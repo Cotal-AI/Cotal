@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, resolveOnPath, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
@@ -273,6 +273,23 @@ function rotateServiceLog(path: string): void {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
   if (info.size >= LOG_ROTATE_BYTES) renameSync(path, `${path}.1`);
+}
+
+/** Delete the instances' logs, `<log>` and the rotated `<log>.1`, and return the paths deleted. */
+export function removeServiceLogs(space: string, ids: readonly string[]): string[] {
+  const removed: string[] = [];
+  for (const id of ids) {
+    const path = serviceLogPath(space, id);
+    if (!path) continue;
+    for (const file of [path, `${path}.1`]) {
+      try { unlinkSync(file); removed.push(file); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw new CommandFailure("partial", "OPERATION_PARTIAL", `the definition and its stopped instance records were removed, but the log ${file} was not deleted: ${(error as Error).message}`, { target: { space, instanceId: id }, changed: removed.map((log) => ({ kind: "service-log", path: log })), remedy: `delete ${file} yourself` });
+      }
+    }
+  }
+  return removed;
 }
 
 /** Both absent, or the same attempt and inventory digest. */
@@ -762,8 +779,9 @@ export function removeStoppedInstanceRecord(definition: ServiceDefinitionSnapsho
   } finally { hold.release(); }
 }
 
-/** Called under the definition writer lock, after stopped/host/supervisor checks for every row. */
-export function removeStoppedInstanceRecords(space: string, name: string): void {
+/** Called under the definition writer lock, after stopped/host/supervisor checks for every row.
+ *  Returns the full IDs whose records it removed. */
+export function removeStoppedInstanceRecords(space: string, name: string): string[] {
   const rows = removableServiceInstances(space, name), removed: string[] = [];
   try {
     for (const row of rows) { serviceInstanceStore(space).commit(row.name, row, undefined); removed.push(row.name); }
@@ -771,7 +789,11 @@ export function removeStoppedInstanceRecords(space: string, name: string): void 
     if (!removed.length) throw error;
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "some stopped instance records were removed, but the definition was kept after another record changed", { target: { space, name }, changed: removed.map((instanceId) => ({ kind: "stopped-instance-record", instanceId })), remedy: "inspect the remaining records before another removal; no process was signalled and logs were retained" });
   }
+  return removed;
 }
+
+/** The most a finite tail reads back from the end of a log, the size at which a start rotates it. */
+const LOG_TAIL_BYTES = LOG_ROTATE_BYTES;
 
 /** Read only bounded regular-file bytes; log data is not promised to be secret-redacted. */
 export function readServiceLog(space: string, id: string, tail: number) {
@@ -784,11 +806,20 @@ export function readServiceLog(space: string, id: string, tail: number) {
     const info = fstatSync(fd);
     if (![info.size, info.dev, info.ino].every((number) => Number.isSafeInteger(number) && number >= 0)) throw new CommandFailure("refused", "UNSUPPORTED", "this log's native file coordinates cannot be represented safely; no approximate byte offsets were reported");
     if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the service log is not an owned private regular file");
-    const length = Math.min(info.size, 1024 * 1024), start = info.size - length;
-    const buffer = Buffer.alloc(length);
-    let offset = 0;
-    while (offset < length) { const count = readSync(fd, buffer, offset, length - offset, start + offset); if (!count) break; offset += count; }
-    let text = buffer.subarray(0, offset).toString("utf8");
+    // Read back 1 MiB at a time until the bytes hold `tail` whole lines, the file's start or the bound.
+    const limit = Math.min(info.size, LOG_TAIL_BYTES), chunks: Buffer[] = [];
+    let start = info.size, newlines = 0;
+    while (info.size - start < limit && (start === info.size || newlines < tail)) {
+      const length = Math.min(1024 * 1024, limit - (info.size - start)), chunk = Buffer.alloc(length);
+      let offset = 0;
+      while (offset < length) { const count = readSync(fd, chunk, offset, length - offset, start - length + offset); if (!count) break; offset += count; }
+      if (offset < length) break;
+      chunks.unshift(chunk);
+      start -= length;
+      for (let at = chunk.indexOf(10); at !== -1; at = chunk.indexOf(10, at + 1)) newlines++;
+      if (start + length === info.size && chunk[length - 1] === 10) newlines--;
+    }
+    let text = Buffer.concat(chunks).toString("utf8");
     if (start) text = text.includes("\n") ? text.slice(text.indexOf("\n") + 1) : "";
     const all = text.replace(/\n$/, "").split("\n");
     return { lines: text ? all.slice(-tail) : [], omittedBytes: start, path };

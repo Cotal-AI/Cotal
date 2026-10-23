@@ -3793,9 +3793,10 @@ start or stop that finds nothing to do says so and reports `no-op`.
 `stack-broker` row shows which `nats-server` serves the stack. `--json` carries it as `executable`.
 A stopped instance shows no running process, and a host with no `/proc` shows it as not readable.
 
-`remove` forgets a definition once every instance is stopped and no unit is installed. Logs stay.
-With `--instance <id>` it forgets only that stopped instance record, and keeps the definition and
-its other instances. A command that names no instance while several records exist refuses
+`remove` forgets a definition once every instance is stopped and no unit is installed. It deletes
+those instances' logs and lists each file it deleted.
+With `--instance <id>` it forgets only that stopped instance record, and keeps the definition,
+its other instances and its logs. A command that names no instance while several records exist refuses
 `TARGET_AMBIGUOUS`; its Next lists each instance with its state and the `remove --instance` command
 for each stopped one, so a finished record stops blocking the bare form. A controller stack's
 member records are not removed this way; they go with `cotal space forget`.
@@ -6808,9 +6809,12 @@ Ctrl-C also reaches the native child, which ignores a signal that carries no sto
 prints one warning line for it.
 Native service child boot never repairs or seeds connector packages. Background stdout/stderr
 go to owner-private logs. A start or restart moves a log of 16 MiB or more to `<log>.1`, replacing
-an earlier one, and the run writes a fresh log, so the log grows until the next start. `logs --tail <1..1000>` reads a bounded tail from the last 1 MiB. The result
-is partial only when that read holds fewer lines than the tail asked for. Foreground output is not captured there. Log text is not promised to be
-secret-redacted. Live following uses the bounded read-only stream described below.
+an earlier one, and the run writes a fresh log, so the log grows until the next start.
+`logs --tail <1..1000>` reads back from the end of the log until it has that many lines, reading at
+most 16 MiB. The result is partial only when those 16 MiB hold fewer lines than the tail asked for.
+`service remove` deletes `<log>` and `<log>.1` for each instance it removes. Foreground output is
+not captured there. Log text is not promised to be secret-redacted. Live following uses the bounded
+read-only stream described below.
 
 For a recorded systemd user unit, logs use its saved original invocation, boot and OS user,
 not the native manager's current invocation. Finite tails read at most 1 MiB and 1000 records.
