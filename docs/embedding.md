@@ -653,7 +653,9 @@ The `error` event carries a fault the endpoint cannot return from a call, such a
 subscription or a refused publish that no request was waiting on. Attach a listener before `start()`,
 since Node throws on an unhandled `error`. A denial the broker returns to a request, such as an
 observer's read of the DM stream, reaches only that call, which decides what it means, and is not
-emitted again as an `error`.
+emitted again as an `error`. When the broker refuses a joined channel's live subscription, the
+endpoint leaves the channel and emits one `error` that names the channel. Its `cause` is the
+broker's refusal, which names the subject.
 
 ## Booting the daemons
 

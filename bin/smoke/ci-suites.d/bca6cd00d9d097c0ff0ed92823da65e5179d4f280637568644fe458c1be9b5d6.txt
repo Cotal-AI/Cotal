@@ -1,0 +1,2 @@
+# A broker refusal of a joined channel's live subscription reaches the error event once, with its cause.
+smoke:late-chat-refusal
