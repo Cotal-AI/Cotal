@@ -5231,7 +5231,9 @@ cotal r simulate ./workflow.cotal.js --handler ./results.json
 These three forms are offline and reject mesh or caller selection. Validation checks the
 language. A program that does not validate is refused by all three with every problem listed: its
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
-`result.problems`. Plan lists validated static call sites in source order; it does not evaluate branches,
+`result.problems`. A warning leaves the program valid. All three print it on stderr with its code,
+position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a literal list whose items carry no `id` and
+that passes no `key`, which the run refuses when it reaches it. Plan lists validated static call sites in source order; it does not evaluate branches,
 loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
 script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and

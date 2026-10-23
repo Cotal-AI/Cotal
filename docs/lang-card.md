@@ -80,7 +80,8 @@ rule covers user functions declared `async`.
 `parallel` and `race` take branches unevaluated, as a record of thunks. The record keys are the
 branch keys and survive reordering; array branches are keyed by index, which shifts when you
 insert one (warning L3023). `fanOut(items, fn, { name, key? })` runs `fn(item, index)` per item;
-the branch key is `key(item)`, else the item's string `id`, else the fan-out is refused (L3021).
+the branch key is `key(item)`, else the item's string `id`, else the run refuses the fan-out when
+it reaches it (L3021). `cotal run validate` warns with the same code on a literal list it can see.
 
 ```js
 async function review(pr) {
