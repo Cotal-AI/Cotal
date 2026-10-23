@@ -1684,7 +1684,10 @@ record carries; it recovers only by replaying the same request.
 
 The public route `/service-endpoint-authority` exists only with `serviceEndpoints`, on both faces;
 without it the route answers 404. `GET` returns `{v:1, kind:"service-endpoint-authority-info", space,
-accountPublicKey}` for the receiver's own account with `cache-control: no-store`. `POST` takes one
+accountPublicKey, issuer, keys}` for the receiver's own account with `cache-control: no-store`:
+`issuer` is the exact `iss` its service access bearers carry and `keys` the Ed25519 verification
+keys it publishes at `GET /jwks`, public coordinates only (`kty`, `crv`, `kid`, `x`, at most 16). A
+guest verifies its access bearer under them before it brands its serve grant (§13.6). `POST` takes one
 envelope of at most 2 MiB. The proof is the credential on either face; the loopback capability is
 never read. A request naming another account or space is refused before its proof is used. The proof
 kinds each operation admits are fixed: register needs IdP; activate needs IdP or a renewal proof;

@@ -63,11 +63,22 @@ const credential = {
   accessBearer: "fixture-access", accessExpiresAt: 60, renewalProof: "fixture-renewal", renewalExpiresAt: 3600,
 };
 
-const info = { v: 1, kind: "service-endpoint-authority-info", space: identity.space, accountPublicKey: identity.accountPublicKey };
+const issuerKey = { kty: "OKP", crv: "Ed25519", kid: "kid-1", x: "A".repeat(43) };
+const info = { v: 1, kind: "service-endpoint-authority-info", space: identity.space, accountPublicKey: identity.accountPublicKey, issuer: "https://auth.example/exchange", keys: [issuerKey] };
 assert.deepEqual(parseServiceAuthorityInfo(info, identity.space), info);
 assert.throws(() => parseServiceAuthorityInfo(info, "other-space"), /does not match/);
 assert.throws(() => parseServiceAuthorityInfo({ ...info, token: "fixture" }, identity.space), /unsupported fields/);
 assert.throws(() => parseServiceAuthorityInfo({ ...info, accountPublicKey: "invalid" }, identity.space), /DATA-account/);
+// The issuer identity is part of the closed answer: an authority that publishes none, a private
+// member, another curve, a duplicate kid or a malformed coordinate is refused, never defaulted.
+const { keys: _keys, ...withoutKeys } = info;
+assert.throws(() => parseServiceAuthorityInfo(withoutKeys, identity.space), /unsupported fields/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, issuer: "" }, identity.space), /issuer/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [] }, identity.space), /bounded nonempty/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [{ ...issuerKey, d: "B".repeat(43) }] }, identity.space), /unsupported fields/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [{ ...issuerKey, crv: "X25519" }] }, identity.space), /Ed25519/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [issuerKey, issuerKey] }, identity.space), /duplicate/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [{ ...issuerKey, x: "not base64url!" }] }, identity.space), /coordinate/);
 
 assert.equal(actor.length, 54);
 assert.match(actor, /^svc_[a-z0-9]{50}$/);

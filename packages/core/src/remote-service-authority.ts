@@ -11,12 +11,27 @@ import { assertDerivedOwnerToken, assertLifecycleToken, spacePrefix } from "./su
 import { SERVICE_AUTHORITY_MAX_BYTES, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
 export { SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, SERVICE_AUTHORITY_MAX_BYTES, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
 
-/** Non-authorizing account metadata read through the client's already-pinned authority origin. */
+/** One published Ed25519 verification key of the service authority's issuer: the public
+ *  coordinate only, as the door projects its JWKS. */
+export interface ServiceIssuerKey {
+  kty: "OKP";
+  crv: "Ed25519";
+  kid: string;
+  x: string;
+}
+
+/** Non-authorizing account metadata read through the client's already-pinned authority origin,
+ *  with the issuer identity a guest verifies its service access bearer under: the same origin,
+ *  tenant path included, that mints the bearer. */
 export interface ServiceAuthorityInfo {
   v: 1;
   kind: "service-endpoint-authority-info";
   space: string;
   accountPublicKey: string;
+  /** The exact `iss` the authority mints into its service access bearers. */
+  issuer: string;
+  /** The authority's published verification keys, the set its `GET /jwks` serves. */
+  keys: readonly ServiceIssuerKey[];
 }
 
 /** A transport failure never permits a new mutation identity or an unqualified replay. */
@@ -219,14 +234,38 @@ function artifacts(raw: unknown, closureCount: number): void {
   }
 }
 
+/** How many verification keys an issuer may publish at once: the active key plus the retired
+ *  kids still published for their max-age window. */
+const ISSUER_KEYS_MAX = 16;
+/** Unpadded base64url of a 32-byte Ed25519 public coordinate. */
+const ED25519_X = /^[A-Za-z0-9_-]{43}$/;
+
+function issuerKeys(raw: unknown): ServiceIssuerKey[] {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > ISSUER_KEYS_MAX) invalid("keys must be a bounded nonempty array");
+  const kids = new Set<string>();
+  return raw.map((entry) => {
+    const o = record(entry, "issuer key");
+    closed(o, ["kty", "crv", "kid", "x"]);
+    if (o.kty !== "OKP" || o.crv !== "Ed25519") invalid("issuer key must be an Ed25519 public key");
+    const kid = text(o.kid, "kid", 256);
+    if (kids.has(kid)) invalid("duplicate issuer kid");
+    kids.add(kid);
+    if (typeof o.x !== "string" || !ED25519_X.test(o.x)) invalid("issuer key x must be a 32-byte base64url coordinate");
+    return { kty: "OKP", crv: "Ed25519", kid, x: o.x };
+  });
+}
+
 export function parseServiceAuthorityInfo(raw: unknown, expectedSpace: string): ServiceAuthorityInfo {
   const o = record(raw, "authority info");
-  closed(o, ["v", "kind", "space", "accountPublicKey"]);
+  closed(o, ["v", "kind", "space", "accountPublicKey", "issuer", "keys"]);
   spacePrefix(expectedSpace);
   if (o.v !== 1 || o.kind !== "service-endpoint-authority-info" || o.space !== expectedSpace)
     invalid("authority info does not match this space and protocol");
   if (typeof o.accountPublicKey !== "string" || !isAccountNkey(o.accountPublicKey)) invalid("invalid DATA-account public key");
-  return { v: 1, kind: "service-endpoint-authority-info", space: expectedSpace, accountPublicKey: o.accountPublicKey };
+  return {
+    v: 1, kind: "service-endpoint-authority-info", space: expectedSpace, accountPublicKey: o.accountPublicKey,
+    issuer: text(o.issuer, "issuer", 2048), keys: issuerKeys(o.keys),
+  };
 }
 
 export function parseServiceRegistrationWitness(raw: unknown): ServiceRegistrationWitness {

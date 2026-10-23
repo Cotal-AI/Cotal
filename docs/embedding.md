@@ -1405,7 +1405,8 @@ the administrative rail, both scanners and the remaining clients stay live, so n
 take over the claim.
 
 With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
-route answers 404. `GET` returns the receiver's account and space. `POST` takes a `{request, proof}`
+route answers 404. `GET` returns the receiver's account and space, the exact `iss` its service
+access bearers carry, and the public Ed25519 keys `GET /jwks` publishes. `POST` takes a `{request, proof}`
 envelope of at most 2 MiB. An IdP proof derives the owner, who needs a current interactive cli or web
 row; register needs one, and so may activate. A service's renewal proof authorizes activate, renew
 and status, and its access bearer authorizes ready and status; neither is owner authority. A typical
@@ -1421,10 +1422,9 @@ as well as the signed-in login.
 The `credential` answer carries no store access and no serve grant, so a service turns it into the
 process-local grant `serveEndpoint` consumes with `authorizeGuestServeGrant({ accountPublicKey,
 result, registration, authenticity })`: the parsed result, the service's own embedded closure, and
-the pinned issuer's `iss` and published keys. The issuer and keys must
-come from the registered space's authority URL the service already pins, tenant path included,
-read through the auth provider; `serviceEndpointInfo` does not expose them yet, so no shipped
-service serves through this seam until the provider does.
+the pinned issuer's `iss` and published keys. The issuer and keys come from the registered
+space's authority URL the service already pins, tenant path included: the auth provider's
+`serviceEndpointInfo` answer carries them, and a service passes that answer as `authenticity`.
 It verifies the access bearer's EdDSA signature under the published key its `kid` names and the
 same closed claims the host's token validator checks, so a bearer the issuer did not sign for
 this witness brands nothing; the closure is bound to the service's own embedded contract, not to

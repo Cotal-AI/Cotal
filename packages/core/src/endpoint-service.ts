@@ -27,7 +27,7 @@ import {
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { canonicalJson, contractDigest } from "./canonical.js";
-import type { ServiceAuthorityResult, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
+import type { ServiceAuthorityResult, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
@@ -1723,20 +1723,12 @@ async function verifiedServeSurface(
   return { surface, commands, clusters, journalClass };
 }
 
-/** One published Ed25519 verification key of the service authority's issuer, as its JWKS lists
- *  it. Only the public coordinate is read; any other member is ignored. */
-export interface ServiceIssuerKey {
-  kty: "OKP";
-  crv: "Ed25519";
-  kid: string;
-  x: string;
-}
-
 /** What makes a guest's access bearer a signed credential rather than bytes it was handed: the
  *  exact `iss` the pinned authority mints and the keys that authority publishes at its JWKS. Both
- *  must come from the registered space's authority URL the guest already pins, tenant path
- *  included, through the auth provider; a key set chosen by the caller or read from a bare
- *  shared origin proves nothing. The bearer never names where its key comes from. */
+ *  come from the registered space's authority URL the guest already pins, tenant path included:
+ *  the auth provider's `serviceEndpointInfo` answer carries them and satisfies this type as it is.
+ *  A key set chosen by the caller or read from a bare shared origin proves nothing. The bearer
+ *  never names where its key comes from. */
 export interface GuestServeAuthenticity {
   issuer: string;
   keys: readonly ServiceIssuerKey[];
@@ -1760,7 +1752,7 @@ const jsonPart = (part: string): unknown => {
 };
 
 /**
- * Verify a service access bearer the way the host's callout does, with the issuer's published
+ * Verify a service access bearer the way the host's token validator does, with the issuer's published
  * key: EdDSA over the compact JWS with the key the header's `kid` names, no embedded key
  * material, the closed service-access claim set (SPEC 13.9), the exact issuer, the space as the
  * only audience, the registered owner as subject, the fixed at-most-60-second lifetime, and the

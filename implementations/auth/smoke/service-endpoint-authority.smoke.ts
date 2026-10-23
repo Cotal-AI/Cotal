@@ -133,6 +133,10 @@ try {
   c.check("B1 the provider reads the receiver's own account and space over the loopback face", info.space === space && info.accountPublicKey === accountPublicKey, info);
   const pubInfo = await readRemoteServiceAuthorityInfo(pub, space), pubGet = await raw(pub, null, { method: "GET" });
   c.check("B2 the public face serves the same info, not stored", pubInfo.accountPublicKey === accountPublicKey && pubGet.cacheControl === "no-store", pubGet);
+  const jwks = (await (await fetch(`${on.url}/jwks`)).json()) as { keys: Array<{ kid: string; x: string }> };
+  c.check("B3 the info names the issuer and the same public Ed25519 keys GET /jwks publishes, on both faces",
+    info.issuer.length > 0 && info.keys.length === jwks.keys.length && info.keys.every((k, i) => k.kid === jwks.keys[i]!.kid && k.x === jwks.keys[i]!.x)
+    && JSON.stringify(pubInfo) === JSON.stringify(info), { info, jwks });
 
   // ---- C: register through the provider ----
   const i1 = rid(), i2 = rid(), i3 = rid(), i4 = rid();
