@@ -209,7 +209,10 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const verified = v.force !== true;
   if (verified) {
     take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);
-    take(await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired)), target);
+    const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired));
+    // A broker that does not answer may be down right now, which is what --force is for.
+    if (!reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `pass --force to add "${name}" unchecked, as for a space that is down right now`);
+    take(reached, target);
     if (mode === "open") await servedOrThrow(server, name, target);
   }
   const warnings: OutputWarning[] = [];
