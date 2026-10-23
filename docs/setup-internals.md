@@ -20,7 +20,9 @@ Every run takes the same inputs: destination, application, runtimes, project and
 terminal, `askInputs` asks for each one no flag gave and shows the answers before anything is
 written; Change asks again with the answers kept and Cancel saves nothing. Without one, or with
 `--yes`, `--no-input` or `--json`, `scriptedInputs` takes them from the flags and refuses a missing
-one. `--destination cloud` is refused as in development before anything else. `runtimeChoices`
+one, and that refusal (`MissingFlags`) prints the scripted form without the command help.
+`--destination cloud` is refused before anything else with the route a Cloud space takes: `cotal
+login` registers it, then `--destination self-hosted`. `runtimeChoices`
 lists `pty`, the official runtimes with the host tools in `OFFICIAL_RUNTIME_TOOLS`, and each
 installed third-party runtime. A script's runtimes are the `--runtime` names, which `runtimeFlags`
 checks before any write: an unknown name or an official one whose tool is not on PATH is refused.

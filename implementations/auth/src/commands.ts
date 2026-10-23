@@ -10,7 +10,7 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
 import { readFileSync } from "node:fs";
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, writePrivateRecord, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -173,15 +173,21 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       if (removed.length)
         console.log(`Removed the previous account's discovered spaces: ${removed.join(", ")}. No replacement was selected automatically.`);
     }
+    let discovered: MeshEntry[] = [];
     if (provider.hasSpaceCatalog?.({ dir: homeCotalDir(), idpUrl: idp, sub })) {
       const consumer = resolveSpaceCatalogConsumer();
-      await provider.syncSpaceCatalogAfterLogin?.({ dir: homeCotalDir(), idpUrl: idp, validate: consumer.validate, apply: consumer.apply });
+      const results = await provider.syncSpaceCatalogAfterLogin?.({ dir: homeCotalDir(), idpUrl: idp, validate: consumer.validate, apply: consumer.apply }) ?? [];
+      const owners = new Set(results.map((r) => r.account.ownerKey));
+      discovered = loadMeshes().filter((m) => m.origin === "catalog" && owners.has(m.catalogOwner ?? "")).sort((a, b) => a.space.localeCompare(b.space));
     }
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     console.log(renderReport({ sections: [
       { title: "Signed in", blocks: [{ kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()]] }, { kind: "lines", lines: [{ text: "Account identity is verified. Each space's grants decide access separately. No session token is printed.", tone: "hint" }] }] },
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal space", description: "See registered spaces and choose one" }, { command: "cotal sync", description: "Refresh spaces the provider makes available to this account" }] }] },
+      ...(discovered.length ? [{ title: "Your spaces", blocks: [{ kind: "fields" as const, rows: discovered.map((m): [string, string] => [m.space, [m.catalogName ?? m.space, m.catalogRole].filter(Boolean).join(" · ")]) }] }] : []),
+      { title: "Next", blocks: [{ kind: "commands", items: discovered.length
+        ? [{ command: "cotal use <name>", description: "Select one of your spaces for the commands that follow" }, { command: "cotal space", description: "See every registered space" }]
+        : [{ command: "cotal space", description: "See registered spaces and choose one" }, { command: "cotal sync", description: "Refresh spaces the provider makes available to this account" }] }] },
     ] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stdout)));
   });
 }

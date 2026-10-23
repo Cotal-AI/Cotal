@@ -14,7 +14,7 @@
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { isLoopbackLiteral, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
-import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
@@ -22,7 +22,7 @@ import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@co
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, withManagedGrantTransaction } from "./ledger.js";
+import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
 import { serviceEndpointRenewal } from "./service-endpoint-renewal.js";
 import {
@@ -785,6 +785,19 @@ function remoteUserAuthEntry(
   return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
 }
 
+/** The next step after a remote space refuses an ungranted account: the spaces the same sign-in
+ *  discovered, or the sync that discovers them. */
+function discoveredSpacesRemedy(space: string, idpUrl: string): string {
+  const idp = normalizeIdpUrl(idpUrl);
+  const names = loadMeshes()
+    .filter((m) => m.origin === "catalog" && m.space !== space && m.userAuth && normalizeIdpUrl(m.userAuth.idp.url) === idp)
+    .map((m) => m.space)
+    .sort();
+  return names.length
+    ? `your account's spaces are ${names.join(", ")}; select one with \`cotal use <name>\``
+    : "run `cotal sync` to discover the spaces your account has, then select one with `cotal use <name>`";
+}
+
 /** Client-only service transport. The local arm reads a powerless sentinel projection, never
  * the callout account document. It sends no loopback capability. Remote pins remain dir-bound. */
 function serviceClientTarget(store: SecretStore, dir: string, space: string): {
@@ -863,6 +876,10 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
     // none, say so rather than presenting the bare HTTP status as if it were the reason - this
     // client cannot tell a real service sentence from a status code dressed up as one.
     const actorLabel = `actor "${actor}"${view ? ` (view "${view}")` : ""}`;
+    // This machine holds no ledger for the space, so the operator's grant command that follows a
+    // not-granted reason is not a step this user can take. The spaces the account discovered are.
+    if (body.error?.startsWith(notGrantedReason(actor)))
+      throw credentialFailure("refused", `signed in, but space "${space}" has not granted ${actorLabel} to this account, and only that space's operator can grant it`, discoveredSpacesRemedy(space, remote.idp.url));
     throw credentialFailure(
       "refused",
       body.error

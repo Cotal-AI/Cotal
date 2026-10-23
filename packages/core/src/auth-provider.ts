@@ -512,6 +512,9 @@ export interface AuthSpaceCatalogResult {
   snapshot?: unknown;
   fetchedAt?: string;
   error?: string;
+  /** On `failed`: the previous refresh of this account failed too, with no success since, so this
+   *  failure continues an outage an earlier preparation already returned. */
+  ongoing?: boolean;
 }
 
 /** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI.

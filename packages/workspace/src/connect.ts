@@ -236,7 +236,7 @@ export async function userViewAuthOrThrow(conn: Connection, view: string, opts: 
   } catch (e) {
     const code = (e as { code?: unknown } | undefined)?.code;
     if (code !== "refused" && code !== "signed-out" && code !== "unavailable") throw e;
-    throw new ConnectRefusal(`✗ ${(e as Error).message}`, undefined, { cause: e, kind: code === "signed-out" ? "permanent" : "transient", code: credentialCode(e) });
+    throw credentialRefusal(e, code === "signed-out" ? "permanent" : "transient");
   }
 }
 
@@ -399,9 +399,19 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
  *  (`refused`). A provider sets it as the thrown error's `code`; anything else is unclassified. */
 export type CredentialFailure = "signed-out" | "unavailable" | "refused";
 
-/** An error a user-auth provider throws, carrying its {@link CredentialFailure}. */
-export function credentialFailure(code: CredentialFailure, message: string): Error {
-  return Object.assign(new Error(message), { code });
+/** An error a user-auth provider throws, carrying its {@link CredentialFailure} and, when the
+ *  provider can name the next step apart from the reason, its remedy. */
+export function credentialFailure(code: CredentialFailure, message: string, remedy?: string): Error {
+  return Object.assign(new Error(message), { code }, remedy === undefined ? {} : { remedy });
+}
+
+/** A provider failure as a refusal: its message, and its remedy apart when it named one. */
+function credentialRefusal(e: unknown, kind: ConnectRefusalKind): ConnectRefusal {
+  const message = e instanceof Error ? e.message : String(e);
+  const remedy = (e as { remedy?: unknown } | undefined)?.remedy;
+  return typeof remedy === "string"
+    ? new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, { cause: e, kind, code: credentialCode(e), parts: { message, remedy } })
+    : new ConnectRefusal(`✗ ${message}`, undefined, { cause: e, kind, code: credentialCode(e) });
 }
 
 /** The provider's own sentence when it answered and refused this actor, such as the scope an elevated
@@ -681,7 +691,7 @@ async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
     return await userConnect(target);
   } catch (e) {
     const kind = (e as { code?: unknown } | undefined)?.code === "unavailable" ? "transient" : "permanent";
-    throw new ConnectRefusal(`✗ ${e instanceof Error ? e.message : String(e)}`, undefined, { cause: e, kind, code: credentialCode(e) });
+    throw credentialRefusal(e, kind);
   }
 }
 

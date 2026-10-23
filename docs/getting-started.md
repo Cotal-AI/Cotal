@@ -76,7 +76,8 @@ before it writes anything:
 
 1. **Where your space runs.** Local is a space this machine starts. Self-hosted is a space that
    runs on a server and is registered here, with `cotal space add` or from a connection file the
-   space's operator gives you. Cloud is shown as in development and cannot be chosen yet.
+   space's operator gives you. Cloud cannot be chosen: sign in with `cotal login`, which registers
+   your Cloud spaces here, then choose Self-hosted and pick one.
 2. **Which application your agents run in.** Every installed connector is a choice, and its hint
    comes from the connector itself: one that declares its own setup runs it (Claude installs its
    plugin that way), and one whose executable is not on PATH is named. Setup records your choice
