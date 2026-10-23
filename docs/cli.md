@@ -2941,6 +2941,8 @@ must name the requested persona and keep their original bytes. They cannot be co
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
 including `--subscribe ""` for no channels, and accepts `--role` and `--model`.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
+Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
+persona is one: its file is `default.md` and its agents launch as `default_agent`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
 preferences). A successful editor exit and valid definition are required before saving. A changed

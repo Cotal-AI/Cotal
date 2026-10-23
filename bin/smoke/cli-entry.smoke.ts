@@ -27,6 +27,7 @@ import "@cotal-ai/delivery";
 import "@cotal-ai/runtime";
 import "@cotal-ai/auth";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { DEFAULT_AGENT } from "../../implementations/cli/src/lib/default-persona.js";
 
 const REPO = join(import.meta.dirname, "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -225,6 +226,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("control: personas edit runs the editor", edited.status === 0 && edited.stdout.includes('saved "x"'), shown(edited));
   const forbidden = cotal(["personas", "edit", "x", "--no-input"], persona, editor);
   check("personas edit --no-input refuses to open an editor", forbidden.status === 1 && /--no-input forbids one/.test(forbidden.stderr) && !forbidden.stdout.includes("saved"), shown(forbidden));
+  // The seeded default is `default` in the catalog and launches as `default_agent`.
+  const seeded = (home: string) => {
+    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", ".cotal", "agents", "default.md"), DEFAULT_AGENT);
+  };
+  const shownDefault = cotal(["persona", "show", "default", "--json"], seeded, noSeed);
+  check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
+  const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
+  check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
 }
 
 // ── Unknown words, prefixes, uninstalled seeded commands ──────────────────────────────────────────
