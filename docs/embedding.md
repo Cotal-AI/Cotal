@@ -1379,13 +1379,20 @@ does not export this module; the typed request, result and view parsers in the s
 are public.
 
 `openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
-to host these operations; it is off by default and no CLI flag sets it. With it, the plane and the
+to host these operations; it is off by default. `cotal up --user-auth --service-endpoints` sets it
+on the stock auth service. With it, the plane and the
 hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
-four caller-policy operations and the two reads in process. A hosted context rejects it as
-`unavailable` while it is not ready. That function has no route or capability of its own; register
-admission is reachable only through the
-public route below. The host authenticates no caller: the embedder must authenticate the operator or
-owner granter it passes. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
+four caller-policy operations and the three reads (`proposal-read`, `operation-read` and
+`name-read`) in process. A hosted context rejects it as
+`unavailable` while it is not ready. The host authenticates no caller: the embedder must
+authenticate the operator or owner granter it passes. The stock service does that on
+`POST /service-endpoint-host`: the body is `{ idpToken, request }` with no granter, and the route
+verifies the token and derives the granter. A decision, an `owner-request` revoke and the reads run
+as the proved owner on either face; `name-bind`, any other revoke and the admission operations are
+the operator's, served on the loopback face under the exchange capability only, with the proved
+subject as the audit id. `cotal service-endpoint` drives that route as the signed-in user
+([docs/cli.md](cli.md#service-endpoint)). Register admission is reachable only through the public
+route below. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
 the endpoint's name binding once, with your `claimReference`, and only the identical request recovers
 it; nothing updates, transfers or releases a name. The host checks no domain control, so verify the
 claim, or delegate a namespace you control, before you bind. The host runs over the plane's claim hold, data account and
