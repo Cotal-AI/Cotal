@@ -55,8 +55,9 @@
  *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
  *     stack, `up` starts it again and a later `down` stops it.
  *  9. A `down` killed mid-stop. Killed while the broker's record is `stopping`, it leaves a broker
- *     that is gone under an unconfirmed request: the next `down` refuses and names
- *     `down --abandon-stop <request> --yes`, which records the broker failed with a warning, and
+ *     that is gone under an unconfirmed request: `status` names that member and request, the next
+ *     `down` refuses and names `down --abandon-stop <request> --yes`, which records the broker failed
+ *     with a warning, and
  *     `up` then `down` cycle the stack. Killed while the manager's record is `stopping` and before
  *     its request is published, the next bare `down` stops the stack and releases the reservation
  *     that killed `down` took.
@@ -680,6 +681,9 @@ try {
     const request = await killDownAt(root, space, "stack-broker");
     await until(() => gone(space, "stack-broker"), 10_000);
     check(`${space}: the killed down left the broker stopping under its request, with its process gone`, request !== undefined && serviceInstances(space, "stack-broker")[0]?.record.value.state === "stopping" && gone(space, "stack-broker"), { request });
+    const status = cli(root, "status", "--space", space, "--json");
+    const block = (status.env?.result?.folder as { stackBlock?: { definition?: string; reason?: string; route?: { kind?: string; requestId?: string } } | null } | undefined)?.stackBlock;
+    check(`${space}: status names the broker as what keeps up and down from settling, with that request to abandon`, (status.status === 0 || status.status === 4) && block?.definition === "stack-broker" && block.route?.kind === "abandon" && block.route.requestId === request && Boolean(block.reason?.includes("process is gone")), { ...shown(status), block });
     const refused = cli(root, "down", "--yes", "--json");
     check(`${space}: the next down refuses and names the abandon command for that request`, refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(refused.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`)), shown(refused));
     const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");

@@ -110,6 +110,14 @@ export async function settleRetainedNativeStop(definition: ServiceDefinitionSnap
   return transition(row, { state: "stopped", requestId: retained.requestId, readiness: "not-checked", nativeStop: result });
 }
 
+/** Whether {@link settleRetainedNativeStop} may change this record before a classification reads it:
+ *  a native `stopping` record that published no request, a signal stop whose process still runs, or a
+ *  published native stop, which only its adapter's receipts decide. */
+export function retainedStopMaySettle(value: ServiceInstance): boolean {
+  const retained = retainedStopRequest(value);
+  return value.nativeStopRequired && value.process !== undefined && value.state === "stopping" && !retained || resumableSignalStop(value) || retained?.publication === "published";
+}
+
 /** Abandon the native stop `requestId` this record retains, on an operator's explicit request. The
  *  caller holds the definition's writer lock. The adapter refuses unless no receipt settles the
  *  request and its exact process and the stopper that published it have both exited; it then removes

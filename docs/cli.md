@@ -2136,7 +2136,13 @@ are separate columns; neither a saved serving state nor a supervisor receipt bec
 endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
-process is gone, Next offers `cotal up --root <root>` first. Unreadable
+process is gone, Next offers `cotal up --root <root>` first. When an earlier `down`, or a foreground
+`up` whose terminal closed, ended after it signalled the broker or the delivery daemon and before it
+saw that process exit, `up` and `down` refuse until that stop is abandoned. `status` then says so
+under the selected space, names the member, and offers `cotal down --abandon-stop <request-id> --yes`
+with the request ID their refusal names, and the member's `service status`, in place of `up --root`.
+`--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
+receipts, which only `up` and `down` read, so `status` does not name it. Unreadable
 service record families make the report partial instead of becoming empty lists. Warnings retain
 a classified cause code, such as unsupported host observation, without native diagnostic bodies. These reads
 import no provider and start, stop, adopt or repair nothing. `--all` extends broker checks; this

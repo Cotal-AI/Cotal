@@ -11,7 +11,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -362,12 +362,58 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
     // Read-only, a crash is classified as the settled `failed` record it will become.
     if (gone && !stopRetained && (["failed", "stopped"].includes(value.state) || !settle && value.process !== undefined && ["starting", "running", "unknown"].includes(value.state))) return { role, instanceId: row.name, process: "gone" };
     // Nothing was changed by this command, so its own outcome is a known refusal.
+    const route = memberStopRoute(value);
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", !stopRetained
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : resumableSignalStop(value) ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
   } finally { hold?.release(); }
+}
+
+/** The way out a refusal of `value` names: abandon the stop it retains, signal its process again, or
+ *  only inspect it. */
+function memberStopRoute(value: ServiceInstance): { kind: "abandon"; requestId: string } | { kind: "resume" } | { kind: "inspect" } {
+  const retained = retainedStopRequest(value);
+  if (retained?.publication === "published") return { kind: "abandon", requestId: retained.requestId };
+  if (abandonableSignalStop(value)) return { kind: "abandon", requestId: value.requestId };
+  return { kind: resumableSignalStop(value) ? "resume" : "inspect" };
+}
+
+/** A member that keeps `up` and `down` from settling a cut-off operation, as {@link stackOperationBlock}
+ *  reads it. */
+export interface StackOperationBlock {
+  operation: { id: string; kind: StackJournal["operation"]["kind"] };
+  definition: string;
+  instanceId: string;
+  /** Why the stack is in this state. */
+  reason: string;
+  route: { kind: "abandon"; requestId: string } | { kind: "inspect" };
+}
+
+/** What keeps `up` and `down` from settling this journal's operation, which ended with no recorded
+ *  outcome: the member their refusal names, why, and the way out it names. Read as `down --dry-run`
+ *  reads it, with nothing written. Undefined when the operation is settled or settles from its
+ *  members' processes, and when a member's retained stop may settle before they classify it, which
+ *  for a native stop only its adapter's receipts decide. */
+export function stackOperationBlock(journal: StackJournal): StackOperationBlock | undefined {
+  try { previewStackSettlement(journal); return undefined; }
+  catch (error) {
+    const target = isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" ? error.target as { definition?: unknown; instanceId?: unknown } | undefined : undefined;
+    if (typeof target?.definition !== "string" || typeof target.instanceId !== "string") throw error;
+    const row = serviceInstances(journal.space, target.definition).find((item) => item.name === target.instanceId);
+    if (!row) throw error;
+    const value = row.record.value, route = memberStopRoute(value);
+    if (retainedStopMaySettle(value) || route.kind === "resume") return undefined;
+    const operation = `the earlier ${journal.operation.kind === "down" ? "whole-stack stop" : journal.operation.kind} ${journal.operation.id}`;
+    return {
+      operation: { id: journal.operation.id, kind: journal.operation.kind },
+      definition: target.definition, instanceId: target.instanceId, route,
+      reason: route.kind === "abandon"
+        ? `${operation} asked ${target.definition} to stop and ended before it saw the process exit, and the process is gone, so up and down refuse until the stop is abandoned`
+        : `${operation} ended with no recorded outcome, and ${target.definition} is neither proven running nor proven stopped, so up and down refuse until it is inspected`,
+    };
+  }
 }
 
 /** Settle each member's retained native stop from its adapter's own receipt, under that member's
