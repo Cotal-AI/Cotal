@@ -581,6 +581,12 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal((await completionOut(["watch", "--server", ""])).trimEnd(), ":nofiles", "watch --server offers no option names as its value");
 }
 
+// --- a value that is not a path offers no file names --------------------------------------------
+{
+  for (const flag of ["--window", "--desc", "--instructions"]) assert.equal((await completionOut(["channel", "set", "ops", flag, ""])).trimEnd(), ":nofiles", `channel set ${flag} offers no file names`);
+  assert.equal((await completionOut(["channel", "set", "ops", "--creds", ""])).trimEnd(), ":default", "channel --creds completes from the shell's file names");
+}
+
 // --- endpoint describe has no contract cache, so --refresh refuses before any request ------------
 {
   const endpoint = registry.all<Command>("command").find((cmd) => cmd.name === "endpoint")!;

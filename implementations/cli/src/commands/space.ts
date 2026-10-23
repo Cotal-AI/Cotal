@@ -300,6 +300,8 @@ function spaceView(s: SpaceDetail): Report {
 /** Argument completion: the subcommand, then registered names. */
 export function spaceComplete(argv: string[]): CompletionResult {
   if (completingFlagValue(argv, spaceFlags)?.name === "mode") return { items: ["auth", "open", "user"].map((value) => ({ value })), directive: "nofiles" };
+  // --root is a folder and --file a bundle, so both complete from the shell's own file names.
+  if (["root", "file"].includes(completingFlagValue(argv, spaceFlags)?.name ?? "")) return { items: [], directive: "default" };
   if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }, { value: "delete" }], directive: "nofiles" };
   if ((argv[0] === "show" || argv[0] === "forget") && argv.length === 2)
     return { items: [...loadMeshes().map((m) => ({ value: m.space })), ...loadPreparedSpaces().map((p) => ({ value: p.space }))], directive: "nofiles" };

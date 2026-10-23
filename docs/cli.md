@@ -4973,7 +4973,8 @@ names. A `--space` value completes from those spaces on every command. It does n
 or refresh extensions.
 
 In bash and zsh, a file argument such as `team check <file>`, `up -f <file>` or `--channels <path>`
-completes from the shell's own file names. A value with a fixed set of choices does not offer files.
+completes from the shell's own file names, and so does a folder such as `space add --root <dir>`.
+A value with a fixed set of choices, a duration or free text does not offer files.
 A stub installed by an earlier release offers no files. `cotal completion` reports it as differing
 from this version, and `completion install` refreshes it.
 

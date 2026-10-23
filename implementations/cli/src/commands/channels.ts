@@ -38,7 +38,8 @@ export function channelComplete(argv: string[]): CompletionResult {
     try { return { items: loadMeshes().map((mesh) => ({ value: mesh.space })), directive: "nofiles" }; }
     catch { return { items: [], directive: "nofiles" }; }
   }
-  if (completingFlagValue(argv, channelFlags)) return { items: [], directive: "default" };
+  // Only --creds names a file; a duration, a description or instructions offer no file names.
+  if (completingFlagValue(argv, channelFlags)) return { items: [], directive: completingFlagValue(argv, channelFlags)?.name === "creds" ? "default" : "nofiles" };
   const positionals = positionalsForCompletion(argv, channelFlags);
   if (positionals.length <= 1 && !last.startsWith("-")) return { items: ["show", "members", "set", "defaults", "remove"].map((value) => ({ value })), directive: "nofiles" };
   return { items: channelFlags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), directive: "nofiles" };

@@ -211,6 +211,10 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   }
   const modes = run(["__complete", "space", "add", "x", "--mode", ""]);
   check("completion offers auth, open and user after space add --mode", ["auth", "open", "user"].every((n) => new RegExp(`^${n}$`, "m").test(modes.stdout)), shown(modes));
+  for (const flag of ["--root", "--file"]) {
+    const files = run(["__complete", "space", "add", "x", flag, ""]);
+    check(`space add ${flag} completes from the shell's file names`, files.stdout.trimEnd() === ":default", shown(files));
+  }
 }
 
 // ── A record that does not parse ─────────────────────────────────────────────────────────────────────
