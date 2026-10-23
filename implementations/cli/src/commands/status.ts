@@ -1135,7 +1135,7 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
 function responderText(state: DeliveryResponderState | null, mode: MeshTarget["mode"]): { text: string; tone: Tone } | undefined {
   if (state === null && mode === "open") return { text: "not used - an open mesh runs no delivery daemon", tone: "hint" };
   if (state === "unbound")
-    return { text: `NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · start it with \`${displayCmd()} up\` (or \`${displayCmd()} deliver --space <space>\`)`, tone: "failed" };
+    return { text: `NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · start it with \`${displayCmd()} up\``, tone: "failed" };
   // A stale record is NOT BOUND with a different next move: the slot is occupied by a corpse, so
   // starting a daemon now loses the single-flight CAS. Say that, rather than sending the operator
   // into a refusal they will read as a second failure.

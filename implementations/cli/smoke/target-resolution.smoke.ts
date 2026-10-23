@@ -130,6 +130,19 @@ const QUESTION = "Which one?";
   setCurrent("alpha");
   const selected = terminal(["who"]);
   check("a selection on a terminal is the target, with no question", await until(() => selected.s.code !== undefined) && !selected.s.text().includes(QUESTION) && /\bin alpha\b/.test(selected.s.text()), { code: selected.s.code, out: selected.s.text().slice(-600) });
+
+  // In beta's own root the selection is still the target, and the run says so before it acts.
+  const NOTE = `this targets the selected space "alpha", not this folder's space "beta"; pass --space beta to target it`;
+  const inBeta = run(["who", "--json"], join(home, "beta"));
+  const warned = envelope(inBeta)?.warnings?.find((w: { code: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE");
+  check("in another space's root the selection stays the target and warns, naming both spaces and --space",
+    envelope(inBeta)?.target?.space === "alpha" && warned?.message === NOTE && warned.target?.space === "alpha" && warned.target.folderSpaces?.join() === "beta" &&
+      inBeta.stderr.includes(`! ${NOTE}`), shown(inBeta));
+  const inAlpha = run(["who", "--json"], join(home, "alpha"));
+  const inBetaNamed = run(["who", "--json", "--space", "beta"], join(home, "beta"));
+  check("control: no warning in the selected space's root, from a folder with no project, or with --space",
+    [inAlpha, inBetaNamed, run(["who", "--json"])].every((r) => envelope(r)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") && !r.stderr.includes("SELECTION") && !/^! this targets/m.test(r.stderr)),
+    [inAlpha, inBetaNamed].map(shown));
   clearCurrent();
 }
 

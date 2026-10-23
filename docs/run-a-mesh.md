@@ -463,7 +463,8 @@ personas, and its mode). So a bare `cotal spawn <persona>` from *any* directory 
 running mesh with the right credentials instead of mistaking the cwd for a space:
 
 - `cotal use <name>` sets the default from every directory, including inside another mesh's
-  project. `--space <name>` overrides it for one command.
+  project. There a command warns that it targets the selection and names the `--space` for the
+  folder's own space. `--space <name>` overrides the selection for one command.
 - When one broker has records for several spaces, `cotal up --space <name>` refreshes that named
   space.
 - A refresh rewrites only what that command decided: the server, root and mode, the user-auth

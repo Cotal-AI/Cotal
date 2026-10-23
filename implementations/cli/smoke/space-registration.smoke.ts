@@ -413,7 +413,11 @@ setCurrent("keep");
   check("a --root that is not a directory is USAGE_INVALID", refused(await json(["space", "create", "other", "--root", join(home, "absent")]), 1, "USAGE_INVALID"));
   check("create takes exactly one name", refused(await json(["space", "create"], spare), 1, "USAGE_INVALID") && refused(await json(["space", "create", "a", "b"], spare), 1, "USAGE_INVALID"));
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
-  check("no refused create prepared anything or made a .cotal", findPreparedSpace("other") === undefined && findPreparedSpace("a") === undefined && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
+  for (const name of ["a b", "dot.name", "é"]) {
+    const bad = await json(["space", "create", name], spare);
+    check(`a name cotal up cannot start (${name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
+  }
+  check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
   check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
 
@@ -469,6 +473,11 @@ setCurrent("keep");
   check("up with a missing --channels file is USAGE_INVALID, exit 1, naming the file, and leaves the root and registrations unchanged",
     refused(noChannels, 1, "USAGE_INVALID") && (noChannels.env?.error?.message ?? "").includes(missingChannels) &&
       cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(noChannels));
+  const serverHost = new URL(server).hostname;
+  const hostPort = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--host", `${serverHost}:${new URL(server).port}`], {}, fresh);
+  check("up with a port-bearing --host refuses, exit 1, pointing at --server, and leaves the root and registrations unchanged",
+    hostPort.status === 1 && /is not a valid bind host/.test(hostPort.stderr) && /the port comes from --server/.test(hostPort.stderr) &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(hostPort));
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");

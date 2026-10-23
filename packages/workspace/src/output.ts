@@ -154,8 +154,9 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
   return typeof e === "object" && e !== null && (e as { [FAILURE_BRAND]?: unknown })[FAILURE_BRAND] === true;
 }
 
-/** The space one command run resolved, as {@link recordOperationSpace} set it. */
-export interface OperationScope { space?: string }
+/** The space one command run resolved, as {@link recordOperationSpace} set it, and the warnings
+ *  {@link recordOperationWarning} recorded. */
+export interface OperationScope { space?: string; warnings?: OutputWarning[] }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
@@ -173,6 +174,21 @@ export function recordOperationSpace(space: string): void {
   if (scope) scope.space = space;
 }
 
+/** Record a warning about what this command's operation resolved. It is printed on stderr at once,
+ *  before the command acts on it, and every envelope of the run carries it. A warning already
+ *  recorded in this run is not repeated. Outside {@link runOperation} it does nothing. */
+export function recordOperationWarning(warning: OutputWarning): void {
+  const scope = operationScope.getStore();
+  if (!scope || scope.warnings?.some((w) => w.code === warning.code && w.message === warning.message)) return;
+  (scope.warnings ??= []).push(warning);
+  process.stderr.write(`! ${warning.message}\n`);
+}
+
+/** The warnings this command run recorded so far, none outside {@link runOperation}. */
+export function operationWarnings(): readonly OutputWarning[] {
+  return operationScope.getStore()?.warnings ?? [];
+}
+
 /** `failure` with the operation's recorded space added to its target, so its report begins with
  *  `Mesh: <space>` and its envelope carries `target.space`. A target that already has a `space`
  *  field, or is not an object, is kept as it is. */
@@ -185,8 +201,8 @@ export function inOperationSpace(failure: CommandFailure, space: string | undefi
   return placed;
 }
 
-/** The envelope for a command that did not succeed. */
-export function failureEnvelope(command: string, failure: CommandFailure): Envelope<null> {
+/** The envelope for a command that did not succeed, with the warnings its run recorded. */
+export function failureEnvelope(command: string, failure: CommandFailure, warnings: readonly OutputWarning[] = operationWarnings()): Envelope<null> {
   return {
     schemaVersion: 1,
     command,
@@ -194,7 +210,7 @@ export function failureEnvelope(command: string, failure: CommandFailure): Envel
     outcome: failure.outcome,
     completeness: "not-checked",
     result: null,
-    warnings: [],
+    warnings: [...warnings],
     error: failure.detail(),
     ...(failure.changed === undefined ? {} : { changed: failure.changed }),
   };
