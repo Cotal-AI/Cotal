@@ -34,6 +34,15 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Endpoint caller files after 0.99.0
+
+`cotal auth mint <name> --endpoint <class> --out <file>` from 0.91.0 through 0.99.0 recorded the
+endpoint's wire token, such as `com_example_reviews`, in `<file>.issuance.json`. `ep describe`,
+`ep invoke` and `invoke` with `--creds <file>` then failed with "the endpoint contract read did not
+complete", so those files could not make a call. A current client refuses that intent with
+`SCHEMA_INVALID`. Issue a new caller to a new `--out` file; the old output and intent block reuse of
+their path.
+
 ## Personal native connections in 0.92.0
 
 Update the CLI and its Claude plugin together, then reopen the native Code session. Existing static
