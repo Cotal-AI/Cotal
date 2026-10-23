@@ -8,7 +8,8 @@ import { LOAD_NOW, SCRIPTS } from "./completion-scripts.js";
 import { CommandFailure } from "@cotal-ai/workspace";
 
 interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number }
-interface Ownership { schemaVersion: 1; shell: string; stub: string; stubHash: string; wiring: { path: string; block: string } | null }
+/** `wiring.created` marks a startup file that `install` created, so `uninstall` removes it once it is empty. */
+interface Ownership { schemaVersion: 1; shell: string; stub: string; stubHash: string; wiring: { path: string; block: string; created?: true } | null }
 interface Paths { stub: string; rc?: string }
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
@@ -174,7 +175,7 @@ function ownership(paths: Paths, shell: string): { record?: Ownership; snapshot?
   try { value = JSON.parse(text(snapshot)!); } catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record is invalid; it was not reset"); }
   const record = value as Ownership;
   if (!record || typeof record !== "object" || Object.keys(record).some((key) => !["schemaVersion", "shell", "stub", "stubHash", "wiring"].includes(key)) || record.schemaVersion !== 1 || record.shell !== shell || record.stub !== paths.stub || typeof record.stubHash !== "string" || !/^[0-9a-f]{64}$/.test(record.stubHash)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record does not match this shell and path");
-  if (record.wiring !== null && (!record.wiring || typeof record.wiring !== "object" || Object.keys(record.wiring).some((key) => !["path", "block"].includes(key)) || record.wiring.path !== paths.rc || typeof record.wiring.block !== "string" || ![blockFor(paths.stub, shell), "\n" + blockFor(paths.stub, shell)].includes(record.wiring.block))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record contains unknown startup wiring; it was not used to rewrite a shell file");
+  if (record.wiring !== null && (!record.wiring || typeof record.wiring !== "object" || Object.keys(record.wiring).some((key) => !["path", "block", "created"].includes(key)) || (record.wiring.created !== undefined && record.wiring.created !== true) || record.wiring.path !== paths.rc || typeof record.wiring.block !== "string" || ![blockFor(paths.stub, shell), "\n" + blockFor(paths.stub, shell)].includes(record.wiring.block))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record contains unknown startup wiring; it was not used to rewrite a shell file");
   return { record, snapshot };
 }
 
@@ -239,6 +240,8 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     }
     let nextStartup = current;
     let installedBlock = blockFor(paths.stub, shell);
+    // A startup file this integration created, recorded at its first install or created by this one.
+    const created = record.wiring?.created === true || (paths.rc !== undefined && startup === undefined);
     if (record.wiring) {
       const count = current.split(record.wiring.block).length - 1;
       if (count > 1 || count === 0 && (current.includes(paths.stub) || current.includes(BEGIN) || current.includes("# cotal shell completion"))) {
@@ -262,7 +265,12 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     if (operation === "uninstall") {
       if (paths.rc && nextStartup.includes(paths.stub)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unowned startup reference still names this stub; removing the file would break custom wiring", { remedy: "review and remove that custom reference manually before uninstalling" });
       if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run cotal completion uninstall ${shell} again` });
-      if (paths.rc && nextStartup !== current) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
+      if (paths.rc && nextStartup !== current) {
+        // A startup file install created, with nothing else in it now, goes rather than staying empty.
+        if (created && nextStartup === "" && startup) remove(paths.rc, startup);
+        else write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644);
+        changed.push(paths.rc);
+      }
       if (stub) { remove(paths.stub, stub); changed.push(paths.stub); }
       if (owned.snapshot) { remove(recordPath(paths), owned.snapshot); changed.push(recordPath(paths)); }
     } else {
@@ -275,7 +283,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       if (paths.rc && nextStartup !== current && !readOnly()) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
       record.stubHash = hash(script);
       // A read-only startup file keeps the wiring it had, so the record keeps naming that.
-      if (!readOnly()) record.wiring = paths.rc ? { path: paths.rc, block: installedBlock } : null;
+      if (!readOnly()) record.wiring = paths.rc ? { path: paths.rc, block: installedBlock, ...(created ? { created: true as const } : {}) } : null;
       const serialized = JSON.stringify(record, null, 2) + "\n";
       if (text(owned.snapshot) !== serialized) { write(recordPath(paths), owned.snapshot, serialized, 0o600); changed.push(recordPath(paths)); }
       if (readOnly()) throw new CommandFailure("failed", "OPERATION_FAILED", `${changed.includes(paths.stub) ? "wrote" : "kept the current"} ${paths.stub} but could not add its line to ${paths.rc}, which is read-only; that file was not changed`, { target: { shell, path: paths.rc }, changed: [...changed], remedy: `add this line to ${paths.rc} yourself: ${completionSourceLine(paths.stub, shell)}` });

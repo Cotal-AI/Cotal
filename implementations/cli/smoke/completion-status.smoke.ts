@@ -359,6 +359,29 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("--force is refused where it does not apply", misplaced.status === 1 && /--force applies to completion install and uninstall/.test(misplaced.stderr), shown(misplaced));
 }
 
+// ── A startup file install created goes with the integration ───────────────────────────────────────
+{
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc");
+  const first = s.run(["completion", "install", "bash"]);
+  check("install creates a missing .bashrc", first.status === 0 && existsSync(rc), shown(first));
+  const gone = s.run(["completion", "uninstall", "bash"]);
+  check("uninstall removes the .bashrc install created instead of leaving it empty", gone.status === 0 && !existsSync(rc), shown(gone));
+  s.run(["completion", "install", "bash"]);
+  writeFileSync(rc, readFileSync(rc, "utf8") + "alias ll='ls -l'\n");
+  const kept = s.run(["completion", "uninstall", "bash"]);
+  check("it keeps that .bashrc once you added your own lines", kept.status === 0 && readFileSync(rc, "utf8") === "alias ll='ls -l'\n", shown(kept));
+  writeFileSync(rc, "");
+  s.run(["completion", "install", "bash"]);
+  const empty = s.run(["completion", "uninstall", "bash"]);
+  check("a .bashrc that was there before install stays, even empty", empty.status === 0 && existsSync(rc) && readFileSync(rc, "utf8") === "", shown(empty));
+  const zd = join(s.home, "zd"), zrc = join(zd, ".zshrc");
+  mkdirSync(zd, { mode: 0o700 });
+  const zInstall = s.run(["completion", "install", "zsh"], { ZDOTDIR: zd });
+  const zUninstall = s.run(["completion", "uninstall", "zsh"], { ZDOTDIR: zd });
+  check("the same holds for a .zshrc in ZDOTDIR", zInstall.status === 0 && zUninstall.status === 0 && !existsSync(zrc), { install: shown(zInstall), uninstall: shown(zUninstall) });
+}
+
 // ── The stubs leave a path value to the shell's file names ─────────────────────────────────────────
 {
   const s = sandbox();

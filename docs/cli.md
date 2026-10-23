@@ -5317,7 +5317,8 @@ profile or permits scripts under its execution policy.
 
 Installation writes a private `.ownership.json` record beside its stub. Reinstall refreshes only
 an unchanged recorded stub. Uninstall removes only that stub and the unchanged recorded startup
-block, keeping other startup bytes. Modified or unrecorded material is preserved with a refusal.
+block, keeping other startup bytes. A startup file that `install` created is removed when nothing
+else is left in it; one that was there before stays, even empty. Modified or unrecorded material is preserved with a refusal.
 For a recorded stub or startup block you edited, the refusal names `--force`: `install --force`
 rewrites the stub and each block from `# >>> cotal completion >>>` to `# <<< cotal completion <<<`,
 and `uninstall --force` removes them. Startup content outside those markers is kept. A block whose
