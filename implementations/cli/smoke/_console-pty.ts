@@ -38,12 +38,14 @@ export interface PtyOptions {
   env: Record<string, string>;
   cols?: number;
   rows?: number;
+  /** The terminal name, which the child sees as `TERM`. */
+  name?: string;
 }
 
 /** Run node under a real pty with tsx's loader registered, so `args` may name a `.ts` entry. */
 export function nodePty(args: string[], opts: PtyOptions): Pty {
   return ptySpawn(process.execPath, ["--import", TSX_LOADER, ...args], {
-    name: "xterm-256color",
+    name: opts.name ?? "xterm-256color",
     cols: opts.cols ?? 120,
     rows: opts.rows ?? 32,
     cwd: opts.cwd,

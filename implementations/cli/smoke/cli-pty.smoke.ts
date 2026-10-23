@@ -271,6 +271,15 @@ try {
     check(`cotal ${argv.join(" ")} opens no prompt`, !s.text().includes("Register a mesh"), s.text());
   }
 
+  // A dumb terminal gets no color, unless FORCE_COLOR asks for it.
+  for (const [label, extra, colored] of [["TERM=dumb", {}, false], ["TERM=dumb with FORCE_COLOR=1", { FORCE_COLOR: "1" }, true]] as const) {
+    const pty = cotalPty(["help"], { cwd: home, env: { ...env, TERM: "dumb", ...extra }, name: "dumb" });
+    ptys.push(pty);
+    const s = session(pty);
+    await until(() => s.exitCode !== undefined);
+    check(`cotal help under ${label} is ${colored ? "colored" : "not colored"}`, s.exitCode === 0 && /\x1b\[[0-9;]*m/.test(s.raw) === colored && s.text().includes("cotal"), JSON.stringify(s.raw.slice(0, 200)));
+  }
+
   // A catalog travels with a cloned repo, so on a terminal `personas show` escapes its control characters.
   const catalog = join(home, "catalog");
   mkdirSync(join(catalog, ".cotal", "agents"), { recursive: true });

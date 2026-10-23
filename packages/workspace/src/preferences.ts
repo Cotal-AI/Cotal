@@ -95,12 +95,13 @@ const KEYS: readonly KeySpec[] = [
     key: "color",
     about: "whether output is colored: auto (on a terminal), always or never",
     perSpace: false,
-    // FORCE_COLOR keeps the precedence over NO_COLOR it has always had: `0` or `false` is never and
-    // any other value always. NO_COLOR is a no-color preference when it is non-empty (no-color.org).
+    // FORCE_COLOR keeps the precedence over NO_COLOR it has always had: `0` or `false`, in any case,
+    // is never and any other value always. NO_COLOR is a no-color preference when it is non-empty
+    // (no-color.org).
     env: ["FORCE_COLOR", "NO_COLOR"],
     productDefault: "auto",
     check: (value) => ((COLOR_VALUES as readonly string[]).includes(value) ? undefined : `use ${COLOR_VALUES.join(", ")}`),
-    fromEnv: (name, raw) => (name === "FORCE_COLOR" ? (raw === "0" || raw === "false" ? "never" : "always") : raw ? "never" : undefined),
+    fromEnv: (name, raw) => (name === "FORCE_COLOR" ? (raw === "0" || raw.toLowerCase() === "false" ? "never" : "always") : raw ? "never" : undefined),
   },
   {
     key: "editor",

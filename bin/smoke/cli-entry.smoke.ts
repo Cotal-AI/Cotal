@@ -229,6 +229,10 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const r = cotal(argv, undefined, forced);
     check(`cotal ${argv.join(" ")} prints with no ANSI color`, r.status === 0 && r.stdout.length > 0 && !ansi.test(r.stdout), shown(r));
   }
+  for (const value of ["0", "false", "FALSE", "False"]) {
+    const r = cotal(["help"], undefined, { FORCE_COLOR: value });
+    check(`FORCE_COLOR=${value} turns color off`, r.status === 0 && r.stdout.length > 0 && !ansi.test(r.stdout), shown(r));
+  }
   const refusal = cotal(["--no-color", "nope"], undefined, forced);
   check("control: forced color colors a refusal", ansi.test(cotal(["nope"], undefined, forced).stderr));
   check("a refusal under --no-color has no ANSI color", refusal.status === 1 && !ansi.test(refusal.stderr), shown(refusal));

@@ -17,14 +17,14 @@ export function disableColor(): void {
 }
 
 /** Whether operator output gets ANSI color. `--no-color` wins. Then the `color` preference decides,
- *  through the one resolver `cotal config` shows: a set `FORCE_COLOR` (`0` or `false` is off, any
- *  other value on), a non-empty `NO_COLOR` (off), the saved preference, and `auto`, where color
- *  follows whether stdout is a terminal. Read on every call, so a process that sets these after
- *  import is still honoured. */
+ *  through the one resolver `cotal config` shows: a set `FORCE_COLOR` (`0` or `false` in any case is
+ *  off, any other value on), a non-empty `NO_COLOR` (off), the saved preference, and `auto`, where
+ *  color follows whether stdout is a terminal that is not `TERM=dumb`, which terminfo defines as one
+ *  without color. Read on every call, so a process that sets these after import is still honoured. */
 export function colorEnabled(): boolean {
   if (colorDisabled) return false;
   const mode = resolvePreference("color", { preferences: savedOrNone() }).value;
-  return mode === "always" || (mode === "auto" && Boolean(process.stdout.isTTY));
+  return mode === "always" || (mode === "auto" && Boolean(process.stdout.isTTY) && process.env.TERM !== "dumb");
 }
 
 /** The saved preferences for the color decision. An invalid file stops every command before it runs
