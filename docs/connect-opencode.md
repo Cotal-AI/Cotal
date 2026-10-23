@@ -113,7 +113,9 @@ in-process plugin does everything.
   the end of an execution that started after the batch was submitted settles it, so an earlier end,
   or a replay of one, leaves the batch held. Messages
   still queued behind the turn are not renewed, and a full inbox evicts those, never the batch the
-  turn carries. Renewal stops once the seat can no longer vouch that it holds a message, for
+  turn carries. On both lines a prompt typed while a batch's turn is open carries no peer
+  messages, and the ones queued behind it go out as their own turn once it ends. Renewal stops
+  once the seat can no longer vouch that it holds a message, for
   example after its link was down for longer than the ack wait, and the broker may then
   redeliver it. Delivery stays at-least-once: see
   [Durable transport](presence-and-delivery.md#durable-transport).

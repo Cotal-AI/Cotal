@@ -227,7 +227,7 @@ try {
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
   // A user interrupt after a wake does NOT re-drive it: an explicit Stop is a turn someone ENDED,
-  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (ackSurfaced),
+  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (batch.ack),
   // never re-armed the way a genuine failure re-arms it above.
   await pub.multicast("@Otto second look", { channel: "team", mentions: ["Otto"] });
   await waitForPrompts(7);
@@ -422,7 +422,7 @@ try {
     // with nothing pending, so no drive fires), then hold `busy` across the publish window: the
     // incoming handler buffers while busy, so the pair cannot drive its own prompt_async. The
     // human prompt that follows is the one frame that carries both — `injectIntoPrompt` is gated
-    // on driving/awaitingTurnEnd, not on busy.
+    // on driving and the open batch, not on busy.
     await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
     await sleep(300);
     await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
@@ -717,6 +717,45 @@ try {
       prompts2.length === 2 && prompts2[1]?.body.text?.includes("second turn via 2.x") === true,
       prompts2,
     );
+
+    // The second prompt's batch is open, so a native prompt carries nothing (#3507): its DM is still
+    // in the inbox, and the 1.x hook refuses the same way. The DM buffered behind it goes out alone.
+    const prompt2 = ctx2.sessionHooks.get("prompt") as (e: { sessionID: string; prompt: { text: string } }) => void;
+    await pub2.unicast(otto2Id!, "third turn via 2.x");
+    await sleep(500);
+    const whileOpen = { sessionID: SID2, prompt: { text: "typed while a batch is open" } };
+    prompt2(whileOpen);
+    check("2.x: a native prompt carries nothing while a driven batch is open", whileOpen.prompt.text === "typed while a batch is open", whileOpen);
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 3 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 4 }, data: { sessionID: SID2 } });
+    for (let i = 0; i < 50 && prompts2.length < 3; i++) await sleep(100);
+    check(
+      "2.x: the DM buffered behind the open batch is driven as its own prompt once that turn ends",
+      prompts2.length === 3 && prompts2[2]?.body.text?.includes("third turn via 2.x") === true && !prompts2[2]?.body.text?.includes("second turn via 2.x"),
+      prompts2,
+    );
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 5 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 6 }, data: { sessionID: SID2 } });
+    await sleep(300);
+
+    // A native turn with no batch open: the DM it buffers is carried by the next native prompt, and
+    // that batch is open until the turn ends, so a second native prompt carries it no second time.
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 7 }, data: { sessionID: SID2 } });
+    await sleep(200);
+    await pub2.unicast(otto2Id!, "fourth via 2.x");
+    await sleep(500);
+    const first = { sessionID: SID2, prompt: { text: "typed with no batch open" } };
+    prompt2(first);
+    check(
+      "2.x: a native prompt with no batch open carries the buffered DM ahead of its text",
+      first.prompt.text.includes("fourth via 2.x") && first.prompt.text.endsWith("\n\ntyped with no batch open"),
+      first,
+    );
+    const again = { sessionID: SID2, prompt: { text: "typed again" } };
+    prompt2(again);
+    check("2.x: a second native prompt does not carry the open batch again", again.prompt.text === "typed again" && prompts2.length === 3, { again, prompts2 });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 8 }, data: { sessionID: SID2 } });
+    await sleep(300);
 
     const names1x = cotalToolSpecs(configFromEnv(), "opencode").map((s) => s.name).sort();
     const names2x = ctx2.addedTools.map((t) => t.name).sort();

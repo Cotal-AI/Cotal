@@ -158,7 +158,7 @@ export interface ClaudeHooks {
  * workflow. Do not "fix" the duplicate by committing optimistically: that is the burial this whole
  * file exists to prevent.
  *
- * Deferring the ack to turn completion (the OpenCode connector's `ackSurfaced` on `session.idle`)
+ * Deferring the ack to turn completion (the OpenCode connector's `SurfacedBatch.ack` on `session.idle`)
  * does NOT substitute for this. `Stop` fires whether or not the reply survived, so it would commit a
  * batch the model never saw — the same loss, later. OpenCode can bind its ack to the turn because
  * `drive()` OWNS delivery; this connector only hands a reply off, so the ack binds to the handoff.
