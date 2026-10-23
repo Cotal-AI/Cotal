@@ -597,6 +597,13 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
   }
 }
 
+/** How a refused exchange opens when the signed-in human has no interactive grant for `actor`. The
+ *  rest of that refusal is the operator's grant command. A client with no ledger for the space
+ *  recognizes this opening, because exchange services send no structured refusal code. */
+export function notGrantedReason(actor: string): string {
+  return `actor "${actor}" is not granted for this user`;
+}
+
 /** The IdP bridge's `authorizeActor` hook (bearer-MINT boundary) — INTERACTIVE rows only, by
  *  construction. A name that exists only as a managed agent gets the exact managed-path answer
  *  (never "not granted", which would read as a permissions problem, and never a mint). */
@@ -610,7 +617,7 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
       if (findManagedActor(dir, owner, actor))
         throw new Error(`actor "${actor}" is a managed agent - it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
       throw new Error(
-        `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner} --full\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. For a narrow row, name --scope, --allow-subscribe and --allow-publish instead of --full`,
+        `${notGrantedReason(actor)} - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner} --full\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. For a narrow row, name --scope, --allow-subscribe and --allow-publish instead of --full`,
       );
     }
     // MINT-boundary lifecycle stamp (SPEC 13.1): EVERY minted bearer - view or not - carries the

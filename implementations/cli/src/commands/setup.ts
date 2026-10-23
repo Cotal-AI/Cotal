@@ -44,6 +44,7 @@ import { seedWriterKind } from "../seed/paths.js";
 import { brand, brandBold, dim, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
+import { MissingFlags } from "../lib/missing-flags.js";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { openSetupLog, type SetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
@@ -63,7 +64,7 @@ const ONBOARD_VERSION = "2";
 /** Setup saves its preparation before a separate start decision. Scripts name every input;
  *  an explicit start must detach so no script inherits a terminal view. */
 export const setupFlags = [
-  { name: "destination", type: "string", value: "<local|self-hosted>", description: "where the space runs: local (this machine starts it) or self-hosted (a space registered here); Cloud is in development" },
+  { name: "destination", type: "string", value: "<local|self-hosted>", description: "where the space runs: local (this machine starts it) or self-hosted (a space registered here, including a Cloud space `cotal login` discovered)" },
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "the application your agents run in: its own setup runs, and `cotal spawn` in the space launches it" },
   { name: "project", type: "string", value: "<dir>", description: "the project folder: the space's root, whose .cotal/agents holds its personas" },
   { name: "space", short: "s", type: "string", value: "<name>", description: "the space to prepare (local) or the registered space to use (self-hosted)" },
@@ -260,12 +261,12 @@ async function runSkillsOnly(): Promise<void> {
   seedAgentSkills();
 }
 
-/** A destination this cut can prepare. Cloud is in development, so it is refused before anything is
- *  written or any endpoint is contacted. */
+/** A destination this cut can prepare. A Cloud space is a registered space, so `cloud` is refused
+ *  with the self-hosted route before anything is written or any endpoint is contacted. */
 function destinationOf(value: string): Destination {
   if (value === "local" || value === "self-hosted") return value;
   if (value === "cloud")
-    throw new CommandFailure("refused", "UNSUPPORTED", "Cotal Cloud is in development, so setup cannot prepare a Cloud space yet", { remedy: "pass --destination local or --destination self-hosted" });
+    throw new CommandFailure("refused", "UNSUPPORTED", "setup has no separate Cloud destination: a Cloud space is set up as a registered space", { remedy: "sign in with `cotal login`, which registers your Cloud spaces here (`cotal space` lists them), then run `cotal setup --destination self-hosted --space <name>`" });
   throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
 }
 
@@ -273,7 +274,7 @@ function destinationOf(value: string): Destination {
  *  `--runtime` sets up no runtime beyond `pty`. */
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
-  if (missing.length > 0) throw usage(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, SCRIPTED_FORM);
+  if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, SCRIPTED_FORM);
   const project = resolve(v.project!);
   if (!isDir(project)) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
   return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
@@ -341,7 +342,7 @@ async function askDestination(initial: Destination | undefined): Promise<Destina
       options: [
         { value: "local", label: "Local", hint: "this machine starts it" },
         { value: "self-hosted", label: "Self-hosted", hint: "it runs on a server and is registered here" },
-        { value: "cloud", label: "Cloud", hint: "in development", disabled: true },
+        { value: "cloud", label: "Cloud", hint: "sign in with `cotal login`, then choose Self-hosted", disabled: true },
       ],
       initialValue: initial ?? "local",
     }),

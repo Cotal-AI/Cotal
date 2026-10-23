@@ -796,6 +796,21 @@ try {
   check("a dead account transport error never recommends cotal login",
     localRefresh.err.includes(deadIdp) && localRefresh.err.includes("fetch failed") && !localRefresh.err.includes("cotal login"),
     localRefresh.err);
+  // A failure that continues an outage is warned about once, and a target in that account still refuses.
+  Object.assign(deadResult, { ongoing: true });
+  const quietRefresh = await capture(() => prepareCatalogCommand({ positionals: [], values: {}, raw: [] }));
+  check("a failure that continues an outage is not warned about again", !quietRefresh.err.includes(deadIdp), quietRefresh.err);
+  recordMesh({
+    space: "dead-selected", server: DEAD, root: shared, mode: "user", origin: "catalog", catalogOwner: "dead-owner",
+    userAuth: { provider: "cotal", idp: { url: deadIdp, issuer: "https://dead.example", audience: "catalog" }, remote: true, sentinelCredsPath: join(shared, "sentinel.creds") },
+    ts: new Date(0).toISOString(),
+  });
+  let deadTargetError: Error | undefined;
+  await prepareCatalogCommand({ positionals: [], values: { space: "dead-selected" }, raw: [] }).catch((e: Error) => void (deadTargetError = e));
+  check("a target in that account still refuses while its outage continues",
+    deadTargetError?.name === "CatalogPreparationError" && deadTargetError.message.includes(deadIdp), deadTargetError?.message);
+  removeMesh("dead-selected");
+  delete (deadResult as { ongoing?: boolean }).ongoing;
 
   recordMesh({
     space: "catalog-selected", server: catalogServer, root: shared, mode: "user", origin: "catalog", catalogOwner: "live-owner",

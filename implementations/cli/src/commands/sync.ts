@@ -271,9 +271,9 @@ export class CatalogPreparationError extends Error {
 
 /** Shared once-per-command preparation. Every target-resolving call gives each signed-in account a
  * chance to refresh inside the provider's freshness window. An operational catalog target scopes
- * that work to its own account and treats its failure as fatal. Other targets warn per account;
- * diagnostics retain every result for `status` and never refuse the command. Unknown names force a
- * refresh even inside the freshness window. */
+ * that work to its own account and treats its failure as fatal. Other targets warn once per account
+ * outage; diagnostics retain every result for `status` and never refuse the command. Unknown names
+ * force a refresh even inside the freshness window. */
 export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = false, command?: "meshes" | "use"): Promise<void> {
   catalogDiagnostics = [];
   const values = args.values as { space?: string };
@@ -316,8 +316,10 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   if (diagnostics) return;
   if (targetCatalog && failures.length)
     throw new CatalogPreparationError(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "), "DEPENDENCY_UNAVAILABLE");
-  for (const failure of failures)
-    console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}`));
+  // One warning per outage: a failure that continues one an earlier command already warned about
+  // stays quiet until the catalog answers again. A failing target still refuses above.
+  for (const failure of failures.filter((r) => !r.ongoing))
+    console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}; its last snapshot stays in use, and this warning is not repeated while it keeps failing`));
 }
 
 /** One signed-in account's refresh, as `cotal sync` reports it. */

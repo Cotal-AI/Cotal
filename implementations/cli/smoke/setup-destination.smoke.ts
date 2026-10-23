@@ -5,7 +5,7 @@
  * registry serves the tmux and herdr runtimes packed from this checkout.
  *
  * Scripted: every input is a flag, a missing one is refused before anything is written, Cloud is
- * refused as in development, and a refusal leaves the sandbox as it was. A local space is prepared
+ * refused with the route a Cloud space takes today, and a refusal leaves the sandbox as it was. A local space is prepared
  * the way `space create` prepares it, its default persona lands in the project's `.cotal/agents`,
  * and the application becomes the space's `harness` preference, and yours when you have none. A
  * rerun changes nothing. A harness
@@ -239,9 +239,11 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
     refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && /--destination local --harness <connector> --project <dir> --space <name>/.test(missing.env?.error?.remedy ?? ""), shown(missing));
   const yes = await run(["setup", "--yes"]);
-  check("setup --yes alone is refused the same way, exit 1", yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr), shown(yes));
+  check("setup --yes alone is refused the same way, exit 1, with the scripted form and no command help",
+    yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr) && /--destination local --harness <connector>/.test(yes.stderr) && !/^Usage$/m.test(yes.stderr), shown(yes));
   const cloud = await json(FULL("c1", dirs.cloud).map((a) => (a === "local" ? "cloud" : a)));
-  check("--destination cloud is UNSUPPORTED, exit 2, as in development", refused(cloud, 2, "UNSUPPORTED") && /in development/.test(cloud.env?.error?.message ?? ""), shown(cloud));
+  check("--destination cloud is UNSUPPORTED, exit 2, naming the self-hosted route after cotal login",
+    refused(cloud, 2, "UNSUPPORTED") && /no separate Cloud destination/.test(cloud.env?.error?.message ?? "") && /`cotal login`.*--destination self-hosted --space <name>/.test(cloud.env?.error?.remedy ?? ""), shown(cloud));
   const cloudAlone = await json(["setup", "--destination", "cloud"]);
   check("--destination cloud is refused as UNSUPPORTED before any missing input", refused(cloudAlone, 2, "UNSUPPORTED"), shown(cloudAlone));
   const mars = await json(FULL("m1", dirs.mars).map((a) => (a === "local" ? "mars" : a)));
@@ -445,7 +447,7 @@ if (process.platform !== "win32") {
     const dir = project("pty-cloud");
     const before = files();
     const t = terminal(dir);
-    check("a terminal is asked where the space runs, with Cloud shown as in development", (await t.at(DESTINATION)) && /Cloud \(in development\)/.test(t.s.text()), t.s.text().slice(-600));
+    check("a terminal is asked where the space runs, with Cloud pointing to cotal login", (await t.at(DESTINATION)) && /Cloud \(sign in with `cotal login`/.test(t.s.text()), t.s.text().slice(-600));
     t.write(DOWN);
     await wait(300);
     t.write(DOWN);

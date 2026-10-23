@@ -65,6 +65,8 @@ interface CatalogAccountState {
   /** The consumer applied this snapshot in full. Absent while a fetched snapshot is being applied,
    *  so a preparation that finds it absent applies the cached snapshot again. */
   applied?: boolean;
+  /** The last refresh failed. A successful refresh clears it. */
+  failing?: boolean;
 }
 
 interface CatalogsFile {
@@ -588,6 +590,11 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         }
         const catalogUrl = state.catalogUrl;
         if (!catalogUrl) {
+          if (state.failing) {
+            state = { ...state, failing: undefined };
+            file.accounts[key] = state;
+            changed = true;
+          }
           results.push({ account: accountView(state), state: "no-catalog", ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}) });
           continue;
         }
@@ -614,7 +621,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         const response = await idpFetch(catalogUrl, { headers, redirect: "manual" });
         if (response.status === 304) {
           if (state.snapshot === undefined) throw new Error("the catalog returned 304 before this machine had a snapshot");
-          state = { ...state, fetchedAt: new Date().toISOString() };
+          state = { ...state, fetchedAt: new Date().toISOString(), failing: undefined };
           file.accounts[key] = state;
           changed = true;
           const result: AuthSpaceCatalogResult = { account: accountView(state), state: "not-modified", snapshot: state.snapshot, fetchedAt: state.fetchedAt };
@@ -631,6 +638,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
           fetchedAt: new Date().toISOString(),
           ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : { etag: undefined }),
           applied: false,
+          failing: undefined,
         };
         // Commit the candidate as NOT applied before the first registry write. A death anywhere in
         // the application leaves a cache that names the snapshot and says it is incomplete.
@@ -644,12 +652,19 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         changed = true;
         results.push(result);
       } catch (e) {
+        const ongoing = state.failing === true;
+        if (!ongoing) {
+          state = { ...state, failing: true };
+          file.accounts[key] = state;
+          changed = true;
+        }
         const result: AuthSpaceCatalogResult = {
           account: accountView(state),
           state: "failed",
           ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}),
           ...(state.fetchedAt ? { fetchedAt: state.fetchedAt } : {}),
           error: e instanceof Error ? e.message : String(e),
+          ...(ongoing ? { ongoing: true } : {}),
         };
         opts.apply(result);
         results.push(result);

@@ -279,7 +279,7 @@ cotal setup --skills
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server. `cloud` is refused as in development, before anything is written or contacted. |
+| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. `cloud` is refused before anything is written or contacted, and the refusal names that route: `cotal login`, then `--destination self-hosted --space <name>`. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
 | `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
@@ -298,10 +298,12 @@ Setup saves preparation before a separate startup decision. Configure-only is th
 `--yes` never turns it into startup. On a terminal it asks for each input no flag gave: destination,
 application, runtimes, project folder and space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
-answers kept, and Cancel saves nothing. Cloud is listed as in development and cannot be chosen.
+answers kept, and Cancel saves nothing. Cloud is listed but cannot be chosen. Its hint says to sign
+in with `cotal login` and choose Self-hosted, because a Cloud space is registered here when you sign in.
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
-is `USAGE_INVALID` naming each missing flag, before anything is written:
+is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
+scripted form below and not the full command help:
 
 ```bash
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
@@ -1833,7 +1835,8 @@ adds every valid registration without a separate `meshes add`. A snapshot younge
 is used without a request. After that, commands that resolve a mesh target conditionally refresh the
 saved catalogs. An operation targeting a discovered space refreshes only that space's account and
 refuses if that account fails. Operations targeting local or manually registered meshes refresh every
-account, print one warning for each failure, and continue. `cotal status` refreshes every account,
+account and continue. They warn once when an account's catalog starts failing and stay quiet while
+it keeps failing; the next failure after a successful refresh warns again. `cotal status` refreshes every account,
 never refuses on a refresh failure, and lists each account as `fresh`, `updated`, `not-modified`,
 `no-catalog`, or `failed` with its error. With no cached sign-in, catalog preparation reads without
 creating a control directory or lock. An explicit IdP without a cached login refuses with
@@ -4228,7 +4231,10 @@ Plain `http://` is accepted only on a loopback IP literal such as `127.0.0.1` or
 is a name: a hosts entry would choose the IdP. It prints your IdP subject, the id the operator
 grants against. When the trusted
 `/token` response advertises a same-origin space catalog, login validates and records that account's
-spaces immediately. After a
+spaces immediately, lists them under `Your spaces`, and names `cotal use <name>` to select one. A
+space registered from elsewhere that has not granted your account refuses with those discovered
+spaces as its remedy, because only that space's operator can grant you. On the root that holds the
+space's grant ledger, the refusal names the operator's `cotal actor grant` command instead. After a
 login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
 ledger at connect time. A provider that cannot be reached, or that stops answering, refuses with

@@ -42,6 +42,7 @@ import { servicePresetCommand } from "./lib/service-presets.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { ConfirmationRequired } from "./lib/confirmation-required.js";
+import { MissingFlags } from "./lib/missing-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
@@ -104,11 +105,12 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
 function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false): never {
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
-  // missing --yes is not a grammar mistake, and its remedy says the whole fix.
+  // missing --yes or a missing scripted input is not a grammar mistake, and its remedy says the
+  // whole fix.
   if (failure.code === "USAGE_INVALID" && !json) {
     stderrLine("✗ ", failure.message, c.red);
     if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
-    if (!(failure instanceof ConfirmationRequired)) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+    if (!(failure instanceof ConfirmationRequired) && !(failure instanceof MissingFlags)) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
     process.exit(1);
   }
   writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}

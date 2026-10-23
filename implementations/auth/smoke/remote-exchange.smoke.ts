@@ -91,7 +91,7 @@ if (SUBCOMMAND === "auth-service") {
 type ChildProcess = import("node:child_process").ChildProcess;
 
 const { spawn } = await import("node:child_process");
-const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+const { mkdirSync, mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const { createServer } = await import("node:http");
@@ -520,6 +520,35 @@ try {
   const rawProfile = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-service" });
   check("the public exchange still refuses raw manager-service view/profile strings", rawProfile.status === 403, rawProfile.body);
 
+  console.log("E3) a remote client refused for an ungranted actor names the account's discovered spaces");
+  {
+    // A machine with no ledger for the space: a registration from elsewhere, plus one space the same
+    // sign-in discovered. The operator's grant command is not a step this user can take.
+    const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+    const clientRoot = mkdtempSync(join(tmpdir(), "cotal-rx-client-"));
+    const remoteAuth = (space: string) => {
+      const stateDir = userAuthStateDir(clientRoot, space);
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(stateDir, "sentinel.creds"), expectedCallout.sentinelCreds, { mode: 0o600 });
+      return { provider: "cotal", idp: { url: base, issuer: origin, audience: origin }, remote: true as const, endpoints: { url: PUBLIC }, sentinelCredsPath: join(stateDir, "sentinel.creds") };
+    };
+    recordMesh({ space: "rx_bootstrap", server: SERVER, root: clientRoot, mode: "user", origin: "manual", userAuth: remoteAuth("rx_bootstrap"), ts: new Date().toISOString() });
+    recordMesh({ space: "rx_team", server: SERVER, root: clientRoot, mode: "user", origin: "catalog", catalogOwner: "rx-owner", userAuth: remoteAuth("rx_team"), ts: new Date().toISOString() });
+    let refusal: (Error & { code?: unknown; remedy?: unknown }) | undefined;
+    try {
+      await cotalAuthProvider.userCredentials({ store: workspaceSecretStore(clientRoot), dir: userAuthStateDir(clientRoot, "rx_bootstrap"), space: "rx_bootstrap", actor: "ungranted_human" });
+    } catch (e) {
+      refusal = e as Error & { code?: unknown; remedy?: unknown };
+    }
+    check("the refusal names the discovered spaces and how to select one, not the operator's grant command",
+      refusal?.code === "refused" && /space "rx_bootstrap" has not granted actor "ungranted_human" to this account/.test(refusal.message) &&
+        !/cotal actor grant/.test(`${refusal.message} ${String(refusal.remedy)}`) && refusal.remedy === "your account's spaces are rx_team; select one with `cotal use <name>`",
+      { message: refusal?.message, remedy: refusal?.remedy });
+    removeMesh("rx_bootstrap");
+    removeMesh("rx_team");
+    rmSync(clientRoot, { recursive: true, force: true });
+  }
+
   console.log("F) Origin / content-type / body bound on the public face");
   const browser = await post(`${PUBLIC}/exchange`, agentBody2, { origin: "https://evil.example" });
   check("browser-origin requests are refused on the public face (403)", browser.status === 403, browser.body);
@@ -789,7 +818,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 117;
+const EXPECTED = 118;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

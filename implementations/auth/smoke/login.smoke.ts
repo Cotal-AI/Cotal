@@ -528,7 +528,9 @@ console.log("C2) advertised space catalog cache");
   makeStale();
   failCatalog = true;
   const failed = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
-  check("a failed refresh reports failure while retaining the previous snapshot", failed[0]?.state === "failed" && failed[0].snapshot !== undefined, failed);
+  check("a failed refresh reports failure while retaining the previous snapshot", failed[0]?.state === "failed" && failed[0].snapshot !== undefined && failed[0].ongoing !== true, failed);
+  const failedAgain = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
+  check("the next failed refresh is marked as the same outage", failedAgain[0]?.state === "failed" && failedAgain[0].ongoing === true, failedAgain);
   failCatalog = false;
   invalidCatalog = true;
   const invalid = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
@@ -547,6 +549,12 @@ console.log("C2) advertised space catalog cache");
       refused);
   }
   foreignTrust = undefined;
+  const recovered = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
+  failCatalog = true;
+  const nextOutage = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
+  failCatalog = false;
+  check("a successful refresh ends the outage, so the next failure starts a new one",
+    recovered[0]?.state === "not-modified" && nextOutage[0]?.state === "failed" && nextOutage[0].ongoing !== true, { recovered, nextOutage });
   if (process.platform !== "win32") {
     check("catalog cache file is 0600", (statSync(cacheFile).mode & 0o777) === 0o600);
     check("catalog state directory is 0700", (statSync(catalogDir).mode & 0o777) === 0o700);
