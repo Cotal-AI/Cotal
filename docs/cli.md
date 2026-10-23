@@ -2971,6 +2971,10 @@ A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control 
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
 entry, is the route that does.
 
+`ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
+manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
+header.
+
 The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
 one envelope whose `result` is:
 
