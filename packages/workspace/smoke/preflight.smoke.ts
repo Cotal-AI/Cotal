@@ -17,7 +17,7 @@
  * Run: pnpm smoke:preflight
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MeshTarget, PreflightFailure } from "@cotal-ai/workspace"; // erased at runtime — safe before the COTAL_HOME sandbox
@@ -191,6 +191,24 @@ for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected"] as const)
   check(`message: ${kind} also names the space`, preflightMessage(kind, T, true).includes("alpha"));
 check("message: open-wants-auth does NOT claim a space name", !preflightMessage("open-wants-auth", T, true).includes("alpha"));
+
+// A folder whose `.cotal/` holds records but names no space, as after `space forget` of a prepared
+// space, resolves to the default space with nothing recording it there. An unreachable broker then
+// names the folder and the step that prepares a space in it, not a default mesh recorded there.
+{
+  const forgotten = mkdtempSync(join(home, "forgotten-"));
+  mkdirSync(join(forgotten, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(forgotten, ".cotal", "agents", "default.md"), "---\nname: default\n---\n");
+  const empty = mkdtempSync(join(home, "empty-"));
+  mkdirSync(join(empty, ".cotal"));
+  const t = resolveMeshTarget(forgotten);
+  check("a folder whose records name no space resolves local-space, flagged as naming no space", t.source === "local-space" && t.namesNoSpace === true, t);
+  check("control: an empty .cotal/ is not flagged", resolveMeshTarget(empty).namesNoSpace === undefined);
+  const m = preflightMessage("unreachable", t, false);
+  check("message: unreachable for that folder names it and space create, not the default mesh or address",
+    m === `✗ no space is registered or prepared here for ${t.root} - prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\`` && !m.includes(t.server), m);
+  check("control: the same target without the flag keeps the recorded-mesh sentence", preflightMessage("unreachable", { ...t, namesNoSpace: undefined }, false).includes(`mesh "${t.space}" is recorded at ${t.root}`));
+}
 
 // ── preflightTarget: probe a dead broker, classify, but DO NOT mutate the registry ────────────────
 recordMesh({ space: "probe-victim", server: DEAD, root: "/tmp/proj", mode: "open", ts: new Date(0).toISOString() });
