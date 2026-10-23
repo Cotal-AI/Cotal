@@ -699,6 +699,11 @@ export class RunHosting {
       });
       if (found === undefined)
         throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${this.ctx.endpoint}; a run that was never started cannot be resumed`);
+      // A completed or failed run's journal already holds its outcome. Driving it again would only
+      // replay that outcome under a new epoch and holder, as the boot reconcile never does.
+      const state = found.status?.state;
+      if (state === "completed" || state === "failed")
+        throw new EpEnvelopeError("failed-precondition", `run ${args.runId} ${state === "completed" ? "is already completed" : "has already failed"}, so there is nothing to resume; a resume continues a run that is running or released`);
       if (found.program === undefined)
         throw new EpEnvelopeError("failed-precondition", `run ${args.runId}: no program is recorded for it, so a hosted resume has no source to run; drive it from a terminal with \`cotal run resume ${args.runId} --local --file <program>\``);
       const verdict = host.validate(found.program.source, found.program.file);
