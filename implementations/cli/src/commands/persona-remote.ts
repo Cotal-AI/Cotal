@@ -148,7 +148,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
     const localFilesChanged = mode === "create" && localFile !== undefined && raw.path === localFile && existsSync(localFile);
     // Without a bearer the caller is minted for this call alone, so a later call is another caller.
     const perCallCaller = connection.auth.bearer === undefined;
-    result = { kind: "remote-persona", operation: mode, space: connection.space, requestedInstanceId: instanceId, requestId: response.reply.id, responder: response.responder, data, saved: mode === "create", localFilesChanged, perCallCaller, agentLaunched: false, announcement: null };
+    result = { kind: "remote-persona", operation: mode, space: connection.space, requestedInstanceId: instanceId, requestId: response.reply.id, responder: response.responder, data, saved: mode === "create", localFilesChanged, perCallCaller, localCatalog: connection.root !== undefined, agentLaunched: false, announcement: null };
     if (sender && values.announce !== undefined) {
       try {
         const message = await sender.ep.multicast(`Defined persona ${name}; available in the selected manager's persona catalog.`, { channel: values.announce });
@@ -180,6 +180,13 @@ function remotePersonaView(result: Record<string, unknown>): Report {
   const instructions = typeof data.persona === "string" ? data.persona.split(/\r?\n/) : [];
   const pin = String(result.requestedInstanceId);
   const name = typeof data.name === "string" && /^[A-Za-z0-9_-]+$/.test(data.name) ? data.name : null;
+  const next = name ? [
+    ...(!result.saved || !result.perCallCaller ? [{ command: `cotal p show ${name} --on ${pin}`, description: "Read this manager's authorized definition" }]
+      : result.localFilesChanged ? [{ command: `cotal p show ${name}`, description: "Read the definition in this root's catalog" }] : []),
+    { command: `cotal spawn ${name} --on ${pin}`, description: "Request a launch under the native caller grants" },
+  ] : !result.perCallCaller ? [{ command: `cotal p show <name> --on ${pin}`, description: "Read a named definition from this manager" }]
+    // A caller minted for this call alone owns no card, so the manager answers its show not-found.
+    : result.localCatalog ? [{ command: "cotal p show <name>", description: "Read a definition in this root's catalog" }] : [];
   return { sections: [
     { title: result.saved ? "Persona saved on manager" : "Manager persona catalog", blocks: [
       { kind: "fields", rows: [["Space", String(result.space)], ["Requested manager", pin], ["Answering manager", responder.instanceId], ["Epoch", String(responder.epoch)], ["Original request", String(result.requestId)], ["Local files", result.localFilesChanged ? `${String(data.path)}, written by the manager in this root's catalog` : "unchanged"], ["Agent launch", "not requested"]] },
@@ -188,10 +195,6 @@ function remotePersonaView(result: Record<string, unknown>): Report {
     ] },
     ...(instructions.length ? [{ title: "Authorized instructions", blocks: [{ kind: "lines" as const, lines: instructions.slice(0, 60) }, ...(instructions.length > 60 ? [{ kind: "lines" as const, lines: [`${instructions.length - 60} body lines are not shown; JSON retains the authorized result.`] }] : [])] }] : []),
     ...(announcement ? [{ title: "Announcement", blocks: [{ kind: "fields" as const, rows: [["Channel", announcement.channel], ["Storage", announcement.outcome], ["Message", announcement.messageId ?? "not confirmed"], ["Delivery and completion", "not confirmed"]] as [string, string][] }] }] : []),
-    { title: "Next", blocks: [{ kind: "commands", items: name ? [
-      ...(!result.saved || !result.perCallCaller ? [{ command: `cotal p show ${name} --on ${pin}`, description: "Read this manager's authorized definition" }]
-        : result.localFilesChanged ? [{ command: `cotal p show ${name}`, description: "Read the definition in this root's catalog" }] : []),
-      { command: `cotal spawn ${name} --on ${pin}`, description: "Request a launch under the native caller grants" },
-    ] : [{ command: `cotal p show <name> --on ${pin}`, description: "Read a named definition from this manager" }] }] },
+    ...(next.length ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: next }] }] : []),
   ] };
 }
