@@ -288,6 +288,7 @@
   "cli:backup restore": "current:backup restore",
   "cli:backup verify": "current:backup verify",
   "cli:backup--accept-missing-source": "current:backup restore --accept-missing-source",
+  "cli:backup--discard-history": "current:backup cleanup-fallback --discard-history",
   "cli:backup--dry-run": [
    "current:backup recover --dry-run",
    "current:backup cleanup-fallback --dry-run"
@@ -366,6 +367,7 @@
    "current:backup recover"
   ],
   "cli:clean--creds": "current:history clear",
+  "cli:clean--discard-history": "current:backup cleanup-fallback --discard-history",
   "cli:clean--dms": "current:history clear --dms",
   "cli:clean--force": [
    "current:reset store --yes",

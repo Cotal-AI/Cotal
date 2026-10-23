@@ -88,14 +88,15 @@ export function sendArguments(args: ParsedArgs): SendInput {
     throw new CommandFailure("refused", "USAGE_INVALID", 'a lone "-" is not read as stdin; send stdin with --stdin or --file -', { remedy: again("--stdin") });
   if (args.positionals.length === 1 && !args.positionals[0]?.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "the message is empty", { remedy: again('"<message>"') });
+  // A channel or role name the subject rules refuse gets their reason, which names what is at fault.
   try {
     if (destination.mode === "msg") {
       assertValidChannel(destination.target);
-      if (!isConcreteChannel(destination.target)) throw new Error("wildcard publication");
+      if (!isConcreteChannel(destination.target)) throw new Error("name one concrete channel, without wildcards");
     } else if (destination.mode === "ask") assertValidRole(destination.target);
     else if (/[\/\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("not an agent address");
-  } catch {
-    throw new CommandFailure("refused", "USAGE_INVALID", destination.mode === "msg" ? "name one concrete channel, without wildcards" : destination.mode === "ask" ? "name one native role token" : "use an agent name or full instance id, not a roster label");
+  } catch (error) {
+    throw new CommandFailure("refused", "USAGE_INVALID", destination.mode === "dm" ? "use an agent name or full instance id, not a roster label" : (error as Error).message);
   }
   if (values["reply-to"] !== undefined && (destination.mode !== "dm" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");

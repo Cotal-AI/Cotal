@@ -477,7 +477,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f` |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
-| `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written |
+| `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
@@ -871,6 +871,30 @@ While those creds are expired the mesh keeps delivering messages, but the
 [membership feed](delivery-daemon.md) and live connection eviction stay down; `cotal doctor auth`
 and the manager's log both name the credential and this repair.
 
+### Channel seed file
+
+A start seeds the channel registry from the `--channels` file, or from the root's
+`.cotal/channels.json` when you pass none. The file is one JSON object with two optional keys:
+
+```json
+{
+  "defaults": { "replay": false, "replayWindow": "6h", "deliveryClass": "durable" },
+  "channels": {
+    "news": { "description": "Daily news" },
+    "ops": { "deliveryClass": "live", "instructions": "Keep posts short." }
+  }
+}
+```
+
+`defaults` takes `replay` (`true` or `false`), `replayWindow` (a number followed by `s`, `m`, `h`
+or `d`) and `deliveryClass` (`live` or `durable`). Each key under `channels` is one concrete channel
+name, as `channel set` takes it, and its object takes those three fields plus `description` (up to
+200 characters) and `instructions` (up to 2000). Each field in the file overwrites that field in the
+registry, and fields the file leaves out keep their values. Any other key, a wildcard or invalid
+channel name, or an invalid value refuses `SCHEMA_INVALID` before anything starts, naming the file
+and the entry. A default file that is invalid refuses the same way, with a remedy to fix or remove
+it. A manifest start (`-f`) seeds from the manifest's own channels instead.
+
 ## down
 
 Every `down` runs to its end when the reader of its output goes away, as `| head` does. It
@@ -1256,7 +1280,7 @@ after a refused cut retires that seat through its retirement path.
 ```bash
 cotal clean <history|store|all> --force
 cotal clean restore-attempt --attempt <id> --force
-cotal clean restore-fallback --attempt <id> --force
+cotal clean restore-fallback --attempt <id> --force [--discard-history]
 ```
 
 | Flag | Default | Meaning |
@@ -1266,6 +1290,7 @@ cotal clean restore-fallback --attempt <id> --force
 | `--store-dir <dir>` | `.cotal/nats` | `store`/`all`: JetStream store directory |
 | `--force` | none | Required: destructive, no prompting |
 | `--attempt <id>` | none | `restore-attempt`: exact stale pre-commit attempt; `restore-fallback`: matching healthy committed restore |
+| `--discard-history` | off | `restore-fallback`: also delete a registry-only restore's old store, the only copy of the history it left out |
 
 One configurable cleanup verb; every target requires `--force`.
 
@@ -1299,7 +1324,8 @@ are always refused.
 `store` and `all` also refuse every maintenance journal state. After a healthy committed restore,
 `restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
-completed restore journal so a later `down --preserve-state` can start a new backup cycle. After an
+completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a
+registry restore it also requires `--discard-history`, as `backup cleanup-fallback` does. After an
 `--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
@@ -1406,7 +1432,7 @@ cotal backup create <dir> [--only full|registry] [--store-dir <dir>] [--json|--p
 cotal backup inspect <dir> [--json|--plain]
 cotal backup verify <dir> [--json|--plain]
 cotal backup recover <full-attempt-id> [--yes|--dry-run] [--json|--plain]
-cotal backup cleanup-fallback <full-attempt-id> [--yes|--dry-run] [--json|--plain]
+cotal backup cleanup-fallback <full-attempt-id> [--yes|--dry-run] [--discard-history] [--json|--plain]
 cotal backup restore <dir> [--only registry] [--store-dir <dir>] [--accept-missing-source] [--json|--plain]
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 ```
@@ -1477,7 +1503,9 @@ started is proven gone or the claim's deadline has passed. Commit intent forbids
 removes only its unchanged retained old-store identity; it never removes the restored target.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
-starts a new backup cycle.
+starts a new backup cycle. A registry restore leaves every other stream out, so its old store holds
+the only copy of that history. Its `--dry-run` warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`, and the
+cleanup refuses `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
@@ -1501,7 +1529,11 @@ size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backu
 each case the preserved cut is not changed. A receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
-confirm that any seat joined. `--store-dir` names a store the restore creates, so a path that
+confirm that any seat joined. A registry restore brings back channel settings only, so chat and DM
+history start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
+names the store the restore set aside, which holds the only copy of that history. Its next step says
+that `backup cleanup-fallback` deletes that store only with `--discard-history`.
+`up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
@@ -3166,7 +3198,10 @@ refused with `SCHEMA_INVALID`, naming the file's own name and the `persona creat
 They cannot be combined with
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
 including `--subscribe ""` for no channels, and accepts `--role` and `--model`. Both refuse control
-characters with `USAGE_INVALID`. `--harness` must name a harness this machine knows, as
+characters with `USAGE_INVALID`. Each entry of `--subscribe`, `--allow-subscribe` and
+`--allow-publish` must be a valid channel name, written without `#`, and each `--subscribe` channel
+must be within `--allow-subscribe` when it is given, or creation refuses with `USAGE_INVALID`,
+naming the flag and the entry. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
@@ -3808,7 +3843,8 @@ preserved and never printed in the receipt. A file that cannot be read is refuse
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`.
 The recipient grammar is checked before connector installation or target preparation. Channel
-and role names use the native subject grammar; a channel publication cannot name a wildcard.
+and role names use the native subject grammar; a channel publication cannot name a wildcard, and a
+channel or role name outside the grammar is refused with the rule it breaks.
 A direct target resolves by its full identity or an unambiguous name. A name collision refuses
 with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, and a target that is not
 present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
@@ -4898,11 +4934,14 @@ key. A read looks through `--space`, else the space selected with `cotal use`, e
 `--user` reads your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
-and `persona` have per-space values. A write that a variable outranks in this shell is still saved,
-with a `PREFERENCE_SHADOWED` warning naming the variable. A `persona` that the space's catalog
-does not hold is saved with a `PERSONA_NOT_FOUND` warning naming the catalog. A variable whose
-value `config set` would refuse still wins, and `config`, `config get` and `status` name it in a
-`PREFERENCE_INVALID` warning with the reason. Setting a value that is already saved, or
+and `persona` have per-space values. `set --space` takes a space registered or prepared on this
+machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
+`unset --space` takes any name, so a value left for a space you removed can go. A write that a
+variable outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming the
+variable. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
+warning naming the catalog. A variable whose value `config set` would refuse still wins, and
+`config`, `config get` and `status` name it in a `PREFERENCE_INVALID` warning with the reason.
+Setting a value that is already saved, or
 unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
 with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
 refused with `CONFLICT`. A preferences folder you cannot write is refused with `PERMISSION_DENIED`

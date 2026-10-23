@@ -9,8 +9,8 @@
  * and is partial when it cannot remove them. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
- * no installed provider, and one naming a missing channels file, have refused and left the root as
- * it was. Create and a later `up` write the
+ * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
+ * default channels file, have refused and left the root as it was. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -585,6 +585,31 @@ setCurrent("keep");
   check("up with a port-bearing --host refuses, exit 1, pointing at --server, and leaves the root and registrations unchanged",
     hostPort.status === 1 && /is not a valid bind host/.test(hostPort.stderr) && /the port comes from --server/.test(hostPort.stderr) &&
       cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(hostPort));
+  // Content the registry would not take refuses before anything starts, naming the file and the entry.
+  const badSeeds: [string, string, string][] = [
+    ["a channel name channel set refuses", '{"channels":{"bad name!":{}}}', 'invalid channel "bad name!"'],
+    ["a replay window that is not a duration", '{"channels":{"ops":{"replayWindow":"2x"}}}', 'channel "ops" replayWindow: invalid duration "2x"'],
+    ["a file that is not an object", "[1,2]", "it must be a JSON object"],
+    ["a misspelled top-level key", '{"chanels":{"ops":{}}}', 'unknown key "chanels"'],
+    ["a misspelled channel field", '{"channels":{"ops":{"replayWindw":"6h"}}}', 'channel "ops" has an unknown key "replayWindw"'],
+  ];
+  for (const [what, text, named] of badSeeds) {
+    const seedPath = join(fresh, "bad-channels.json");
+    writeFileSync(seedPath, text);
+    const badSeed = await json(["up", "--open", "--channels", seedPath, "--server", server], fresh);
+    check(`up with ${what} in --channels is SCHEMA_INVALID, exit 1, naming the file and the entry, and leaves the root unchanged`,
+      refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
+        cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
+  }
+  // The default file is read once the root is settled, so it refuses after the stack lock's layout
+  // exists and before a store, a broker or a registration.
+  const defaultSeed = join(fresh, ".cotal", "channels.json");
+  writeFileSync(defaultSeed, '{"chanels":{}}');
+  const badDefault = await json(["up", "--open", "--server", server], fresh);
+  check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
+    refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
+  unlinkSync(defaultSeed);
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
