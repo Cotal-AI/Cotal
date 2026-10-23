@@ -4432,7 +4432,7 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * Privileged: pre-create a role's shared TASK work-queue durable (auth mode), so agents
    * of that role can BIND it without holding CONSUMER.CREATE on TASK_<space>. The creator
-   * sets the filter to svc.<role>.* — agents never choose it, which stops cross-role drain.
+   * sets the filter to svc.<role>.> — agents never choose it, which stops cross-role drain.
    * Idempotent per role. The caller must be permissive on TASK_<space>.
    */
   async provisionTaskQueue(role: string): Promise<void> {

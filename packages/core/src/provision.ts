@@ -1550,7 +1550,7 @@ export function permissionsFor(
   if (svcD) {
     // TASK consumer: BIND ONLY its own role's pre-created durable (svc_<role>). Like DM, the
     // create-time filter_subject isn't reliably ACL-constrainable, so no create path is
-    // allowed — the privileged provisioner pre-creates svc_<role> filtered to svc.<role>.*.
+    // allowed — the privileged provisioner pre-creates svc_<role> filtered to svc.<role>.>.
     // STREAM.INFO rides the SAME role gate as the bind rows: a role-less agent holds no TASK grant
     // at all, so it can neither read the task stream's state nor enumerate its subjects.
     pubAllow.push(
