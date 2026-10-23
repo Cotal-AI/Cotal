@@ -3982,7 +3982,8 @@ cotal channel remove <name> [--purge] [--yes]
 metadata, not every channel with traffic. `show` includes inherited replay and delivery settings.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
-records. A missing feed remains unknown rather than an empty confirmed census.
+records. A missing feed remains unknown rather than an empty confirmed census. The delivery service
+writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
 space and history scope. Scripts pass `--yes`. Removing a channel that has no saved entry is a

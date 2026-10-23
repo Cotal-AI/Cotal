@@ -5,7 +5,8 @@
  * `--grep`, `--dms`, the usage refusals, a credential that may not read history, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
- * same broker, `cotal channel remove` says whether it removed a saved entry.
+ * same broker, `cotal channel remove` says whether it removed a saved entry, and on the open broker
+ * `cotal channel members` refuses with `UNSUPPORTED`.
  * smoke:ps-user-mode and smoke:user-spawn:live exercise the native user-auth history path.
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
@@ -345,6 +346,15 @@ try {
     check("removing it again is a no-op that removed nothing", again.status === 0 && again.envelope?.outcome === "no-op" && removedOf(again) === false, shown(again));
     const typo = await run(["channel", "remove", "opz", "--yes", "--space", space]);
     check("a name with no saved entry says nothing was removed", typo.status === 0 && typo.stdout.includes("Nothing removed · #opz") && typo.stdout.includes("no saved entry"), shown(typo));
+  }
+
+  // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────
+  {
+    const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
+    const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
+    check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
+    const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
+    check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
