@@ -326,18 +326,19 @@ setCurrent("keep");
 // ── A root other local accounts can write ──────────────────────────────────────────────────────────────
 // `space create` refuses such a root, so `up` refuses it too, before anything is written: a stack it
 // started there could not be stopped from it. World write refuses on every host, and one refusal names
-// the folder and its parent.
+// the folder and its parent. The folder has its own `.cotal`, so a `.cotal` in an ancestor such as the
+// temporary directory does not become its root.
 {
   const exposed = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-exposed-")));
   const parent = join(exposed, "shared"), folder = join(parent, "proj");
-  mkdirSync(folder, { recursive: true });
+  mkdirSync(join(folder, ".cotal"), { recursive: true });
   chmodSync(parent, 0o777);
   chmodSync(folder, 0o777);
   const before = registryFiles();
   const up = await json(["up", "--open", "--server", LIVE], folder);
   check("up in a folder other accounts can write is PERMISSION_DENIED, exit 2, naming it and its parent with one remedy, and writes nothing",
     refused(up, 2, "PERMISSION_DENIED") && (up.env?.error?.message ?? "").includes(`${folder} and ${parent} are writable by every local account`) &&
-      up.env?.error?.remedy === `chmod o-w ${folder} ${parent}` && readdirSync(folder).length === 0 && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(up));
+      up.env?.error?.remedy === `chmod o-w ${folder} ${parent}` && readdirSync(join(folder, ".cotal")).length === 0 && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(up));
   rmSync(exposed, { recursive: true, force: true });
 }
 
