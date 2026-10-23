@@ -303,6 +303,8 @@ function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["ma
 
 /** Local boot and additive intents are recovery coordinates, not evidence of native state. */
 function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["bootAttempts"]> {
+  // A refusal with its own cause, such as a root other local accounts can write, is named.
+  const because = (error: unknown) => isCommandFailure(error) ? ` (${error.message})` : "";
   const result: NonNullable<StatusResult["bootAttempts"]> = { root, state: "not-checked", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [] };
   try {
     if (!realDirNoSymlink(root, ".cotal")) return result;
@@ -313,9 +315,9 @@ function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["b
     const unreadable = [...attempts.refused, ...summaries.refused].map(({ path }) => path);
     result.unreadable.push(...unreadable);
     if (unreadable.length) gaps.add("FRESH_BOOT_RECORD_UNREADABLE", "one or more fresh boot attempts or returned summaries are unreadable; their outcomes were not treated as absent", { root, paths: unreadable });
-  } catch {
+  } catch (error) {
     result.state = "partial";
-    gaps.add("FRESH_BOOT_RECORD_UNAVAILABLE", "this folder's fresh boot attempt inventory could not be read; no empty inventory was inferred", { root });
+    gaps.add("FRESH_BOOT_RECORD_UNAVAILABLE", `this folder's fresh boot attempt inventory could not be read${because(error)}; no empty inventory was inferred`, { root });
   }
   try {
     const additive = listAdditiveTeamAttempts(root);
@@ -323,9 +325,9 @@ function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["b
     const unreadable = additive.refused.map(({ path }) => path);
     result.unreadable.push(...unreadable);
     if (unreadable.length) gaps.add("ADDITIVE_ATTEMPT_UNREADABLE", "one or more additive attempts are unreadable; their effects were not treated as absent", { root, paths: unreadable });
-  } catch {
+  } catch (error) {
     result.state = "partial";
-    gaps.add("ADDITIVE_ATTEMPT_UNAVAILABLE", "this folder's additive attempt inventory could not be read; no empty inventory was inferred", { root });
+    gaps.add("ADDITIVE_ATTEMPT_UNAVAILABLE", `this folder's additive attempt inventory could not be read${because(error)}; no empty inventory was inferred`, { root });
   }
   if (result.state !== "partial") result.state = result.unreadable.length ? "partial" : "read";
   result.observedAt = new Date().toISOString();

@@ -59,6 +59,7 @@ import {
   CommandFailure,
   commandFailureReport,
   isCommandFailure,
+  protectedLocalDirectory,
   jsonFlag,
   plainFlag,
   renderReport,
@@ -566,6 +567,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __ordinaryResumeAttempt?: string;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
+  // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
+  // before anything is written: a stack started there could not be stopped from it.
+  protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
   if (values.restore) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");

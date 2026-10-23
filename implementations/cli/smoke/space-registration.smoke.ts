@@ -10,7 +10,9 @@
  * it was. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
- * legacy route, each with its reason, its remedy and exit 2, and the registration is kept.
+ * legacy route, each with its reason, its remedy and exit 2, and the registration is kept. An `up` in
+ * a folder other local accounts can write refuses before it writes anything, naming the folder and its
+ * parent with one remedy.
  *
  * Needs `nats-server` on PATH.
  *
@@ -18,7 +20,7 @@
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -316,6 +318,24 @@ setCurrent("keep");
   check("forgetting keeps the root's files", existsSync(join(root, ".cotal")));
   const human = await run(["space", "forget", "keep"]);
   check("forgetting the selected space clears the selection and says so", human.status === 0 && getCurrent() === undefined && /forgot keep/.test(human.stdout) && /no space is selected now/.test(human.stdout), shown(human));
+}
+
+// ── A root other local accounts can write ──────────────────────────────────────────────────────────────
+// `space create` refuses such a root, so `up` refuses it too, before anything is written: a stack it
+// started there could not be stopped from it. World write refuses on every host, and one refusal names
+// the folder and its parent.
+{
+  const exposed = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-exposed-")));
+  const parent = join(exposed, "shared"), folder = join(parent, "proj");
+  mkdirSync(folder, { recursive: true });
+  chmodSync(parent, 0o777);
+  chmodSync(folder, 0o777);
+  const before = registryFiles();
+  const up = await json(["up", "--open", "--server", LIVE], folder);
+  check("up in a folder other accounts can write is PERMISSION_DENIED, exit 2, naming it and its parent with one remedy, and writes nothing",
+    refused(up, 2, "PERMISSION_DENIED") && (up.env?.error?.message ?? "").includes(`${folder} and ${parent} are writable by every local account`) &&
+      up.env?.error?.remedy === `chmod o-w ${folder} ${parent}` && readdirSync(folder).length === 0 && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(up));
+  rmSync(exposed, { recursive: true, force: true });
 }
 
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────

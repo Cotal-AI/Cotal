@@ -1701,9 +1701,11 @@ with a 2 second limit each, so the first check in a process can take a few secon
 holds for the life of the process. When a read is unavailable, group write refuses; install the
 `acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
 allowed. New control directories use mode 0700. An unsafe existing path refuses before the
-prepared record is written, without changing its permissions. The refusal names the path, the
-reason and a remedy such as `chmod g-w <path>`. It starts nothing and leaves the
-selection as it is. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
+prepared record is written, without changing its permissions. The refusal names every unsafe path
+in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that lists each path.
+It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
+it starts in, before it writes anything, so it never starts a stack that `down` would refuse to
+stop from that root. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
 space's root, and the home folder, whose `.cotal` holds this machine's own records. `space` lists
 prepared spaces under their own heading, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
