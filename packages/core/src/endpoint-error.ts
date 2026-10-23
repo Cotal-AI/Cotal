@@ -123,6 +123,25 @@ export function registryReadFailed(e: unknown): boolean {
 }
 
 /**
+ * `details[].kind` for a refusal raised because the service registry was READ and lists no live
+ * instance of the endpoint (§13.5). An unreadable registry raises the same `failed-precondition`
+ * without it, so a surface that states "none is running" keys on this marker, never on the code.
+ */
+export const EP_NO_LIVE_INSTANCES = "ai.cotal.ep.no-live-instances";
+
+/** The {@link EP_NO_LIVE_INSTANCES} payload: the endpoint the registry lists no live instance of. */
+export interface EpNoLiveInstancesDetail extends EpErrorDetail {
+  kind: typeof EP_NO_LIVE_INSTANCES;
+  endpoint: string;
+}
+
+/** True iff `e` carries the {@link EP_NO_LIVE_INSTANCES} marker: the registry was read and lists no
+ *  live instance. */
+export function noLiveInstances(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_NO_LIVE_INSTANCES);
+}
+
+/**
  * `details[].kind` for a CALLER-side refusal raised before publish because the args carry a key the
  * resolved input contract does not declare. That contract is the one the responder serves, so the
  * key is one this caller sends and the responder does not know. Core cannot call that version skew,

@@ -2323,7 +2323,9 @@ read. A connector whose catalog could not be read, or that the manager could not
 read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. The
 screen points to that warning without repeating it inline. The remedy is to correct the stated
 cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
-refusal is reported separately. A connector whose harness the manager did not find at boot
+refusal is reported separately. When the space's service registry lists no live manager, an
+unpinned operator `models` refuses `TARGET_UNAVAILABLE` (exit 2) at once, as `ps` does, and names
+bare `cotal up` as the next step. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
 printed it. OpenCode and Codex ids are the full
@@ -4767,6 +4769,11 @@ as the requested manager, and the JSON target carries `requestedManagerInstance`
 Follow-up commands printed by the CLI retain the same explicit pin and fill
 in a returned run ID only when it matches the native run-token shape. Keep the
 pin on later status, answer and resume calls.
+
+An unpinned hosted verb run by the operator reads the space's service registry first. When it
+lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
+(exit 2) at once, as `ps` does, and names bare `cotal up` as the next step, instead of waiting out
+the manager's answer deadline.
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the

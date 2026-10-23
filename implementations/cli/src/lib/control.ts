@@ -16,6 +16,7 @@ import {
   unansweredRequest,
   unansweredRail,
   registryReadFailed,
+  noLiveInstances,
   undeclaredArg,
   controlReplyFrom,
   controlReplyFromThrown,
@@ -763,6 +764,20 @@ export async function scatterManager(
   const who = controlCaller(auth);
   if ("refusal" in who) return { ok: false, error: who.refusal };
   return askManagerScatterEp(space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs);
+}
+
+/** The refusal `ps` gives, raised before an unpinned operator read when the registry lists no live
+ *  manager, rather than after the read's describe has waited out its whole deadline. Only the
+ *  operator instrument holds the registry rows, so a caller passes a user's manager view or a pinned
+ *  call straight to the read. Any other registry outcome, an unreadable registry included, leaves
+ *  the read to decide. `purpose` completes "no manager is running for this space to …". */
+export async function refuseWithoutLiveManager(space: string, server: string, auth: ControlAuth, target: unknown, purpose: string): Promise<void> {
+  try {
+    await withControlConnection(server, auth, async (nc) => freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT));
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  }
 }
 
 /** The stable code a refused manager READ reports, by the endpoint's catalog code. A read has no

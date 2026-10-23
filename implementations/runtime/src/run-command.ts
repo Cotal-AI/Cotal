@@ -27,7 +27,9 @@ import {
   assertLifecycleToken,
   LANG_PROBLEM_DETAIL_KIND,
   dialerFor,
+  freezeExpectedSet,
   invokeRepairingSplit,
+  noLiveInstances,
   newTakeoverId,
   newIdentity,
   mintCreds,
@@ -614,7 +616,7 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
  *  ({@link invokeRepairingSplit}). The reply's data on success; on a refusal the manager's own
  *  sentence, printed, and a non-zero exit. */
 async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved?: (space: string) => void): Promise<unknown> {
-  const t = await resolveRunControlTarget(values);
+  const { target: t, seat } = await resolveRunControlTarget(values);
   resolved?.(t.space);
   const who = controlCaller(t.auth);
   if ("refusal" in who) {
@@ -625,6 +627,9 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
   try {
+    // Only the operator's own unpinned instrument holds the registry rows `ps` scatters on; a seat's
+    // credential and a user's manager view hold none.
+    if (!seat && auth.bearer === undefined && auth.managerInstanceId === undefined) await refuseWithoutLiveManager(nc, t.space);
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): its generation is read
     // back from this connection's accepted row, and every request rides `ep.v1` under it.
     const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
@@ -661,20 +666,39 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   }
 }
 
+/** A hosted verb on a space whose registry lists no live manager is refused here, as `ps` refuses
+ *  it, rather than after the describe has waited out its whole deadline for an answer no manager
+ *  can send. Any other registry outcome, an unreadable registry included, leaves the describe to
+ *  decide. */
+async function refuseWithoutLiveManager(nc: NatsConnection, space: string): Promise<void> {
+  try {
+    await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT);
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space to host or read its workflow runs", {
+      target: { space },
+      native: { code: e.code, detail: `${e.code}: ${e.message}` },
+      remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none",
+    });
+  }
+}
+
 /** A spawned static seat that shells out to the rendered `cotal run answer …` command must answer as
  *  THAT seat ({@link resolveSeatControlTarget}). An open mesh keeps the operator caller here, which
  *  holds the run capability's full answer reach. Outside a managed seat, keep the ordinary operator
  *  target resolution unchanged. `--on` reaches the mint on every path and becomes the instance the
- *  call addresses; a user-mode view already carries the instance its issuer bound. */
-async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget> {
+ *  call addresses; a user-mode view already carries the instance its issuer bound. `seat` says the
+ *  target is the seat's own. */
+async function resolveRunControlTarget(values: RunValues): Promise<{ target: ControlTarget; seat: boolean }> {
   const on = values.on;
   const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
   const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
   recordOperationSpace(target.space);
-  if (on === undefined) return target;
+  const resolved = { target, seat: target === seat };
+  if (on === undefined) return resolved;
   if (target.auth.managerInstanceId !== undefined && target.auth.managerInstanceId !== on)
     throw new CommandFailure("refused", "CONFLICT", "the requested manager instance differs from this credential's instance authority; no other manager was selected");
-  return { ...target, auth: { ...target.auth, managerInstanceId: on } };
+  return { ...resolved, target: { ...target, auth: { ...target.auth, managerInstanceId: on } } };
 }
 
 function renderLangProblem(d: EpErrorDetail): string {
