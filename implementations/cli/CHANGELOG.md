@@ -1,5 +1,37 @@
 # @cotal-ai/cli
 
+## 0.99.1
+
+### Patch Changes
+
+- 1708ce5: Create a missing Cotal config directory with mode 0700 from every writer, not only the extension
+  writer. Under a group-writable umask, `config set`, the seed store and lock files made it 0775, and
+  `completion` and `ext seed` then refused the directory cotal had just created. A completion file
+  that cannot be read now names why instead of a bare PERMISSION_DENIED.
+- 50de78d: Point Claude Desktop chat on a signed-in space at the space's hosted connector. Desktop chat
+  supplies no native session, so this computer's `--desktop` server cannot join a signed-in space,
+  yet setup wrote its entry and status reported it as added. Setup for a signed-in space now writes no
+  Desktop entry and prints the hosted connector URL to add under Settings > Connectors > Add custom
+  connector, the Claude Desktop status row prints it for a signed-in selected space, and the server's
+  refusal names it. The URL comes from `cloudCapabilities.hostedConnector` (version 1, HTTPS) in the
+  space's discovery document; a space that advertises none is reported that way. The Desktop server's
+  instructions no longer tell the model to prefer the local path for a signed-in space.
+- 636cb2c: `cotal history --dms` names a DM's recipient when a message in the window came from that principal, in the table and in `--follow` lines, and shows the principal otherwise. It used to show every recipient as a raw principal. An open-mode `chat` session's principal is now `local.<hex>`, the same form as other open-mode endpoints. It was `local.local_<hex>`, which read as a doubled prefix wherever the principal was shown. `result.items[].to` in `--json` is still the principal.
+- 6661221: `cotal send -c <channel> --mention <agent>` now puts the agent's name in the message's mention list, as SPEC §5 defines it. It used to put the agent's instance id there, so a `chat` session, which compares the list with its own label, received the post with `mentionsMe: false`, and the durable mention copy on a `live` channel never resolved. An instance id is still accepted and is sent as that agent's name, and it is refused when the name also resolves to another participant.
+- cce57c1: The `cotal send` guide now says when a recipient can answer by the sender's name. On a static or open mesh every send has its own principal under the same display name, so once a recipient has heard two sends from the same login and host, a reply by that name refuses with `TARGET_AMBIGUOUS`. The guide names the replies that still work: the id on the message, or `/reply` in `chat`. It used to say a reply by the sender's name always works.
+- bcc22a2: Keep a controller stack controllable across an upgrade. Each member record pins its built-in
+  adapter at the release that wrote it, and every control path compared that version too, so after
+  `npm i -g cotal-ai@<new>` the new `cotal down` refused to stop a running stack (CONFLICT, "the
+  selected native service pins another definition or adapter revision") and `cotal up` refused to
+  restart a stopped one. Built-in and first-party adapters are version-locked to the CLI, so their pins
+  now match on name, package and declaration; a third-party adapter's version still counts. Also list
+  the candidate IDs of an ambiguous service instance on one line, instead of printing `\u000a`
+  between them.
+- Updated dependencies [1708ce5]
+- Updated dependencies [50de78d]
+  - @cotal-ai/core@0.99.1
+  - @cotal-ai/workspace@0.99.1
+
 ## 0.99.0
 
 ### Minor Changes
