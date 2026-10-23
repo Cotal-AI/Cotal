@@ -1546,10 +1546,11 @@ export class MeshHandler {
    * terminal, carrying the TurnResult. The DEADLINE is double-covered: the manager arms a
    * goal-bound hold (its expiry commits `failed` reason `turn-deadline`), and this client arms its
    * OWN pause under the step's request id — the L4003 authority that survives a dead manager.
-   * DEATH likewise: the manager's reap hook fails pending turns `agent-down`, and this client
-   * watches presence itself (the L4002 authority when the manager died with the seat). The watch
-   * reads death the way `wait(down)` does: a superseded incarnation at once, a lapsed row only
-   * once it has stayed absent for {@link LAPSE_CONFIRM_MS} and its manager no longer runs the seat.
+   * DEATH: the manager's reap hook marks pending turns; death rides the deadline terminal as
+   * `agentDownAt`. This client's presence watch is the early L4002 authority even while the
+   * manager runs. The watch reads death the way `wait(down)` does: a superseded incarnation at
+   * once, a lapsed row only once it has stayed absent for {@link LAPSE_CONFIRM_MS} and its manager
+   * no longer runs the seat.
    *
    * Handoff honoring (lang §5.3) happens HERE: the scope's pending memo is spent at every turn's
    * begin, and when this turn targets its `to`, the link rides the submission (`handoffFrom`, the
