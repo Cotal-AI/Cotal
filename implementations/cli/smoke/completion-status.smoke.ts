@@ -366,6 +366,12 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("history offers clear and the channels the space's personas declare", exactly(history, ["clear", "review"]), shown(history));
   const channel = offered(["channel", "remove", "--space", "rr"]);
   check("channel remove offers those channels", exactly(channel, ["review"]), shown(channel));
+  // A path lets the shell complete file names; any other value does not.
+  for (const [words, directive] of [[["space", "add", "x", "--root"], ":default"], [["space", "add", "x", "--file"], ":default"], [["channel", "set", "ops", "--creds"], ":default"],
+    [["channel", "set", "ops", "--window"], ":nofiles"], [["channel", "set", "ops", "--desc"], ":nofiles"], [["channel", "set", "ops", "--instructions"], ":nofiles"]] as const) {
+    const r = offered([...words]);
+    check(`${words.join(" ")} ${directive === ":default" ? "offers file names" : "offers no file names"}`, r.status === 0 && r.values.length === 0 && r.directive === directive, shown(r));
+  }
 }
 
 finish();
