@@ -1517,6 +1517,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       seedPersonaAfterUp(root);
       return;
     }
+    // The broker answering here is the named space's own, started from another folder.
+    const owner = values.space !== undefined ? findMesh(space) : undefined;
+    if (owner && owner.server === server && owner.root !== root) {
+      let controller = false;
+      try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
+      throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server }, remedy: `use it from here with --space ${space}, or stop it with cotal down${controller ? " --yes" : ""} in ${owner.root}` });
+    }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
     // Reaching here with `--rotate-sys` means something IS answering at the requested address and it
     // is not this root's recorded mesh (that case was refused above). The ordinary response is to pick
