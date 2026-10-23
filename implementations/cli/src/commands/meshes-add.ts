@@ -367,7 +367,7 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
     case "tls-trust":
       return `✗ the broker at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, then re-run`;
     case "slow-link":
-      return `✗ the broker at ${server} answered TCP but the credentialed connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - nothing was registered; retry, or raise the connect budget if this link is consistently slow`;
+      return `✗ the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - nothing was registered; retry, and if it keeps happening, check that the broker process is not stopped or overloaded`;
   }
 }
 

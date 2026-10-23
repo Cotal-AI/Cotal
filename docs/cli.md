@@ -2076,7 +2076,8 @@ unreadable extensions manifest is refused while loading the command surface, bef
 can run. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
-`running · service unchecked`.
+`running · service unchecked`. A broker that takes the connection and does not answer, as a
+stopped one does, leaves it unchecked too, and `status` still exits.
 
 The local auth reader uses a stripped signer only when both split trust records are absent.
 The load refuses dangling and looping links at either record even when an older stripped signer is present.
@@ -2150,7 +2151,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
 means the component record is live but its service/readiness surface did not answer or is not ready.
 Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
-absent component or a clean zero. A PID record that exists but cannot be read, or exists under both
+absent component or a clean zero. A broker that takes the connection and does not answer, as a
+stopped one does, refuses the manager and delivery probes, and the pass still exits. A PID record that exists but cannot be read, or exists under both
 its current and a pre-upgrade name, refuses only its own row. A record that its component removes
 while the pass runs reads as `absent`.
 

@@ -7865,15 +7865,18 @@ function hostPort(server: string): { host: string; port: number } {
  *  broker rejects and logs). It is a *plaintext NATS* liveness check only:
  *    • a TLS-first (`handshake_first`, NATS ≥ 2.10.4) listener sends its TLS handshake before INFO,
  *      so the read won't match → returns false (a documented false-negative for that broker config);
- *    • a non-NATS / silent listener never sends a valid `INFO {` → also false (we require the real
- *      greeting, never "any open port is reachable").
+ *    • a non-NATS listener never sends a valid `INFO {` → also false, and a silent one resolves
+ *      `"silent"` (we require the real greeting, never "any open port is reachable").
  *  Closes well within the server's ~1s authorization timeout, so it cannot trip a timeout log.
- *  A live server resolves to what its greeting said about auth; anything else resolves `false`. */
-function tcpInfoProbe(server: string, timeoutMs: number): Promise<false | { authRequired: boolean }> {
-  return new Promise<false | { authRequired: boolean }>((resolve) => {
+ *  A live server resolves to what its greeting said about auth. A peer that accepted the connection
+ *  and sent no full line before the deadline, as a stopped or overloaded broker does, resolves
+ *  `"silent"`; anything else resolves `false`. */
+function tcpInfoProbe(server: string, timeoutMs: number): Promise<false | "silent" | { authRequired: boolean }> {
+  return new Promise<false | "silent" | { authRequired: boolean }>((resolve) => {
     let socket: ReturnType<typeof createConnection> | undefined;
     let done = false;
-    const finish = (live: false | { authRequired: boolean }) => {
+    let connected = false;
+    const finish = (live: false | "silent" | { authRequired: boolean }) => {
       if (done) return;
       done = true;
       try { socket?.destroy(); } catch { /* already gone */ }
@@ -7894,7 +7897,8 @@ function tcpInfoProbe(server: string, timeoutMs: number): Promise<false | { auth
       try { finish({ authRequired: (JSON.parse(line.slice(brace)) as { auth_required?: unknown })?.auth_required === true }); } // require a real INFO greeting, not arbitrary bytes
       catch { finish(false); }
     });
-    socket.on("timeout", () => finish(false));
+    socket.on("connect", () => { connected = true; });
+    socket.on("timeout", () => finish(connected ? "silent" : false));
     socket.on("error", () => finish(false)); // refused / reset / DNS failure
     socket.on("close", () => finish(false)); // closed before a full INFO line arrived
   });
@@ -7973,7 +7977,7 @@ export async function isReachable(
         return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
       }
     }
-    return (await tcpInfoProbe(servers, timeoutMs)) !== false;
+    return typeof (await tcpInfoProbe(servers, timeoutMs)) === "object";
   }
   // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
   // the same orphaned-socket defects probeConnect did (#389, and the slow-greeting case #2156) and
@@ -7986,7 +7990,8 @@ export async function isReachable(
   // address that never completed a handshake.
   const started = Date.now();
   const gate = opts.tls || wsServers(servers) ? tcpDialable : tcpInfoProbe;
-  if (!(await gate(servers, timeoutMs))) return false;
+  const reached = await gate(servers, timeoutMs);
+  if (!reached || reached === "silent") return false;
   try {
     const nc = await dialerFor(servers)({
       servers,
@@ -8051,6 +8056,9 @@ export async function probeConnect(
   const gate = opts.tls || wsServers(server) ? tcpDialable : tcpInfoProbe;
   const greeting = await gate(server, timeoutMs);
   if (!greeting) return classifyProbeFailure(undefined, opts);
+  // A peer that took the connection and never greeted is there but not answering, as a stopped or
+  // overloaded broker is. That is the same latency verdict as a dial that ran out of its budget.
+  if (greeting === "silent") return classifyProbeFailure(undefined, opts, false, "timeout");
   try {
     const nc = await dialerFor(server)({
       servers: server,
@@ -8077,8 +8085,9 @@ export async function probeConnect(
  *  used to misclassify a dead cred. Reading the cred removes that timing dependency entirely, so the
  *  classification is deterministic. Unreadable content falls through to the wire truth (no false
  *  stale diagnosis from garbage). `e` is undefined when the gate refused before any connect.
- *  `authRequired` is true when the gate read a greeting that asked for auth. */
-function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false): ProbeResult {
+ *  `authRequired` is true when the gate read a greeting that asked for auth. `otherwise` is the
+ *  verdict when nothing more specific applies. */
+function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false, otherwise: "unreachable" | "timeout" = "unreachable"): ProbeResult {
   if (typeof opts.creds === "string") {
     try {
       if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
@@ -8096,5 +8105,5 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false):
   // sees only ECONNRESET, and a running auth broker used to read as gone. No rejection was read, so
   // the verdict is marked inferred.
   if (authRequired && (e as { code?: unknown } | undefined)?.code === "ECONNRESET") return { ok: false, reason: "auth-required", inferred: true };
-  return { ok: false, reason: "unreachable" };
+  return { ok: false, reason: otherwise };
 }
