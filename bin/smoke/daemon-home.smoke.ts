@@ -32,10 +32,11 @@
  *     - a 0755 home: PERMISSION_DENIED / DIR_WRONG_MODE, exit 2, mode unchanged;
  *     - a symlinked home: PERMISSION_DENIED / DIR_SYMLINK;
  *     - a relative home: USAGE_INVALID naming "absolute";
+ *     - the Cotal home itself: USAGE_INVALID naming the Cotal home, and no lock in it;
  *     - in every case 0 new runtime entries and no lock file;
  *  H4 lifetime lock and no stale-socket cleanup:
- *     - a second managed serve on D refuses, naming the live holder's pid, and the first's socket
- *       keeps its inode;
+ *     - a second managed serve on D refuses CONFLICT / LOCK_HELD naming the live holder's pid, and
+ *       the first's socket keeps its inode;
  *     - after SIGKILL of the first, its socket stays. A new serve refuses CONFLICT /
  *       ALREADY_RUNNING with the inode unchanged, so 0 removals;
  *     - after the operator removes it, serve binds the SAME derived path (deterministic);
@@ -46,8 +47,8 @@
  *       listener receives 0 bytes.
  *
  * Not covered here, and still to add: register approval carry-over (needs the stock auth service
- * sandbox of daemon-register.smoke.ts), `--daemon-home` equal to `$COTAL_HOME`, a foreign-owned
- * home (needs a user namespace) and the `cotal service install` unit path.
+ * sandbox of daemon-register.smoke.ts), a foreign-owned home (needs a user namespace) and the
+ * `cotal service install` unit path.
  *
  * Run: tsx bin/smoke/daemon-home.smoke.ts   (Linux only)
  */
@@ -65,6 +66,8 @@ import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspac
 import { daemonPaths } from "../daemon/endpoint.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
+// Read the scratch-parent override before the COTAL_* environment is cleared below.
+const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -84,7 +87,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
 }
 
 // ---------- owned sandbox ----------
-const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cdh-"));
+const root = mkdtempSync(join(scratchParent, "cdh-"));
 chmodSync(root, 0o700);
 const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed"), user = join(root, "user");
 for (const d of [home, rt, meshRoot, managed, user]) mkdirSync(d, { mode: 0o700 });
@@ -99,14 +102,34 @@ const childEnv = {
 };
 const runtimeEntries = (): string[] => existsSync(runtimeDir) ? readdirSync(runtimeDir, { recursive: true }).map(String).sort() : [];
 
+/** Every child this smoke starts, so teardown can wait for each one to exit before removing the root. */
+const children = new Set<ChildProcess>();
+const exited = (child: ChildProcess): Promise<void> => child.exitCode !== null || child.signalCode !== null
+  ? Promise.resolve()
+  : new Promise<void>((r) => child.once("exit", () => r()));
+/** Kill and WAIT for the exit: a timed-out or killed child must not outlive the fixture it uses. */
+async function kill(child: ChildProcess, signal: NodeJS.Signals = "SIGKILL"): Promise<void> {
+  if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+  await exited(child);
+}
+function track(child: ChildProcess): ChildProcess {
+  children.add(child);
+  child.once("exit", () => children.delete(child));
+  return child;
+}
+
 type Doc = { outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
 /** One CLI invocation to completion. */
 async function cli(args: string[], timeoutMs = 30_000): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
-  const child = spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const child = track(spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
   let out = "", err = "";
-  child.stdout.on("data", (b) => { out += String(b); });
-  child.stderr.on("data", (b) => { err += String(b); });
-  const status = await Promise.race([new Promise<number | null>((r) => child.once("exit", (c) => r(c))), sleep(timeoutMs).then(() => { child.kill("SIGKILL"); return -1; })]);
+  child.stdout!.on("data", (b) => { out += String(b); });
+  child.stderr!.on("data", (b) => { err += String(b); });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; void kill(child); }, timeoutMs);
+  await exited(child);
+  clearTimeout(timer);
+  const status = timedOut ? -1 : child.exitCode;
   let doc: Doc = {};
   try { doc = JSON.parse(out.trim().split("\n").pop() ?? "") as Doc; } catch { /* reported by the caller */ }
   return { status, doc, out, err };
@@ -115,12 +138,12 @@ async function cli(args: string[], timeoutMs = 30_000): Promise<{ status: number
 /** A `daemon serve` child, read until it reports ready or exits. */
 interface Serve { child: ChildProcess; socket?: string; status?: number | null; out: string; err: string }
 async function serve(extra: string[]): Promise<Serve> {
-  const child = spawn(process.execPath, daemonArgv(["serve", ...extra]), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const child = track(spawn(process.execPath, daemonArgv(["serve", ...extra]), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
   const s: Serve = { child, out: "", err: "" };
-  child.stderr.on("data", (b) => { s.err += String(b); });
+  child.stderr!.on("data", (b) => { s.err += String(b); });
   await new Promise<void>((resolve) => {
     const t = setTimeout(resolve, 30_000);
-    child.stdout.on("data", (b) => {
+    child.stdout!.on("data", (b) => {
       s.out += String(b);
       const m = /daemon ready at (\S+)/.exec(s.out);
       if (m) { s.socket = m[1]; clearTimeout(t); resolve(); }
@@ -130,11 +153,12 @@ async function serve(extra: string[]): Promise<Serve> {
   return s;
 }
 const live = (s: Serve | undefined) => !!s && s.socket !== undefined && s.child.exitCode === null && s.child.signalCode === null;
+/** Stop a serve child: the given signal, then SIGKILL if it has not exited within 10 s. Always waits. */
 async function stop(s: Serve | undefined, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
   if (!s || s.child.exitCode !== null || s.child.signalCode !== null) return;
-  const gone = new Promise<void>((r) => s.child.once("exit", () => r()));
   s.child.kill(signal);
-  await Promise.race([gone, sleep(10_000)]);
+  const graceful = await Promise.race([exited(s.child).then(() => true), sleep(10_000).then(() => false)]);
+  if (!graceful) await kill(s.child);
 }
 const fileState = (p: string) => { const st = lstatSync(p); return { ino: st.ino, mtimeMs: st.mtimeMs }; };
 
@@ -217,7 +241,10 @@ try {
     check("H3 a symlinked home refuses PERMISSION_DENIED / DIR_SYMLINK, exit 2", r2.status === 2 && r2.doc.error?.code === "PERMISSION_DENIED" && r2.doc.error?.cause?.code === "DIR_SYMLINK", { status: r2.status, doc: r2.doc });
     const r3 = await cli(["serve", "--daemon-home", "relative/home", "--json"]);
     check("H3 a relative home refuses USAGE_INVALID naming an absolute path", r3.status === 1 && r3.doc.error?.code === "USAGE_INVALID" && /absolute/i.test(r3.doc.error?.message ?? ""), { status: r3.status, doc: r3.doc });
-    check("H3 the three refusals created 0 runtime entries", JSON.stringify(runtimeEntries()) === JSON.stringify(before), { before, after: runtimeEntries() });
+    const r4 = await cli(["serve", "--daemon-home", home, "--json"]);
+    check("H3 the Cotal home itself refuses USAGE_INVALID naming the Cotal home", r4.status === 1 && r4.doc.error?.code === "USAGE_INVALID" && /Cotal home/.test(r4.doc.error?.message ?? ""), { status: r4.status, doc: r4.doc });
+    check("H3 and no lock was created in the Cotal home", !existsSync(lockFile(home)));
+    check("H3 the four refusals created 0 runtime entries", JSON.stringify(runtimeEntries()) === JSON.stringify(before), { before, after: runtimeEntries() });
   });
 
   await cell("H4 the lifetime lock is singleton and a stale socket is never removed", async () => {
@@ -225,7 +252,7 @@ try {
     if (!live(managedServe) || typeof derived !== "string") return;
     const ino = lstatSync(derived).ino;
     const second = await cli(["serve", "--daemon-home", managed, "--json"]);
-    check("H4 a second managed serve refuses, naming the live holder's pid", second.status !== 0 && new RegExp(`held by a live process \\(pid ${managedServe!.child.pid}\\)`).test(second.out + second.err), { status: second.status, out: second.out.slice(0, 300), err: second.err.slice(0, 300) });
+    check("H4 a second managed serve refuses CONFLICT / LOCK_HELD, exit 2, naming the live holder's pid", second.status === 2 && second.doc.error?.code === "CONFLICT" && second.doc.error?.cause?.code === "LOCK_HELD" && new RegExp(`held by a live process \\(pid ${managedServe!.child.pid}\\)`).test(second.doc.error?.message ?? ""), { status: second.status, doc: second.doc, err: second.err.slice(0, 300) });
     check("H4 the first serve's socket keeps its inode and still answers", lstatSync(derived).ino === ino && (await cli(["status", "--daemon-home", managed, "--json"])).doc.result?.pid === managedServe!.child.pid);
     await stop(managedServe, "SIGKILL");
     check("H4 instrument: after SIGKILL the socket is left behind and the lock has no live owner", existsSync(derived) && lstatSync(derived).ino === ino && liveLockOwnerPid(lockFile(managed)) === undefined);
@@ -243,7 +270,7 @@ try {
     await stop(managedServe);
     check("H5 instrument: the clean stop removed its socket and released the lock", !existsSync(derived) && liveLockOwnerPid(lockFile(managed)) === undefined);
     const held = acquireLock(lockFile(managed), { waitMs: 0, label: "daemon-home smoke" });
-    const listener = spawn(process.execPath, ["-e", `const s=require("net").createServer(c=>c.on("data",()=>process.stdout.write("GOT-BYTES\\n")));s.listen(${JSON.stringify(derived)},()=>{require("fs").chmodSync(${JSON.stringify(derived)},0o600);process.stdout.write("LISTENING\\n")});`], { stdio: ["ignore", "pipe", "ignore"] });
+    const listener = track(spawn(process.execPath, ["-e", `const s=require("net").createServer(c=>c.on("data",()=>process.stdout.write("GOT-BYTES\\n")));s.listen(${JSON.stringify(derived)},()=>{require("fs").chmodSync(${JSON.stringify(derived)},0o600);process.stdout.write("LISTENING\\n")});`], { stdio: ["ignore", "pipe", "ignore"] }));
     let out = "";
     listener.stdout!.on("data", (b) => { out += String(b); });
     try {
@@ -254,7 +281,7 @@ try {
       check("H5 status refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2", r.status === 2 && r.doc.error?.code === "PERMISSION_DENIED" && r.doc.error?.cause?.code === "PEER_NOT_LOCK_OWNER", { status: r.status, doc: r.doc });
       check("H5 the impostor listener received 0 bytes", !out.includes("GOT-BYTES"), out);
     } finally {
-      listener.kill("SIGKILL");
+      await kill(listener);
       held.release();
     }
   });
@@ -264,6 +291,8 @@ try {
 } finally {
   await stop(managedServe);
   await stop(legacyServe);
+  // No child may outlive the fixture root it uses.
+  for (const child of [...children]) await kill(child);
   await new Promise<void>((r) => authority.close(() => r()));
   rmSync(root, { recursive: true, force: true });
 }
