@@ -582,7 +582,10 @@ An explicit `--store-dir` on `up`, `up --restore` or `backup restore` must name 
 path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it. The
 existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
 writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
-is written. A non-empty directory is accepted, since it may hold an existing store.
+is written. A non-empty directory is accepted, since it may hold an existing store. A control
+directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
+other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
+with credentials and records, or with another root's store, and `reset store` could not remove it.
 A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
 that is not a regular file is refused and left unchanged. A private directory is set to `0700`
 through its path, which follows a symlink; this step does not refuse a symlinked `~/.cotal` or

@@ -14,7 +14,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
   const values = args.values as { only?: string; "store-dir"?: string; "accept-missing-source"?: boolean; json?: boolean; plain?: boolean };
   const directory = resolve(args.positionals[1]!);
   const target = { directory };
-  if (values["store-dir"] !== undefined) assertStoreDirArgument(values["store-dir"]);
+  if (values["store-dir"] !== undefined) assertStoreDirArgument(values["store-dir"], cotalRoot());
   let result: RestoreStartupResult;
   try {
     result = await startRestore({
