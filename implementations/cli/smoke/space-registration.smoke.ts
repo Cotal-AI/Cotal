@@ -491,7 +491,24 @@ setCurrent("keep");
     check("a --root this account cannot write is PERMISSION_DENIED, exit 2, with nothing written",
       refused(denied, 2, "PERMISSION_DENIED") && (denied.env?.error?.message ?? "").startsWith(`${readOnly} is not writable by this account`) && !existsSync(join(readOnly, ".cotal")) && findPreparedSpace("other") === undefined, shown(denied));
     chmodSync(readOnly, 0o700);
+    // A Cotal home this account cannot write is refused too, and the empty .cotal the attempt made is removed.
+    const lockedHome = join(home, "locked-home");
+    const homeless = join(home, "homeless");
+    mkdirSync(lockedHome, { mode: 0o500 });
+    mkdirSync(homeless);
+    const noHome = await run(["space", "create", "other", "--root", homeless, "--json"], { COTAL_HOME: join(lockedHome, ".cotal") });
+    const noHomeEnv = JSON.parse(noHome.stdout || "{}") as Record<string, any>;
+    check("a Cotal home this account cannot write is PERMISSION_DENIED, exit 2, naming it, with nothing left in the root",
+      refused({ ...noHome, env: noHomeEnv }, 2, "PERMISSION_DENIED") && (noHomeEnv.error?.message ?? "").startsWith(`this account cannot write this machine's Cotal home ${join(lockedHome, ".cotal")}`) && readdirSync(homeless).length === 0 && findPreparedSpace("other") === undefined, shown(noHome));
+    chmodSync(lockedHome, 0o700);
   }
+  // A .cotal that links to a folder that does not exist is refused naming both, with nothing written.
+  const dangling = join(home, "dangling");
+  mkdirSync(dangling);
+  symlinkSync(join(home, "nowhere"), join(dangling, ".cotal"));
+  const linked = await json(["space", "create", "other", "--root", dangling]);
+  check("a .cotal linking to a missing folder is TARGET_NOT_FOUND, exit 2, naming the link and its target",
+    refused(linked, 2, "TARGET_NOT_FOUND") && linked.env?.error?.message === `${join(dangling, ".cotal")} links to ${join(home, "nowhere")}, which does not exist; nothing was written` && !existsSync(join(home, "nowhere")) && findPreparedSpace("other") === undefined, shown(linked));
   // A prepared folder that is moved keeps none of its space, so a bare up there would start the
   // default. With that space selected and its recorded folder gone, up refuses and names the step.
   {
