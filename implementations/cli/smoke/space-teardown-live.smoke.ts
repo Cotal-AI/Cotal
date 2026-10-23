@@ -114,6 +114,7 @@ try {
     // 2. Space delete refuses while the stack runs (B4-01).
     const preview = cli(home, "space", "delete", space, "--dry-run", "--json");
     check("space delete --dry-run warns that the apply would refuse", Boolean(preview.env?.warnings?.some((row) => row.code === "LIFECYCLE_BLOCKED")) && preview.env?.result?.applyBlockedBy !== null, shown(preview));
+    check("the preview read the broker, so its warning does not say no broker was contacted", !preview.env?.warnings?.some((row) => row.message.includes("no broker was contacted")), preview.env?.warnings);
     const deleted = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete --yes refuses LIFECYCLE_BLOCKED, exit 2", deleted.status === 2 && deleted.env?.error?.code === "LIFECYCLE_BLOCKED", shown(deleted));
     check("its remedy names cotal down and cotal reset store", Boolean(deleted.env?.error?.remedy?.includes("cotal down")) && Boolean(deleted.env?.error?.remedy?.includes(`cotal reset store ${space}`)), deleted.env?.error);
@@ -128,6 +129,10 @@ try {
     const stopped = cli(root, "down", "--yes", "--json");
     check("the refused delete left a stack that down --yes stops", stopped.status === 0, shown(stopped));
     check("down removed the registration and kept the prepared record", findMesh(space) === undefined && findPreparedSpace(space) !== undefined);
+    // Starting it again to delete would meet the running-stack refusal, so the stopped refusal names reset store.
+    const deleteStopped = cli(home, "space", "delete", space, "--yes", "--json");
+    check("space delete after down refuses TARGET_UNAVAILABLE and names cotal reset store, not cotal up",
+      deleteStopped.status === 2 && deleteStopped.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(deleteStopped.env.error.remedy?.includes(`cotal reset store ${space} --yes`)) && !deleteStopped.env.error.remedy?.includes("cotal up"), shown(deleteStopped));
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");

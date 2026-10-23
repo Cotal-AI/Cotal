@@ -115,7 +115,10 @@ function createSource(name: string, path: string, values: Values): Buffer {
   if (values.file !== undefined) {
     if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
     const bytes = readInput(values.file);
-    validatePersona(bytes, values.file === "-" ? "standard input" : values.file, name);
+    const source = values.file === "-" ? "standard input" : values.file;
+    const def = validatePersona(bytes, source);
+    // The file's own name is known, so name it and the create that keeps it.
+    if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy: `create it under its own name with cotal persona create ${def.name} --file ${values.file}, or set its name to '${name}'` });
     return bytes;
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');

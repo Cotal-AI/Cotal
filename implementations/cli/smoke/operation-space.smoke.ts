@@ -28,7 +28,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: Record<string, unknown> | null;
-  error?: { code: string };
+  error?: { code: string; message?: string; remedy?: string };
 }
 
 const { check, finish } = createSuite();
@@ -82,6 +82,12 @@ const conflict = cotal("persona", "create", "rev", "--json");
 check("persona create over an existing file is a CONFLICT in the prepared space", conflict.status === 2 && conflict.envelope?.error?.code === "CONFLICT" && conflict.envelope.target?.space === "opsp", shown(conflict));
 const conflictPlain = cotal("persona", "create", "rev", "--plain");
 check("its plain report begins with Mesh: <space>", conflictPlain.status === 2 && conflictPlain.first === "Mesh: opsp", shown(conflictPlain));
+// A complete file that names another persona: the refusal names the file's name and the create that keeps it.
+const otherFile = join(root, "bernie.md");
+writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\n");
+const mismatch = cotal("persona", "create", "ex11", "--file", otherFile, "--json");
+check("a --file naming another persona is SCHEMA_INVALID, naming the file's name and its own create",
+  mismatch.status === 1 && mismatch.envelope?.error?.code === "SCHEMA_INVALID" && (mismatch.envelope.error.message ?? "").includes(`${otherFile} names 'bernie'`) && (mismatch.envelope.error.remedy ?? "").includes(`cotal persona create bernie --file ${otherFile}`), shown(mismatch));
 
 finish();
 process.exit(process.exitCode ?? 0);

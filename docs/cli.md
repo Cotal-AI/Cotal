@@ -700,7 +700,8 @@ nothing; the stack keeps its recorded address. A text `up` prints one `Starting 
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's
 Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager after `--no-manager`,
 and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, so a bare
-`cotal spawn` can target another space.
+`cotal spawn` can target another space. When another space stays selected, the receipt says so and
+names `cotal use <space>`, as a legacy `up` does.
 
 On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
 every stack mode. It refuses while validating its arguments, before the confirmation and before any
@@ -1810,8 +1811,10 @@ instead of showing missing resources as absent. The snapshot is non-atomic and p
 authoritative liveness or membership check. User-auth deletion inventory and apply
 are not supported. The dry-run removes no live or local state, and a read that covers its whole scope
 exits 0. A space that is prepared and not running, including one stopped with `cotal down`, has no
-live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2,
-naming the root to start it in, and `space forget` removes only its local record.
+live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2.
+For a stopped stack it names `cotal reset store <space> --yes`, which removes the stored streams, and
+`space forget`, which removes only its local record. For a space that never ran it names only
+`space forget`, because no streams were stored.
 
 On a space this machine started, the apply refuses `LIFECYCLE_BLOCKED` while the space's own stack
 still runs here, before any broker connection. On a controller root that is any service instance of
@@ -3084,7 +3087,9 @@ to the current directory. Remote `--on` operations refuse as unsupported here.
 
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
-must name the requested persona and keep their original bytes. They cannot be combined with
+must name the requested persona and keep their original bytes. A file that names another persona is
+refused with `SCHEMA_INVALID`, naming the file's own name and the `persona create` that keeps it.
+They cannot be combined with
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
 including `--subscribe ""` for no channels, and accepts `--role` and `--model`. Both refuse control
 characters with `USAGE_INVALID`. `--harness` must name a harness this machine knows, as
@@ -5456,7 +5461,7 @@ controller. A root without a stack journal takes the fresh static-auth or open r
 stopped stack can resume in static-auth, open or user-auth mode. The manifest's channels seed the broker. The stack's own manager
 starts its agents from a launch spec pinned by digest. One rich, JSON or plain receipt includes
 the controller members and requested topology. Agent joins are not checked, so the receipt is
-partial. The fresh attempt and summary are launch records, not stop authority. No additive
+partial. A manifest that requests no agents leaves no join unchecked, so its receipt is `ok`. The fresh attempt and summary are launch records, not stop authority. No additive
 ownership ledger is created; `cotal down` uses the stack journal and each member's native lifecycle.
 
 Before writes it checks the selected root, auth mode, broker address, runtime, connectors and
@@ -5550,7 +5555,10 @@ requires the original registered root, broker, TLS mode and exact manager.
 The revision-32 native `slots` query checks each recorded name, principal and
 lifecycle UID. A successor, omitted slot or unconfirmed transition refuses
 before a stop. A dry-run only reads this impact; apply requires a default-cancel
-terminal confirmation or `--yes` in scripts.
+terminal confirmation or `--yes` in scripts. Every `team remove --dry-run` is `partial`, exit 4: it
+reads the manager's slots and the card revisions in order, not atomically, and the membership feed
+is display-only, so the preview does not establish what the apply will find. The apply reads the
+slots and revisions again before it acts.
 
 Under the root maintenance lock, apply records one private synced removal intent
 bound to the original creation receipt. Each necessary stop has a synced original
