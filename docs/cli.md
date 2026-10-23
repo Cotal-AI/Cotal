@@ -5022,7 +5022,9 @@ cotal r simulate ./workflow.cotal.js --handler ./results.json
 ```
 
 These three forms are offline and reject mesh or caller selection. Validation checks the
-language. Plan lists validated static call sites in source order; it does not evaluate branches,
+language. A program that does not validate is refused by all three with every problem listed: its
+code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
+`result.problems`. Plan lists validated static call sites in source order; it does not evaluate branches,
 loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
 script. It executes no JavaScript handler and invents no unscripted outcome. A simulation does
 not establish live authority, installed applications or readiness. All three support JSON and

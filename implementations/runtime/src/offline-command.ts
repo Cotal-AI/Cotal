@@ -65,7 +65,19 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   try { checked = validate(source, file); }
   catch (error) {
     if (!(error instanceof LangErrors)) throw error;
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow is not valid cotal-lang", { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
+    // Every problem as the validator records it, so the fix is the same edit a hosted `run start`
+    // refusal prints.
+    const problems = error.errors.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix }));
+    const count = `${problems.length} problem${problems.length === 1 ? "" : "s"}`;
+    const failure = new CommandFailure("refused", "SCHEMA_INVALID", `the workflow is not valid cotal-lang (${count})`, { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
+    writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-validation", valid: false, problems }, failure }, (result): Report => ({ sections: [
+      { title: "Workflow not valid", blocks: [
+        { kind: "fields", rows: [["File", file], ["Problems", String(result.problems.length)]] },
+        ...result.problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
+        { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime or application was checked.", tone: "hint" }] },
+      ] },
+    ] }));
+    return;
   }
   const warnings = checked.warnings.map((warning) => ({ code: warning.code, target: { file, span: warning.span }, message: "The language validator reported a warning at this source position." }));
   if (mode === "validate") {
