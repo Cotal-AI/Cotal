@@ -15,12 +15,13 @@ import {
   recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { ConfirmationRequired } from "../lib/confirmation-required.js";
+import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
-import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, runningStackRoles, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -173,8 +174,19 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
   if (values["dry-run"] === true) return previewStackStop(root, values, presentation, withAgents);
   const lock = acquireStackOperationLock(root);
+  // A signal ends the stop where it is, and the notice names the members that still run.
+  const release = noticeOnInterrupt(() => stackStopInterruptNotice(root));
   try { await applyStackStop(root, values, presentation, interactive, withAgents, lock); }
-  finally { releaseMaintenanceLock(lock); }
+  finally { release(); releaseMaintenanceLock(lock); }
+}
+
+/** What an interrupted bare down left: the members still running, and the down that finishes it. */
+function stackStopInterruptNotice(root: string): string {
+  const space = readStackJournal(root)?.journal.space;
+  const running = space === undefined ? [] : runningStackRoles(space);
+  return running.length
+    ? `Interrupted while stopping the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running. Run cotal down --yes to finish the stop.`
+    : `Interrupted while stopping the stack in ${root}; no member is running. Run cotal down --yes to finish its cleanup.`;
 }
 
 /** The recorded stack this stop targets, with every refusal that needs no lock or write. An earlier

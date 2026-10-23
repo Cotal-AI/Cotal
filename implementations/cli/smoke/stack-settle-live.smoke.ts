@@ -57,9 +57,11 @@
  *     that killed `down` took.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
- * 11. An `up` killed while its broker readies, before it registers the space. The broker keeps
- *     running unregistered, so the next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and
- *     `cotal down --yes`, and starts nothing; following it, `down --yes` then `up` start the stack.
+ * 11. An `up` interrupted while its broker readies, before it registers the space. It exits 130
+ *     naming the broker's pid and `cotal down --yes`. The broker keeps running unregistered, so the
+ *     next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and `cotal down --yes`, and starts
+ *     nothing; following it, `down --yes` then `up` start the stack. A `down` interrupted while it
+ *     waits on a frozen manager exits 130 naming the members still running and `cotal down --yes`.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -67,7 +69,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, watch } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -663,20 +665,23 @@ try {
     check(`${space}: after a down without --with-agents it still refuses LIFECYCLE_BLOCKED`, restarted.status === 0 && spared.status === 0 && refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED", { up: shown(restarted), down: shown(spared), refused: shown(refused) });
   }
 
-  // 11. An up killed before it registers the space leaves its broker running unregistered.
+  // 11. An up interrupted before it registers the space leaves its broker running unregistered.
   {
     const space = "stranded";
     const root = prepare(space);
     const port = await freePort();
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
     // Freeze the broker once its process is pinned, so the up is provably waiting on it when it dies.
     const pinned = await until(() => pidOf(space, "stack-broker") !== null, 120_000);
     const broker = pidOf(space, "stack-broker");
     if (broker !== null) process.kill(broker, "SIGSTOP");
     track(space);
-    check("the up still waits on broker readiness when it is killed", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
-    child.kill("SIGKILL");
+    check("the up still waits on broker readiness when it is interrupted", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
+    child.kill("SIGINT");
     await exited(child);
+    check("the interrupted up exits 130 naming its unregistered broker's pid and cotal down --yes", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}`) && upErr.includes("cotal down --yes"), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
     if (broker !== null) process.kill(broker, "SIGCONT");
     check("the killed up left its broker running and the space unregistered", broker !== null && alive(broker) && findMesh(space) === undefined, { broker, registered: findMesh(space) !== undefined });
     const blocked = cli(root, "up", "--json");
@@ -687,6 +692,17 @@ try {
     const started = cli(root, "up", "--json");
     track(space);
     check("up then starts the whole stack", started.status === 0 && pidOf(space, "stack-manager") !== null, shown(started));
+    // A frozen manager holds the down in its impact read, which holds the root's maintenance lock.
+    const manager = pidOf(space, "stack-manager");
+    if (manager !== null) process.kill(manager, "SIGSTOP");
+    const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let downErr = "";
+    stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
+    const held = await until(() => existsSync(join(root, ".cotal", "maintenance", "lock.json")), 60_000);
+    stopping.kill("SIGINT");
+    await exited(stopping);
+    if (manager !== null) process.kill(manager, "SIGCONT");
+    check("a down interrupted on a frozen manager exits 130 naming the members still running and cotal down --yes", held && stopping.exitCode === 130 && downErr.includes("broker, delivery, manager are still running") && downErr.includes("cotal down --yes"), { held, exitCode: stopping.exitCode, stderr: downErr.slice(-400) });
     const last = cli(root, "down", "--yes", "--json");
     check("and down --yes stops it", last.status === 0, shown(last));
   }

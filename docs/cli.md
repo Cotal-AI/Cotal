@@ -573,6 +573,13 @@ only `cotal up`, which runs the guarded stack stop, and a `TimeoutStopSec` long 
 The default `control-group` mode signals every member at the same time, and a manager signalled
 directly does not stop through its request-bound stop.
 
+A detached `up` interrupted by SIGINT, SIGTERM or SIGHUP stops where it is and exits 130, 143 or
+129. Members it already started keep running, and it names them and the next step: `cotal up`
+finishes the start, and `cotal down --yes` stops them. When only its broker started and the space
+was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. A bare
+`down` interrupted the same way exits with the same codes and names the members still running;
+`cotal down --yes` finishes the stop.
+
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
 `.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
@@ -6256,7 +6263,9 @@ the missing scope and the whole-row re-grant that adds it.
 
 JSON and plain receipts retain each native stream acknowledgement and message count. A later
 refusal after an acknowledged purge is partial. An unconfirmed submitted purge is unknown and is
-not retried. Clearing history does not stop agents, remove stream definitions or reset identity;
+not retried. A confirmed clear interrupted by SIGINT, SIGTERM or SIGHUP exits 130, 143 or 129 and
+says which purges were acknowledged or submitted, or that none was submitted and no history was
+cleared. Clearing history does not stop agents, remove stream definitions or reset identity;
 new messages may arrive after the acknowledged purge.
 
 ### Following an endpoint action

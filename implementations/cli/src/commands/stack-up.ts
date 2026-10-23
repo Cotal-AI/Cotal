@@ -22,12 +22,12 @@ import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress } from "../lib/broker-service.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { instanceProjection, observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstance } from "../lib/service-instances.js";
 import { prepareProcessService, removeStoppedInstanceRecords, settleExitedInstances, startProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -281,6 +281,24 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   });
 }
 
+/** The running broker of an unregistered space: what an up stopped before registration leaves. */
+function strandedBroker(space: string): ServiceInstance | undefined {
+  if (findMesh(space)) return undefined;
+  const rows = serviceInstances(space, STACK_DEFINITION.broker);
+  return rows.length === 1 && observeServiceProcess(rows[0]!.record.value) === "running" ? rows[0]!.record.value : undefined;
+}
+
+/** What a detached up interrupted by a signal left: the members that run, and the command that
+ *  finishes the start or stops them. */
+export function stackUpInterruptNotice(root: string, space: string): string {
+  const stranded = strandedBroker(space);
+  if (stranded) return `Interrupted before the space was registered; its broker keeps running as pid ${stranded.process?.pid}. Run cotal down --yes, then cotal up.`;
+  const running = runningStackRoles(space);
+  return running.length
+    ? `Interrupted while starting the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "keeps" : "keep"} running. Run cotal up to finish the start, or cotal down --yes to stop ${running.length === 1 ? "it" : "them"}.`
+    : `Interrupted before any member of the stack in ${root} started. Run cotal up to start it.`;
+}
+
 /** Start the recorded stack and return its domain result without writing any receipt. */
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
@@ -350,8 +368,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // An up stopped after its broker served and before it registered the space leaves a broker whose
   // stream setup and registration only that up's own preparation could finish, and trust is never
   // prepared again under a running broker. This start refuses before any write and names the stop.
-  const strandedRows = registration ? [] : serviceInstances(space, STACK_DEFINITION.broker);
-  const stranded = strandedRows.length === 1 && observeServiceProcess(strandedRows[0]!.record.value) === "running" ? strandedRows[0]!.record.value : undefined;
+  const stranded = registration ? undefined : strandedBroker(space);
   if (stranded)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the cotal up that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: "stop that broker with cotal down --yes, then run cotal up again" });
   // An earlier up or down that never recorded its outcome is settled from its members' process

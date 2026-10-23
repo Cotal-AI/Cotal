@@ -23,6 +23,12 @@ export const STACK_ADAPTER: Readonly<Record<StackRole, string>> = { broker: "nat
 export const STACK_MODES = ["auth", "open", "user"] as const;
 export type StackMode = (typeof STACK_MODES)[number];
 
+/** The stack roles of `space` whose recorded processes run now. A signal handler reads it, so it
+ *  only reads records and process state. */
+export function runningStackRoles(space: string): StackRole[] {
+  return STACK_ROLES.filter((role) => serviceInstances(space, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
+}
+
 /** Which roles a mode can ever plan. An open stack has no delivery; only a user stack has an auth
  *  service. A role outside its mode stays `not-attempted` with no instance, and validation refuses
  *  any other shape. */
