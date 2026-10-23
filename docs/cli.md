@@ -5186,6 +5186,8 @@ Follow-up commands printed by the CLI retain the same explicit pin and fill
 in the run ID the command named or the manager returned, only when it matches the native
 run-token shape. Keep the pin on later status, answer and resume calls.
 
+A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
+on every verb that takes one, before anything is contacted.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
 denied credential, a step in the wrong state or a program that does not validate, is refused, exit

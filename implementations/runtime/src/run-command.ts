@@ -24,6 +24,7 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   hasDuplicateNames,
+  assertIdToken,
   assertLifecycleToken,
   LANG_PROBLEM_DETAIL_KIND,
   dialerFor,
@@ -886,6 +887,11 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
   const usage = (message: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message); };
   if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
+  // A run id is an id token, so a malformed one is refused here, before any contact, rather than
+  // by whichever plane reads it first.
+  if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
+    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(first)} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; cotal run ps lists them`); }
+  }
   let a: string | undefined = first;
   let b: string | undefined = second;
   if (verb === "start") {
