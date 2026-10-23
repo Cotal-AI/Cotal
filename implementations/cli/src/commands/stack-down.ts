@@ -19,7 +19,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
+import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
 import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
@@ -62,7 +62,7 @@ function readMembers(journal: StackJournal): Member[] {
     const retained = retainedStopRequest(instance.record.value);
     if (instance.record.value.state === "stopping" || retained) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained?.publication === "unknown"
       ? "a recorded stack member's stop request file does not read as its own, so whether a stop was published is unknown; nothing was resubmitted and no member was stopped"
-      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: retained?.publication === "published" ? `${inspect}; ${abandonRemedy(retained.requestId)}` : inspect });
+      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: retained?.publication === "published" ? `${inspect}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(instance.record.value) ? `${inspect}; ${abandonRemedy(instance.record.value.requestId)}` : inspect });
     assertNoServiceUnitAttempts(journal.space, row.definition);
     members.push({ role: row.role, definition, instance, live: state === "running" });
   }
@@ -131,7 +131,9 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
 /** What an abandoned member stop leaves unconfirmed. */
 function abandonNotice(role: StackRole, abandonment: ServiceAdapterStopAbandonment): string {
   const receipts = abandonment.receipts.length ? `only ${abandonment.receipts.join(" and ")} receipts` : "no receipt";
-  return `stop request ${abandonment.requestId} of the ${role} was abandoned: its process exited with ${receipts}, and the down that sent it has exited. Whether the ${role} ${abandonment.withAgents ? "stopped and deprovisioned its agents" : "stopped or released its agents' seats"} is not confirmed; a seat that runs outside the ${role} process may still run`;
+  const abandoned = `stop request ${abandonment.requestId} of the ${role} was abandoned: its process exited with ${receipts}, and the down that sent it has exited.`;
+  if (role !== "manager") return `${abandoned} Whether that stop caused the exit is not confirmed`;
+  return `${abandoned} Whether the ${role} ${abandonment.withAgents ? "stopped and deprovisioned its agents" : "stopped or released its agents' seats"} is not confirmed; a seat that runs outside the ${role} process may still run`;
 }
 
 /** The retained active restore an admitted stop names. */
