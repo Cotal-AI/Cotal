@@ -11,7 +11,7 @@
  *
  * Run: pnpm smoke:cli-pty
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -270,6 +270,17 @@ try {
     check(`cotal ${argv.join(" ")} on a terminal prints the usage line and exits 1`, s.exitCode === 1 && s.text().includes("usage: cotal meshes add <space>"), s.text());
     check(`cotal ${argv.join(" ")} opens no prompt`, !s.text().includes("Register a mesh"), s.text());
   }
+
+  // A catalog travels with a cloned repo, so on a terminal `personas show` escapes its control characters.
+  const catalog = join(home, "catalog");
+  mkdirSync(join(catalog, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(catalog, ".cotal", "agents", "evb.md"), "---\nname: evb\nsubscribe: []\n---\nbody \x1b]0;PWN\x07\x1b[2JB\n");
+  const showPty = cotalPty(["personas", "show", "evb"], { cwd: catalog, env });
+  ptys.push(showPty);
+  const shownCard = session(showPty);
+  await until(() => shownCard.exitCode !== undefined);
+  check("personas show on a terminal escapes the file's control characters",
+    shownCard.exitCode === 0 && !/\x1b\]0;|\x07|\x1b\[2J/.test(shownCard.raw) && shownCard.raw.includes("body \\u001b]0;PWN\\u0007\\u001b[2JB"), JSON.stringify(shownCard.raw.slice(-300)));
 } catch (err) {
   check(`suite ran without throwing: ${err instanceof Error ? err.message : String(err)}`, false, err instanceof Error ? err.stack : err);
 } finally {

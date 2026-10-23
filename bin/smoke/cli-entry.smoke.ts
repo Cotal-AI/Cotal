@@ -288,6 +288,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("r\\u001b]0;PWN\\u0007R") && r.stdout.includes("d\\u001b[2JD") &&
         (argv.length === 2 || r.stdout.includes("    body \\u001b]0;PWN\\u0007\\u001b[2JB")), shown(r));
   }
+  const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
+  const piped = cotal(["personas", "show", "h"], hostile, noSeed);
+  check("personas show piped writes the file byte for byte", piped.status === 0 && piped.stdout.endsWith(`\n${card}`), shown(piped));
   for (const argv of [["persona", "create", "q", "--role"], ["persona", "create", "q", "--model"], ["personas", "new", "q", "--role"]]) {
     const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
     check(`cotal ${argv.join(" ")} refuses control characters`,
