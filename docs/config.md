@@ -420,9 +420,10 @@ project paths on the live machine.
 
 A controller stack's member records live in this tree, so commands run under another `COTAL_HOME`
 cannot see a stack started under this one. While that stack's manager or delivery daemon runs,
-`status` there says the stack runs under another Cotal home and names the home in use, and `up`
-refuses `TARGET_UNAVAILABLE` with nothing started. Both name the step: run with the `COTAL_HOME` the
-stack was started under.
+`status` there says the stack runs under another Cotal home and names the home in use, even when
+that home prepared a space at the same root. `up`, `down` and `space create` for that root refuse
+`TARGET_UNAVAILABLE` with nothing started, stopped or written. Each names the step: run with the
+`COTAL_HOME` the stack was started under.
 
 | Path | What it is |
 |---|---|

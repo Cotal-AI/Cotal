@@ -7,7 +7,9 @@
  * serves, so the open broker serves the names that are added and refuses one it does not. A forget
  * removes the space's per-space preferences with it, refuses on a preferences file it cannot read,
  * and is partial when it cannot remove them. On Linux, a space started as a controller
- * stack is written as its stack journal and instance records, with nothing launched. A prepared space
+ * stack is written as its stack journal and instance records, with nothing launched. A stack journal
+ * whose members this home has no record of, with a live manager, stands for a stack running under
+ * another Cotal home: create, down and status there name that home. A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, and one naming a missing channels file, have refused and left the root as
  * it was. Create and a later `up` write the
@@ -39,7 +41,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -417,6 +419,44 @@ setCurrent("keep");
       up.env?.error?.remedy === `chmod o-w ${folder} ${parent}` && readdirSync(join(folder, ".cotal")).length === 0 && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(up));
   rmSync(exposed, { recursive: true, force: true });
 }
+
+// ── A controller stack running under another Cotal home ───────────────────────────────────────────────
+// The root's journal names member instances this home holds no record of, and its manager record
+// fronts a live process of this suite, so the stack runs under another COTAL_HOME.
+if (process.platform === "linux") {
+  const awayRoot = realpathSync.native(projectRoot("away"));
+  const ts = new Date().toISOString();
+  const row = (role: "broker" | "auth" | "delivery" | "manager") =>
+    role === "broker" || role === "manager" ? { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "started" as const } : { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const };
+  writeStackJournal(awayRoot, undefined, {
+    schemaVersion: 1, kind: "cotal-stack-controller", root: awayRoot, space: "away", server: LIVE, mode: "open",
+    members: [row("broker"), row("auth"), row("delivery"), row("manager")],
+    operation: { id: randomUUID(), kind: "up", phase: "completed", recordedAt: ts, withAgents: false }, updatedAt: ts,
+  });
+  const awayManager = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  standIns.push(awayManager);
+  const awayRecord = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: awayRoot, space: "away" });
+  writeFileSync(awayRecord, String(awayManager.pid), { mode: 0o600 });
+  const journal = readFileSync(stackJournalPath(awayRoot), "utf8"), before = registryFiles();
+  const otherHome = (r: Awaited<ReturnType<typeof json>>) =>
+    refused(r, 2, "TARGET_UNAVAILABLE") && /another Cotal home/.test(r.env?.error?.message ?? "") && /COTAL_HOME set to the Cotal home the stack was started under/.test(r.env?.error?.remedy ?? "");
+  const unchanged = () => readFileSync(stackJournalPath(awayRoot), "utf8") === journal && JSON.stringify(registryFiles()) === JSON.stringify(before) && awayManager.exitCode === null;
+  const create = await json(["space", "create", "away", "--root", awayRoot]);
+  check("space create over a stack running under another Cotal home refuses TARGET_UNAVAILABLE with the COTAL_HOME step, and prepares nothing",
+    otherHome(create) && findPreparedSpace("away") === undefined && unchanged(), shown(create));
+  for (const args of [["down", "--yes"], ["down", "--dry-run"]]) {
+    const stop = await json(args, awayRoot);
+    check(`${args.join(" ")} there refuses TARGET_UNAVAILABLE with the COTAL_HOME step, and stops nothing`, otherHome(stop) && unchanged(), shown(stop));
+  }
+  // A space this home prepared at the root does not hide the other home.
+  recordPreparedSpace({ space: "away", root: awayRoot, ts });
+  const status = await json(["status"], awayRoot);
+  check("status there names the other home even when this home prepared a space at the root",
+    status.status === 0 && status.env?.result?.selected?.code === "not-started" && /runs under another Cotal home/.test(status.env.result.selected.message ?? ""), shown(status));
+  removePreparedSpace("away");
+  await new Promise((done) => { awayManager.once("exit", done); awayManager.kill("SIGKILL"); });
+  rmSync(awayRecord);
+} else console.log("  - other Cotal home cells skipped: a controller stack needs Linux machine and boot identity");
 
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {

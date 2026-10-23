@@ -9,10 +9,10 @@
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, isConnectRefusal, oneLine, presentationOf,
+  CommandFailure, canonicalRoot, deliveryCredsKey, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf,
   releaseMaintenanceLock, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
-  recordOperationSpace,
+  recordOperationSpace, stackHomeRemedy, stackRunsUnderOtherHome,
 } from "@cotal-ai/workspace";
 import { ConfirmationRequired } from "../lib/confirmation-required.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -179,6 +179,7 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
   const journal0 = previous.journal;
   recordOperationSpace(journal0.space);
   if (values.space !== undefined && values.space !== journal0.space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this root's recorded controller stack; no member was stopped", { target: { root, selectedSpace: values.space, recordedSpace: journal0.space } });
+  if (stackRunsUnderOtherHome(root, journal0)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack runs under another Cotal home; this one holds no record of its members, so no member was stopped", { target: { root, space: journal0.space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy() });
   if (stackOperationUnsettled(journal0) && journal0.operation.kind !== "up" && journal0.operation.kind !== "down")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was stopped", { target: { root, operation: journal0.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with cotal service --space ${journal0.space}` });
   const settlement = previewStackSettlement(journal0);

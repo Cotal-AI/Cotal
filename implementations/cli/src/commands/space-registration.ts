@@ -23,6 +23,8 @@ import {
   removeMesh,
   removePreparedSpace,
   removeSpacePreferences,
+  stackHomeRemedy,
+  stackRunsUnderOtherHome,
   writeResult,
   type Cell,
   type Check,
@@ -402,6 +404,12 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       ? `forget it with \`cotal space forget ${name}\`, then run this create again`
       : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
   }
+  // A stack this home cannot see runs here under another Cotal home; a space prepared over it could
+  // not start, and the root's status would stop naming that home.
+  let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
+  try { journal = readStackJournal(root)?.journal; } catch { journal = undefined; }
+  if (journal && stackRunsUnderOtherHome(root, journal))
+    throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} runs under another Cotal home; ${homeCotalDir()} holds no record of its members`, target, stackHomeRemedy());
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.
   if (again && held.length === 1 && held[0] === name) return "started";
