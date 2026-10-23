@@ -34,6 +34,20 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Manager instance in the exchange response in 0.100.0
+
+`POST /exchange` no longer answers a `manager-caller` exchange with `managerInstanceId`. Both the
+human and the agent exchange answer with `token`, `owner` and `exp`. The instance a bearer may
+address is its signed `act.managerInstanceId` claim, which the callout enforces and the CLI reads.
+
+### What stops working
+
+Code of your own that reads `managerInstanceId` from an exchange response reads `undefined`.
+
+### Before the upgrade
+
+Read the instance from the bearer's `act.managerInstanceId` claim.
+
 ## Endpoint caller files after 0.99.0
 
 `cotal auth mint <name> --endpoint <class> --out <file>` from 0.91.0 through 0.99.0 recorded the

@@ -1398,12 +1398,12 @@ try {
         method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
         body: JSON.stringify({ owner: OWNER_B, actor, actorToken: g.actorToken, view: "manager-caller" }),
       });
-      const ex = await res.json() as { token?: string; managerInstanceId?: string; error?: string };
-      if (!res.ok || !ex.token || !ex.managerInstanceId) return `exchange HTTP ${res.status} ${ex.error ?? ""}`;
-      const uid = (decodeJwt(ex.token) as { act: { lifecycleUid: string } }).act.lifecycleUid;
+      const ex = await res.json() as { token?: string; error?: string };
+      if (!res.ok || !ex.token) return `exchange HTTP ${res.status} ${ex.error ?? ""}`;
+      const { lifecycleUid: uid, managerInstanceId } = (decodeJwt(ex.token) as { act: { lifecycleUid: string; managerInstanceId: string } }).act;
       const nc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: ex.token, sentinelCreds: g.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
       try {
-        const svc = await resolveService(nc, SPACE, "manager", { owner: OWNER_B, actor, uid }, { instanceId: ex.managerInstanceId, deadlineMs: 10_000 });
+        const svc = await resolveService(nc, SPACE, "manager", { owner: OWNER_B, actor, uid }, { instanceId: managerInstanceId, deadlineMs: 10_000 });
         const r = await invokeCommand(nc, SPACE, svc, "status", undefined, { deadlineMs: 10_000 });
         return r.reply.ok ? (r.reply.data as { agentCount: number }).agentCount : `refused ${r.reply.error?.code}`;
       } catch (e) {

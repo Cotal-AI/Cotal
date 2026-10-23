@@ -104,7 +104,8 @@ try {
   const exchange = async (pin?: string, agent = false, actor = "cli") => {
     const res = await fetch(info.url + "/exchange", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
       body: JSON.stringify({ ...(agent ? { owner, actor: "child", actorToken: secret.actorToken } : { actor, idpToken: token }), view: "manager-caller", ...(pin !== undefined ? { managerInstanceId: pin } : {}) }) });
-    return { status: res.status, body: await res.json() as { token?: string; managerInstanceId?: string; error?: string } };
+    const body = await res.json() as { token?: string; error?: string };
+    return { status: res.status, body, instance: body.token === undefined ? undefined : (decodeJwt(body.token).act as { managerInstanceId?: string }).managerInstanceId };
   };
   const put = async (instance: string, gateOwner: string, state: "open" | "frozen" = "open", registered = true, stale = false) => {
     const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: instance } }), tls: false }) });
@@ -125,7 +126,7 @@ try {
   const legacy = await exchange();
   check("absent option preserves dead-remote refusal", legacy.status === 401 && /none live/.test(legacy.body.error ?? ""));
   const pinned = await exchange(local.instanceId);
-  check("explicit genuine local pin still succeeds", pinned.status === 200 && pinned.body.managerInstanceId === local.instanceId);
+  check("explicit genuine local pin still succeeds", pinned.status === 200 && pinned.instance === local.instanceId);
   const nativePs = async (bearer: string) => {
     const claims = decodeJwt(bearer) as { sub: string; act: { actor: string; lifecycleUid: string; managerInstanceId: string } };
     const callout = await import("@cotal-ai/auth").then(m => m.loadCalloutAuth(store, space));
@@ -136,12 +137,12 @@ try {
   check("baseline explicit pin returns real native empty managed ps", oldPs.ok === true && Array.isArray(oldPs.data) && oldPs.data.length === 0);
   await start("primary"); stage = "primary";
   const primary = await exchange();
-  check("opted-in interactive local primary ignores dead remote history", primary.status === 200 && primary.body.managerInstanceId === local.instanceId);
+  check("opted-in interactive local primary ignores dead remote history", primary.status === 200 && primary.instance === local.instanceId);
   if (primary.status !== 200) throw new Error("primary correctness assertion failed");
   const primaryPs = await nativePs(primary.body.token!);
   check("primary selection returns real native empty managed ps", primaryPs.ok === true && Array.isArray(primaryPs.data) && primaryPs.data.length === 0);
   const liveRemote = mintLifecycleUid(); await put(liveRemote, owner);
-  check("interactive policy remains local even with a live owned remote", (await exchange()).body.managerInstanceId === local.instanceId);
+  check("interactive policy remains local even with a live owned remote", (await exchange()).instance === local.instanceId);
   for (const profile of ["control-caller-privileged", "control-caller-admin"] as const) {
     const resolved = await resolveControlTarget({ space }, profile, undefined, { onRefusal: "throw" });
     check(`${profile} interactive control consumers share local-primary routing`, resolved.auth.managerInstanceId === local.instanceId);
@@ -153,10 +154,10 @@ try {
     const explicit = await resolveControlTarget({ space }, "control-caller-admin", local.instanceId, { onRefusal: "throw" });
     check("explicit client pin still wins over launching-manager binding", explicit.auth.managerInstanceId === local.instanceId);
   } finally { delete process.env.COTAL_MANAGER_INSTANCE; delete process.env.COTAL_SPACE; }
-  check("explicit valid owned remote wins over local primary", (await exchange(liveRemote)).body.managerInstanceId === liveRemote);
-  check("managed secret default selection stays remote", (await exchange(undefined, true)).body.managerInstanceId === liveRemote);
+  check("explicit valid owned remote wins over local primary", (await exchange(liveRemote)).instance === liveRemote);
+  check("managed secret default selection stays remote", (await exchange(undefined, true)).instance === liveRemote);
   const bound = await exchange(liveRemote, true);
-  check("managed launch-bound explicit selection stays remote", bound.status === 200 && decodeJwt(bound.body.token!).act !== undefined && bound.body.managerInstanceId === liveRemote);
+  check("managed launch-bound explicit selection stays remote", bound.status === 200 && bound.instance === liveRemote);
   for (const [name, id, gateOwner, state, stale] of [
     ["foreign", mintLifecycleUid(), `u_${"f".repeat(26)}`, "open", false],
     ["closed", mintLifecycleUid(), owner, "frozen", false],

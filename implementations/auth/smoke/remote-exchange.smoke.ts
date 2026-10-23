@@ -125,7 +125,7 @@ const {
   cotalAuthProvider, establishIdpSession, grantActor, grantManagedActor, revokeManagedActor,
   loadAuthServiceInfo, loadCalloutAuth, newActorToken,
 } = await import("@cotal-ai/auth");
-const { createLocalJWKSet, jwtVerify } = await import("jose");
+const { createLocalJWKSet, decodeJwt, jwtVerify } = await import("jose");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 const { pickFreePort } = await import("./_free-port.js");
 
@@ -163,6 +163,8 @@ async function get(url: string, headers: Record<string, string> = {}): Promise<R
   const res = await fetch(url, { headers });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown>, headers: res.headers };
 }
+/** The manager instance a manager-caller bearer binds: its signed `act.managerInstanceId`. */
+const boundInstance = (r: Reply) => (decodeJwt(r.body.token as string).act as { managerInstanceId?: string }).managerInstanceId;
 
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
@@ -323,16 +325,18 @@ try {
   createManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
   const localManagerCall = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("manager-caller re-reads a newly created local identity file and selects its live manager",
-    localManagerCall.status === 200 && localManagerCall.body.managerInstanceId === localManagerInstanceId, localManagerCall);
+    localManagerCall.status === 200 && boundInstance(localManagerCall) === localManagerInstanceId, localManagerCall);
   const explicitLocal = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: localManagerInstanceId });
   check("the public face serves an explicit selector naming the live co-located manager",
-    explicitLocal.status === 200 && explicitLocal.body.managerInstanceId === localManagerInstanceId, explicitLocal);
+    explicitLocal.status === 200 && boundInstance(explicitLocal) === localManagerInstanceId, explicitLocal);
+  check("the agent manager-caller exchange answers only token, owner and exp",
+    Object.keys(explicitLocal.body).sort().join() === "exp,owner,token", explicitLocal.body);
 
   const remoteOne = mintLifecycleUid();
   await putManager({ instanceId: remoteOne, principal: `${OWNER}.${remoteManagerActors(remoteOne).serve}`, owner: OWNER });
   const remoteSelected = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("one live remote manager takes precedence over the local candidate",
-    remoteSelected.status === 200 && remoteSelected.body.managerInstanceId === remoteOne, remoteSelected);
+    remoteSelected.status === 200 && boundInstance(remoteSelected) === remoteOne, remoteSelected);
   const parentIndependent = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: remoteOne });
   check("the managed row's parent plays no part in manager selection", parentIndependent.status === 200, parentIndependent);
   const remoteTwo = mintLifecycleUid();
@@ -342,7 +346,7 @@ try {
     ambiguous.status === 401 && String(ambiguous.body.error).includes("2 live remote manager candidates"), ambiguous);
   const explicitRemote = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: remoteTwo });
   check("an explicit selector chooses one live own remote manager",
-    explicitRemote.status === 200 && explicitRemote.body.managerInstanceId === remoteTwo, explicitRemote);
+    explicitRemote.status === 200 && boundInstance(explicitRemote) === remoteTwo, explicitRemote);
   const foreign = mintLifecycleUid();
   await putManager({ instanceId: foreign, principal: `${"u_" + "f".repeat(26)}.${remoteManagerActors(foreign).serve}`, owner: "u_" + "f".repeat(26) });
   const foreignSelector = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: foreign });
@@ -469,8 +473,10 @@ try {
   check("a channel-writer view mints on the public face when the row has admin",
     writerPublic.status === 200 && writerView === "channel-writer", { status: writerPublic.status, writerView, body: writerPublic.body });
   const humanManagerCall = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-caller", managerInstanceId: remoteOne });
-  check("the public human exchange serves manager-caller and returns the selected instance",
-    humanManagerCall.status === 200 && humanManagerCall.body.managerInstanceId === remoteOne, humanManagerCall);
+  check("the public human exchange serves manager-caller bound to the selected instance",
+    humanManagerCall.status === 200 && boundInstance(humanManagerCall) === remoteOne, humanManagerCall);
+  check("the human manager-caller exchange answers only token, owner and exp",
+    Object.keys(humanManagerCall.body).sort().join() === "exp,owner,token", humanManagerCall.body);
 
   // ---------- E2. the human's own manager instance list ----------
   console.log("E2) the signed-in human's own manager instances, read-only");
@@ -818,7 +824,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 118;
+const EXPECTED = 120;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
