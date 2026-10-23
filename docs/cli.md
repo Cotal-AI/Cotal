@@ -6820,14 +6820,23 @@ absent from the mesh-selection registry. Live, foreign, unreadable or unresolved
 removal. A starting intent and the extension writer lock prevent an uninstall from crossing the
 controller's final provider check. Providers still run as the current OS user, not in a sandbox.
 
-Process readiness reports a live creation-pinned direct process as Running. HTTP readiness uses
+Process readiness waits up to one second, or its deadline when that is shorter, for the process to
+exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
+recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A live
+creation-pinned direct process is reported Running. HTTP readiness uses
 a bounded loopback request with credentials omitted and redirects disabled. Its success is
 Reachable, not proof that the child owns that listener or serves a native endpoint. Status labels
 the stored readiness observation and its time separately from the current process observation.
-When the HTTP deadline passes first, `service start` exits 3 and names the loopback address without
-the URL's path, the expected status, the deadline, and what the last check saw, such as a refused
-connection or another status. The process is left running, and the Next names the `service logs`
-and `service stop` for that exact instance.
+Before it launches a process with HTTP readiness, `service start` sends one such request. When
+something already answers there, such as an instance of the same definition on its port, any answer
+could come from it rather than the new process, so the start refuses `CONFLICT`, exit 2, names the
+address and that instance, and launches nothing. When the HTTP deadline passes first, `service start`
+names the loopback address without the URL's path, the expected status and the deadline. When the
+service kept answering another status, such as 503, it exits 5 with `OPERATION_FAILED` and names that
+status. When the last check got no answer, such as a refused connection, it exits 3, names what it
+saw, and its Next also names `cotal service show <name>`, which shows the readiness deadline. Either
+way the process is left running, and the Next names the `service logs` and `service stop` for that
+exact instance.
 
 Stop and restart default to cancellation in a terminal and need `--yes` in scripts. The selected
 record revision and creation identity are checked before signals, including escalation. A reused

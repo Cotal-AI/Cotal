@@ -302,7 +302,9 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     } catch (error) {
       if (!stopped) throw error;
       const uncertain = !isCommandFailure(error) || error.outcome === "unknown";
-      throw new CommandFailure(uncertain ? "unknown" : "partial", uncertain ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", "the original process is gone, but the replacement did not confirm readiness; it was not retried", { target, changed: [instanceProjection(stopped.instance)], ...(isCommandFailure(error) && error.native ? { native: error.native } : {}), remedy: "inspect the retained original instance ID and its latest launch request before another start" });
+      // The replacement's own failure says what it saw, such as the exit code of a process that exited at once.
+      const why = isCommandFailure(error) ? `: ${error.message}` : "";
+      throw new CommandFailure(uncertain ? "unknown" : "partial", uncertain ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", `the original process is gone, but the replacement did not confirm readiness${why}; it was not retried`, { target, changed: [instanceProjection(stopped.instance)], ...(isCommandFailure(error) && error.native ? { native: error.native } : {}), remedy: (isCommandFailure(error) ? error.remedy : undefined) ?? "inspect the retained original instance ID and its latest launch request before another start" });
     } finally { hold.release(); }
   } else started = await startProcessService(definition, { ...(id ? { instance: id } : {}), newInstance: values["new-instance"] === true, foreground: values.foreground === true });
   const result = instanceProjection(started.instance);
