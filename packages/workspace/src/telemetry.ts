@@ -2,13 +2,15 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
-import { homeCotalDir } from "./mesh-registry.js";
+import { userCotalDir } from "./mesh-registry.js";
 import { CommandFailure } from "./output.js";
 
 /**
- * The anonymous usage telemetry settings of this machine: `<home>/telemetry.json`. The file holds
- * the chosen level, a random install id that identifies nothing but this file, and the timestamps
- * the CLI keys its one-time notice and its daily install event on. It never holds a credential.
+ * The anonymous usage telemetry settings of this OS user: `telemetry.json` under
+ * {@link userCotalDir}, which `COTAL_HOME` never redirects, so every workspace a person runs under
+ * their own account reports one install id. The file holds the chosen level, a random install id
+ * that identifies nothing but this file, and the timestamps the CLI keys its one-time notice and
+ * its daily install event on. It never holds a credential.
  */
 
 export const TELEMETRY_LEVELS = ["off", "minimal", "regular"] as const;
@@ -31,7 +33,7 @@ export interface TelemetrySettings {
 export type TelemetrySource = "file" | "COTAL_TELEMETRY" | "DO_NOT_TRACK" | "COTAL_TELEMETRY_DISABLED";
 
 export function telemetrySettingsPath(): string {
-  return join(homeCotalDir(), "telemetry.json");
+  return join(userCotalDir(), "telemetry.json");
 }
 
 const isLevel = (value: unknown): value is TelemetryLevel => (TELEMETRY_LEVELS as readonly unknown[]).includes(value);
@@ -72,7 +74,7 @@ function readFile(): TelemetrySettings | undefined {
 }
 
 function write(settings: TelemetrySettings): TelemetrySettings {
-  mkSecretDir(homeCotalDir());
+  mkSecretDir(userCotalDir());
   writeSecretFileAtomic(telemetrySettingsPath(), `${JSON.stringify(settings, null, 2)}\n`);
   return settings;
 }
