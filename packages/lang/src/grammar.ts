@@ -30,6 +30,14 @@ import { isDuration, parseDuration } from "./duration.js";
 import { ADMITTED_NODES, FORBIDDEN_NODES, STRUCTURAL_NODES } from "./syntax.js";
 import { MUTATING_METHODS } from "./library.js";
 
+// The validator's own lookup sets. The package exports these tables as frozen arrays and never
+// these sets, so code that imports the package cannot change what `validate` admits.
+const ADMITTED = new Set(ADMITTED_NODES);
+const STRUCTURAL = new Set(STRUCTURAL_NODES);
+const RESERVED = new Set(RESERVED_NAMES);
+const HOST_GLOBALS = new Set(FORBIDDEN_GLOBALS);
+const MUTATORS = new Set(MUTATING_METHODS);
+
 /** Acorn nodes are loosely typed; this is the shape we actually read. */
 type AnyNode = Node & Record<string, unknown>;
 
@@ -302,7 +310,7 @@ function walkShape(
   if (rule !== undefined) {
     v.fail(rule.code, node, rule.cause, rule.fix);
     forbidden = true;
-  } else if (!ADMITTED_NODES.has(type) && !STRUCTURAL_NODES.has(type) && !underForbidden) {
+  } else if (!ADMITTED.has(type) && !STRUCTURAL.has(type) && !underForbidden) {
     v.fail(
       "L1029",
       node,
@@ -1377,7 +1385,7 @@ function walkCaptured(node: AnyNode, scope: Scope, combinator: string, v: Valida
         const root = rootIdentifier(member.object as AnyNode);
         if (
           method !== null &&
-          MUTATING_METHODS.has(method) &&
+          MUTATORS.has(method) &&
           root !== undefined &&
           scope.lookup(root.name as string) === undefined
         ) {
@@ -1454,7 +1462,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
         return;
       }
       if (scope.lookup(name) !== undefined) return;
-      if (RESERVED_NAMES.has(name)) return;
+      if (RESERVED.has(name)) return;
       if (PROMISE_NAMES.has(name)) {
         v.fail(
           "L2011",
@@ -1464,7 +1472,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
         );
         return;
       }
-      if (FORBIDDEN_GLOBALS.has(name)) {
+      if (HOST_GLOBALS.has(name)) {
         v.fail(
           "L2012",
           node,
@@ -1498,7 +1506,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
             ? (init as AnyNode)
             : undefined;
         for (const n of names) {
-          if (RESERVED_NAMES.has(n)) {
+          if (RESERVED.has(n)) {
             v.fail(
               "L2002",
               d.id as AnyNode,
@@ -1539,7 +1547,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     case "ArrowFunctionExpression": {
       if (node.type === "FunctionDeclaration" && isNode(node.id)) {
         const fname = (node.id as AnyNode).name as string;
-        if (RESERVED_NAMES.has(fname)) {
+        if (RESERVED.has(fname)) {
           v.fail(
             "L2002",
             node.id as AnyNode,
@@ -1555,7 +1563,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
       // assigned to a `const` recurses: `const f = function walk(n) { ... walk(n - 1) ... }`.
       if (node.type === "FunctionExpression" && isNode(node.id)) {
         const fname = (node.id as AnyNode).name as string;
-        if (RESERVED_NAMES.has(fname)) {
+        if (RESERVED.has(fname)) {
           v.fail(
             "L2002",
             node.id as AnyNode,
@@ -1579,7 +1587,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
       for (let i = 0; i < params.length; i += 1) {
         const p = params[i] as AnyNode;
         for (const n of paramNames[i] as string[]) {
-          if (RESERVED_NAMES.has(n)) {
+          if (RESERVED.has(n)) {
             v.fail(
               "L2002",
               p,

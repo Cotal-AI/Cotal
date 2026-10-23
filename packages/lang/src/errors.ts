@@ -9,7 +9,7 @@
  */
 
 /** Every code in the catalog, with the one-line title that heads the rendered error. */
-export const CATALOG = {
+export const CATALOG = Object.freeze({
   // ---- L1xxx: grammar -----------------------------------------------------------------------
   L1001: "Forbidden syntax: `class`",
   L1002: "Forbidden syntax: `this`",
@@ -217,7 +217,7 @@ export const CATALOG = {
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
   L6002: "Simulation script entry unused",
-} as const;
+} as const);
 
 export type LangErrorCode = keyof typeof CATALOG;
 
