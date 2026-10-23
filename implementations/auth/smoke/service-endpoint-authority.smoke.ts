@@ -14,7 +14,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { createAccount } from "@nats-io/nkeys";
 import { Kvm } from "@nats-io/kv";
 import {
-  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA_DIGEST, epAuthBucket, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
+  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, VOID_SCHEMA_DIGEST, contractDigest, epAuthBucket, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
   serveAuthenticityOf, singleDocumentClosure, type ParsedArgs, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
@@ -115,7 +115,7 @@ try {
   };
   const request = (operation: string, fields: object, instanceId: string, requestId = rid()) =>
     ({ v: 1, kind: "service-endpoint-authority", operation, requestId, space, accountPublicKey, endpoint, instanceId, ...fields }) as ServiceAuthorityRequest;
-  const register = (instanceId: string, reg = registration(orders), requestId = rid()) =>
+  const register = (instanceId: string, reg: { clusterDigests: string[]; contractArtifacts: unknown[] } = registration(orders), requestId = rid()) =>
     request("register", { registration: reg, expected: { state: "unregistered" } }, instanceId, requestId);
   const status = (instanceId: string, requestId: string) => request("status", { target: { kind: "operation", operation: "register", requestId } }, instanceId);
   const viaProvider = async (who: "a" | "b" | "c", r: ServiceAuthorityRequest): Promise<ServiceAuthorityResult> => {
@@ -211,6 +211,21 @@ try {
   c.check("F1 a missing, extraneous or tampered artifact refuses as closure-invalid", results.every((r) => denied(r, "closure-invalid")), results);
   c.check("F2 a journal-class command refuses as unsupported-runtime", denied(journalled, "unsupported-runtime"), journalled);
   c.check("F3 no refused closure reached the capacity index: the selector is still free", (await viaProvider("a", register(i4))).state === "approval-required");
+  // A registration may carry the schema closures its commands reference (here the canonical void
+  // closure), verified whole; a legacy body without them is still admitted.
+  const voidClosure = singleDocumentClosure(VOID_SCHEMA);
+  const withVoid = { clusterDigests: [orders.closureDigest], contractArtifacts: [orders.manifest, orders.document, voidClosure.manifest, VOID_SCHEMA] };
+  const f4 = await viaProvider("a", register(rid(), withVoid));
+  c.check("F4 a registration that submits the void schema closure its commands reference is admitted", f4.state === "approval-required", f4);
+  const schemaNoRoot = { ...withVoid, contractArtifacts: [orders.manifest, orders.document, voidClosure.manifest] };
+  const otherSchema = singleDocumentClosure({ type: "string" });
+  const schemaUnreferenced = { ...withVoid, contractArtifacts: [orders.manifest, orders.document, otherSchema.manifest, { type: "string" }] };
+  const forgedManifest = { ...voidClosure.manifest, members: [contractDigest({ type: "string" })] };
+  const schemaForged = { ...withVoid, contractArtifacts: [orders.manifest, orders.document, forgedManifest, VOID_SCHEMA, { type: "string" }] };
+  const schemaRefusals = [];
+  for (const reg of [schemaNoRoot, schemaUnreferenced, schemaForged]) schemaRefusals.push(await viaProvider("a", register(rid(), reg)));
+  c.check("F5 a schema closure without its root, one no command references, and one whose manifest does not recompile all refuse closure-invalid",
+    schemaRefusals.every((r) => denied(r, "closure-invalid")), schemaRefusals);
 
   // ---- G: create-only name binding through the host ----
   const bindReq = { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-bind", granter: operator,

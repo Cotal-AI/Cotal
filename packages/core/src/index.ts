@@ -139,3 +139,5 @@ export * from "./run-submission-client.js";
 export * from "./issuer-session.js";
 
 export * from "./service-gate.js";
+
+export { parseClosureManifest } from "./contract-manifest.js";

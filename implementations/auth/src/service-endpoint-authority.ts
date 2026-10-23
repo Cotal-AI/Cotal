@@ -6,6 +6,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   EpEnvelopeError, GOVERNED_TRAIT_URNS, SERVICE_ACCESS_TTL_SECONDS, SERVICE_ISSUER_KEYS_MAX, SERVICE_RENEWAL_TTL_SECONDS, canonicalJson, contractDigest,
+  compileContract, parseClosureManifest,
   isCanonicalEd25519PublicCoordinate,
   serviceAuthorityRequestDigest, serviceWitnessDigest, verifyClusterManifest, verifyClusterRoot,
   type EpCommandAuthority, type ServiceAuthorityInfo, type ServiceAuthorityRequest, type ServiceAuthorityStatus, type ServiceIssuerKey, type ServiceRegistrationWitness,
@@ -80,8 +81,10 @@ export class ServiceRegistrationRefusal extends Error {
 
 /** Compile the submitted closures into the proposal's command surface. Each cluster digest names its
  *  manifest artifact and that manifest's root names the cluster document, both verified by content
- *  digest. Every submitted artifact must belong to a declared closure, and the commands are only what
- *  the verified documents declare. This cut admits ephemeral commands without governed traits only. */
+ *  digest. The schema closures the commands reference may be submitted with them and are verified
+ *  whole. Every submitted artifact must belong to a declared closure or to a referenced schema
+ *  closure, and the commands are only what the verified documents declare. This cut admits
+ *  ephemeral commands without governed traits only. */
 export function compileServiceRegistration(registration: { clusterDigests: string[]; contractArtifacts: unknown[] }): { clusterDigests: string[]; commands: Command[] } {
   const refuse = (reason: ServiceRegistrationRefusal["reason"], detail: string): never => { throw new ServiceRegistrationRefusal(reason, detail); };
   const byDigest = new Map(registration.contractArtifacts.map((a) => [contractDigest(a), a] as const));
@@ -108,6 +111,32 @@ export function compileServiceRegistration(registration: { clusterDigests: strin
       names.add(c.name);
       commands.push({ name: c.name, clusterDigest: closure, class: c.class, targeted: c.targeted, modes: [...(c.modes ?? [])], capability: c.capability,
         inputDigest: c.inputDigest, outputDigest: c.outputDigest, traits: [...(c.traits ?? [])] });
+    }
+  }
+  // The schema closures the commands reference (each `inputDigest`/`outputDigest`) may ride along, so
+  // a service registering through the door publishes them the way an in-process registrant does. A
+  // supplied one is admitted only whole: its manifest at that digest, its root and every member
+  // present, and the bundle recompiling to that same closure digest (the resolve-time tamper
+  // boundary, SPEC 13.7). One a registration does not supply is not refused: a body from before this
+  // admission still replays, and the host publishes the canonical void closure itself.
+  for (const closure of new Set(commands.flatMap((c) => [c.inputDigest, c.outputDigest]))) {
+    const manifest = byDigest.get(closure);
+    if (manifest === undefined) continue;
+    try {
+      const { root, members } = parseClosureManifest(manifest, `the schema closure ${closure} manifest`);
+      if (!byDigest.has(root)) refuse("closure-invalid", `the schema closure ${closure} has no submitted root document`);
+      const bundleMembers: Record<string, unknown> = {};
+      for (const m of members) {
+        if (m === root) continue;
+        if (!byDigest.has(m)) refuse("closure-invalid", `the schema closure ${closure} names the member ${m}, which is not submitted`);
+        bundleMembers[m] = byDigest.get(m);
+      }
+      const compiled = compileContract({ root: byDigest.get(root), members: bundleMembers });
+      if (compiled.closureDigest !== closure) refuse("closure-invalid", `the submitted schema closure ${closure} recompiles to ${compiled.closureDigest}`);
+      used.add(closure); used.add(root); for (const m of members) used.add(m);
+    } catch (e) {
+      if (e instanceof ServiceRegistrationRefusal) throw e;
+      return refuse("closure-invalid", e instanceof Error ? e.message : String(e));
     }
   }
   if (used.size !== byDigest.size) refuse("closure-invalid", "an artifact belongs to no declared closure");
