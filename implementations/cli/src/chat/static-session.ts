@@ -191,7 +191,8 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     creds,
     card: { owner: DEV_OWNER, actor: slot.actor, name: options.label, kind: "endpoint", meta: { sessionKind: "chat" } },
     lifecycleUid: slot.lifecycleUid,
-    channels: subscribe,
+    // A copy: the endpoint edits its list on /leave and /join, and the read grant may be this array.
+    channels: [...subscribe],
   });
   // The participant listeners are installed here, before the endpoint starts.
   const session = new NativeChatSession({ endpoint, identity, retire });

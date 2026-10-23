@@ -3803,7 +3803,8 @@ The mesh is resolved once, and its recorded auth mode picks the admission. No ot
 A named channel is the session's initial channel. On a static or user-auth mesh it is also the
 session's whole read and post list, so a session opened without one can send and receive direct
 messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`
-before anything reaches the broker. On a session opened without a channel, the refusal says to
+before anything reaches the broker. `/leave` does not change that list, so `/join` returns the
+session to a channel it left. On a session opened without a channel, the refusal says to
 leave and open a new session on the channel. Before the session is admitted, `chat` reads the channel registry on the resolved
 mesh the way `send` does, under the same one-shot identity, and says on stderr whether the channel
 is registered, unregistered, or could not be read. The space's native policy decides whether a send
