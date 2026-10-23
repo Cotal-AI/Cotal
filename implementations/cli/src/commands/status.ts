@@ -50,7 +50,7 @@ import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries 
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { preservedSourceState, restoreNextStep } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
-import { readStackJournal } from "../lib/stack-journal.js";
+import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -191,6 +191,9 @@ export interface StatusResult {
   maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
   /** A store write failure the selected space's running local broker logged; older inputs may omit it. */
   store?: StoreWriteObservation;
+  /** One probe of the selected space's running stack manager's own endpoint. Its process record alone
+   *  stays `running` while it hangs; absent when no stack manager runs, and older inputs may omit it. */
+  stackManager?: { instanceId: string; pid: number; endpoint: ManagerEndpoint };
   hints: string[];
 }
 
@@ -275,7 +278,8 @@ export async function status(args: ParsedArgs): Promise<void> {
   const bootAttempts = readBootAttempts(root, gaps);
   const maintenance = readMaintenance(root, gaps);
   const store = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), hints };
+  const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints };
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
   const context = { preferences: cachedPreferences(), space: selected.ok ? selected.target.space : undefined };
@@ -764,23 +768,42 @@ async function managerProcess(target: MeshTarget | undefined, state: Proc, space
   }
   const running = (extra?: string): ProcessRow => ({ name: "manager", state: "running", pid: state.pid ?? null, detail: [...details, ...(extra ? [extra] : [])].join(" · ") });
   if (!target) return running();
+  const endpoint = await managerEndpoint(target);
+  if (endpoint === "not-answering")
+    return { name: "manager", state: "not-serving", pid: state.pid ?? null, detail: ["service endpoint not answering", ...details.filter((d) => d.startsWith("delivery-aware marker unreadable"))].join(" · ") };
+  return running(endpoint === "unchecked" ? "service unchecked" : undefined);
+}
+
+type ManagerEndpoint = "answered" | "not-answering" | "unchecked";
+
+/** One probe of the space's manager service endpoint. Only a definitive no-answer is
+ *  `not-answering`; a refused probe or an `unavailable` user-mode credential is `unchecked`, so a
+ *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
+ *  `instanceId` an answer from another manager instance is `unchecked` too. */
+async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise<ManagerEndpoint> {
   try {
     let auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } };
     if (target.mode === "user") {
       const credential = await componentCredential(target);
-      if (credential.kind !== "user") return running("service unchecked");
+      if (credential.kind !== "user") return "unchecked";
       auth = { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds, caller: credential.caller };
     } else {
       auth = await staticServiceAuth(target.auth);
     }
-    await managerServiceHealth(target, auth);
-    return running();
+    const status = await managerServiceHealth(target, auth);
+    return instanceId === undefined || status.instanceId === instanceId ? "answered" : "unchecked";
   } catch (e) {
-    const noService = e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message));
-    if (noService)
-      return { name: "manager", state: "not-serving", pid: state.pid ?? null, detail: ["service endpoint not answering", ...details.filter((d) => d.startsWith("delivery-aware marker unreadable"))].join(" · ") };
-    return running("service unchecked");
+    return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message)) ? "not-answering" : "unchecked";
   }
+}
+
+/** A controller stack's manager is an owned service, and its instance record reads `running` while
+ *  the process lives, a hung one included. So a running stack manager gets the probe the legacy
+ *  manager row gets, and only an answer from its own native instance counts. */
+async function readStackManager(target: MeshTarget, services: OwnedServiceStatus): Promise<StatusResult["stackManager"]> {
+  const row = services.instances?.find((item) => item.definition === STACK_DEFINITION.manager && item.observedProcess === "running");
+  if (!row?.pid) return undefined;
+  return { instanceId: row.instanceId, pid: row.pid, endpoint: await managerEndpoint(target, row.nativeEndpoint?.instanceId) };
 }
 
 /** The delivery row's responder detail (#1576). An unbound responder is not a footnote about a
@@ -1289,6 +1312,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ["Connection", connectionCell(s)],
     ...(responder ? [["Delivery responder", stateCell(responder.text, responder.tone)] as [string, Cell]] : []),
     ...(r.store?.state === "write-failed" ? [["Store", stateCell(`write failed at ${r.store.at}: ${r.store.cause}${r.store.path ? ` · ${r.store.path}` : ""}`, "failed")] as [string, Cell]] : []),
+    ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
     ["Project", s.root],
     ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application not set"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
@@ -1349,6 +1373,9 @@ function nextActions(r: StatusResult): Section {
   if (r.selected.resolved && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable") && r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space)
     items.unshift({ command: `${cmd} up --root ${r.selected.root}`, description: "Restart this stack's stopped members from its recorded inputs" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
+  // A manager that does not answer cannot report its stop impact, so no stop route reaches it.
+  if (r.stackManager?.endpoint === "not-answering")
+    items.unshift({ command: `kill -KILL ${r.stackManager.pid}`, description: `The stack manager does not answer, so ${cmd} down cannot stop it. If it stays that way, end its process; ${cmd} down --yes then records it stopped` });
   // The broker keeps a store write error until it restarts, so messages sent meanwhile may be lost.
   if (r.store?.state === "write-failed")
     items.unshift({ command: `${cmd} down`, description: `Free space on the disk that holds ${r.store.path ?? "the broker's store"} first; then ${cmd} up starts the broker again` });

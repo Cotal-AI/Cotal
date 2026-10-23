@@ -8,6 +8,9 @@
  *  3. `up` starts the manager again, and `ps` is answered.
  *  4. A SIGINT with no stop request leaves that manager running. A plain SIGTERM, as `kill`, a
  *     systemd stop or a system shutdown sends, stops it and it exits; `up` starts it again.
+ *  5. `status` reports the running manager as answering. Stopped with SIGSTOP, as a hang, it reads
+ *     not answering by pid, and `down --yes` refuses it by pid; once that process is killed, the
+ *     final `down --yes` stops the stack.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the manager its own `up` started. Needs `nats-server` on PATH.
@@ -48,6 +51,12 @@ const runningManager = (): { pid: number; instanceId: string } | undefined => {
   } catch { return undefined; }
 };
 const managerPid = (): number | undefined => runningManager()?.pid;
+/** The `stackManager.endpoint` probe result `status --json` reports. */
+const managerEndpoint = (): unknown => {
+  try { return (JSON.parse(cli("status", "--json").stdout) as { result?: { stackManager?: { endpoint?: unknown } } }).result?.stackManager?.endpoint; }
+  catch { return undefined; }
+};
+let hung: number | undefined;
 
 try {
   const created = cli("space", "create", "crash");
@@ -92,7 +101,22 @@ try {
   const afterTerm = cli("up");
   check("up starts the manager after its SIGTERM stop", afterTerm.status === 0, afterTerm.out);
   check("...and ps is answered", cli("ps").status === 0);
+
+  // A hung manager's process record stays running, so status asks its endpoint, and the stop
+  // commands, which need its stop impact, refuse it by pid until that process is ended.
+  check("status reports the running stack manager as answering", managerEndpoint() === "answered");
+  hung = managerPid();
+  if (hung !== undefined) process.kill(hung, "SIGSTOP");
+  const hungStatus = cli("status");
+  check("status reports a stopped stack manager as not answering, by pid", hung !== undefined && hungStatus.out.includes(`not answering · stack-manager pid ${hung}`), hungStatus.out);
+  check("...and leads its Next with ending that process", (hungStatus.out.split("\nNext\n")[1]?.split("\n")[0] ?? "").includes(`kill -KILL ${hung}`), hungStatus.out);
+  const refused = cli("down", "--yes");
+  check("down refuses a manager that does not answer, naming its pid", refused.status === 2 && refused.out.includes("LIFECYCLE_BLOCKED") && refused.out.includes(`the manager process ${hung} is running but did not answer its endpoint`) && refused.out.includes("no stop was submitted"), refused.out);
+  check("...and its Next ends that process", refused.out.includes(`end that process with kill -KILL ${hung}; the same command then finds it gone and goes on`), refused.out);
+  if (hung !== undefined) process.kill(hung, "SIGKILL");
+  for (let i = 0; i < 50 && hung !== undefined && alive(hung); i++) await sleep(100);
 } finally {
+  if (hung !== undefined && alive(hung)) process.kill(hung, "SIGKILL");
   const down = cli("down", "--yes");
   check("down stops the stack", down.status === 0, down.out);
   rmSync(home, { recursive: true, force: true });

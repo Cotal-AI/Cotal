@@ -2005,7 +2005,12 @@ are separate columns; neither a saved serving state nor a supervisor receipt bec
 endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
-process is gone, Next offers `cotal up --root <root>` first. Unreadable
+process is gone, Next offers `cotal up --root <root>` first. A running `stack-manager` gets one
+probe of its manager endpoint, and the selected space's `Manager` row reads `answering`,
+`not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be
+made or another manager instance answered. A manager that does not answer puts `kill -KILL <pid>`
+first in Next, because `cotal down` cannot stop it; once that process is gone, `cotal down --yes`
+records it stopped. Unreadable
 service record families make the report partial instead of becoming empty lists. Warnings retain
 a classified cause code, such as unsupported host observation, without native diagnostic bodies. These reads
 import no provider and start, stop, adopt or repair nothing. `--all` extends broker checks; this
@@ -2178,6 +2183,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `meshes` | `current`, `unreadable` (the registry directory, a record or the current-mesh pointer that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
 | `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels` and `membershipFeed` |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
+| `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
 | `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause` and `path`; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
 
@@ -3284,7 +3290,11 @@ or `service start` runs stops this way on a plain `SIGTERM` that carries no stop
 one from `kill`, a systemd stop or a system shutdown, with the default agent policy. Its log shows
 `received SIGTERM with no stop request`, it writes no stop receipt, and the next `cotal down`
 records it as already gone. It ignores a `SIGINT` that carries no stop request and logs one
-warning line, because Ctrl-C reaches it together with the CLI that publishes the request. After an abrupt manager death, the same logical successor
+warning line, because Ctrl-C reaches it together with the CLI that publishes the request. A
+manager that does not answer its endpoint, such as a hung or stopped process, cannot report its
+stop impact, so `cotal down`, `service stop` and `service restart` refuse it `LIFECYCLE_BLOCKED`,
+exit 2, submit no stop and name its pid. Once that process is ended, as with `kill -KILL <pid>`, the
+same command finds it gone and goes on. After an abrupt manager death, the same logical successor
 terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
 records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
 process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
