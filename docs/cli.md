@@ -4989,15 +4989,17 @@ and contact name are included only when supplied. The public intake requires a t
 from `--email`, the existing configured contact or local git email. No environment setup is
 required. Do not put credentials, private transcripts or unrelated customer data in feedback.
 
-A protected `--key-file` selects keyed intake without placing a credential on argv. An existing
+A protected `--key-file` selects keyed intake without placing a credential on argv. The file holds
+one key: an opaque bearer token with no whitespace, optionally followed by one newline. An existing
 internal intake configuration remains supported. The old raw `--key` input refuses before the
 request and does not echo its value. Private key files must meet the shared file-ownership and
 protection policy; unsupported environments refuse rather than weakening that policy.
 
-`--url` can select a self-hosted intake. Remote intake requires HTTPS; HTTP is limited to literal
-loopback development hosts. URL credentials and fragments are refused, and redirects are not
-followed. One request has a 20-second deadline and is never automatically retried or rerouted to
-a different credential/intake.
+`--url` can select a self-hosted intake. A Cotal intake accepts reports only at `POST /v1/feedback`,
+so the URL names that path, such as `https://intake.example/v1/feedback`; the origin alone gets
+HTTP 404. Remote intake requires HTTPS; HTTP is limited to literal loopback development hosts. URL
+credentials and fragments are refused, and redirects are not followed. One request has a 20-second
+deadline and is never automatically retried or rerouted to a different credential/intake.
 
 A connection that never opens sends nothing: a refused connection, a failed DNS lookup or a failed
 TLS handshake refuses with `TARGET_UNAVAILABLE` and the native error code. A timeout or a broken
@@ -5186,7 +5188,8 @@ The daemon serves the workspace root that `--root <dir>` names, which must hold 
 the nearest `.cotal/` above its working directory. With neither, it refuses at start and names the
 directory it searched from, before it reads a credential or dials a broker.
 See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
-(requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
+at `POST /v1/feedback` (requires `--keys`, in the format the `feedback-intake` service preset
+describes, and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
 Without `--server` it dials the broker its `--space` is registered at, and refuses an unregistered
 space before dialing.
@@ -5985,7 +5988,10 @@ reading their contents during definition validation.
 The CLI's own presets are `auth-service`, `broker`, `delivery`, `exec-endpoint`, `feedback-intake`
 and `manager`. The `linear` and `web` presets come with their extensions. The intake preset is
 `feedback-intake`. Supply its `--root`, protected `--keys` and scoped
-broker `--creds` paths in the selected registered space. Optional options include `--server`,
+broker `--creds` paths in the selected registered space. The keys file is JSON with one entry per
+key, `{"keys":[{"key":"<token>","tester":"<tester-id>","name":"<display-name>"}]}`, where `name`
+is optional. A tester's `--key-file` holds their `key`. The intake serves `POST /v1/feedback` on its
+`--host` and `--port`. Optional options include `--server`,
 `--host`, `--port`, `--channel`, `--store`, `--max-bytes` and `--rate-limit`. A supplied store must
 already be private. Without one, the intake appends to a private instance-keyed store beside its
 service records. Feedback records and logs remain private local data and are retained on removal.
