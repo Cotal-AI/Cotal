@@ -15,7 +15,7 @@ import { createAccount } from "@nats-io/nkeys";
 import { Kvm } from "@nats-io/kv";
 import {
   SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA_DIGEST, epAuthBucket, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
-  serveAuthenticityOf, singleDocumentClosure, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
+  serveAuthenticityOf, singleDocumentClosure, type ParsedArgs, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { cotalAuthProvider } from "../src/provider.js";
@@ -25,9 +25,9 @@ import { fetchIdpJwt, saveIdpSession } from "../src/login.js";
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo } from "../src/service-authority-client.js";
-import { serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
+import { serviceAuthorityEngineRequestId, serviceHostGranterFor } from "../src/service-endpoint-authority.js";
 import { serviceHostOperationId } from "../src/service-host-ops.js";
-import { startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { authServiceConfiguration, startAuthService, type AuthServiceHandle } from "../src/service.js";
 import { checks } from "./_service-custody-fixture.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
@@ -300,6 +300,61 @@ try {
     && k6.state === "approval-required" && kLive.state === "approval-required" && k6.proposalId === kLive.proposalId, { k5, k6 });
   const k7 = await viaProvider("a", status(i1, r1.requestId));
   c.check("K6 the approved and revoked history keeps its answer", k7.state === "status" && k7.status.state === "revoking", k7);
+
+  // ---- L: the authenticated host route ----
+  const hostRoute = async (base: string, body: unknown, init: { method?: string; headers?: Record<string, string> } = {}) => {
+    const r = await fetch(`${base}/service-endpoint-host`, { method: init.method ?? "POST", headers: { "content-type": "application/json", ...init.headers },
+      ...(init.method === "GET" ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) });
+    const text = await r.text();
+    let json: unknown; try { json = JSON.parse(text); } catch { json = text; }
+    return { status: r.status, body: json as Record<string, any>, cacheControl: r.headers.get("cache-control") };
+  };
+  const capHeader = { authorization: `Bearer ${on.cap}` };
+  const tokenA = await fetchIdpJwt(idpUrl, "session-a"), tokenB = await fetchIdpJwt(idpUrl, "session-b");
+  const hostReq = (operation: string, input: object, requestId = rid()) => ({ v: 1, kind: "service-endpoint-host", requestId, operation, input });
+  const routeBind = hostReq("name-bind", { endpoint: "org.example.route", owner: ownerA, expectedRevision: 0, claimReference: "route-claim" });
+  const l1 = await hostRoute(on.url, { idpToken: tokenA, request: routeBind }, { headers: capHeader });
+  c.check("L1 the loopback face binds a name under the exchange capability and a signed-in operator", l1.status === 200 && l1.body.state === "bound" && l1.body.binding?.owner === ownerA && l1.cacheControl === "no-store", l1);
+  const l2 = await hostRoute(pub, { idpToken: tokenA, request: { ...routeBind, requestId: rid(), input: { ...routeBind.input, endpoint: "org.example.route2" } } });
+  const l3 = await hostRoute(on.url, { idpToken: tokenA, request: { ...routeBind, requestId: rid(), input: { ...routeBind.input, endpoint: "org.example.route3" } } });
+  const l3read = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-read", input: { endpoint: "org.example.route3" }, granter: operator });
+  c.check("L2 the public face refuses name-bind 403: it is the operator's", l2.status === 403 && /operator/.test(String(l2.body.error)), l2);
+  c.check("L3 the loopback face without the capability refuses 401 and binds nothing", l3.status === 401 && l3read.state === "absent", { l3, l3read });
+  const lReg = await viaProvider("a", register(rid()));
+  const lPid = lReg.state === "approval-required" ? lReg.proposalId : "";
+  const lRead = await hostRoute(pub, { idpToken: tokenA, request: hostReq("proposal-read", { proposalId: lPid }) });
+  const lRev = lRead.body.state === "present" ? (lRead.body.record.revision as number) : -1;
+  c.check("L4 the owner reads its proposal over the public face with its IdP token alone", lReg.state === "approval-required" && lRead.status === 200 && lRev > 0, { lReg, lRead });
+  const lDecide = hostReq("decide", { proposalId: lPid, expectedProposalRevision: lRev, expectedNameRevision: nameRevision, decision: "approve", callerCeiling: [] });
+  const lB = await hostRoute(pub, { idpToken: tokenB, request: lDecide });
+  c.check("L5 another signed-in owner's decision is the engine's denial, not an approval", lB.status === 200 && lB.body.state === "denied", lB);
+  const lA = await hostRoute(pub, { idpToken: tokenA, request: lDecide }), lA2 = await hostRoute(pub, { idpToken: tokenA, request: lDecide });
+  c.check("L6 the owner approves over the route, and the identical request replays the same approval", lA.status === 200 && lA.body.state === "approved" && lA.body.approval?.proposalId === lPid
+    && lA2.status === 200 && lA.body.outcome === "applied" && lA2.body.outcome === "recorded" && JSON.stringify(lA2.body.approval) === JSON.stringify(lA.body.approval), { lA, lA2 });
+  const lGranter = await hostRoute(pub, { idpToken: tokenA, request: { ...hostReq("proposal-read", { proposalId: lPid }), granter: operator } });
+  // The bad token goes to the loopback face: the public face's failure bucket is already full from the earlier sections.
+  const lToken = await hostRoute(on.url, { idpToken: "not-a-jwt", request: hostReq("proposal-read", { proposalId: lPid }) }, { headers: capHeader });
+  const lGet = await hostRoute(pub, null, { method: "GET" }), lMedia = await hostRoute(pub, "{}", { headers: { "content-type": "text/plain" } });
+  const lOrigin = await hostRoute(pub, { idpToken: tokenA, request: hostReq("proposal-read", { proposalId: lPid }) }, { headers: { origin: "https://evil.example" } });
+  c.check("L7 a granter in the body 400, a bad token 403, GET 405, media 415, browser origin 403",
+    lGranter.status === 400 && lToken.status === 403 && lGet.status === 405 && lMedia.status === 415 && lOrigin.status === 403,
+    { granter: lGranter.status, token: lToken.status, get: lGet.status, media: lMedia.status, origin: lOrigin.status });
+  const lRevoke = hostReq("revoke", { endpoint, instanceId: i1, expectedAssignmentDigest: "sha256:" + "0".repeat(64), cause: "restore-quarantine" });
+  const lRevokePub = await hostRoute(pub, { idpToken: tokenA, request: lRevoke });
+  c.check("L8 a revoke whose cause is not owner-request is the operator's: the public face refuses it 403", lRevokePub.status === 403, lRevokePub);
+  const proved = { owner: ownerA, subject: "user-a" };
+  const gOwner = serviceHostGranterFor({ operation: "decide", input: {} }, proved, false), gRevokeOwner = serviceHostGranterFor({ operation: "revoke", input: { cause: "owner-request" } }, proved, false);
+  const gBindPub = serviceHostGranterFor({ operation: "name-bind", input: {} }, proved, false), gBindLoop = serviceHostGranterFor({ operation: "name-bind", input: {} }, proved, true);
+  c.check("L9 the granter mapping: decide and an owner-request revoke are the proved owner; name-bind is operator on the capability face only, with the subject as audit id",
+    gOwner?.kind === "owner" && gOwner.owner === ownerA && gRevokeOwner?.kind === "owner" && gBindPub === undefined && gBindLoop?.kind === "operator" && gBindLoop.auditId === "loopback-capability:user-a",
+    { gOwner, gRevokeOwner, gBindPub, gBindLoop });
+  const lNameA = await hostRoute(pub, { idpToken: tokenA, request: hostReq("name-read", { endpoint: "org.example.route" }) });
+  const lNameB = await hostRoute(pub, { idpToken: tokenB, request: hostReq("name-read", { endpoint: "org.example.route" }) });
+  c.check("L11 name-read over the route: the bound owner reads its binding at its revision; another owner reads absent",
+    lNameA.status === 200 && lNameA.body.state === "present" && lNameA.body.record?.value?.owner === ownerA && lNameA.body.record?.revision === l1.body.binding?.revision
+    && lNameB.status === 200 && lNameB.body.state === "absent", { lNameA, lNameB });
+  const parsed = (values: Record<string, string | boolean | undefined>) => authServiceConfiguration({ values: { space, server: "nats://127.0.0.1:1", ...values }, positionals: [], raw: [], positionalIndices: [] } as unknown as ParsedArgs);
+  c.check("L10 --service-endpoints turns the engine on; its absence leaves it off", parsed({ "service-endpoints": true }).serviceEndpoints === true && parsed({}).serviceEndpoints === false);
 } finally {
   await harness?.close().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prevHome;

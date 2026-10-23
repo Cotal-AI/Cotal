@@ -1667,9 +1667,14 @@ then has no call in flight, and does not make the plane fatal.
 
 The plane and a hosted context expose `decide`, `revoke`, `name-bind`, `operation-read` and
 `proposal-read` as one in-process function; a hosted context refuses it as `unavailable` while it is
-not ready. That function has no route, capability, CLI flag or caller policy. The host checks an
-owner granter's current interactive row but authenticates no caller: the embedder MUST authenticate
-the granter it passes, operator or owner.
+not ready. The host checks an owner granter's current interactive row but authenticates no caller:
+the embedder MUST authenticate the granter it passes, operator or owner. The stock auth service
+serves that function on `POST /service-endpoint-host` when started with `--service-endpoints`: the
+body is `{ idpToken, request }` with no granter, the route verifies the IdP token and derives the
+granter itself. `decide`, a revoke whose cause is `owner-request` and the reads (`proposal-read`, `operation-read`
+and `name-read`, each scoped to the owner's own records) run as the proved owner on either face; `name-bind`, any other revoke and the admission operations are the operator's
+and are served on the loopback face under the exchange capability only, with the proved subject as
+the audit id. The engine's answer, replay included, is returned as is.
 
 `name-bind` is create-only and needs an operator granter. Its `expectedRevision` MUST be 0; any other
 value answers `unsupported`, and a native control endpoint name is refused. It issues one
