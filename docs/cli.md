@@ -551,11 +551,15 @@ path.
 
 A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
 `cotal down` from another terminal can then stop the stack; the foreground `up` sees the completed
-stop or preserve, prints `Foreground stack released` and exits 0. A systemd unit that runs
-`up --foreground` should set `KillMode=mixed`, so the stop signal reaches only `cotal up`, which runs
-the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. The default
-`control-group` mode signals every member at the same time, and a manager signalled directly does
-not stop through its request-bound stop.
+stop or preserve, prints `Foreground stack released` and exits 0. On a controller stack, Ctrl-C or
+`SIGTERM` in that terminal runs the same guarded stop as bare `cotal down` and exits 130 or 143. A
+signal while the stack is still starting lets the start settle, then runs that stop. When the start
+fails, the stop still runs before the start failure is printed. A hangup, such as a closed terminal,
+runs no stop: the command exits 129 and the stack keeps running until `cotal down` stops it. A
+systemd unit that runs `up --foreground` should set `KillMode=mixed`, so the stop signal reaches
+only `cotal up`, which runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop.
+The default `control-group` mode signals every member at the same time, and a manager signalled
+directly does not stop through its request-bound stop.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal` and the broker store owner-private (`0700`)
@@ -602,7 +606,13 @@ conflicting `--server` or `--open` refuses before effects. Legacy-only options r
 new JSON/plain flags. A legacy root is one with no stack journal that is neither prepared nor
 registered for the controller, such as a folder an earlier release started and a normal `down` then
 unregistered. Plain `cotal up` there starts it again on its retained launcher, with its identity,
-store and history. `space create` in such a folder refuses `CONFLICT` and names that `cotal up`.
+store and history. Its `down` drops the registration that kept the broker address, so with no
+`--server` or `--host` it starts at the address in the broker configuration its last start rendered
+there, and in open mode when that start was open and no mode is asked for, and says so in one line.
+After `clean all` that configuration is gone. A root deployed with `up -f` then keeps only its fresh
+team summary, and plain `cotal up` refuses `CONFLICT` and names `cotal up -f <manifest>` when the
+summary names another address, mode or space. `space create` in such a folder refuses `CONFLICT`
+and names that `cotal up`.
 A controller `up` checks that the space is prepared or locally started at its root before it writes
 trust, configuration, a definition, an instance or the journal; a refusal there leaves the folder as
 it was. When a completed stop and `space forget` removed that record,
@@ -1196,7 +1206,9 @@ One configurable cleanup verb; every target requires `--force`.
   minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
-  registry entry; the next `cotal up` mints a fresh identity.
+  registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
+  `cotal up` then refuses and names `cotal up -f <manifest>` when the deployment ran at another
+  address, mode or space.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
 running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). A
@@ -1230,7 +1242,11 @@ prepared record and stack journal at the same root name its broker address, stor
 reset keeps both, so a later `up` starts it again. A stack whose last operation is not a completed
 `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each refusal names one reason and
 the command that clears it. A space that may still run names `cotal down` from its root, or
-`cotal up` and then `cotal down --yes` when a member exited without a recorded stop.
+`cotal up` and then `cotal down --yes` when a member exited without a recorded stop. A legacy root
+has no stack journal, and its `down` drops the registration a reset selects, so no reset reaches it
+once stopped. There the step after `cotal down` is `cotal clean store --force` from its root for
+`reset store`, or `cotal clean all --force` for `reset space`, with `--store-dir <dir>` when the
+registration records a custom store.
 
 The store dry-run is a local-impact preview that exits 0. It requires a space selected that way, a
 real project `.cotal` and a root readable as one local tenant. It opens with a verdict: the apply is
@@ -1741,8 +1757,9 @@ it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
-refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and the root to run
-`cotal up` in. That is the state after an `up` that failed to start or a `space forget`, and the
+refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and
+`cotal space create <space> --root <root>`, which prepares the journal's space there again so that
+`cotal up` starts it. That is the state after an `up` that failed to start or a `space forget`, and the
 command never dials the default address instead. `status` there reads the machine, selects no space
 and probes no broker.
 

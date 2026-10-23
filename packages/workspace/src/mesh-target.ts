@@ -123,6 +123,9 @@ export interface MeshTargetErrorDetails {
   /** For `stale-auth-root`: whether the diverging record was actually removed. An operator-registered
    *  record is kept (see `pruneMesh`), and the copy must not claim a removal that did not happen. */
   removed?: boolean;
+  /** For `not-started` on a stack root with no registration or prepared record: the space its stack
+   *  journal recorded. It is kept out of `space`, which callers read as a prepared space. */
+  stackSpace?: string;
 }
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
@@ -314,17 +317,17 @@ function notStarted(space: string): void {
   if (prepared) throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
 }
 
-/** The broker a root's own stack journal recorded, when the root has one. A journal that cannot be
- *  read still proves a broker was recorded here, so it returns no server rather than nothing. The
- *  server is only shown, never dialed. */
-function stackRecordedServer(root: string): { server?: string } | undefined {
+/** The broker and space a root's own stack journal recorded, when the root has one. A journal that
+ *  cannot be read still proves a broker was recorded here, so it returns neither rather than
+ *  nothing. The server is only shown, never dialed. */
+function stackRecord(root: string): { server?: string; stackSpace?: string } | undefined {
   const path = stackJournalPath(root);
   let file: Stats;
   try { file = lstatSync(path); } catch { return undefined; }
   if (!file.isFile() || file.size > 64 * 1024) return {};
   try {
-    const server = (JSON.parse(readFileSync(path, "utf8")) as { server?: unknown } | null)?.server;
-    return typeof server === "string" ? { server } : {};
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown } | null;
+    return { ...(typeof journal?.server === "string" ? { server: journal.server } : {}), ...(typeof journal?.space === "string" ? { stackSpace: journal.space } : {}) };
   } catch {
     return {};
   }
@@ -439,7 +442,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // A root whose own stack recorded a broker is not given the default address either: with no
     // registration that stack is not running here, and the default port may hold another mesh. The
     // space is left out, so no caller reads this root offline as a prepared space.
-    const stack = stackRecordedServer(root);
+    const stack = stackRecord(root);
     if (stack) throw new MeshTargetError("not-started", `the stack in ${root} recorded a broker, and no space is registered for it here`, { root, ...stack });
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the

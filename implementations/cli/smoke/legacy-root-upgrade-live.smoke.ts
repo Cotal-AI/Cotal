@@ -4,8 +4,8 @@
  *
  *  1. Legacy root. An unprepared folder started with `up --server` takes the retained launcher and
  *     writes no stack journal. After `down` removes its registration, `space create` refuses
- *     CONFLICT and names `cotal up`, and plain `up` starts it again with the same store and account
- *     identity, still with no stack journal.
+ *     CONFLICT and names `cotal up`, and plain `up` starts it again at its own address with the same
+ *     store and account identity, still with no stack journal.
  *  2. Controller root without its registration. After `down` and `space forget`, `up` refuses
  *     TARGET_UNAVAILABLE (exit 2), and after `space add --force` it refuses CONFLICT (exit 2, not 3).
  *     Neither writes the stack journal, `server.conf` or a new service instance record.
@@ -79,6 +79,9 @@ try {
     check("space create refuses CONFLICT and names cotal up", create.status === 2 && create.env?.error?.code === "CONFLICT" && Boolean(create.env.error.remedy?.includes("cotal up")), shown(create));
     const again = cli(root, "up", "--space", space);
     check("plain up starts the stopped legacy root again", again.status === 0, shown(again));
+    // Its registration went with the down, so the address comes from the broker configuration it
+    // rendered, never the default one.
+    check("it starts again at its own address", findMesh(space)?.server === server && again.stdout.includes(`as it last ran: ${server}`), shown(again));
     check("it still has no stack journal", !existsSync(join(root, ".cotal", "stack-controller.json")));
     check("its store identity is unchanged", digest(join(root, ".cotal", "store.id")) === store);
     check("its account records are unchanged", JSON.stringify(accountFiles(root).map((name) => `${name}:${digest(join(root, ".cotal", "auth", name))}`)) === JSON.stringify(accounts));

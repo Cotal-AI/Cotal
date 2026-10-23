@@ -1,6 +1,6 @@
 import * as prompts from "../lib/prompts.js";
 import { homedir } from "node:os";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
@@ -110,15 +110,21 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   let store: ReturnType<typeof safeStoreCleanupPath>;
   try { store = safeStoreCleanupPath(root, target.storeDir); }
   catch { throw new CommandFailure("refused", "CONFLICT", "the recorded store path is not one real directory the reset may remove; nothing was removed", { target: { ...where, storeDir: target.storeDir ?? null } }); }
-  let maintenance: ReturnType<typeof readMaintenanceJournal>, running: string[];
-  try { maintenance = readMaintenanceJournal(root); running = liveMeshProcesses(root, space); }
+  let maintenance: ReturnType<typeof readMaintenanceJournal>, running: string[], legacy: boolean;
+  try { maintenance = readMaintenanceJournal(root); running = liveMeshProcesses(root, space); legacy = target.source === "registration" && readStackJournal(root)?.journal.space !== space; }
   catch { throw new CommandFailure("refused", "CONFLICT", "the root's maintenance journal or process records could not be read; nothing was removed", { target: where }); }
+  // A legacy root's `down` drops its registration, so no reset can select it afterwards. The step
+  // after that stop is the clean the reset runs, from the root, naming only a custom store.
+  const storeFlag = target.storeDir !== undefined && resolve(target.storeDir) !== join(root, ".cotal", "nats") ? ` --store-dir ${target.storeDir}` : "";
+  const afterStop = !legacy ? `run ${review}`
+    : command === "reset store" ? `remove its stored streams with cotal clean store${storeFlag} --force there`
+    : `remove its store and identity with cotal clean all${storeFlag} --force there`;
   if (maintenance)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this root retains a maintenance attempt in state ${maintenance.state}; a reset does not override it`, { target: where, remedy: "finish it, or recover it with its recorded restore recovery or fallback cleanup, before a reset" });
   if (running.length)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the space may still run here (${running.join("; ")}); nothing was removed`, { target: { ...where, processes: running }, remedy: running.some((row) => row.includes("no stop receipt"))
       ? `a member exited without a recorded stop: start the stack with cotal up and stop it with cotal down --yes from ${root}, then run ${review}`
-      : `stop it with cotal down from ${root}, then run ${review}` });
+      : `stop it with cotal down from ${root}, then ${afterStop}` });
   try {
     assertNoRecordedServiceOwner(space);
     assertNoAdditiveLedger(root, space);
@@ -131,7 +137,7 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   try { answers = await isReachable(target.server); }
   catch { throw new CommandFailure("refused", "CONFLICT", "the recorded broker address could not be probed; a stopped broker was not inferred", { target: where }); }
   if (answers)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `something still answers at the recorded broker address ${brokerAddressForDisplay(target.server) ?? "of this space"}; nothing was removed`, { target: where, remedy: `stop the space with cotal down from ${root}, or stop whatever listens there, then run ${review}` });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `something still answers at the recorded broker address ${brokerAddressForDisplay(target.server) ?? "of this space"}; nothing was removed`, { target: where, remedy: `stop the space with cotal down from ${root}, or stop whatever listens there, then ${afterStop}` });
   return store;
 }
 

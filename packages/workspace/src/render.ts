@@ -69,9 +69,10 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
     case "unreadable-auth":
       return parts(`space "${d.space}"'s trust material under ${d.root} will not load (${err.message})`, "repair or remove the account record, then re-run `cotal up`");
     case "not-started":
-      // A prepared space names itself. A root whose stack journal recorded a broker names that broker.
+      // A prepared space names itself. A root whose stack journal recorded a broker names that broker,
+      // and `up` there refuses until `space create` prepares the journal's space at that root again.
       return d.space === undefined
-        ? parts(`the stack in ${d.root} recorded ${d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`}, and no space is registered for it here`, `start it with \`cotal up\` in ${d.root}`)
+        ? parts(`the stack in ${d.root} recorded ${d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${d.root}\`, then start it with \`cotal up\` there`)
         : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
     case "user-auth-unrecorded":
       // U11: without a TRUSTED local record of the space's IdP there is no actionable

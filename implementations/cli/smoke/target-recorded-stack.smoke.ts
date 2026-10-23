@@ -3,10 +3,11 @@
  * the default broker address. After a failed `cotal up`, `whoami`, `status`, `ps`, `who` and
  * `endpoints` in that root used to target nats://127.0.0.1:4222 while the stack journal recorded
  * another port, so any broker on the default port would have been dialed. They now refuse as not
- * started, name the recorded broker and say how to start it.
+ * started, name the recorded broker and say how to start it: `space create` prepares the journal's
+ * space at the root again, then `cotal up`.
  *
  * The journal is written by hand in the shape `cotal up` leaves when its broker never started; the
- * resolver reads only its server field. Driven through the built binary in a sandboxed COTAL_HOME.
+ * resolver reads only its server and space fields. Driven through the built binary in a sandboxed COTAL_HOME.
  * No broker is started.
  *
  * Run: pnpm smoke:target-recorded-stack
@@ -64,7 +65,8 @@ writeFileSync(join(root, ".cotal", "stack-controller.json"), JSON.stringify({
 for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const r = run([command, "--json"]);
   check(`${command} refuses as not started, exit 2`, r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_UNAVAILABLE", shown(r));
-  check(`${command} names the recorded broker and the way to start it`, (r.envelope?.error?.message ?? "").includes("127.0.0.1:24711") && /cotal up/.test(r.envelope?.error?.remedy ?? ""), r.envelope?.error);
+  // `up` refuses while the space is neither prepared nor registered here, so the remedy prepares it first.
+  check(`${command} names the recorded broker and the way to start it`, (r.envelope?.error?.message ?? "").includes("127.0.0.1:24711") && (r.envelope?.error?.remedy ?? "").includes(`cotal space create la07 --root ${root}`) && /cotal up/.test(r.envelope?.error?.remedy ?? ""), r.envelope?.error);
   check(`${command} names no default broker address`, noDefault(r), shown(r));
 }
 
