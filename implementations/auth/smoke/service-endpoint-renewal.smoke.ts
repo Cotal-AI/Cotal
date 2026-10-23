@@ -11,15 +11,16 @@
  *  L2 the next pull renews under the persisted renew id: still 1 renew intent after 5 pulls, and
  *     each pull's bearer is unexpired;
  *  L3 a new source over the same store (a restart) reuses both ids: no index growth;
- *  L4 concurrent pulls share one dispatch;
+ *  L4 concurrent pulls share one dispatch, `bearer()` and `credential()` together: one POST, the
+ *     same bearer, the whole validated credential result, and still one renew intent;
  *  L5 an outage (the door is unreachable) is `unavailable`, retried with the same renew id, and
  *     recovers to `current` once the door is back;
- *  L6 a revoked assignment ends the source: `ended approval-revoked`, and a later pull refuses with
- *     no dispatch;
+ *  L6 a revoked assignment ends the source: `ended approval-revoked`, and a later `bearer()` or
+ *     `credential()` refuses with no dispatch;
  *  L7 an expired renewal proof (approval and root live) reactivates under the same persisted
  *     activate id with the signed-in login: current, 1 POST, no new intent, and the bearer connects;
- *  L8 close() settles a pull in flight as closed without waiting for its answer, rejects new pulls
- *     with no request, and a second close is a no-op;
+ *  L8 close() settles a pull in flight (and the `credential()` sharing it) as closed without waiting
+ *     for its answer, rejects new pulls of either kind with no request, and a second close is a no-op;
  *  L9 no token appears in state(), in thrown errors, or in the persisted record's non-material fields;
  *  L10 a revoke whose cause is `restore-quarantine` (how quarantine reaches an active instance; the
  *      admission gate itself guards only new requests) ends the source as approval-revoked;
@@ -235,6 +236,17 @@ try {
     const all = await Promise.all([s1!.bearer(), s1!.bearer(), s1!.bearer()]);
     tokensSeen.push(...all);
     c.check("L4 3 concurrent pulls, 1 POST, one bearer", doorPosts === posts0 + 1 && new Set(all).size === 1, { posts: doorPosts - posts0 });
+    const posts1 = doorPosts;
+    const renewsBefore = await count(ep, one.instanceId, "renew");
+    const [b, cred, b2, cred2] = await Promise.all([s1!.bearer(), s1!.credential(), s1!.bearer(), s1!.credential()]);
+    tokensSeen.push(b, b2, cred.accessBearer, cred2.accessBearer, cred.renewalProof);
+    const rec = await recordOf(one.witness);
+    c.check("L4 concurrent bearer() and credential() share 1 POST and the same bearer", doorPosts === posts1 + 1 && b === cred.accessBearer && b2 === b && cred2 === cred, { posts: doorPosts - posts1 });
+    c.check("L4 credential() is the validated result: state credential, the witness, the persisted material, an unexpired expiry",
+      cred.state === "credential" && serviceWitnessDigest(cred.witness) === serviceWitnessDigest(one.witness) && rec?.material?.accessBearer === cred.accessBearer
+      && rec?.material?.renewalProof === cred.renewalProof && cred.accessExpiresAt > nowS(), { state: cred.state, exp: cred.accessExpiresAt - nowS() });
+    c.check("L4 credential() went through the same persisted renew id: still 1 renew intent", await count(ep, one.instanceId, "renew") === renewsBefore && renewsBefore === 1);
+    c.check("L4 the credential's bearer connects through the native service callout", await dialOk(cred.accessBearer));
   });
 
   await cell("L5 an outage is unavailable, then recovers with the same id", async () => {
@@ -266,9 +278,11 @@ try {
     c.check("L6 instrument: the fixture owner revoked through the stock host", r.state !== "denied", r);
     c.check("L6 ended approval-revoked", st.state === "ended" && (st as { reason: string }).reason === "approval-revoked", { st, first });
     const posts0 = doorPosts;
-    let later = "";
+    let later = "", laterCred = "";
     try { await s.bearer(); } catch (e) { later = e instanceof Error ? e.message : String(e); }
+    try { await s.credential(); } catch (e) { laterCred = e instanceof Error ? e.message : String(e); }
     c.check("L6 a later pull refuses with 0 POST", later !== "" && doorPosts === posts0, { later, posts: doorPosts - posts0 });
+    c.check("L6 credential() refuses the same way with 0 POST", laterCred === later && doorPosts === posts0, laterCred);
   });
 
   await cell("L10 a quarantine-restore revoke ends the source the same way", async () => {
@@ -366,20 +380,25 @@ try {
     const s = source(four.witness);
     tokensSeen.push(await s.bearer());
     doorDelayMs = 3000;
-    let inflight = "";
+    let inflight = "", inflightCred = "";
     const t0 = Date.now();
     try {
       const pending = s.bearer().then((b) => { tokensSeen.push(b); return "resolved"; }, (e: Error) => e.message);
+      const pendingCred = s.credential().then((cr) => { tokensSeen.push(cr.accessBearer); return "resolved"; }, (e: Error) => e.message);
       await new Promise((r) => setTimeout(r, 300));
       await s.close();
       inflight = await pending;
+      inflightCred = await pendingCred;
     } finally { doorDelayMs = 0; }
     const took = Date.now() - t0;
     c.check("L8 close settles the in-flight pull as closed, well before the held answer", inflight === "service renewal is closed" && took < 2500 && s.state().state === "closed", { inflight, took, state: s.state() });
+    c.check("L8 the credential() sharing that pull settles the same way", inflightCred === "service renewal is closed", inflightCred);
     const posts0 = doorPosts;
-    let thrown = "";
+    let thrown = "", thrownCred = "";
     try { await s.bearer(); } catch (e) { thrown = e instanceof Error ? e.message : String(e); }
+    try { await s.credential(); } catch (e) { thrownCred = e instanceof Error ? e.message : String(e); }
     c.check("L8 a pull after close refuses with 0 POST", thrown === "service renewal is closed" && doorPosts === posts0, thrown);
+    c.check("L8 credential() after close refuses with 0 POST", thrownCred === "service renewal is closed" && doorPosts === posts0, thrownCred);
     let second = "ok";
     try { await s.close(); } catch (e) { second = e instanceof Error ? e.message : String(e); }
     c.check("L8 a second close resolves and changes nothing", second === "ok" && s.state().state === "closed", second);

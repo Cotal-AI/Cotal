@@ -1442,7 +1442,10 @@ If that proof has expired, as after a machine was off for more than a day, the n
 same activate request on the signed-in login, which mints again while the root and the approval stand.
 It keeps one activate and one renew requestId per witness, written to `store` before the first send,
 and replays them, with fresh material each time, for as long as the root and the approval allow.
-Concurrent pulls share one request. It owns no timer. A transport failure, `rate-limited`, a missing
+Concurrent pulls share one request. `credential()` is that same pull answering the whole validated
+`credential` result, the one `authorizeGuestServeGrant` takes; `bearer()` delegates to it, so a
+`bearer()` and a `credential()` in flight together send one request under the same persisted ids,
+and an ended or closed source refuses both the same way. It owns no timer. A transport failure, `rate-limited`, a missing
 or rejected sign-in, or a store failure leaves it `unavailable`, and the next pull replays the same
 request; any other denial from the space ends it, and later pulls send nothing. `state()` reports
 expiries only, errors are fixed sentences, and `close()` aborts a pull in flight.

@@ -26,6 +26,7 @@ import {
 import { spaceSegment } from "@cotal-ai/workspace";
 
 const KIND = "service-endpoint-renewal";
+type Credential = Extract<ServiceAuthorityResult, { state: "credential" }>;
 
 interface Material { accessBearer: string; accessExpiresAt: number; renewalProof: string; renewalExpiresAt: number }
 interface RenewalRecord { v: 1; kind: typeof KIND; witnessDigest: string; activateRequestId: string; renewRequestId: string; material: Material | null }
@@ -67,7 +68,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
   const witnessDigest = serviceWitnessDigest(witness), key = serviceRenewalKey(witness);
   let state: ServiceEndpointRenewalState = { state: "idle" };
   let sentinelCreds: string | undefined;
-  let inflight: Promise<string> | undefined;
+  let inflight: Promise<Credential> | undefined;
   let closed = false;
   const abort = new AbortController();
 
@@ -99,7 +100,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
     }
   }
 
-  async function pull(): Promise<string> {
+  async function pull(): Promise<Credential> {
     const rec = await readRecord();
     const m = rec.material;
     // No material, or a renewal proof past its expiry: replay the persisted activate on the signed-in login.
@@ -124,23 +125,27 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
       end(KNOWN.has(r.reason) ? r.reason : "unrecognized");
     }
     if (r.state !== "credential") end("unrecognized");
-    const c = r as Extract<ServiceAuthorityResult, { state: "credential" }>;
+    const c = r as Credential;
     if (c.accessExpiresAt <= nowS()) outage("service renewal received an access bearer that has already expired; the next pull replays the same request");
     const material: Material = { accessBearer: c.accessBearer, accessExpiresAt: c.accessExpiresAt, renewalProof: c.renewalProof, renewalExpiresAt: c.renewalExpiresAt };
     try { await store.put(key, JSON.stringify({ ...rec, material } satisfies RenewalRecord)); }
     catch { outage("service renewal could not store its new material; the next pull replays the same request"); }
     sentinelCreds = answer!.sentinelCreds;
     state = { state: "current", accessExpiresAt: material.accessExpiresAt, renewalExpiresAt: material.renewalExpiresAt };
-    return material.accessBearer;
+    return c;
   }
 
+  /** One pull, shared by every concurrent `bearer()` and `credential()` call. */
+  const credential = (): Promise<Credential> => {
+    if (closed) return Promise.reject(new Error("service renewal is closed"));
+    if (state.state === "ended") return Promise.reject(new Error(`service renewal ended (${state.reason}); nothing more will be requested for this registration`));
+    inflight ??= pull().finally(() => { inflight = undefined; });
+    return inflight;
+  };
+
   return {
-    bearer() {
-      if (closed) return Promise.reject(new Error("service renewal is closed"));
-      if (state.state === "ended") return Promise.reject(new Error(`service renewal ended (${state.reason}); nothing more will be requested for this registration`));
-      inflight ??= pull().finally(() => { inflight = undefined; });
-      return inflight;
-    },
+    credential,
+    bearer: () => credential().then((c) => c.accessBearer),
     state: () => state,
     get sentinelCreds() { return sentinelCreds; },
     async close() {
