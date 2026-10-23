@@ -5285,7 +5285,9 @@ persona files. It does not contact the mesh or refresh extensions. Every `--spac
 `cotal use` offers, and every `--creds` lets the shell complete a file name. `config` offers its keys, and `config set color` and `config set harness` the
 values a write accepts. `docs` offers its pages, `watch --view` its views and `space add --mode` its
 modes. A channel name for `send -c`, `history` or `channel show`, `members`, `set` and `remove` comes
-from the channels the target space's personas declare, because the broker keeps the others.
+from the channels the target space's personas declare, because the broker keeps the others. The bash
+and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's
+own candidates.
 
 `install` and `uninstall` take a shell name or detect it from `SHELL`. Pass `powershell`
 explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX hosts:

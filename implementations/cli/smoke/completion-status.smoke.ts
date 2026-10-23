@@ -359,6 +359,31 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("--force is refused where it does not apply", misplaced.status === 1 && /--force applies to completion install and uninstall/.test(misplaced.stderr), shown(misplaced));
 }
 
+// ── The stubs leave a path value to the shell's file names ─────────────────────────────────────────
+{
+  const s = sandbox();
+  const bin = join(s.home, "bin"), work = join(s.home, "work");
+  mkdirSync(bin, { mode: 0o700 });
+  mkdirSync(work, { mode: 0o700 });
+  writeFileSync(join(bin, "cotal"), `#!/bin/sh\nexec "${process.execPath}" "${BIN}" "$@"\n`, { mode: 0o700 });
+  for (const name of ["plain.yaml", "my team.yaml"]) writeFileSync(join(work, name), "");
+  const env = { ...HOST_ENV, HOME: s.home, XDG_CONFIG_HOME: s.xdg, COTAL_HOME: join(s.home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", PATH: `${bin}:${process.env.PATH ?? ""}` };
+  const drive = (shell: string, script: string) => spawnSync(shell, shell === "bash" ? ["--norc", "--noprofile", "-c", script] : ["-f", "-c", script], { cwd: work, env, encoding: "utf8", timeout: 60_000 });
+  const bash = (words: string) => drive("bash", `source <(cotal completion script bash); COMP_WORDS=(${words}); COMP_CWORD=$(( \${#COMP_WORDS[@]} - 1 )); _cotal_complete; printf '%s\\n' "\${COMPREPLY[@]}"`);
+  const files = bash(`cotal team check ""`);
+  check("bash completes file names where the value takes a path, one per file", files.status === 0 && files.stdout.split("\n").filter(Boolean).sort().join("|") === "my team.yaml|plain.yaml", { status: files.status, stdout: files.stdout, stderr: files.stderr.slice(0, 300) });
+  const prefix = bash("cotal team check pl");
+  check("bash narrows them to the typed prefix", prefix.status === 0 && prefix.stdout === "plain.yaml\n", { status: prefix.status, stdout: prefix.stdout });
+  const keys = bash(`cotal config set ""`);
+  check("bash offers no file names where the value takes none", keys.status === 0 && keys.stdout.includes("color\n") && !keys.stdout.includes("plain.yaml"), { status: keys.status, stdout: keys.stdout });
+  const zshStub = s.run(["completion", "script", "zsh"]).stdout;
+  check("the zsh stub calls _files for a path value", /\[\[ "\$directive" == default \]\] && _files/.test(zshStub), zshStub);
+  if (spawnSync("zsh", ["-fc", "true"]).status === 0) {
+    const zsh = drive("zsh", `compdef() {}; _describe() { print -r -- "describe"; }; _files() { print -r -- "files"; }; source <(cotal completion script zsh); words=(cotal team check ""); CURRENT=4; _cotal; words=(cotal config set ""); CURRENT=4; _cotal`);
+    check("zsh lists files for a path value and only cotal's own candidates otherwise", zsh.status === 0 && zsh.stdout === "files\ndescribe\n", { status: zsh.status, stdout: zsh.stdout, stderr: zsh.stderr.slice(0, 300) });
+  } else console.log("  zsh is not installed here, so the stub's _files call was checked only in its text");
+}
+
 // ── Values the CLI knows locally ──────────────────────────────────────────────────────────────────
 {
   const s = sandbox();
