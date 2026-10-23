@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readFileSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  acquireLock, agentFilePath, assertValidName, hardenPrivate, mkSecretDir,
+  acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
   parseAgentFileSource, saveAgentFile, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
@@ -51,8 +51,9 @@ function catalogAt(root: string, space: string): PersonaCatalog {
 
 /** Why `name` cannot name a persona, or undefined when it can. */
 export function personaNameProblem(name: string): string | undefined {
-  if (!/^[A-Za-z0-9_-]+$/.test(name)) return "persona names use letters, digits, '_' or '-'";
-  try { assertValidName(name); } catch { return "invalid persona name"; }
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return `persona names use letters, digits, '_' or '-', up to ${MAX_NAME_LENGTH} characters`;
+  if (name.length > MAX_NAME_LENGTH) return `persona names are at most ${MAX_NAME_LENGTH} characters; this one has ${name.length}`;
+  try { assertValidName(name); } catch (error) { return (error as Error).message; }
   return undefined;
 }
 

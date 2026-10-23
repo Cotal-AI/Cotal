@@ -3101,6 +3101,8 @@ folder, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and w
 no space selected and no project here, the refusal says so. Remote `--on` operations refuse as
 unsupported here.
 
+A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
+which rule it broke.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
 must name the requested persona and keep their original bytes. A file that names another persona is

@@ -333,6 +333,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
   }
+  // A name refusal says which rule it broke.
+  for (const [name, reason] of [["a".repeat(200), "persona names are at most 128 characters; this one has 200"], ["a.b", "persona names use letters, digits, '_' or '-', up to 128 characters"]]) {
+    const r = cotal(["persona", "create", name, "--prompt", "x", "--subscribe", ""], persona, noSeed);
+    check(`persona create refuses a ${name.length > 3 ? "200-character" : "dotted"} name with its reason`, r.status === 1 && [`✗ ${reason}`, `! ${reason}`].some((line) => r.stderr.startsWith(line)), shown(r));
+  }
   // A --server that no registration names reads the project in this folder, as launch does.
   const inProject = cotal(["persona", "--json", "--server", "nats://127.0.0.1:1"], persona, noSeed);
   check("control: in a project, persona --server <unregistered> lists that project's catalog",
