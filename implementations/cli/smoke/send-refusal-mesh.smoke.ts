@@ -2,7 +2,9 @@
  * A classified `send` refusal on a resolved space names that space. `send -t <absent>` used to print
  * its TARGET_NOT_FOUND report with no `Mesh:` line and a JSON target without `space`, although the
  * space was resolved and connected before the recipient was looked up. The same lookup serves
- * `--mention`.
+ * `--mention`. The refusal also says what to run next, in `error.remedy` and the human report.
+ * A `--creds` credential that may not read presence used to wait out a five-second Direct Get
+ * timeout and exit 3 with an unknown `timeout`; it is refused with `PERMISSION_DENIED`.
  *
  * Starts one static-auth broker owned by this suite, registers its space under a sandboxed
  * COTAL_HOME, and drives the built binary from the space's root.
@@ -27,7 +29,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string; name?: string } | null;
-  error?: { code: string };
+  error?: { code: string; remedy?: string };
 }
 
 const { check, finish } = createSuite();
@@ -70,15 +72,22 @@ try {
     const r = run(["send", "-t", absent, "hello", "--space", space, ...style]);
     check(`${label}: an absent recipient is refused, exit 2`, r.status === 2 && r.stderr.includes("TARGET_NOT_FOUND"), shown(r));
     check(`${label}: the refusal begins with Mesh: <space>`, firstLine(r.stderr) === `Mesh: ${space}`, shown(r));
+    check(`${label}: the refusal says what to run next`, r.stderr.includes(`cotal who --all --space ${space}`), shown(r));
   }
 
   const json = run(["send", "-t", absent, "hello", "--space", space, "--json"]);
   check("json: the refusal envelope is TARGET_NOT_FOUND", json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.error?.code === "TARGET_NOT_FOUND", shown(json));
   check("json: the envelope target carries the resolved space and the name", json.envelope?.target?.space === space && json.envelope.target.name === absent, json.envelope?.target);
   check("json: stderr still has the human report with the Mesh line", firstLine(json.stderr) === `Mesh: ${space}`, shown(json));
+  check("json: the remedy names who to list", json.envelope?.error?.remedy?.includes(`cotal who --all --space ${space}`) === true, json.envelope?.error);
 
   const mention = run(["send", "-c", "general", "--mention", absent, "hello", "--space", space, "--json"]);
   check("mention: an absent mention is refused with the resolved space", mention.status === 2 && mention.envelope?.error?.code === "TARGET_NOT_FOUND" && mention.envelope.target?.space === space, shown(mention));
+
+  const adminCreds = join(dir, "admin.creds");
+  writeFileSync(adminCreds, await mintCreds(auth, newIdentity(), "admin"), { mode: 0o600 });
+  const denied = run(["send", "-c", "general", "hello", "--creds", adminCreds, "--server", servers, "--space", space, "--json"]);
+  check("creds: a credential that may not read presence is refused PERMISSION_DENIED with the space", denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && denied.envelope.target?.space === space, shown(denied));
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {

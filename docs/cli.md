@@ -3599,13 +3599,16 @@ stdin must contain nonempty UTF-8 text; their content is preserved and never pri
 No destination, several destinations, several body sources or an empty message is refused.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar; a channel publication cannot name a wildcard.
-A direct target resolves by its full identity or an unambiguous name. A name collision refuses;
-no fuzzy match selects an agent for you.
+A direct target resolves by its full identity or an unambiguous name. A name collision refuses
+with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, and a target that is not
+present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
+agent for you.
 
 For a channel post, repeat `--mention <agent>` to add explicit wake hints without changing the
 destination. Each one resolves like a direct target and is sent as that agent's name, which is what
 a receiving session compares. An instance id is refused when its name also resolves to another
-participant. Direct and role sends have no native mention field and refuse that option.
+participant, and a shared name refuses with the full identities to send to with `--to` instead.
+Direct and role sends have no native mention field and refuse that option.
 A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
 still has no inbox and does not promise thread continuity.
 
@@ -3637,7 +3640,10 @@ bearer, which has no batched read of those buckets, so it watches them instead, 
 consumer stays on the broker for five minutes after the send exits. A sustained send rate there can
 reach the broker's limit of 1000 consumers per stream, and the broker refuses further sends until
 the old consumers expire. A channel send also reads that channel's policy, with one Direct Get on a
-static or open mesh and with one more scan consumer on a user-auth mesh.
+static or open mesh and with one more scan consumer on a user-auth mesh. A `--creds` credential
+that may not read the roster and the channel registry that way, such as one from `cotal auth mint`,
+refuses with `PERMISSION_DENIED` (exit 2) before anything is sent, and the remedy says to run
+without `--creds`.
 
 A recipient can still answer a `send --to` or `send --role` with `cotal_dm` or from a `chat`
 session. On a static or open mesh every send has its own principal under the same display name, so
@@ -3952,6 +3958,10 @@ same per-action instrument path as `cotal stop` and `cotal ps`, never the observ
 `--creds` file cannot drive it. `a` (or `:attach <agent>`) runs
 [`cotal attach`](#managed-seats) in place and returns to the console on detach. See
 [Watch a mesh](watch-a-mesh.md).
+
+Message bodies, names and other text from peers are untrusted. Both views show a control character
+in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
+a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
 
 <a id="web"></a>
 

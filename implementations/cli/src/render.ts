@@ -1,4 +1,4 @@
-import { peerLabel, presenceText, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
+import { oneLine, peerLabel, presenceText, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
 import { MeshView, type FeedEntry } from "./view/mesh-view.js";
 import { activityAge, c, color256, presenceDetail, statusBadge } from "./ui.js";
 
@@ -27,16 +27,18 @@ const ts = (epochMs: number) => c.dim(new Date(epochMs).toLocaleTimeString());
 
 // ---- formatting a feed entry / presence change into a line -----------------
 
+// A peer writes the body, its names and the destination it claims. Each is escaped before it is
+// colored, so it cannot carry a control sequence to the terminal, as watch --plain and history do.
 function target(e: FeedEntry): string {
-  if (e.delivery === "multicast") return c.cyan("#" + (e.channel ?? "?"));
-  if (e.delivery === "anycast") return c.dim("@" + (e.toService ?? "?"));
-  const names = (e.toNames ?? []).map((n) => agentColor(n)(n)).join(", ");
+  if (e.delivery === "multicast") return c.cyan("#" + oneLine(e.channel ?? "?"));
+  if (e.delivery === "anycast") return c.dim("@" + oneLine(e.toService ?? "?"));
+  const names = (e.toNames ?? []).map((n) => agentColor(n)(oneLine(n))).join(", ");
   const mult = e.count && e.count > 1 ? c.dim(` (${e.count}×)`) : "";
   return names + mult;
 }
 
 function feedLine(e: FeedEntry): string {
-  return `${ts(e.ts)} ${who(e.from)} ${c.dim("→")} ${target(e)}: ${e.text}`;
+  return `${ts(e.ts)} ${who(e.from)} ${c.dim("→")} ${target(e)}: ${oneLine(e.text)}`;
 }
 
 function presenceLine(ev: PresenceEvent): string {
@@ -57,8 +59,8 @@ function presenceLine(ev: PresenceEvent): string {
  *  prints presence changes and each classified+coalesced feed entry as it lands. */
 export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: string): Promise<void> {
   const view = new MeshView(ep, tapSubject ? { tapSubject } : {});
-  ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
-  view.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
+  ep.on("error", (e: Error) => console.error(c.red("! " + oneLine(e.message))));
+  view.on("warning", (e: Error) => console.error(c.yellow("! " + oneLine(e.message))));
   view.on("presence", (ev) => console.log(presenceLine(ev as PresenceEvent)));
   view.on("entry", (e) => console.log(feedLine(e as FeedEntry)));
   await view.start();

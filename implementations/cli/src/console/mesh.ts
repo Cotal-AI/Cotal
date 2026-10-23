@@ -5,7 +5,7 @@
 // sort, rates, derived signals) lives in MeshView — see docs/mesh-view.md.
 
 import { useEffect, useRef, useState } from "react";
-import type { CotalEndpoint } from "@cotal-ai/core";
+import { oneLine, type CotalEndpoint } from "@cotal-ai/core";
 import type { MeshSnapshot, MeshViewOptions } from "../view/mesh-view.js";
 import { MeshView } from "../view/mesh-view.js";
 
@@ -16,13 +16,25 @@ export type MeshState = MeshSnapshot;
 /** Focusable panes across the console (normal panels + the DM and topology lenses). */
 export type FocusId = "roster" | "feed" | "needsyou" | "dmpeers" | "dmthread" | "topo";
 
+/** `value` with every string safe to draw. Peers write message bodies, names, activities and channel
+ *  text, and Ink passes a control sequence in a string through to the terminal, so each string keeps
+ *  its line breaks and shows every other control character as a `\uXXXX` escape. A function's
+ *  result is escaped the same way. */
+export function displaySafe<T>(value: T): T {
+  if (typeof value === "string") return value.replace(/\r\n/g, "\n").split("\n").map(oneLine).join("\n") as T;
+  if (typeof value === "function") return ((...args: unknown[]) => displaySafe((value as (...a: unknown[]) => unknown)(...args))) as T;
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(displaySafe) as T;
+  return Object.fromEntries(Object.entries(value).map(([key, field]) => [key, displaySafe(field)])) as T;
+}
+
 export function useMesh(ep: CotalEndpoint, opts?: MeshViewOptions): MeshSnapshot {
   const viewRef = useRef<MeshView | null>(null);
   if (!viewRef.current) viewRef.current = new MeshView(ep, opts ?? {});
-  const [state, setState] = useState<MeshSnapshot>(() => viewRef.current!.snapshot());
+  const [state, setState] = useState<MeshSnapshot>(() => displaySafe(viewRef.current!.snapshot()));
   useEffect(() => {
     const view = viewRef.current!;
-    const onChange = (s: MeshSnapshot) => setState(s);
+    const onChange = (s: MeshSnapshot) => setState(displaySafe(s));
     view.on("change", onChange);
     void view.start();
     return () => {

@@ -221,5 +221,41 @@ console.log("4. every send waits for the same participant start, and a refusal r
   check("a later send retries participant startup and publishes once", starts === 2 && ep.sent.join(",") === "retry", { starts, sent: ep.sent });
 }
 
+console.log("5. a peer's control sequences reach the screen as escapes, not as terminal commands");
+{
+  const body = "INJ \x1b[2J \x1b]0;pwned-title\x07 \x1b]8;;http://evil.example/\x1b\\link\x1b]8;;\x1b\\ cr\rOVER\nSECOND-LINE";
+  class Observer extends EventEmitter {
+    space = "peer-text";
+    card = { id: "local.operator", name: "operator", kind: "endpoint", role: "operator" };
+    async start() {}
+    async stop() {}
+    getRoster(): Presence[] { return []; }
+    tap() {}
+    async listChannels() { return [{ channel: "general", messages: 1 }]; }
+    async channelHistory() { return [{ id: "m1", ts: Date.now(), from: { id: "local.peer", name: "peer\x1b[31m" }, channel: "general", parts: [{ kind: "text", text: body }] }]; }
+    async dmHistory() { return []; }
+    ref() { return this.card; }
+    async readMembership() { return { asOf: undefined, members: [] }; }
+    async watchMembership() { return { stop: async () => {} }; }
+  }
+  const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+  stdin.isTTY = true;
+  stdin.setRawMode = () => stdin;
+  stdin.ref = () => stdin;
+  stdin.unref = () => stdin;
+  let raw = "";
+  const frames: string[] = [];
+  const stdout = new Writable({ write(c, _e, cb) { raw += String(c); frames.push(strip(String(c))); if (frames.length > 100) frames.shift(); cb(); } }) as unknown as NodeJS.WriteStream;
+  stdout.columns = 160;
+  stdout.rows = 32;
+  stdout.isTTY = true;
+  const app = render(<App ep={new Observer() as unknown as CotalEndpoint} canWrite={false} canControl={false} />, { stdin, stdout, patchConsole: false, exitOnCtrlC: false, debug: true });
+  const paint = await waitForFrame(frames, "SECOND-LINE", 5_000);
+  app.unmount();
+  check("the body is painted, with its control characters as escapes", paint.includes("INJ \\u001b[2J \\u001b]0;pwned-title\\u0007"), paint.slice(-400));
+  check("no title, hyperlink, bell or bare carriage return reaches the terminal", !raw.includes("\x1b]") && !raw.includes("\x07") && !raw.includes("\x1b[2J") && !/\r(?!\n)OVER/.test(raw), JSON.stringify(raw.slice(-200)));
+  check("a body's line break still starts a new row", paint.includes("SECOND-LINE") && !paint.includes("\\u000aSECOND-LINE"), paint.slice(-400));
+}
+
 console.log(`\n${fail === 0 ? "CONSOLE-RENDER SMOKE OK ✅" : "CONSOLE-RENDER SMOKE FAILED ❌"} (${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
