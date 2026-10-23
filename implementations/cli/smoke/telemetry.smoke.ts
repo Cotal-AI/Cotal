@@ -173,6 +173,18 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   const result = status.envelope?.result as Body | undefined;
   check("cotal telemetry under DO_NOT_TRACK reports off by that variable with no install id, and sends nothing", status.status === 0 && status.sent.length === 0 && result?.level === "off" && result?.source === "DO_NOT_TRACK" && result?.installId === null && result?.url === url, { ...shown(status), result });
 
+  // Under an environment opt-out the file is neither read nor created, so a level saves nothing.
+  for (const extra of [{ DO_NOT_TRACK: "1" }, { COTAL_TELEMETRY_DISABLED: "1" }, { COTAL_TELEMETRY: "off" }]) {
+    const [name] = Object.keys(extra);
+    const r = await s.run(["telemetry", "minimal", "--json"], extra);
+    await settled();
+    const warning = (r.envelope?.warnings as Body[] | undefined)?.[0];
+    check(`cotal telemetry minimal under ${name} saves nothing and creates no file: a no-op with ENVIRONMENT_OPT_OUT`,
+      r.status === 0 && r.sent.length === 0 && r.envelope?.outcome === "no-op" && warning?.code === "ENVIRONMENT_OPT_OUT" && /minimal was not saved/.test(String(warning?.message)) && !existsSync(s.settingsPath), shown(r));
+  }
+  const text = await s.run(["telemetry", "regular"], { DO_NOT_TRACK: "1" });
+  check("…and the text report says on stderr that the level was not saved", text.status === 0 && /DO_NOT_TRACK keeps telemetry off and the settings file untouched, so regular was not saved/.test(text.stderr) && !existsSync(s.settingsPath), shown(text));
+
   const off = await s.run(["telemetry", "off"]);
   await settled();
   const after = await s.run(["version"]);
@@ -181,6 +193,9 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("after cotal telemetry off, a command sends nothing", after.status === 0 && after.sent.length === 0, shown(after));
   const again = await s.run(["telemetry", "off", "--json"]);
   check("setting the level the file already holds is a no-op", again.status === 0 && again.envelope?.outcome === "no-op", shown(again));
+  const held = readFileSync(s.settingsPath, "utf8");
+  const forced = await s.run(["telemetry", "regular", "--json"], { DO_NOT_TRACK: "1" });
+  check("under DO_NOT_TRACK an existing settings file is left as it was", forced.status === 0 && forced.envelope?.outcome === "no-op" && readFileSync(s.settingsPath, "utf8") === held, shown(forced));
   const on = await s.run(["telemetry", "on", "--json"]);
   const onResult = on.envelope?.result as Body | undefined;
   check("cotal telemetry on is regular, and reports the file as the source with the install id", on.status === 0 && onResult?.level === "regular" && onResult?.source === "file" && onResult?.installId === s.settings().installId, { ...shown(on), onResult });

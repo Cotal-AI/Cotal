@@ -4950,7 +4950,9 @@ is never sent. The bare form prints the level in force, what set it (the setting
 `COTAL_TELEMETRY`, `DO_NOT_TRACK` or `COTAL_TELEMETRY_DISABLED`), the install id, the intake URL and
 the settings file. A level argument writes the file; `on` is an alias of `regular`, and writing the
 level the file already holds is a `no-op`. A level the environment forces still wins, and the
-report says so. `cotal telemetry` itself sends nothing.
+report says so. Under `DO_NOT_TRACK`, `COTAL_TELEMETRY_DISABLED` or `COTAL_TELEMETRY=off` the file
+is neither read nor created, so a level argument saves nothing and is a `no-op` with an
+`ENVIRONMENT_OPT_OUT` warning. `cotal telemetry` itself sends nothing.
 
 The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEMETRY` set to
 anything but a level refuses `USAGE_INVALID`, and a settings file that does not validate refuses

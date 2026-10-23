@@ -22,7 +22,9 @@ cotal telemetry regular    # the default; `on` is an alias
 
 The environment outranks the file: `DO_NOT_TRACK=1` or `COTAL_TELEMETRY_DISABLED=1` forces `off`,
 and `COTAL_TELEMETRY=off|minimal|regular` names a level. Any other `COTAL_TELEMETRY` value refuses
-with `USAGE_INVALID`. `cotal telemetry` names the source of the level in force.
+with `USAGE_INVALID`. `cotal telemetry` names the source of the level in force. While the
+environment forces `off`, `cotal telemetry <level>` saves nothing and creates no file: it is a
+`no-op` with an `ENVIRONMENT_OPT_OUT` warning.
 
 The settings live in the OS user's own Cotal directory, `~/.cotal/telemetry.json`
 (`%LOCALAPPDATA%\Cotal\telemetry.json` on Windows), mode `0600`: the level, a random install id

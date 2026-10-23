@@ -36,12 +36,15 @@ export function validateTelemetryArguments(args: ParsedArgs): void {
 }
 
 /** `cotal telemetry [off|minimal|regular]`: show the level in force, or set the file's level. A level
- *  the environment forces still wins over the file, and the report says so. */
+ *  the environment forces still wins over the file, and the report says so. Under an environment
+ *  opt-out the file is neither read nor created, so a level is not saved: the run is a no-op that
+ *  says so. */
 export async function telemetry(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const wanted = args.positionals[0] as TelemetryLevel | undefined;
   const before = effectiveTelemetry(process.env);
-  const noOp = wanted !== undefined && before.settings?.level === wanted;
+  const optedOut = wanted !== undefined && before.source !== "file" && before.level === "off";
+  const noOp = optedOut || (wanted !== undefined && before.settings?.level === wanted);
   if (wanted !== undefined && !noOp) setTelemetryLevel(wanted);
   const state = wanted === undefined || noOp ? before : effectiveTelemetry(process.env);
   const result: TelemetryResult = {
@@ -53,7 +56,10 @@ export async function telemetry(args: ParsedArgs): Promise<void> {
     url: telemetryUrl(),
     file: telemetrySettingsPath(),
   };
-  writeResult(presentation, { command: "telemetry", target: null, result, noOp }, view);
+  const warnings = optedOut
+    ? [{ code: "ENVIRONMENT_OPT_OUT", target: { file: result.file }, message: `${before.source} keeps telemetry off and the settings file untouched, so ${wanted} was not saved; unset ${before.source} to save a level` }]
+    : [];
+  writeResult(presentation, { command: "telemetry", target: null, result, noOp, warnings }, view);
 }
 
 const SOURCE_TEXT: Record<TelemetrySource, string> = {
