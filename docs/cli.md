@@ -5399,8 +5399,10 @@ that step and the message stays under `Step errors`. A run that failed before it
 cause shows only `failed`. A failure raised by program code outside any step is recorded in no
 journal row. The view says so under `Failure` and names
 `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
-`--json` on `ps` or `journal` prints each row the manager answers with (or `--local` reads) as one
-JSON object per line. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
+`--json` on `ps` or `journal` writes one envelope on stdout, as other commands do, and nothing on
+stderr, whether the manager answers or `--local` reads. `ps` lists its rows under `result.items`.
+`journal` puts the run under `result.view`: its `runId`, `endpoint`, recorded `spec` and `status`,
+and its rows under `result.view.journal`. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
 `journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
 reports; `programHash` is absent for a run with no recorded program), `failure` on a failed run
 with its `code` and `message`, and `revoked` or `revocationUnreadable` when the marker says so. A `journal` row is an `activation` or a `step`. A
@@ -5410,9 +5412,9 @@ and `startedAt` and `endedAt` in epoch milliseconds. An open
 pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
 settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
-The run header goes to stderr, so stdout carries only rows; an unreadable revocation marker
-prints its reason there and still exits 1. The text view is presentation and is not a stable
-parsing target. `--json` on any other verb is refused.
+An unreadable revocation marker makes the result partial, exit 4, with a `REVOCATION_NOT_CHECKED`
+warning naming the run. The text view is presentation and is not a stable parsing target. With
+`--local`, only `ps`, `journal`, `answer` and `amend` take `--json` or `--plain`.
 `ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
 diagnostic JSON page instead of the full list:
 `--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
