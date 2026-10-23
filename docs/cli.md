@@ -4359,7 +4359,10 @@ cotal console [--plain] [--space <s>]
 
 A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. The
 line stream is also what a pipe gets. On `--plain`, and under a locale that is not UTF-8, it writes
-no status marks and its punctuation in ASCII. On a
+no status marks and its punctuation in ASCII. The line stream reports a lost connection in one line
+while it re-establishes it. A credential that can no longer connect ends it with the refusal a
+one-shot command with that credential gets, as [`history --follow`](#history) does. Ctrl-C or
+SIGTERM ends either view at any time. On a
 user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
 `admin`. Inside the TUI, operator control (`D` kill, `:spawn`, `:status`, `:purge`) rides the
 same per-action instrument path as `cotal stop` and `cotal ps`, never the observer; a raw
