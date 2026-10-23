@@ -231,6 +231,8 @@ export type RunJournalRow =
       /** The settled status and error code as recorded; `outcome` is their presentation. */
       readonly status?: string;
       readonly errorCode?: string;
+      /** The recorded error's message, on a settled `failed` or `refused` step. */
+      readonly errorMessage?: string;
       /** When the step began and, once settled, ended (epoch ms). */
       readonly startedAt: number;
       readonly endedAt?: number;
