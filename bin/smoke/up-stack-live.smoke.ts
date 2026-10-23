@@ -470,15 +470,16 @@ try {
     // The shape under test: a pinned manager whose spare capability is NOT proven.
     rmSync(rgRecord(MANAGER_SPARE_CAPABILITY), { force: true });
     rgUp.kill("SIGINT");
-    // The refusal path must return quickly; give the would-be teardown a moment to betray itself.
+    // The stop prints its refusal only after its own round trip to the manager, which a loaded host
+    // slows, so the output is polled up to a deadline. Then the would-be teardown gets a moment to
+    // betray itself before the gate is checked.
+    const refusal = () => /refusing bare manager stop/.test(plain(rgOutText)) && /cotal down --with-agents/.test(plain(rgOutText));
+    for (let i = 0; i < 120 && !refusal(); i++) await sleep(500);
+    ok("the refusal names the bare-stop rule and the reap route", refusal(), rgOutText);
     await sleep(3000);
     ok("the refusal gate leaves the manager and broker running",
       alive(rgManagerPid) && (await portOpenAt(rgPort)) && rgUp !== undefined && alive(rgUp.pid ?? 0),
       { manager: rgManagerPid, managerAlive: alive(rgManagerPid), upAlive: rgUp ? alive(rgUp.pid ?? 0) : false });
-    ok("the refusal names the bare-stop rule and the reap route",
-      /refusing bare manager stop/.test(plain(rgOutText)) &&
-      /cotal down --with-agents/.test(plain(rgOutText)),
-      rgOutText);
     ok("no spared report is printed on the refusal path", !/left \d+ managed agent/.test(plain(rgOutText)), rgOutText);
     // The operator's route ends the run: down --with-agents, then up exits via the broker-exit path.
     cliInEnv(rgRoot, rgEnv, "down", "--with-agents");
