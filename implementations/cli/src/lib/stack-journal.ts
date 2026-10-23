@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, cotalDirLink, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, movedRootRemedy, parsePid, preparedSpaceAt, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, cotalDirLink, decodeLocalJson, findMesh, findPreparedSpace, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, movedRootRemedy, parsePid, preparedSpaceAt, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -74,10 +74,26 @@ function invalid(root: string): never {
   throw new CommandFailure("refused", "SCHEMA_INVALID", "the stack journal has an unsupported shape; no stack membership or stopped state was inferred", { remedy: `inspect ${stackJournalPath(root)} and the service instances it names; it was not reset` });
 }
 
+/** Why `space create --adopt` may not take over, at `root`, the stack journal that `recordedRoot`
+ *  recorded for `space`: this folder's `.cotal` links to another's, the recorded root still holds the
+ *  journal, this home records one of its member instances, or the space is prepared or registered on
+ *  this machine. Undefined when it may. */
+function adoptionBlock(root: string, recordedRoot: string, space: string, members: readonly StackMember[]): { kind: "link" | "copy" | "known" | "recorded"; message: string; remedy: string } | undefined {
+  const link = cotalDirLink(root);
+  if (link !== undefined) return { kind: "link", message: `${join(root, ".cotal")} is a link to ${link}, so this folder has no records of its own to adopt`, remedy: `use the stack from ${recordedRoot}, which holds it` };
+  if (existsSync(stackJournalPath(recordedRoot))) return { kind: "copy", message: `${recordedRoot} still holds the stack journal of "${space}", so this folder is a copy of a stack that runs from there`, remedy: `use the stack from ${recordedRoot}, which holds it` };
+  const ids = new Set(members.flatMap((member) => [member.instanceId, member.replacement?.instanceId]).filter((id): id is string => typeof id === "string"));
+  const known = STACK_ROLES.flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])).find((row) => ids.has(row.record.value.instanceId));
+  if (known) return { kind: "known", message: `this machine records instance ${known.record.value.instanceId} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
+  const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with cotal space forget ${space}, then run cotal space create ${space} --adopt --root ${root}` };
+  return undefined;
+}
+
 /** A well-formed journal that another folder recorded: this folder's `.cotal` links to that folder's,
  *  or this folder was moved or copied after that stack started there. Its members and instances
- *  belong to that folder, so nothing here uses them. */
-function recordedElsewhere(root: string, recordedRoot: string, space: string): never {
+ *  belong to that folder, so nothing here uses them. A folder that may adopt the journal is told how. */
+function recordedElsewhere(root: string, recordedRoot: string, space: string, members: readonly StackMember[]): never {
   const link = cotalDirLink(root);
   if (link !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `${join(root, ".cotal")} is a link to ${link}, whose stack journal was recorded at ${recordedRoot}; a controller stack runs only from the folder it started in`, {
@@ -87,9 +103,12 @@ function recordedElsewhere(root: string, recordedRoot: string, space: string): n
   // The recorded root still holds its journal after a copy; after a move it does not, even where a
   // running broker created empty folders at that path again.
   const moved = !existsSync(stackJournalPath(recordedRoot));
+  let block: ReturnType<typeof adoptionBlock> | null = null;
+  if (moved) { try { block = adoptionBlock(root, recordedRoot, space, members); } catch { block = null; } }
+  const adopt = block === undefined ? `adopt it with cotal space create ${space} --adopt --root ${root}` : block?.kind === "recorded" ? block.remedy : undefined;
   throw new CommandFailure("refused", "CONFLICT", `this folder's stack journal was recorded at ${recordedRoot}, so this folder was ${moved ? "moved" : "copied"} from there; a controller stack runs only from the folder it started in`, {
     target: { root, recordedRoot, space },
-    remedy: moved ? movedRootRemedy(recordedRoot) : `use the stack from ${recordedRoot}, which holds it; this copy does not`,
+    remedy: !moved ? `use the stack from ${recordedRoot}, which holds it; this copy does not` : adopt ? `${movedRootRemedy(recordedRoot)}; or, to run it from this folder, ${adopt}` : movedRootRemedy(recordedRoot),
   });
 }
 
@@ -141,7 +160,7 @@ function validate(input: unknown, root: string): StackJournal {
   const maintained = operation.kind === "preserve" || operation.kind === "resume";
   if (maintained !== (operation.maintenanceAttemptId !== undefined) || maintained && (operation.withAgents !== false || typeof operation.maintenanceAttemptId !== "string" || !MAINTENANCE_ATTEMPT_ID.test(operation.maintenanceAttemptId))) invalid(root);
   const broker = value.broker === undefined ? undefined : brokerInputs(value.broker, root);
-  if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string);
+  if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string, members);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
 }
@@ -172,6 +191,56 @@ export function readStackJournal(root: string): StackJournalSnapshot | undefined
   try { input = decodeLocalJson(bytes); }
   catch (error) { if (isCommandFailure(error)) unreadable(canonical); throw error; }
   return { journal: validate(input, canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+/** The stack journal at `root` that another folder recorded, as a copy or a moved folder keeps it, with
+ *  that folder. Undefined when `root` has no journal or recorded it itself. */
+export function journalRecordedElsewhere(root: string): { journal: StackJournal; recordedRoot: string; sha256: string } | undefined {
+  const canonical = canonicalRoot(root);
+  const bytes = readLocalRecordSource(stackJournalPath(canonical), LIMIT, true);
+  if (!bytes) return undefined;
+  let input: unknown;
+  try { input = decodeLocalJson(bytes); }
+  catch (error) { if (isCommandFailure(error)) unreadable(canonical); throw error; }
+  const recordedRoot = (input as { root?: unknown } | null)?.root;
+  if (typeof recordedRoot !== "string" || recordedRoot === canonical) return undefined;
+  // Validated as if recorded here, so a shape refusal names this folder's journal.
+  return { journal: validate({ ...(input as object), root: canonical }, canonical), recordedRoot, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+/** Why `space create --adopt` would refuse the journal {@link journalRecordedElsewhere} found at
+ *  `root`, as the message and the next step; undefined when it would adopt it. */
+export function adoptionRefusal(root: string, found: { journal: StackJournal; recordedRoot: string }): { message: string; remedy: string } | undefined {
+  return adoptionBlock(canonicalRoot(root), found.recordedRoot, found.journal.space, found.journal.members);
+}
+
+/** `space create --adopt`: rewrite, at `root`, the stack journal another folder recorded, as a copy
+ *  from another machine or a folder moved after its stack stopped keeps it, so it names this root.
+ *  It refuses as {@link adoptionBlock} says. The adopted journal keeps the space, address, mode and
+ *  broker inputs, with a store that lay under the recorded root moved under this one, and records an
+ *  up refused before any member started, as a stack that never ran here. Returns the recorded root. */
+export function adoptStackJournal(root: string, space: string): string {
+  const canonical = canonicalRoot(root), path = stackJournalPath(canonical);
+  const lock = acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") });
+  try {
+    const found = journalRecordedElsewhere(canonical);
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${canonical} without --adopt` });
+    if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with cotal space create ${found.journal.space} --adopt --root ${canonical}` });
+    const block = adoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
+    if (block) throw new CommandFailure("refused", "CONFLICT", `${block.message}; it was not adopted and nothing was written`, { target: { root: canonical, recordedRoot: found.recordedRoot, space }, remedy: block.remedy });
+    const under = (path: string) => { const rest = relative(found.recordedRoot, path); return rest !== "" && !rest.startsWith("..") && !isAbsolute(rest) ? join(canonical, rest) : path; };
+    const now = new Date().toISOString();
+    const next: StackJournal = {
+      schemaVersion: 1, kind: "cotal-stack-controller", root: canonical, space, server: found.journal.server, mode: found.journal.mode,
+      members: STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: null, state: "not-attempted" })),
+      ...(found.journal.broker ? { broker: { ...found.journal.broker, storeDir: under(found.journal.broker.storeDir) } } : {}),
+      operation: { id: randomUUID(), kind: "up", phase: "refused", recordedAt: now, withAgents: false },
+      updatedAt: now,
+    };
+    validate(next, canonical);
+    writeSecretFileAtomic(path, JSON.stringify(next, null, 2) + "\n");
+    return found.recordedRoot;
+  } finally { lock.release(); }
 }
 
 /** A controller-owned stack cannot be preserved in this release, so its preserve, and the backup and

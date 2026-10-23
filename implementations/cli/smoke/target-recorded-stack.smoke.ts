@@ -8,6 +8,9 @@
  * told it is a link, and its status names the link once. A journal cut short or emptied, as an
  * interrupted write leaves it, is named with its path and the way out, and status warns about it. A
  * moved folder is told to move back, and to move aside first any folders found at the old path.
+ * `space create` in a copy refuses; where the folder its journal names holds no journal, as for a
+ * copy from another machine, the refusal and status name `space create --adopt`, which rewrites the
+ * journal to name the copy and its store, and prepares the space there.
  *
  * The journal is written by hand in the shape `cotal up` leaves when its broker never started; the
  * resolver reads only its server and space fields. Driven through the built binary in a sandboxed COTAL_HOME.
@@ -116,9 +119,9 @@ const recreatedUp = run(["up", "--json"], moved);
 rmSync(root, { recursive: true });
 renameSync(moved, root);
 check("up in a moved folder refuses CONFLICT and says to move it back",
-  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === `move this folder back to ${root}, then run the command again there`, shown(movedUp));
+  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === `move this folder back to ${root}, then run the command again there; or, to run it from this folder, adopt it with cotal space create la07 --adopt --root ${moved}`, shown(movedUp));
 check("with empty folders at the old path it is still moved, and says to move them aside first",
-  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there`, shown(recreatedUp));
+  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; or, to run it from this folder, adopt it with cotal space create la07 --adopt --root ${moved}`, shown(recreatedUp));
 // A folder whose .cotal links to this project's reads the same journal through the link.
 const linked = `${root}-linked`;
 mkdirSync(linked);
@@ -131,6 +134,34 @@ const linkedCodes = (linkedStatus.envelope?.warnings ?? []).map((w) => w.code);
 check("status there warns once that it did not read the attempt inventories through the link",
   linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${join(root, ".cotal")}`)), shown(linkedStatus));
 rmSync(linked, { recursive: true, force: true });
+
+// space create in a copy refuses, and names --adopt where the copy may take the journal over.
+{
+  const original = run(["space", "create", "la07", "--adopt", "--json"], copy);
+  check("--adopt in a copy whose original still holds the journal refuses CONFLICT and writes nothing",
+    original.status === 2 && original.envelope?.error?.code === "CONFLICT" && original.envelope.error.message === `${root} still holds the stack journal of "la07", so this folder is a copy of a stack that runs from there; it was not adopted and nothing was written` && original.envelope.error.remedy === `use the stack from ${root}, which holds it` && (JSON.parse(readFileSync(join(copy, ".cotal", "stack-controller.json"), "utf8")) as { root: string }).root === root, shown(original));
+  // A copy from another machine: the folder its journal names holds no journal on this one.
+  const away = `${root}-away`, brought = `${root}-brought`;
+  spawnSync("cp", ["-a", root, brought]);
+  const path = join(brought, ".cotal", "stack-controller.json");
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), broker: { storeDir: join(root, ".cotal", "nats") } }, null, 2) + "\n", { mode: 0o600 });
+  renameSync(root, away);
+  const command = `cotal space create la07 --adopt --root ${brought}`;
+  const plain = run(["space", "create", "la07", "--json"], brought);
+  check("space create there without --adopt refuses CONFLICT, exit 2, naming the --adopt command",
+    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with ${command}`, shown(plain));
+  const status = run(["status", "--json"], brought);
+  check("status there names the same command", JSON.stringify(status.envelope?.result?.selected ?? null).includes(`\`${command}\``), shown(status));
+  const adopted = run(["space", "create", "la07", "--adopt", "--json"], brought);
+  const journal = JSON.parse(readFileSync(path, "utf8")) as { root: string; space: string; server: string; broker?: { storeDir: string }; members: { instanceId: string | null; state: string }[] };
+  renameSync(away, root);
+  check("--adopt prepares the space and rewrites the journal to name this folder, its store under it, with no member started",
+    adopted.status === 0 && journal.root === brought && journal.space === "la07" && journal.server === RECORDED && journal.broker?.storeDir === join(brought, ".cotal", "nats") && journal.members.every((m) => m.instanceId === null && m.state === "not-attempted"), { adopted: shown(adopted), journal });
+  const preparedThere = run(["status", "--json"], brought);
+  check("the space is then prepared there, to start with cotal up", (preparedThere.envelope?.result?.selected?.message ?? "").includes(`"la07" is prepared but not started`), shown(preparedThere));
+  check("rig: forget the adopted space", run(["space", "forget", "la07", "--json"], brought).status === 0);
+  rmSync(brought, { recursive: true, force: true });
+}
 writeFileSync(join(copy, ".cotal", "stack-controller.json"), JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: copy, space: "la07" }) + "\n", { mode: 0o600 });
 const malformed = run(["up", "--json"], copy);
 check("a malformed journal is still SCHEMA_INVALID, and its remedy names the journal's own path",

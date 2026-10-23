@@ -82,6 +82,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
         : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
+      // A journal another folder recorded is taken over with `space create --adopt`, unless that
+      // folder still holds it, so this one is a copy of a stack that runs from there.
+      if (d.home === undefined && d.recordedRoot !== undefined)
+        return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.recordedRootHoldsJournal
+          ? `use the stack from ${d.recordedRoot}, which holds it`
+          : `adopt it here with \`cotal space create ${d.stackSpace ?? "<space>"} --adopt --root ${d.root}\`, then start it with \`cotal up\` there`);
       return d.home === undefined
         ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${d.root}\`, then start it with \`cotal up\` there`)
         : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());

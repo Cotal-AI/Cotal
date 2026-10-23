@@ -650,7 +650,8 @@ longer holds the journal. Commands that reach a static-auth space from a moved f
 project folder relative to that folder and runs from it, so a broker still running when its folder
 is renamed keeps writing into the renamed folder and does not create the old path again. A broker
 an earlier release started does, so when something is found at the recorded path, the refusal says
-to move it aside before moving the folder back. A folder whose `.cotal` is a link to another
+to move it aside before moving the folder back. When `space create --adopt` could take the journal
+over instead, the refusal names that command too. A folder whose `.cotal` is a link to another
 project's `.cotal` is told that it is a link and to use the stack from that project. `status` there
 does not read the folder's boot and additive attempt inventories through the link and warns that
 it did not. `space create` in a copy whose records name another root says so and names that root,
@@ -1846,7 +1847,7 @@ cotal space [--json|--plain]
 cotal space show [<name>] [--json|--plain]
 cotal space add <name> --server <url> [--root <dir>] [--mode auth|open] [--tls] [--allow-unencrypted-overlay] [--force] [-y|--yes]
 cotal space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root <dir>] [--server <url>] [--force] [-y|--yes]
-cotal space create <name> [--root <dir>]
+cotal space create <name> [--root <dir>] [--adopt]
 cotal space forget <name>
 cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]
 cotal use [<space>] [--json|--plain]
@@ -2037,6 +2038,19 @@ refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorde
 `cotal up` starts it. That is the state after an `up` that failed to start or a `space forget`, and the
 command never dials the default address instead. `status` there reads the machine, selects no space
 and probes no broker.
+
+A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
+`space create <name>` there refuses `CONFLICT`, exit 2, and names `cotal space create <name> --adopt
+--root <root>`, and `status` names the same command. `--adopt` takes the journal over: it rewrites it
+to name this folder, moves a broker store that lay under the recorded folder to the same place under
+this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
+with the copied store. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
+link, when the recorded folder still holds the journal, because this folder is then a copy of a stack
+that runs from there, when this machine records an instance of that stack, because the folder was
+then moved on this machine and moves back, and when the space is prepared or registered on this
+machine, where its Next names `cotal space forget` first. A copy brought from another machine and a
+folder moved after its record was forgotten are adopted. Without `--adopt`, nothing rewrites a
+journal.
 
 With no `--space`, `--server` or `--creds`, nothing selected and no project in the folder, a command
 that several running spaces could serve asks which one when it runs in a terminal. The answer is the

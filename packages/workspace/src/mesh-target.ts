@@ -137,6 +137,10 @@ export interface MeshTargetErrorDetails {
   stackSpace?: string;
   /** For `not-started`: the Cotal home in use, when the root's stack runs under another one. */
   home?: string;
+  /** For `not-started` on a stack root whose journal another folder recorded, as a copy or a moved
+   *  folder keeps it: that folder, and whether it still holds the journal. */
+  recordedRoot?: string;
+  recordedRootHoldsJournal?: boolean;
   /** For `not-started` on a prepared space: its root no longer exists, so `up` cannot start it there. */
   rootMissing?: boolean;
 }
@@ -357,15 +361,17 @@ export function stackRunsUnderOtherHome(root: string, journal: { space?: unknown
  *  home in use when the stack runs under another one. A journal that cannot be read still proves a
  *  broker was recorded here, so it returns neither rather than nothing. The server is only shown,
  *  never dialed. */
-function stackRecord(root: string): { server?: string; stackSpace?: string; home?: string } | undefined {
+function stackRecord(root: string): { server?: string; stackSpace?: string; home?: string; recordedRoot?: string; recordedRootHoldsJournal?: boolean } | undefined {
   const path = stackJournalPath(root);
   let file: Stats;
   try { file = lstatSync(path); } catch { return undefined; }
   if (!file.isFile() || file.size > 64 * 1024) return {};
   try {
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown } | null;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown; root?: unknown } | null;
     if (!journal) return {};
-    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}) };
+    const elsewhere = typeof journal.root === "string" && journal.root !== canonicalRoot(root) ? journal.root : undefined;
+    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}),
+      ...(elsewhere !== undefined ? { recordedRoot: elsewhere, recordedRootHoldsJournal: existsSync(stackJournalPath(elsewhere)) } : {}) };
   } catch {
     return {};
   }
