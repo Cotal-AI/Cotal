@@ -21,7 +21,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
-import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, runningStackRoles, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, runningStackRoles, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -34,14 +34,18 @@ export function controllerStackRecorded(root: string): boolean {
 
 export function validateStackDownArguments(root: string, values: ParsedArgs["values"]): void {
   const preserve = values["preserve-state"] === true;
-  const allowed = new Set(preserve ? ["space", "yes", "json", "plain", "preserve-state", "store-dir", "session-store"] : ["space", "yes", "dry-run", "json", "plain", "with-agents", "abandon-stop"]);
+  const allowed = new Set(preserve ? ["space", "yes", "json", "plain", "preserve-state", "store-dir", "session-store"] : ["space", "yes", "dry-run", "json", "plain", "with-agents", "abandon-stop", "abandon-launch"]);
   const unsupported = Object.keys(values).filter((name) => !allowed.has(name) && values[name] !== undefined && !(Array.isArray(values[name]) && (values[name] as unknown[]).length === 0));
-  if (unsupported.length) throw new CommandFailure("refused", "USAGE_INVALID", preserve ? "a controller stack's preserve accepts only --space, --store-dir, --session-store, --yes and presentation flags; it is exclusive with --with-agents and --dry-run" : "a controller stack's bare down accepts only --space, --with-agents, --abandon-stop, --yes, --dry-run and presentation flags; no other option was ignored", { target: { options: unsupported } });
+  if (unsupported.length) throw new CommandFailure("refused", "USAGE_INVALID", preserve ? "a controller stack's preserve accepts only --space, --store-dir, --session-store, --yes and presentation flags; it is exclusive with --with-agents and --dry-run" : "a controller stack's bare down accepts only --space, --with-agents, --abandon-stop, --abandon-launch, --yes, --dry-run and presentation flags; no other option was ignored", { target: { options: unsupported } });
   if (values["dry-run"] === true && values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if (values["abandon-stop"] !== undefined) {
     if (values["dry-run"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop removes a retained stop request, so a read-only preview cannot take it");
     if (values["with-agents"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop cannot be combined with --with-agents: the abandoned stop's manager has exited, so no manager can stop the agents");
     if (values.yes !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop needs --yes, because it gives up the only record of what that stop did");
+  }
+  if (values["abandon-launch"] !== undefined) {
+    if (values["dry-run"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-launch records a member launch failed, so a read-only preview cannot take it");
+    if (values.yes !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-launch needs --yes, because a process that launch started without recording it is not excluded");
   }
   if (preserve) refuseControllerCut(root, "down --preserve-state");
 }
@@ -59,7 +63,7 @@ function readMembers(journal: StackJournal): Member[] {
     if (!instance || instance.record.value.definition !== row.definition) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "a recorded stack member's exact instance record is missing or belongs to another definition; no member was stopped", { target: { space: journal.space, definition: row.definition, instanceId: row.instanceId } });
     const state = observeServiceProcess(instance.record.value);
     const inspect = `inspect it with cotal service status ${row.definition} --instance ${row.instanceId} --space ${journal.space}`;
-    if (!processGone(state) && state !== "running") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a recorded stack member is foreign, unreadable or has an unresolved launch; no member was stopped", { target: instanceProjection(instance), remedy: inspect });
+    if (!processGone(state) && state !== "running") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a recorded stack member is foreign, unreadable or has an unresolved launch; no member was stopped", { target: instanceProjection(instance), remedy: state === "unresolved-launch" ? `${inspect}; ${abandonLaunchRemedy(row.instanceId)}` : inspect });
     const retained = retainedStopRequest(instance.record.value);
     if (instance.record.value.state === "stopping" || retained) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained?.publication === "unknown"
       ? "a recorded stack member's stop request file does not read as its own, so whether a stop was published is unknown; nothing was resubmitted and no member was stopped"
@@ -231,7 +235,12 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (ours) await settleRetainedStackStops(ours);
   // A stop no receipt can settle is abandoned only when the operator names its request.
   const abandoned = ours && typeof values["abandon-stop"] === "string" ? await abandonRetainedStackStop(ours, values["abandon-stop"]) : undefined;
-  const abandonWarnings: OutputWarning[] = abandoned ? [{ code: "STOP_ABANDONED", target: { ...instanceProjection(abandoned.row), role: abandoned.role, requestId: abandoned.abandonment.requestId, receipts: abandoned.abandonment.receipts }, message: abandonNotice(abandoned.role, abandoned.abandonment) }] : [];
+  // So is a launch whose record names no process, when the operator names its instance.
+  const launch = ours && typeof values["abandon-launch"] === "string" ? abandonUnresolvedStackLaunch(ours, values["abandon-launch"]) : undefined;
+  const abandonWarnings: OutputWarning[] = [
+    ...(abandoned ? [{ code: "STOP_ABANDONED", target: { ...instanceProjection(abandoned.row), role: abandoned.role, requestId: abandoned.abandonment.requestId, receipts: abandoned.abandonment.receipts }, message: abandonNotice(abandoned.role, abandoned.abandonment) }] : []),
+    ...(launch ? [{ code: "LAUNCH_ABANDONED", target: { ...instanceProjection(launch.row), role: launch.role }, message: `the ${launch.role} launch ${launch.row.name} was recorded failed: the up that started it exited before it recorded a process. A process that launch started without recording it is not excluded, and this down does not stop it` }] : []),
+  ];
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
   // The completed down that stopped the stack also stopped its agents when it took --with-agents, so
   // a repeat has nothing left to stop. A stack that never started has no agents either.

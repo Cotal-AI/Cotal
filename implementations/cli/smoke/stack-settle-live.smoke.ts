@@ -62,13 +62,20 @@
  *     next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and `cotal down --yes`, and starts
  *     nothing; following it, `down --yes` then `up` start the stack. A `down` interrupted while it
  *     waits on a frozen manager exits 130 naming the members still running and `cotal down --yes`.
+ * 12. An `up` stopped after it recorded its broker's launch and before it recorded the child. A
+ *     listener that accepts and never answers holds the port, so the launch waits in its
+ *     reachability probe. Interrupted there by SIGINT or SIGHUP, the `up` exits 130 or 129 and
+ *     records the launch failed, so `down --yes` settles it. Killed there, it leaves a record that
+ *     names no process: `down --yes` refuses `LIFECYCLE_BLOCKED` naming
+ *     `down --abandon-launch <instance> --yes`, which refuses without `--yes` and for another
+ *     instance, then records the broker failed with a warning. Each stack then starts and stops.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
  */
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -706,6 +713,48 @@ try {
     check("a down interrupted on a frozen manager exits 130 naming the members still running and cotal down --yes", held && stopping.exitCode === 130 && downErr.includes("broker, delivery, manager are still running") && downErr.includes("cotal down --yes"), { held, exitCode: stopping.exitCode, stderr: downErr.slice(-400) });
     const last = cli(root, "down", "--yes", "--json");
     check("and down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 12. An up stopped between recording its broker's launch and recording the child.
+  for (const [signal, code] of [["SIGINT", 130], ["SIGHUP", 129], ["SIGKILL", null]] as const) {
+    const space = `launch-${signal.slice(3).toLowerCase()}`;
+    const root = prepare(space);
+    // The launch's reachability probe waits on a listener that never sends a NATS greeting.
+    const held: Socket[] = [];
+    const silent = createServer((socket) => { held.push(socket); });
+    const port = await listenOn(silent, await freePort());
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
+    const broker = () => { try { return serviceInstances(space, "stack-broker")[0]; } catch { return undefined; } };
+    const unpinned = await until(() => { const row = broker(); return row !== undefined && row.record.value.state === "starting" && row.record.value.process === undefined; }, 120_000);
+    child.kill(signal);
+    await exited(child);
+    for (const socket of held) socket.destroy();
+    await new Promise<void>((done) => silent.close(() => done()));
+    const row = broker();
+    const record = { state: row?.record.value.state, process: row?.record.value.process ?? null, exitCode: child.exitCode, signal: child.signalCode, stderr: upErr.slice(-400) };
+    if (code !== null) {
+      check(`${signal} after the broker launch is recorded: up exits ${code} and records that launch failed, with no process`, unpinned && child.exitCode === code && row?.record.value.state === "failed" && row.record.value.process === undefined && upErr.includes("Interrupted before any member"), record);
+      const settled = cli(root, "down", "--yes", "--json");
+      check(`${signal}: down --yes settles the earlier up`, settled.status === 0 && Boolean(settled.env?.warnings?.some((warning) => warning.code === "OPERATION_SETTLED")), shown(settled));
+    } else {
+      check("a kill after the broker launch is recorded leaves a broker record that names no process", unpinned && child.signalCode === "SIGKILL" && row !== undefined && observeServiceProcess(row.record.value) === "unresolved-launch", record);
+      const instance = row?.name ?? "none";
+      const refused = cli(root, "down", "--yes", "--json");
+      check("down --yes refuses LIFECYCLE_BLOCKED, exit 2, naming down --abandon-launch for that instance", refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(refused.env.error.remedy?.includes(`cotal down --abandon-launch ${instance} --yes`)), shown(refused));
+      const unacknowledged = cli(root, "down", "--abandon-launch", instance, "--json");
+      check("down --abandon-launch without --yes is a usage error, exit 1, and records nothing", unacknowledged.status === 1 && unacknowledged.env?.error?.code === "USAGE_INVALID" && broker()?.record.value.state === "starting", shown(unacknowledged));
+      const another = cli(root, "down", "--abandon-launch", randomUUID(), "--yes", "--json");
+      check("down --abandon-launch naming another instance refuses TARGET_NOT_FOUND and records nothing", another.status === 2 && another.env?.error?.code === "TARGET_NOT_FOUND" && broker()?.record.value.state === "starting", shown(another));
+      const abandoned = cli(root, "down", "--abandon-launch", instance, "--yes", "--json");
+      check("down --abandon-launch records the broker failed with a LAUNCH_ABANDONED warning", abandoned.status === 0 && Boolean(abandoned.env?.warnings?.some((warning) => warning.code === "LAUNCH_ABANDONED" && warning.target?.instanceId === instance)) && broker()?.record.value.state === "failed", shown(abandoned));
+    }
+    const started = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    check(`${signal}: up then starts the stack`, started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
+    const last = cli(root, "down", "--yes", "--json");
+    check(`${signal}: and down --yes stops it`, last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");

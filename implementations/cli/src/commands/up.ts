@@ -181,6 +181,7 @@ import { liveMeshProcesses } from "./clean.js";
 import { cleanedManifestStart, retainedLegacyBroker } from "../lib/legacy-start.js";
 import { controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, stackUpInterruptNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
+import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
@@ -1071,8 +1072,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     };
     if (values.foreground) await holdForegroundStack(meshRoot, start);
     else {
-      // A signal ends a detached start where it is, and the notice names what it left running.
-      const release = noticeOnInterrupt(() => stackUpInterruptNotice(meshRoot, stackSpace));
+      // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
+      // its child, and the notice names what it left running.
+      const release = noticeOnInterrupt(() => { settleInterruptedLaunches(); return stackUpInterruptNotice(meshRoot, stackSpace); });
       try { await start(); } finally { release(); }
     }
     return;

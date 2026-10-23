@@ -147,6 +147,27 @@ export function abandonRetainedSignalStop(row: ServiceInstanceSnapshot, requestI
   return transition(row, { state: "failed", readiness: "not-checked" });
 }
 
+/** Record `failed`, on an operator's explicit request, a launch whose record names no process: its
+ *  launcher ended after it recorded the launch and before it recorded the child. The caller holds the
+ *  definition's writer lock, which that launcher held, so it has exited. A child it spawned without
+ *  recording is not excluded, and nothing here looks for one. */
+export function abandonUnresolvedLaunch(row: ServiceInstanceSnapshot): ServiceInstanceSnapshot {
+  if (observeServiceProcess(row.record.value) !== "unresolved-launch") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this instance's launch is not unresolved: its record names a process or a settled state; nothing was abandoned", { target: instanceProjection(row) });
+  return transition(row, { state: "failed", readiness: "not-checked" });
+}
+
+/** What an interrupt records for each launch this process recorded and has not yet pinned to its child. */
+const unpinnedLaunches = new Set<() => void>();
+
+/** For a command that ends itself on an interrupt: record each launch it has not yet pinned to its
+ *  child. One with no spawned child is recorded `failed`. One whose child was spawned is recorded with
+ *  that child's identity; when that cannot be read, it is recorded `failed` with the exit once the
+ *  child has exited and `unknown` before, as a failed pin is. Without this, the record names no
+ *  process, and only `down --abandon-launch` resolves it. */
+export function settleInterruptedLaunches(): void {
+  for (const settle of unpinnedLaunches) settle();
+}
+
 /** The refusal for a retained native stop, made before any readiness probe, stop request or record
  *  write. This command has no effect, so it is refused; only the earlier stop's outcome is unknown. A
  *  request file that does not read as this launch's own is named an unknown publication. */
@@ -335,7 +356,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
   const { program, adapter: declaredAdapter, cliInvocation, env, launcher } = prepareProcessService(definition);
   if (declaredAdapter && (options.newInstance && !declaredAdapter.declaration.capabilities.multiInstance || options.foreground && !declaredAdapter.declaration.capabilities.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "the selected adapter does not declare this multi-instance or foreground capability; no launch was allocated");
   const hold = held ?? serviceDefinitionStore(value.space).pin(definition);
-  let child: ChildProcess | undefined;
+  let child: ChildProcess | undefined, unpinned: (() => void) | undefined;
   try {
     assertNoServiceUnitAttempts(value.space, definition.name);
     const rows = serviceInstances(value.space, definition.name);
@@ -374,6 +395,14 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     const store = serviceInstanceStore(value.space);
     store.commit(id, selected, instance);
     let row = store.read(id)!;
+    // Until the child's identity is recorded, an interrupt records this launch on its way out.
+    unpinned = () => {
+      if (child?.pid === undefined) { row = transition(row, { state: "failed", readiness: "not-checked" }); return; }
+      let identity;
+      try { identity = requireProcessIdentity(child.pid); } catch { identity = undefined; }
+      row = transition(row, identity ? { process: identity } : { state: exited ? "failed" : "unknown", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
+    };
+    unpinnedLaunches.add(unpinned);
     let adapter: { provider: LoadedServiceAdapter; context: ServiceAdapterContext } | undefined;
     let launch: { program: string; args: readonly string[]; cwd: string };
     try {
@@ -431,6 +460,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       throw new CommandFailure(exited ? "failed" : "unknown", exited ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", "the child could not be creation-pinned; its native child handle was asked to exit, and no replacement was launched", { target: instanceProjection(row) });
     }
     row = transition(row, { process: identity });
+    unpinnedLaunches.delete(unpinned);
     let running: ServiceInstanceSnapshot;
     try { running = await serviceReadiness(row, value, adapter); }
     catch (error) {
@@ -441,7 +471,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; its log records the cause`, { target: instanceProjection(failed), remedy: `read its log with cotal service logs ${definition.name} --instance ${id} --space ${value.space}` });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
-  } finally { if (!held) hold.release(); }
+  } finally { if (unpinned) unpinnedLaunches.delete(unpinned); if (!held) hold.release(); }
 }
 
 /** Native preview imports only the pinned provider and performs its caller-scoped read. No
