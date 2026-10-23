@@ -1,5 +1,16 @@
 # @cotal-ai/auth
 
+## 0.97.1
+
+### Patch Changes
+
+- 0c858f4: A proposal read names its endpoint's binding only when that binding is the reader's own (the operator reads it as before), so an owner whose proposal sits under another owner's name no longer sees that owner's token, claim reference and request. `cotal service-endpoint approve|refuse|name-bind` prints the request id it was sent under and takes `--request-id <hex32>` to send the identical request again, which the host replays; a run without it is a new request. The docs now list the four caller-policy operations the host route serves as the owner, say that the admission operations have no engine handler yet and answer `unsupported`, and require unpredictable request ids.
+- 68ab046: `cotal service-endpoint approve|refuse|name-bind` records its request under the request id before sending it, and `--request-id` sends that recorded request again as it was. The replay used to rebuild the decision from a fresh proposal read, so once the first attempt had moved the proposal the resend carried different revisions under the same id and the host answered `conflict` instead of replaying the approval. A lost answer now names the recorded id to resend; an id this root never recorded, or one recorded for another command or subject, is refused with nothing sent.
+- Updated dependencies [aa8d11e]
+  - @cotal-ai/core@0.97.1
+  - @cotal-ai/workspace@0.97.1
+  - @cotal-ai/lang@0.97.1
+
 ## 0.97.0
 
 ### Minor Changes
