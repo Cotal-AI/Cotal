@@ -1913,10 +1913,14 @@ files. Open-mode impact and receipt label that any broker client can delete the 
 `space forget` is not a substitute for live deletion.
 
 The receipt's Next names the route back. On a space this machine started, the broker keeps running
-without the streams, and only a broker start creates them. `cotal down --yes` in its root, or
-`cotal down` on a legacy root, then `cotal up` starts it again with empty streams. Running
-`space forget` after that stop drops it instead. Until then a bare `cotal up` there refuses
-`TARGET_NOT_FOUND`, exit 2, saying the broker no longer holds the streams and naming that restart.
+without the streams. On a controller stack, a bare `cotal up` in its root creates them again, empty,
+on that broker, the way a broker start does, and starts the other members. Its receipt says
+`Space streams: created again, empty, on the running broker`, and `--json` sets
+`result.streamsRecreated`. It does so only when every one of the space's streams is gone. A broker
+that lost only some of them keeps them as they are, and `up` refuses `TARGET_NOT_FOUND`, exit 2,
+naming `cotal down --yes`, then `cotal up`, whose broker start creates the missing ones. To drop
+the space instead, run `cotal down --yes` in its root, then `space forget`. On a legacy root, run
+`cotal down`, then `cotal up` to start it again with empty streams.
 
 `use <space>` selects the space commands target when none is named. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and

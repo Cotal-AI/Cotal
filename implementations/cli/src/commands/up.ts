@@ -41,6 +41,8 @@ import {
   requireBrokerFloor,
   parseServerVersion,
   presenceBucket,
+  spaceDeletionStreams,
+  isJetStreamMissing,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
   LEASE_TTL_MS,
@@ -56,7 +58,7 @@ import {
   type CompletionResult,
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager, StorageType } from "@nats-io/jetstream";
+import { JetStreamApiCodes, jetstreamManager, StorageType } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   CommandFailure,
@@ -2816,6 +2818,7 @@ export function controllerStackNative(): StackUpNative {
       return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile };
     },
     initializeStreams: (server, space, setup, seedFile) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined),
+    recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen) => commitTransportPolicy(root, chosen, true),
   };
@@ -4093,6 +4096,38 @@ async function recreateAdoptedMemoryBuckets(root: string, space: string, server:
   const auth = await getSpaceAuth(workspaceSecretStore(root), space);
   if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(root)}; cannot recreate its memory buckets on the adopted listener`);
   await recreateMemoryBuckets(server, space, { creds: await mintCreds(auth, newIdentity(), "provisioner") });
+}
+
+/** `cotal space delete` removes a space's streams from a broker that keeps running. When a stack
+ *  reuses that broker and every canonical stream of the space is gone, create them again, empty, as
+ *  a broker start does, and return true. A broker that still holds any of them is left as it is. */
+async function recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: "open" | "auth" | "user"; channels?: string; seed?: ChannelRegistryFile }): Promise<boolean> {
+  let setup: { creds: string } | undefined;
+  if (opts.mode === "auth") {
+    const auth = await getSpaceAuth(workspaceSecretStore(opts.root), opts.space);
+    if (!auth) throw new Error(`space "${opts.space}" has no trust material under ${authDir(opts.root)}; cannot read its streams on the running broker`);
+    setup = { creds: await mintCreds(auth, newIdentity(), "provisioner") };
+  } else if (opts.mode !== "open") throw new Error("a user-auth stack's streams are not recreated on a running broker");
+  const nc = await connect({ servers: opts.server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
+  let held = false;
+  try {
+    requireBrokerFloor(nc);
+    const jsm = await jetstreamManager(nc);
+    for (const name of spaceDeletionStreams(opts.space)) {
+      try {
+        await jsm.streams.info(name);
+        held = true;
+        break;
+      } catch (error) {
+        if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound)) throw error;
+      }
+    }
+  } finally {
+    await nc.drain();
+  }
+  if (held) return false;
+  await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.channels));
+  return true;
 }
 
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`
