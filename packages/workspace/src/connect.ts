@@ -357,7 +357,10 @@ export class ConnectRefusal extends Error {
 /** A refusal over a workspace failure: the one-line sentence for a terminal, its parts for a
  *  structured command. */
 function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
-  const target = e.kind === "target" ? spaceRootTarget(e.error.details) : e.kind === "preflight" ? spaceRootTarget(e.target) : undefined;
+  // A folder whose records name no space is probed under the default space, and its refusal names
+  // the folder, so its target names only the folder too.
+  const target = e.kind === "target" ? spaceRootTarget(e.error.details)
+    : e.kind === "preflight" ? spaceRootTarget(e.failure === "unreachable" && e.target.namesNoSpace ? { root: e.target.root } : e.target) : undefined;
   return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e), ...(target ? { target } : {}) });
 }
 

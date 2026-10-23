@@ -208,6 +208,12 @@ check("message: open-wants-auth does NOT claim a space name", !preflightMessage(
   check("message: unreachable for that folder names it and space create, not the default mesh or address",
     m === `✗ no space is registered or prepared here for ${t.root} - prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\`` && !m.includes(t.server), m);
   check("control: the same target without the flag keeps the recorded-mesh sentence", preflightMessage("unreachable", { ...t, namesNoSpace: undefined }, false).includes(`mesh "${t.space}" is recorded at ${t.root}`));
+  // The refusal's target names the folder only, so no report is headed by the assumed space.
+  const refusal = await preflightOrThrow({ ...t, server: DEAD }).then(() => undefined, (e: unknown) => e);
+  check("preflightOrThrow on that folder refuses with a target naming only the folder, not the assumed space",
+    refusal instanceof ConnectRefusal && refusal.code === "TARGET_UNAVAILABLE" && JSON.stringify(refusal.target) === JSON.stringify({ root: t.root }) && !Object.hasOwn(refusal.failure().target as object, "space"), refusal instanceof ConnectRefusal ? refusal.target : String(refusal));
+  const recorded = await preflightOrThrow({ ...t, server: DEAD, namesNoSpace: undefined }).then(() => undefined, (e: unknown) => e);
+  check("control: without the flag the refusal's target keeps the space", recorded instanceof ConnectRefusal && (recorded.target as { space?: string } | undefined)?.space === t.space, recorded instanceof ConnectRefusal ? recorded.target : String(recorded));
 }
 
 // ── preflightTarget: probe a dead broker, classify, but DO NOT mutate the registry ────────────────
