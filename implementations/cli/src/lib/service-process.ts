@@ -445,6 +445,8 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       row = transition(row, identity ? { process: identity } : { state: exited ? "failed" : "unknown", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
     };
     unpinnedLaunches.add(unpinned);
+    // Smoke only: hold a recorded launch before its child exists, so a signal can land in that window.
+    if (process.env.COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD === "1") await delay(60_000);
     let adapter: { provider: LoadedServiceAdapter; context: ServiceAdapterContext } | undefined;
     let launch: { program: string; args: readonly string[]; cwd: string };
     try {

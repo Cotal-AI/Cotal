@@ -70,20 +70,21 @@
  *     next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and `cotal down --yes`, and starts
  *     nothing; following it, `down --yes` then `up` start the stack. A `down` interrupted while it
  *     waits on a frozen manager exits 130 naming the members still running and `cotal down --yes`.
- * 14. An `up` stopped after it recorded its broker's launch and before it recorded the child. A
- *     listener that accepts and never answers holds the port, so the launch waits in its
- *     reachability probe. Interrupted there by SIGINT or SIGHUP, the `up` exits 130 or 129 and
- *     records the launch failed, so `down --yes` settles it. Killed there, it leaves a record that
- *     names no process: `down --yes` refuses `LIFECYCLE_BLOCKED` naming
- *     `down --abandon-launch <instance> --yes`, which refuses without `--yes` and for another
- *     instance, then records the broker failed with a warning. Each stack then starts and stops.
+ * 14. An `up` stopped after it recorded its broker's launch and before it recorded the child. The
+ *     `COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD` hold keeps the launch in that window; a listener that
+ *     holds the port is refused before any launch is recorded. Interrupted there by SIGINT or
+ *     SIGHUP, the `up` exits 130 or 129 and records the launch failed, so `down --yes` settles it.
+ *     Killed there, it leaves a record that names no process: `down --yes` refuses
+ *     `LIFECYCLE_BLOCKED` naming `down --abandon-launch <instance> --yes`, which refuses without
+ *     `--yes` and for another instance, then records the broker failed with a warning. Each stack
+ *     then starts and stops.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
  */
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createServer, type Socket } from "node:net";
+import { createServer } from "node:net";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -773,7 +774,11 @@ try {
     const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
     let downErr = "";
     stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
-    const held = await until(() => existsSync(join(root, ".cotal", "maintenance", "lock.json")), 60_000);
+    // Node dies on a SIGINT that lands before a listener exists. The down installs its handler right
+    // after it takes the lock, so this waits for a lock this down owns, and a margin, before signalling.
+    const lockFile = join(root, ".cotal", "maintenance", "lock.json");
+    const held = await until(() => { try { return JSON.parse(readFileSync(lockFile, "utf8")).owner?.pid === stopping.pid; } catch { return false; } }, 60_000);
+    await sleep(200);
     stopping.kill("SIGINT");
     await exited(stopping);
     if (manager !== null) process.kill(manager, "SIGCONT");
@@ -786,19 +791,15 @@ try {
   for (const [signal, code] of [["SIGINT", 130], ["SIGHUP", 129], ["SIGKILL", null]] as const) {
     const space = `launch-${signal.slice(3).toLowerCase()}`;
     const root = prepare(space);
-    // The launch's reachability probe waits on a listener that never sends a NATS greeting.
-    const held: Socket[] = [];
-    const silent = createServer((socket) => { held.push(socket); });
-    const port = await listenOn(silent, await freePort());
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    // The smoke hold keeps the recorded launch from starting its child until the signal lands.
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env: { ...env, COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD: "1" }, stdio: ["ignore", "ignore", "pipe"] });
     let upErr = "";
     child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
     const broker = () => { try { return serviceInstances(space, "stack-broker")[0]; } catch { return undefined; } };
     const unpinned = await until(() => { const row = broker(); return row !== undefined && row.record.value.state === "starting" && row.record.value.process === undefined; }, 120_000);
     child.kill(signal);
     await exited(child);
-    for (const socket of held) socket.destroy();
-    await new Promise<void>((done) => silent.close(() => done()));
     const row = broker();
     const record = { state: row?.record.value.state, process: row?.record.value.process ?? null, exitCode: child.exitCode, signal: child.signalCode, stderr: upErr.slice(-400) };
     if (code !== null) {
