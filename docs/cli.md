@@ -4121,7 +4121,10 @@ The mesh is resolved once, and its recorded auth mode picks the admission. No ot
 
 On a static mesh, `chat` reads the space's service registry before it asks the manager for a
 session. When the registry lists no live manager, as after `cotal service stop stack-manager`, it
-refuses `TARGET_UNAVAILABLE` (exit 2) at once and names bare `cotal up`, as the run verbs do.
+refuses `TARGET_UNAVAILABLE` (exit 2) at once and names bare `cotal up`, as the run verbs do. A
+manager that stays registered but does not answer, such as one that crashed, is refused
+`TARGET_UNAVAILABLE` too once its answer deadline passes, with `cotal status` as the next step,
+because no session was asked for.
 
 A static or user session shows its end time in the banner, and says when it ends a minute before.
 After a session ends, `--plain` answers every line with how to leave, and `/quit` or the end of

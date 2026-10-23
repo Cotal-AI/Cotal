@@ -5,6 +5,7 @@
  *
  *  1. `status` leads its Next with `cotal up --root <root>`, which restarts the stopped member.
  *  2. `ps` refuses: no manager is running for this space, and its Next names bare `cotal up`.
+ *     `chat` refuses TARGET_UNAVAILABLE once its describe goes unanswered, pointing to `status`.
  *  3. `up` starts the manager again, and `ps` is answered.
  *  4. A SIGINT with no stop request leaves that manager running. A plain SIGTERM, as `kill`, a
  *     systemd stop or a system shutdown sends, stops it and it exits. `chat` then refuses at once
@@ -84,6 +85,11 @@ try {
   const ps = cli("ps");
   check("ps refuses: no manager is running for this space", ps.status === 2 && ps.out.includes("no manager is running for this space"), ps.out);
   check("...and its Next names bare cotal up", ps.out.includes("start the stack's manager with bare cotal up"), ps.out);
+  // The crashed manager is still registered, so chat waits out its describe and then refuses, since
+  // no session was asked for.
+  const crashedChat = cli("chat", "general", "--plain");
+  check("chat refuses TARGET_UNAVAILABLE, exit 2, saying chat-session-open was not sent", crashedChat.status === 2 && crashedChat.out.includes("TARGET_UNAVAILABLE") && crashedChat.out.includes("chat-session-open was not sent"), crashedChat.out);
+  check("...and its Next points to status", crashedChat.out.includes("cotal status shows whether this space's manager answers"), crashedChat.out);
 
   const again = cli("up");
   check("up starts the manager again", again.status === 0, again.out);

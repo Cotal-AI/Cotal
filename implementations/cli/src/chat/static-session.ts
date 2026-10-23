@@ -16,7 +16,7 @@
  * `cotal use` or registry change cannot move the retirement to another mesh.
  */
 import {
-  CotalEndpoint, DEV_OWNER, SealRecipient, assertLifecycleToken, assertValidChannel, idFromCreds, isCurvePublicKey, principalKey, resolveReadAcl,
+  CotalEndpoint, DEV_OWNER, EP_UNANSWERED, SealRecipient, assertLifecycleToken, assertValidChannel, idFromCreds, isCurvePublicKey, principalKey, resolveReadAcl,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, isConnectRefusal, mintControlInstrument, preflightOrThrow, type MeshTarget } from "@cotal-ai/workspace";
@@ -161,6 +161,14 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   }
   if (!reply.ok) {
     recipient.clear();
+    // A describe that drew no answer means chat-session-open was never sent, so this is a refusal,
+    // as the run verbs give it, and not an unknown outcome.
+    if (reply.details?.some((detail) => detail.kind === EP_UNANSWERED && detail.command === "describe"))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `chat-session-open was not sent: ${reply.error}`, {
+        target: { space: mesh.space },
+        native: { code: reply.code },
+        remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it",
+      });
     throw managerFailure(reply, "chat-session-open", { space: mesh.space });
   }
   const managerInstanceId = reply.managerInstanceId;
