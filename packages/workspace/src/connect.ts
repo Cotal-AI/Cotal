@@ -665,16 +665,17 @@ export async function connectUserControlOrThrow(flags: ResolveFlags): Promise<Co
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root
  *  supplied — never imported here), exchange this machine's login session for a bearer, and hand
  *  back bearer + sentinel. The provider owns the failure copy for its own steps (not logged in,
- *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper only
+ *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper
  *  throws it as a {@link ConnectRefusal}, so each caller keeps its own disposition.
+ *
+ *  A service that did not answer is a `transient` refusal, as an unreachable broker is: `cotal
+ *  attach` exchanges the base bearer again on every reconnect, and the service may answer the next
+ *  time. Every other failure is `permanent`.
  *
  *  Takes a resolved target only — never a Profile. Callers that know the mesh is user-mode must
  *  enter via {@link connectUserControlOrExit} (no role) or the user branch of {@link connectOrExit}
  *  (which refuses control-caller-* instruments). If a Profile is ever threaded into this function,
  *  the call sites that invented dummy roles are the defect. */
-/** {@link userConnect} with its failure as a {@link ConnectRefusal}. A user-auth service that did not
- *  answer is `transient`, as an unreachable broker is: `cotal attach` exchanges the base bearer again
- *  on every reconnect, and the service may answer the next time. Every other failure is `permanent`. */
 async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
   try {
     return await userConnect(target);
