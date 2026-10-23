@@ -573,6 +573,13 @@ only `cotal up`, which runs the guarded stack stop, and a `TimeoutStopSec` long 
 The default `control-group` mode signals every member at the same time, and a manager signalled
 directly does not stop through its request-bound stop.
 
+`up` runs the `nats-server` on PATH when one answers `--version`, and the bundled one otherwise. One
+on PATH must report version 2.12 or newer. An older one, or one that reports no version, refuses
+`DEPENDENCY_UNAVAILABLE` (exit 2) before the broker starts, naming its path and version; upgrade it
+or take it off PATH. When `up` starts the broker, its receipt names the file, where it was found and
+its version on the `Broker executable` line, and `--json` carries them as `result.brokerExecutable`.
+`status` shows the same under This machine, and `setup` refuses the old one the same way.
+
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
 `.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
@@ -3592,6 +3599,10 @@ and the child variable it feeds, never a value. `show` lists the references by n
 Ctrl-D or closed input at that question leaves the service unchanged and exits 0. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
 start or stop that finds nothing to do says so and reports `no-op`.
+
+`status` names the file a running instance's process executes, as the kernel reports it, so the
+`stack-broker` row shows which `nats-server` serves the stack. `--json` carries it as `executable`.
+A stopped instance shows no running process, and a host with no `/proc` shows it as not readable.
 
 `remove` forgets a definition once every instance is stopped and no unit is installed. Logs stay.
 

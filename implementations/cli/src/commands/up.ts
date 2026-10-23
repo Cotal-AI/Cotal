@@ -160,7 +160,7 @@ import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
-import { resolveNatsServer } from "../lib/nats-bin.js";
+import { natsServerLabel, resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -1619,7 +1619,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
     const quietRestore = restored !== undefined && restoreSinks.has(restored.attemptId);
-    const { pid, source, authService, controlPlane, delivery, manager } = await startMeshDetached({
+    const { pid, executable, authService, controlPlane, delivery, manager } = await startMeshDetached({
       transport,
       server,
       storeDir: values["store-dir"],
@@ -1644,7 +1644,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     });
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
     if (!quietRestore) {
-      console.log(c.dim(`Started nats-server (${source}).`));
+      console.log(c.dim(`Started ${executable}.`));
       console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) })));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
@@ -1701,11 +1701,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
   ];
-  const { bin, source } = await resolveNatsServer();
+  const natsServer = await resolveNatsServer();
+  const bin = natsServer.path;
 
   console.log(
     c.dim(
-      `Starting nats-server (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}, ${source}) - store: ${storeDir}, bind: ${host}`,
+      `Starting ${natsServerLabel(natsServer)} (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}) - store: ${storeDir}, bind: ${host}`,
     ),
   );
   console.log(c.dim("Press Ctrl-C to stop.\n"));
@@ -2812,7 +2813,7 @@ export function controllerStackNative(): StackUpNative {
   return {
     prepareBroker: async (opts) => {
       const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
-      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, seedFile: prepared.seedFile };
+      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile };
     },
     initializeStreams: (server, space, setup, seedFile) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
@@ -3472,8 +3473,8 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     "-c", confPath,
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
   ];
-  const { bin, source } = await resolveNatsServer();
-  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, confPath, args, bin, source };
+  const { path: bin, source, version } = await resolveNatsServer();
+  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, confPath, args, bin, source, version };
 }
 
 /**
@@ -3502,8 +3503,8 @@ export async function startMeshDetached(
   // The `= {}` default is gone with the optional transport: an options object that can be omitted
   // entirely cannot carry a mandatory decision.
   opts: DetachOpts,
-): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; manager: boolean }> {
-  const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source } = await prepareBrokerStart(opts);
+): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; manager: boolean }> {
+  const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source, version } = await prepareBrokerStart(opts);
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
   const startOffset = fstatSync(fd).size;
@@ -3536,7 +3537,7 @@ export async function startMeshDetached(
   return {
     server,
     pid: child.pid ?? 0,
-    source,
+    executable: natsServerLabel({ path: bin, source, version }),
     controlPlane: controlPlane !== undefined,
     authService,
     deliveryResponderBound: useAuth ? controlPlane?.responderBound === true : null,

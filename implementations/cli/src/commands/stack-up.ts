@@ -29,6 +29,7 @@ import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -36,7 +37,7 @@ import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack,
 export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
-  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; seedFile?: unknown }>;
+  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown }>;
   initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown): Promise<void>;
   recordMesh(entry: { space: string; server: string; root: string; mode: StackMode; tlsRequired: boolean; storeDir: string; userAuth?: UserAuthInfo; maxSessions?: number; attachHost?: string; maxFileStore?: number }): void;
   commitTransport(root: string, transport: BrokerTransport): void;
@@ -125,6 +126,8 @@ export interface StackUpResult {
   admittedRestore?: string;
   /** An earlier operation with no recorded outcome that this call settled before it started. */
   settled?: StackSettlement;
+  /** The nats-server this call started the broker with. */
+  brokerExecutable?: NatsServer;
 }
 
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. */
@@ -237,12 +240,12 @@ function adapterDefinition(space: string, adapter: string, options: Record<strin
   return { schemaVersion: 1, space, launch: { type: "adapter", adapter, options }, readiness: { type: "adapter", timeoutMs } };
 }
 
-function membersView(journal: StackJournal, title: string): Report {
+function membersView(journal: StackJournal, title: string, executable?: NatsServer | null): Report {
   // A role the stack's mode never plans (auth on a static or open stack, delivery on an open one)
   // is not a member of it; it stays in the journal and JSON only.
   const members = journal.members.filter((member) => stackRoleApplies(journal.mode, member.role));
   return { sections: [{ title, blocks: [
-    { kind: "fields", rows: [["Space", journal.space], ["Root", journal.root], ["Broker", journal.server], ["Mode", journal.mode === "open" ? "open, no authentication" : journal.mode === "user" ? "user auth" : "static auth"], ["Operation", `${journal.operation.kind} ${journal.operation.phase}`], ...(journal.mode === "user" ? [["Registration", userRegistrationIncomplete(journal.space) ? "incomplete: no confirmed auth-service endpoint" : "auth-service endpoint confirmed by its provider"] as [string, string]] : [])] },
+    { kind: "fields", rows: [["Space", journal.space], ["Root", journal.root], ["Broker", journal.server], ["Mode", journal.mode === "open" ? "open, no authentication" : journal.mode === "user" ? "user auth" : "static auth"], ["Operation", `${journal.operation.kind} ${journal.operation.phase}`], ...(executable ? [["Broker executable", natsServerLabel(executable)] as [string, string]] : []), ...(journal.mode === "user" ? [["Registration", userRegistrationIncomplete(journal.space) ? "incomplete: no confirmed auth-service endpoint" : "auth-service endpoint confirmed by its provider"] as [string, string]] : [])] },
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: members.map((member) => ({ role: member.role, definition: member.definition, instance: member.instanceId ?? "not allocated", state: { text: member.state.replaceAll("-", " "), tone: ["started", "reused", "stopped", "already-stopped"].includes(member.state) ? "ok" as const : ["refused", "failed"].includes(member.state) ? "failed" as const : "waiting" as const } })) },
     { kind: "lines", lines: [journal.mode === "open"
       ? "Open stack: no authentication, no delivery member and no delivery credential. Each member is one exact service-controller instance. Broker readiness means its own process reported its listener; manager readiness is the child's own local receipt, not an attributed endpoint response. This is not agent or task readiness, and a partial start is not rolled back."
@@ -255,7 +258,7 @@ function membersView(journal: StackJournal, title: string): Report {
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
-  const { journal, changed, allReused, admittedRestore, settled } = await startControllerStack(request, native);
+  const { journal, changed, allReused, admittedRestore, settled, brokerExecutable } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
   // The start keeps another selected space; the receipt says so, as a legacy `up` does.
@@ -269,8 +272,8 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, written }, warnings, ...(allReused && written.length === 0 ? { noOp: true } : {}) }, (result) => {
-    const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started");
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, written }, warnings, ...(allReused && written.length === 0 ? { noOp: true } : {}) }, (result) => {
+    const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable);
     const view: Report = result.written.length ? { ...members, sections: [...members.sections, { blocks: [{ kind: "fields", rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] } : members;
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
@@ -439,6 +442,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   let failedRole: StackRole | undefined;
   let failedStage: "broker-streams" | "broker-registration" | undefined;
   let startedBroker: { definition: ServiceDefinitionSnapshot; id: string } | undefined;
+  let brokerExecutable: NatsServer | undefined;
   let launch: { path: string; sha256: string } | undefined;
   // Only a broker this call starts gets the space's streams created.
   let brokerReused = false;
@@ -477,7 +481,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const savedBroker = serviceDefinitionStore(space).read(STACK_DEFINITION.broker);
     const savedOptions = savedBroker?.record.value.launch.type === "adapter" ? savedBroker.record.value.launch.options : undefined;
     if (!prepared && !savedOptions) throw new CommandFailure("refused", "CONFLICT", "a broker instance runs without its saved stack definition; it was not adopted", { target: { space, definition: STACK_DEFINITION.broker } });
-    const brokerOptions = prepared ? { root, config: prepared.confPath, binary: canonicalBinary(prepared.bin), server } : { ...savedOptions! };
+    if (prepared) brokerExecutable = { path: canonicalBinary(prepared.bin), source: prepared.source, version: prepared.version };
+    const brokerOptions = prepared && brokerExecutable ? { root, config: prepared.confPath, binary: brokerExecutable.path, server } : { ...savedOptions! };
     const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root, replace("broker"));
     if (storePin) recheckExistingStore(storePin, { root, space });
     const brokerInstance = await start("broker", broker);
@@ -621,7 +626,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       : "the user stack's other members were already running and were reused; the manager was not attempted because no signed-in, granted login exists. This is not whole-stack readiness", { target: detail, changed, native: { code: "AUTH_REQUIRED", outcome: "refused", detail: loginBlock.message }, ...(loginBlock.remedy ? { remedy: loginBlock.remedy } : {}) });
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
-  return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}) };
+  return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}) };
 }
 
 /** Stop a broker this call started, through its exact kernel stop, and read whether its log says it
