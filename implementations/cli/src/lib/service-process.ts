@@ -275,8 +275,18 @@ async function adapterCall<T>(call: (signal: AbortSignal) => Promise<T> | T, tim
   } finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }
 }
 
+/** What a failed bounded readiness request saw, in words. No response body or header is kept. */
+function httpReadinessFailure(error: unknown): string {
+  const code = (error as { cause?: { code?: unknown } } | undefined)?.cause?.code;
+  if (code === "ECONNREFUSED") return "connection refused, so nothing listened there";
+  if ((error as { name?: unknown } | undefined)?.name === "TimeoutError") return "no answer before the request timed out";
+  return typeof code === "string" ? `the request failed with ${code}` : "the request failed";
+}
+
 export async function serviceReadiness(row: ServiceInstanceSnapshot, definition: ServiceDefinitionInput, adapter?: { provider: LoadedServiceAdapter; context: ServiceAdapterContext }): Promise<ServiceInstanceSnapshot> {
   const deadline = Date.now() + definition.readiness.timeoutMs;
+  // The last HTTP readiness observation, named when the deadline passes first.
+  let seen: string | undefined;
   do {
     const state = observeServiceProcess(row.record.value);
     if (gone(state)) throw new CommandFailure("failed", "OPERATION_FAILED", "the owned service process exited before readiness was established", { target: { instanceId: row.name, requestId: row.record.value.requestId } });
@@ -305,10 +315,22 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
       const response = await fetch(definition.readiness.url, { redirect: "manual", credentials: "omit", signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))) });
       await response.body?.cancel();
       if (response.status === definition.readiness.expectedStatus && observeServiceProcess(row.record.value) === "running") return transition(row, { state: "running", readiness: "http-reachable" });
-    } catch { /* A failed bounded HTTP read is not proof of process death or listener ownership. */ }
+      seen = `status ${response.status}`;
+    } catch (error) {
+      // A failed bounded HTTP read is not proof of process death or listener ownership.
+      seen = httpReadinessFailure(error);
+    }
     await delay(Math.min(100, Math.max(0, deadline - Date.now())));
   } while (Date.now() < deadline);
   const uncertain = transition(row, { state: "unknown", readiness: "not-checked" });
+  if (definition.readiness.type === "http") {
+    // The address alone is named: a definition's URL is kept out of reports, and its path may carry a token.
+    const { definition: name, instanceId, space } = uncertain.record.value;
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the owned process did not answer its HTTP readiness check on ${new URL(definition.readiness.url).host} with status ${definition.readiness.expectedStatus} within ${definition.readiness.timeoutMs} ms; the last check saw ${seen ?? "no completed request"}. The process was left running, not relaunched or killed`, {
+      target: instanceProjection(uncertain),
+      remedy: `read its output with cotal service logs ${name} --instance ${instanceId} --space ${space}, and stop it with cotal service stop ${name} --instance ${instanceId} --space ${space} --yes before another start`,
+    });
+  }
   throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned process did not establish its declared readiness before the deadline; it was not relaunched or automatically killed", { target: instanceProjection(uncertain), remedy: "inspect service status/logs with the original full instance ID before another start" });
 }
 

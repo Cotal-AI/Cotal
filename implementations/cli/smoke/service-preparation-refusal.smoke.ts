@@ -6,13 +6,17 @@
  * succeed or refuse on that same cause, never on the retained instance. A second record makes the
  * bare forms ambiguous until `remove --instance` clears one.
  *
- * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started and no service
- * process is launched. The named `down <service>` form runs the same stop path as `service stop`
- * and is not driven here.
+ * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started, and the only
+ * service process launched is the HTTP readiness one below, which its own Next stops. The named
+ * `down <service>` form runs the same stop path as `service stop` and is not driven here.
  *
  * A process definition whose envRefs read a variable the environment does not set refuses its start
  * before anything launches, naming that variable and the child variable it feeds, and `service show`
  * lists the references by name.
+ *
+ * A process definition whose HTTP readiness never answers exits 3 naming the loopback address, the
+ * expected status, the deadline and the refused connection it saw, never the URL's path, and its
+ * Next stops that exact instance.
  *
  * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
  * before a child in two isolated homes: with the account only in the child's home and only in the
@@ -28,7 +32,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSpaceAuth } from "@cotal-ai/core";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -127,6 +131,23 @@ const shownText = spawnSync(process.execPath, [BIN, "service", "show", "envsvc",
 check("service show lists the reference by name", shownText.status === 0 && /Environment references:\s+REVIEWS_TOKEN from SMOKE_UNSET_REVIEWS_TOKEN/.test(shownText.stdout), { status: shownText.status, stdout: shownText.stdout.slice(0, 900) });
 const envRemoved = run(["service", "remove", "envsvc", "--space", "b1", "--yes"]);
 check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemoved));
+
+// A process service whose HTTP readiness never answers: nothing listens at its loopback address.
+{
+  const port = await freePort(), httpDefinition = join(home, "http.json");
+  writeFileSync(httpDefinition, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exec sleep 60"], cwd: root }, readiness: { type: "http", url: `http://127.0.0.1:${port}/health?token=smoke-hidden`, expectedStatus: 200, timeoutMs: 1500 } }));
+  const httpAdded = run(["service", "add", "httpsvc", "--file", httpDefinition, "--space", "b1"]);
+  check("rig: a process definition with HTTP readiness is saved", httpAdded.status === 0 && httpAdded.envelope?.outcome === "ok", shown(httpAdded));
+  const late = run(["service", "start", "httpsvc", "--space", "b1"]);
+  const id = late.envelope?.target?.instanceId, message = late.envelope?.error?.message ?? "", remedy = late.envelope?.error?.remedy ?? "";
+  check("a start whose HTTP readiness never answers exits 3, naming the address, status, deadline and the refused connection",
+    late.status === 3 && late.envelope?.error?.code === "OPERATION_UNKNOWN" && message.includes(`on 127.0.0.1:${port} with status 200 within 1500 ms; the last check saw connection refused`) && message.includes("left running"), shown(late));
+  check("it never prints the URL's path or query", !`${late.stdout}${late.stderr}`.includes("/health") && !`${late.stdout}${late.stderr}`.includes("smoke-hidden"), shown(late));
+  check("its Next names the logs and the stop for that exact instance", typeof id === "string" && remedy.includes(`cotal service logs httpsvc --instance ${id} --space b1`) && remedy.includes(`cotal service stop httpsvc --instance ${id} --space b1 --yes`), late.envelope?.error);
+  const stopped = run(["service", "stop", "httpsvc", "--instance", String(id), "--space", "b1", "--yes"]);
+  check("following it stops the process, exit 0", stopped.status === 0 && stopped.envelope?.outcome === "ok", shown(stopped));
+  check("rig: the definition is forgotten", run(["service", "remove", "httpsvc", "--space", "b1", "--yes"]).status === 0);
+}
 
 // A Linear service whose envRefs give the child HOME from SERVICE_HOME. With COTAL_HOME unset, each
 // process reads the Cotal home under its own HOME: the controller's is `a`, the child's `b`.

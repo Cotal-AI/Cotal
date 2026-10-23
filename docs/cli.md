@@ -6653,6 +6653,10 @@ Process readiness reports a live creation-pinned direct process as Running. HTTP
 a bounded loopback request with credentials omitted and redirects disabled. Its success is
 Reachable, not proof that the child owns that listener or serves a native endpoint. Status labels
 the stored readiness observation and its time separately from the current process observation.
+When the HTTP deadline passes first, `service start` exits 3 and names the loopback address without
+the URL's path, the expected status, the deadline, and what the last check saw, such as a refused
+connection or another status. The process is left running, and the Next names the `service logs`
+and `service stop` for that exact instance.
 
 Stop and restart default to cancellation in a terminal and need `--yes` in scripts. The selected
 record revision and creation identity are checked before signals, including escalation. A reused
