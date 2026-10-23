@@ -315,7 +315,7 @@ export async function send(args: ParsedArgs): Promise<void> {
 /** Complete the declared destination flags from local records only. */
 export function sendComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, sendFlags);
-  if (flag?.name === "creds" || flag?.name === "file") return { items: [], directive: "default" };
+  if (flag?.name === "file") return { items: [], directive: "default" };
   if (flag?.name === "channel") return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "role") return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };

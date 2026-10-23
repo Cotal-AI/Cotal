@@ -11,7 +11,7 @@ import {
 } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
-import { spaceCompletion } from "../lib/completion.js";
+import { fileCompletion, spaceCompletion } from "../lib/completion.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
 import { commandSurface } from "../ext-loader.js";
 import { changeCompletion, completionOwnership, completionPaths as stubPaths, completionSourceLine, readCompletionText } from "../lib/completion-install.js";
@@ -103,8 +103,10 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     emit(flags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), "nofiles");
     return;
   }
-  // Every `--space` names a space, so one rule completes it for every command, as `use` does.
-  const completer = context?.valueFlag?.name === "space" && !word.startsWith("-") ? spaceCompletion : cmd?.complete;
+  // Every `--space` names a space and every `--creds` a file, so one rule completes each for every
+  // command: the spaces `use` offers, and the shell's file names.
+  const value = word.startsWith("-") ? undefined : context?.valueFlag?.name;
+  const completer = value === "space" ? spaceCompletion : value === "creds" ? fileCompletion : cmd?.complete;
   if (!completer) {
     const cursor = context?.positionals.find((item) => item.index === argv.length - 1);
     const children = parent?.subcommands?.filter((item) => !item.hidden);
