@@ -34,6 +34,22 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Spawn in this terminal after 0.100.0
+
+A bare `cotal spawn [<persona>]` runs the application in this terminal again, on every kind of mesh,
+as it did before 0.91.0. No manager is asked, so several live managers no longer stop it. A manager
+runs a launch only with `--detach` (`-d`), which returns once the agent joins, or with
+`--on <instance>`, which attaches to the agent on that manager.
+
+- A script or alias that relied on a bare spawn attaching to a manager's seat adds `--on <instance>`,
+  or `-d` and then `cotal attach <name>`.
+- `--foreground` keeps working and changes nothing.
+- `--restarts`, `--creds`, `--json` and `--plain` belong to a manager's launch, so without `-d` or
+  `--on` they are refused with a Next that adds `-d`.
+- On a user-auth mesh that runs elsewhere, a spawn in this terminal provisions its agent through the
+  agent-provisioning endpoint the mesh advertises. A mesh that advertises none refuses it and names
+  `-d` among the remedies.
+
 ## Endpoint caller files after 0.99.0
 
 `cotal auth mint <name> --endpoint <class> --out <file>` from 0.91.0 through 0.99.0 recorded the
@@ -406,7 +422,8 @@ nothing. A launchd job gets no warning. `cotal up --detach` keeps its meaning. T
 no mode and no unit, and no unit or script is rewritten or restarted.
 
 `cotal spawn <name>` now launches through a manager and attaches. A container or script that ran
-an agent directly with `spawn <name>` adds `--foreground`.
+an agent directly with `spawn <name>` adds `--foreground`. After 0.100.0 a bare spawn runs in the
+terminal again; see [Spawn in this terminal after 0.100.0](#spawn-in-this-terminal-after-01000).
 
 ### Deprecated daemon entries
 
