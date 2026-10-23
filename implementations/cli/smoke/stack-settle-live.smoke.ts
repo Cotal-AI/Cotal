@@ -13,7 +13,10 @@
  *     finds that stack's broker answering refuses CONFLICT naming the address and that space, with a
  *     next step to another `--server`; its `down` stops nothing, `reset space` finds nothing to reset,
  *     and its next `up` starts at another address. Once it ran, a third space's broker at that
- *     address makes its bare `up` name stopping that space, and it keeps the address.
+ *     address makes its bare `up` name stopping that space, and it keeps the address. A first `up`
+ *     refused at a port another program holds names another `--server`, records no broker instance
+ *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
+ *     refusal says the stack started no member.
  *  4. Orphan manager. With the broker suspended under a live manager, `down` refuses
  *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing. With the broker
  *     killed under a live manager, `down` refuses before any stop
@@ -57,12 +60,17 @@
  *     that killed `down` took.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
- * 11. An `up` interrupted while its broker readies, before it registers the space. It exits 130
+ * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
+ *     stops that broker again and fails `OPERATION_FAILED`, naming the open-file limit. The next `up`
+ *     under the normal limit starts the stack.
+ * 12. A `down --yes` in a folder whose `.cotal` this account cannot write refuses `PERMISSION_DENIED`
+ *     before the plan, naming the folder, and stops nothing. Once it is writable, `down` stops it.
+ * 13. An `up` interrupted while its broker readies, before it registers the space. It exits 130
  *     naming the broker's pid and `cotal down --yes`. The broker keeps running unregistered, so the
  *     next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and `cotal down --yes`, and starts
  *     nothing; following it, `down --yes` then `up` start the stack. A `down` interrupted while it
  *     waits on a frozen manager exits 130 naming the members still running and `cotal down --yes`.
- * 12. An `up` stopped after it recorded its broker's launch and before it recorded the child. A
+ * 14. An `up` stopped after it recorded its broker's launch and before it recorded the child. A
  *     listener that accepts and never answers holds the port, so the launch waits in its
  *     reachability probe. Interrupted there by SIGINT or SIGHUP, the `up` exits 130 or 129 and
  *     records the launch failed, so `down --yes` settles it. Killed there, it leaves a record that
@@ -76,7 +84,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, type Socket } from "node:net";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, watch } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -281,6 +289,27 @@ try {
     check("down --yes stops the moved stack again", cli(second, "down", "--yes", "--json").status === 0);
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", stopped.status === 0, shown(stopped));
+  }
+
+  // 3b. A first up refused at a port another program holds pins nothing.
+  {
+    const space = "heldfirst";
+    const root = prepare(space);
+    const holder = createServer();
+    const port = await listenOn(holder, await freePort());
+    const refused = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    track(space);
+    check("a first up at a port another program holds refuses CONFLICT, exit 2, naming the address and bind error", refused.status === 2 && refused.env?.error?.code === "CONFLICT" && refused.env.error.message.includes(`127.0.0.1:${port}`) && refused.env.error.message.includes("address already in use"), shown(refused));
+    check("the refusal says the stack started no member", Boolean(refused.env?.error?.message.startsWith("the controller stack started no member (broker: ")) && !refused.env?.error?.message.includes("started members were kept"), shown(refused));
+    check("its next step is another --server, or stopping that program", Boolean(refused.env?.error?.remedy?.includes("cotal up --server nats://127.0.0.1:<port>") && refused.env.error.remedy.includes(`stop the process listening on 127.0.0.1:${port}`)), shown(refused));
+    check("no broker instance was recorded", serviceInstances(space, "stack-broker").length === 0, serviceInstances(space, "stack-broker").map((row) => row.record.value.state));
+    const nothing = cli(root, "down", "--yes", "--json");
+    check("down --yes there stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
+    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    track(space);
+    check("the next up starts at another address while the program still holds the first", moved.status === 0, shown(moved));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    await new Promise<void>((done) => holder.close(() => done()));
   }
 
   // 4. An orphan manager, member names and the delivery-aware marker (B2-01, B2-03, B2-07, B2-08).
@@ -672,7 +701,45 @@ try {
     check(`${space}: after a down without --with-agents it still refuses LIFECYCLE_BLOCKED`, restarted.status === 0 && spared.status === 0 && refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED", { up: shown(restarted), down: shown(spared), refused: shown(refused) });
   }
 
-  // 11. An up interrupted before it registers the space leaves its broker running unregistered.
+  // 11. A first up whose broker cannot create the space's streams.
+  {
+    const space = "fewfiles";
+    const root = prepare(space);
+    const port = await freePort();
+    const limited = spawnSync("/bin/sh", ["-c", 'ulimit -n 32 && exec "$@"', "sh", process.execPath, "--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
+    let failed: Envelope | undefined;
+    try { failed = JSON.parse(limited.stdout) as Envelope; } catch { failed = undefined; }
+    track(space);
+    check(`${space}: under ulimit -n 32 the up stops the broker it started, fails OPERATION_FAILED, exit 5, and names the open-file limit`,
+      limited.status === 5 && failed?.error?.code === "OPERATION_FAILED" && /ran out of open files/.test(failed.error.message) && (failed.error.remedy ?? "").includes("ulimit -n") && gone(space, "stack-broker"),
+      { status: limited.status, envelope: failed, stderr: limited.stderr.slice(-1500) });
+    const recovered = cli(root, "up", "--json");
+    track(space);
+    const stopped = cli(root, "down", "--yes", "--json");
+    check(`${space}: the next up under the normal limit starts the stack, and down stops it`, recovered.status === 0 && stopped.status === 0 && gone(space, "stack-broker"), { up: shown(recovered), down: shown(stopped) });
+  }
+
+  // 12. A down in a folder whose .cotal this account cannot write. Root bypasses the mode.
+  if (process.getuid?.() !== 0) {
+    const space = "readonly";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    track(space);
+    const dir = join(root, ".cotal"), journal = readFileSync(join(dir, "stack-controller.json"), "utf8");
+    chmodSync(dir, 0o500);
+    let refused: Run;
+    try { refused = cli(root, "down", "--yes", "--json"); }
+    finally { chmodSync(dir, 0o700); }
+    check(`${space}: down --yes with an unwritable .cotal refuses PERMISSION_DENIED, exit 2, naming it, and stops nothing`,
+      started.status === 0 && refused.status === 2 && refused.env?.error?.code === "PERMISSION_DENIED" && (refused.env.error.message ?? "").includes(dir) &&
+        (refused.env.error.remedy ?? "").includes(`chmod u+w ${dir}`) && !gone(space, "stack-broker") && readFileSync(join(dir, "stack-controller.json"), "utf8") === journal,
+      { up: shown(started), down: shown(refused) });
+    const stopped = cli(root, "down", "--yes", "--json");
+    check(`${space}: once it is writable, down --yes stops the stack`, stopped.status === 0 && gone(space, "stack-broker"), shown(stopped));
+  }
+
+  // 13. An up interrupted before it registers the space leaves its broker running unregistered.
   {
     const space = "stranded";
     const root = prepare(space);
@@ -715,7 +782,7 @@ try {
     check("and down --yes stops it", last.status === 0, shown(last));
   }
 
-  // 12. An up stopped between recording its broker's launch and recording the child.
+  // 14. An up stopped between recording its broker's launch and recording the child.
   for (const [signal, code] of [["SIGINT", 130], ["SIGHUP", 129], ["SIGKILL", null]] as const) {
     const space = `launch-${signal.slice(3).toLowerCase()}`;
     const root = prepare(space);

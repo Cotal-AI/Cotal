@@ -208,8 +208,12 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", localLogin: "absent", serverRevoked: null }, noOp: true }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp]] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }] }] }] }));
     return;
   }
-  try { await revokeIdpSession(idp, session.token); }
-  catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: "retry logout for this provider, or revoke the session at the provider" }); }
+  // `--local` forgets this machine's login without contacting the provider, whose session stays valid.
+  const local = args.values.local === true;
+  if (!local) {
+    try { await revokeIdpSession(idp, session.token); }
+    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run cotal logout --idp ${idp} --local` }); }
+  }
   let localCleared = false;
   let removed: string[] = [];
   try {
@@ -217,10 +221,12 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     localCleared = true;
     if (session.sub) removed = removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session.sub));
   } catch {
+    if (local && !localCleared) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the cached login could not be confirmed cleared; the provider was not contacted", { target: { idp } });
+    if (local) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the cached login was cleared, but discovered-space cleanup was not confirmed; the provider was not contacted", { target: { idp }, changed: [{ kind: "local-login", idp, cleared: true }] });
     throw new CommandFailure("partial", "OPERATION_PARTIAL", localCleared ? "the server session was revoked and the cached login cleared, but discovered-space cleanup was not confirmed" : "the server session was revoked, but local cleanup was not confirmed", { target: { idp }, changed: [{ kind: "idp-session", idp, revoked: true }, ...(localCleared ? [{ kind: "local-login", idp, cleared: true }] : [])] });
   }
-  writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", serverRevoked: true, localLoginCleared: true, removedRegistrations: removed } }, (result) => ({ sections: [
-    { title: "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }] }] },
+  writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", serverRevoked: !local, localLoginCleared: true, removedRegistrations: removed } }, (result) => ({ sections: [
+    { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
   ] }));
 }
@@ -401,9 +407,13 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
         }
         return tx.grantInteractive(grantRow);
       });
-      const result = { kind: "actor-grant", grant: publicActor({ ...row, kind: "interactive" }), fullOptionExplicit: values.full === true };
+      // A re-grant writes the row again and rotates its lifecycle even when no field changed, so the
+      // receipt says what the earlier row held relative to this one.
+      const fields = (r: Pick<ActorRow, "scope" | "allowSubscribe" | "allowPublish" | "role" | "label" | "parent">) => JSON.stringify([r.scope, r.allowSubscribe, r.allowPublish, r.role ?? null, r.label ?? null, r.parent ?? null]);
+      const previous = current === undefined ? "none" as const : fields(current) === fields(row) ? "unchanged" as const : "replaced" as const;
+      const result = { kind: "actor-grant", grant: publicActor({ ...row, kind: "interactive" }), fullOptionExplicit: values.full === true, previous, previousLifecycleRetired: retired };
       writeResult(presentationOf(args.values), { command, target: { space, owner: row.owner, actor: row.actor }, result }, (data) => ({ sections: [
-        { title: "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
+        { title: data.previous === "unchanged" ? "Actor grant stored unchanged" : "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Earlier grant", data.previous === "none" ? "none" : data.previous === "unchanged" ? "the same fields" : "replaced"], ...(data.previousLifecycleRetired ? [["Earlier lifecycle", "retired, so a bearer issued under it no longer works"] as [string, string]] : []), ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
       ] }));
       return;
     }
@@ -629,7 +639,7 @@ const authCommands: Command[] = [
       jsonFlag, plainFlag, spaceFlag,
       { name: "owner", type: "string", value: "<u_…>", description: "name-bind: the derived owner token the name is bound to" },
       { name: "claim", type: "string", value: "<ref>", description: "name-bind: your claim reference for the namespace (the host verifies no domain control)" },
-      { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: the capability ceiling callers of this service may be granted (default: none)" },
+      { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: capabilities the proposed commands declare, such as read; callers may be granted every command that declares one (default: none)" },
       { name: "request-id", type: "string", value: "<hex32>", description: "approve, refuse, name-bind: send the request an earlier run here recorded under this id again, as it was; the host replays its answer" },
     ],
     run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
@@ -654,14 +664,15 @@ const authCommands: Command[] = [
     kind: "command",
     name: "logout",
     group: "Identity",
-    summary: "revoke the IdP session and clear the cached login --idp <auth base URL>",
-    usage: "cotal logout [--idp <auth base URL>] [--json|--plain]",
+    summary: "revoke the IdP session and clear the cached login --idp <auth base URL> [--local]",
+    usage: "cotal logout [--idp <auth base URL>] [--local] [--json|--plain]",
     prepareMeshTarget: false,
     outputs: ["json", "plain"],
     validate: (args) => validateAccountArguments(args, "logout"),
     flags: [
       jsonFlag, plainFlag,
       { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
+      { name: "local", type: "boolean", description: "forget this machine's cached login without contacting the provider; its session stays valid until it expires or is revoked there" },
     ],
     run: runLogout,
   },
@@ -678,7 +689,7 @@ function validateAuthArguments(args: ParsedArgs): void {
   if (mode === "mint") { validateCredentialMintArguments({ ...args, positionals: args.positionals.slice(1) }); return; }
   if (mode === "retire") {
     if (!actor || extra.length || Object.keys(args.values).some((key) => !["space", "yes", "json", "plain", "no-color", "no-input"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "use auth retire <full-lifecycle-uid> [--space <space>] [--yes] without actor, credential or grant selectors");
-    try { assertLifecycleToken(actor); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "auth retire needs one exact native lifecycle UID; no alias or prefix was resolved"); }
+    try { assertLifecycleToken(actor); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "auth retire needs one exact native lifecycle UID, 26 to 32 lowercase letters and digits; no alias or prefix was resolved", { remedy: "`cotal ps --wide` shows each seat's lifecycle uid" }); }
     return;
   }
   if (mode === "redeem") {

@@ -96,7 +96,7 @@ import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
-import { controllerStackRecorded, nothingRunning, stackDown, validateStackDownArguments } from "./stack-down.js";
+import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
@@ -154,20 +154,21 @@ export function validateDownArguments(args: ParsedArgs): void {
 
 /** A bare `down` stops only the stack of the folder it runs in. When this folder's root holds no
  *  stack and the space named by `--space`, or else the selected one, is a controller stack rooted at
- *  another folder, refuse with that space and its root, so the remedy is a `down` that stops it. */
+ *  another folder, refuse with that space and its root, so the remedy is a `down` that stops it. A
+ *  folder with its own `.cotal` keeps the selected space from applying; a `--space` it holds no
+ *  registration for still names that root. */
 function refuseStackElsewhere(values: ParsedArgs["values"]): void {
   if (values.file !== undefined || values.run !== undefined) return;
   const here = canonicalRoot(cotalRoot());
   let space: string | undefined, root: string | undefined;
   try {
-    if (localMeshesForRoot(here).length || existsSync(join(here, ".cotal")) && here !== canonicalRoot(homedir())) return;
+    const local = localMeshesForRoot(here);
+    if (typeof values.space === "string" ? local.some((mesh) => mesh.space === values.space) : local.length || existsSync(join(here, ".cotal")) && here !== canonicalRoot(homedir())) return;
     space = typeof values.space === "string" ? values.space : getCurrent();
-    const mesh = space === undefined ? undefined : findMesh(space);
-    if (!mesh || mesh.origin !== "up" || canonicalRoot(mesh.root) === here || !controllerStackRecorded(mesh.root)) return;
-    root = mesh.root;
+    root = space === undefined ? undefined : stackRootElsewhere(space, here);
   } catch { return; }
-  const again = ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a controller stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${again}\` from ${root}` });
+  if (root === undefined) return;
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a controller stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${sameDown(values)}\` from ${root}` });
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */

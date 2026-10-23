@@ -10,6 +10,9 @@
  * or a line with no newline before it, left the question pending. They ask through askLine now, and
  * no other CLI source asks a readline question.
  *
+ * A question that defaults to No confirms only on a typed `y` or `yes` and Enter; any other text,
+ * such as "ok" or "maybe", keeps No.
+ *
  * Drives the real clack prompts and readline over in-memory streams. No binary, broker or terminal.
  *
  * Run: pnpm smoke:prompt-input-end
@@ -117,6 +120,57 @@ const tick = () => new Promise<void>((done) => setImmediate(done));
   input.write("\r");
   const result = await settle(answer);
   check("a CLI confirm still answers", result.settled && result.value === true, result);
+  input.end();
+}
+
+// A question that defaults to No confirms only on a typed y or yes and Enter. Stray text keeps No,
+// although clack's toggle took `k` and `l` as moves to Yes and a `y` inside a word as Yes.
+const typed = async (keys: string) => {
+  const input = new PassThrough();
+  const answer = cliPrompts.confirm({ message: "Clear all retained history?", initialValue: false, input, output: sink() });
+  await tick();
+  input.write(keys);
+  const result = await settle(answer);
+  input.end();
+  return result;
+};
+for (const keys of ["y\r", "Y\r", "yes\r", "YES\r", " y \r"]) {
+  const result = await typed(keys);
+  check(`a default-No question is confirmed by ${JSON.stringify(keys)}`, result.settled && result.value === true, result);
+}
+for (const keys of ["\r", "ok\r", "later\r", "maybe\r", "k\r", "l\r", "n\r", "yy\r", "yess\r", "\u001b[A\r"]) {
+  const result = await typed(keys);
+  check(`a default-No question keeps No on ${JSON.stringify(keys)}`, result.settled && result.value === false, result);
+}
+{
+  const result = await typed("\u0003");
+  check("Ctrl-C at a default-No question is still a cancel", result.settled && prompts.isCancel(result.value), result);
+}
+{
+  // Its title breaks at spaces beside clack's mark, each continuation line starting under the text.
+  // Clack's own wrap moved a break space onto the next line, indenting it a column further.
+  let drawn = "";
+  const output = Object.assign(new Writable({ write(chunk, _encoding, done) { drawn += String(chunk); done(); } }), { columns: 43 });
+  const message = "Remove 'probe' at /run/user/1000/work-project-098/proj/a b c d e f g h/.cotal/agents/probe.md?";
+  const input = new PassThrough();
+  const answer = cliPrompts.confirm({ message, initialValue: false, input, output });
+  await tick();
+  input.write("\r");
+  await settle(answer);
+  input.end();
+  const frame = drawn.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n").slice(0, 8);
+  const title = frame.filter((row) => /^[◆│] {2}/.test(row) && !/type y to confirm/.test(row)).slice(0, 3);
+  check("a default-No question's title starts each continuation line under the text", title.length === 3 && title.slice(1).every((row) => /^│ {2}\S/.test(row)), frame);
+  check("...and breaks it only at spaces, within the width", title.map((row) => row.slice(3)).join(" ") === message && title.every((row) => row.length <= 43), frame);
+}
+
+{
+  const input = new PassThrough();
+  const answer = cliPrompts.confirm({ message: "Create it?", initialValue: true, input, output: sink() });
+  await tick();
+  input.write("\r");
+  const result = await settle(answer);
+  check("a default-Yes question keeps clack's toggle: Enter takes Yes", result.settled && result.value === true, result);
   input.end();
 }
 

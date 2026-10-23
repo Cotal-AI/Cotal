@@ -2,7 +2,8 @@
  * `cotal history [channel]` on the structured output contract, against brokers this suite owns. Real
  * agents post to channels and DM each other; the CLI child reads with its own one-shot credential.
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
- * `--grep`, `--dms`, the usage refusals, a credential that may not read history, `--follow` as NDJSON
+ * `--grep`, `--dms`, the usage refusals, a credential that may not read history, one another space's
+ * account issued, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
  * same broker, `cotal channel remove` says whether it removed a saved entry, and on the open broker
@@ -54,7 +55,7 @@ type Result = {
   replay: { channel: string; replay: boolean | null }[];
   items: Item[];
 };
-type Envelope = { outcome: string; completeness: string; command: string; target: unknown; result: Result | null; warnings: { code: string }[]; error?: { code: string; message: string } };
+type Envelope = { outcome: string; completeness: string; command: string; target: unknown; result: Result | null; warnings: { code: string }[]; error?: { code: string; message: string; remedy?: string } };
 
 const space = `histsmoke-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -244,6 +245,16 @@ try {
   writeFileSync(probe, await mintCreds(auth, newIdentity(), "probe"), { mode: 0o600 });
   const denied = await run(["history", "general", "--json", "--creds", probe, "--space", space, "--server", servers]);
   check("a credential that may not read history is a PERMISSION_DENIED refusal, exit 2, not an empty page", denied.status === 2 && denied.envelope?.outcome === "refused" && denied.envelope.error?.code === "PERMISSION_DENIED" && denied.envelope.result === null, shown(denied));
+  // A credential another space's account issued is rejected, and the refusal names the space its
+  // permissions name. One for this space's name from a foreign account names no other space.
+  const elsewhere = join(home, "elsewhere.creds"), sameName = join(home, "same-name.creds");
+  writeFileSync(elsewhere, await mintCreds(await createSpaceAuth("elsewhere"), newIdentity(), "observer"), { mode: 0o600 });
+  writeFileSync(sameName, await mintCreds(await createSpaceAuth(space), newIdentity(), "observer"), { mode: 0o600 });
+  const crossed = await run(["history", "general", "--json", "--creds", elsewhere, "--space", space, "--server", servers]);
+  check("another space's credential is PERMISSION_DENIED, exit 2, naming the space it is for",
+    crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && crossed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", not "${space}"`) && (crossed.envelope.target as { credentialSpace?: string } | null)?.credentialSpace === "elsewhere" && (crossed.envelope.error.remedy ?? "").includes(`cotal auth mint <label> --space ${space}`), shown(crossed));
+  const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
+  check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
 
   // ── --follow ────────────────────────────────────────────────────────────────────────────────────
   const f = follow(["history", "general", "--follow", "--json"]);

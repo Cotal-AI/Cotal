@@ -339,10 +339,16 @@ export interface CleanupProgress {
   readonly identity: StoreIdentity;
 }
 
+export type RestoreSelection = "full" | "registry";
+
 export interface RestoreContext {
   readonly attemptId: string;
   readonly method: "same-path" | "alternate" | "disaster";
   readonly targetPath: string;
+  /** What the restore brought back. A `registry` restore leaves every other stream out, so the
+   *  previous store holds the only copy of that history. Absent in journals written before it was
+   *  recorded. */
+  readonly selection?: RestoreSelection;
   readonly fallbackPath?: string;
   readonly previousSource?: PreviousSource;
   readonly target?: StoreIdentity;
@@ -1839,7 +1845,8 @@ function validateRestoreContext(
   const restore = record.restore;
   if (!restore || typeof restore.attemptId !== "string" || !ATTEMPT_ID.test(restore.attemptId) ||
       !["same-path", "alternate", "disaster"].includes(restore.method) ||
-      typeof restore.targetPath !== "string" || !isAbsolute(restore.targetPath))
+      typeof restore.targetPath !== "string" || !isAbsolute(restore.targetPath) ||
+      (restore.selection !== undefined && !["full", "registry"].includes(restore.selection)))
     maintenanceError("journal-corrupt", "restore context is invalid", { paths: [path] });
   if (restore.target && (!validIdentity(restore.target) || restore.target.path !== restore.targetPath))
     maintenanceError("journal-corrupt", "restore target identity is invalid", { paths: [path] });
@@ -3243,10 +3250,10 @@ export function consumeRetiredMaintenance(lock: MaintenanceLock): OrdinaryResume
   return record;
 }
 
-function restoreBase(ready: MaintenanceReadyRecord, attemptId: string, method: RestoreContext["method"], targetPath: string): RestoreContext {
+function restoreBase(ready: MaintenanceReadyRecord, attemptId: string, method: RestoreContext["method"], targetPath: string, selection: RestoreSelection | undefined): RestoreContext {
   if (!ATTEMPT_ID.test(attemptId))
     maintenanceError("invalid-transition", "restore attempt id must be a safe token", { root: ready.source.path, attemptId });
-  return { attemptId, method, targetPath };
+  return { attemptId, method, targetPath, ...(selection ? { selection } : {}) };
 }
 
 export interface RestoreClaimInput {
@@ -3332,7 +3339,7 @@ export function recordRestoreAttemptResources(
 
 export function prepareSamePathRestore(
   lock: MaintenanceLock,
-  input: { readonly attemptId: string; readonly targetPath: string; readonly fallbackPath: string; readonly claim: RestoreClaimInput },
+  input: { readonly attemptId: string; readonly targetPath: string; readonly fallbackPath: string; readonly claim: RestoreClaimInput; readonly selection?: RestoreSelection },
 ): RestoreReadyRecord {
   const ready = requireReady(lock);
   const targetPath = resolve(input.targetPath);
@@ -3352,7 +3359,7 @@ export function prepareSamePathRestore(
     });
   const { claim, ownedPaths } = newRestoreClaim(input.claim);
   const restore = {
-    ...restoreBase(ready, input.attemptId, "same-path", targetPath), fallbackPath,
+    ...restoreBase(ready, input.attemptId, "same-path", targetPath, input.selection), fallbackPath,
     ...(ownedPaths ? { ownedPaths } : {}),
   };
   return writeJournal(lock, ready, { ...readyFrom(ready), state: "restore-ready", phase: "move-pending", restore, claim }) as RestoreReadyRecord;
@@ -3404,7 +3411,7 @@ export function moveSamePathRestoreSource(lock: MaintenanceLock): RestoreReadyRe
 
 export function prepareAlternateRestore(
   lock: MaintenanceLock,
-  input: { readonly attemptId: string; readonly targetPath: string; readonly claim: RestoreClaimInput },
+  input: { readonly attemptId: string; readonly targetPath: string; readonly claim: RestoreClaimInput; readonly selection?: RestoreSelection },
 ): RestoreReadyRecord {
   const ready = requireReady(lock);
   const targetPath = canonicalCandidatePath(input.targetPath);
@@ -3420,7 +3427,7 @@ export function prepareAlternateRestore(
     });
   const { claim, ownedPaths } = newRestoreClaim(input.claim);
   const restore = {
-    ...restoreBase(ready, input.attemptId, "alternate", targetPath),
+    ...restoreBase(ready, input.attemptId, "alternate", targetPath, input.selection),
     previousSource: { kind: "retained", identity: ready.source } as PreviousSource,
     ...(ownedPaths ? { ownedPaths } : {}),
   };
@@ -3429,7 +3436,7 @@ export function prepareAlternateRestore(
 
 export function prepareMissingSourceRestore(
   lock: MaintenanceLock,
-  input: { readonly attemptId: string; readonly targetPath: string; readonly claim: RestoreClaimInput },
+  input: { readonly attemptId: string; readonly targetPath: string; readonly claim: RestoreClaimInput; readonly selection?: RestoreSelection },
 ): RestoreReadyRecord {
   assertLock(lock);
   const record = currentJournal(lock);
@@ -3447,7 +3454,7 @@ export function prepareMissingSourceRestore(
     });
   const { claim, ownedPaths } = newRestoreClaim(input.claim);
   const restore = {
-    ...restoreBase(record, input.attemptId, "disaster", targetPath),
+    ...restoreBase(record, input.attemptId, "disaster", targetPath, input.selection),
     ...(ownedPaths ? { ownedPaths } : {}),
   };
   return writeJournal(lock, record, { ...readyFrom(record), state: "restore-ready", phase: "disaster-source-missing", restore, claim }) as RestoreReadyRecord;
@@ -4046,7 +4053,10 @@ export function rollbackRestore(lock: MaintenanceLock, options: RollbackRestoreO
   return writeJournal(lock, record, readyFrom(record)) as MaintenanceReadyRecord;
 }
 
-export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string): RestoreActiveRecord {
+/** Delete the old store a healthy active restore set aside, then retire its journal. A registry
+ *  restore left every other stream out, so its old store holds the only copy of that history and is
+ *  deleted only with `discardHistory`. */
+export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string, options: { readonly discardHistory?: boolean } = {}): RestoreActiveRecord {
   let record = currentJournal(lock);
   if (record.state !== "active" || record.restore.attemptId !== attemptId)
     maintenanceError("cleanup-forbidden", "old-source cleanup requires the matching healthy active restore", {
@@ -4070,6 +4080,12 @@ export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string)
       recourse: [{ action: "repair", description: "Preserve both trees and repair the overlapping restore journal.", paths: [previous.identity.path, record.restore.target.path] }],
     });
   if (record.restore.cleanup?.status === "complete") return retireCleanedRestore(lock, record);
+  // A cleanup already under way had this consent when it started.
+  if (!record.restore.cleanup && record.restore.selection === "registry" && !options.discardHistory)
+    maintenanceError("cleanup-forbidden", "a registry restore's old source holds the only copy of the history it left out", {
+      root: lock.root, attemptId, paths: [previous.identity.path],
+      recourse: [{ action: "cleanup", description: "Keep the old source, or repeat the cleanup with explicit consent to discard that history.", paths: [previous.identity.path] }],
+    });
   if (!record.restore.cleanup)
     record = startCleanup(lock, record, "previous-source", previous.identity) as RestoreActiveRecord;
   if (record.restore.cleanup?.kind !== "previous-source")

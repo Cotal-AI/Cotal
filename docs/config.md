@@ -152,7 +152,9 @@ value is visible.
 
 `harness` is checked against the official connectors and the ones installed extensions provide.
 `persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
-with no control characters; whether that persona exists is checked when a launch uses it. A
+with no control characters. When the catalog of the space a command here uses (`--space`, else the
+selected space) does not hold it, the value is still saved, since the file may be created later,
+with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A
 value is checked when it is written, and an unknown key or an invalid value is refused with the valid
 ones. Preferences hold no credentials. They change future commands, not agents already running.
 
@@ -409,7 +411,9 @@ rather than read as absent. A process record's read error names the record's pat
 ### Machine files
 
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:
-`~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`.
+`~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`. A `COTAL_HOME`
+that names a file, or a path under one, stops every command except help and shell completion with
+`SCHEMA_INVALID`, naming the variable: point it at a directory or unset it.
 
 `COTAL_HOME` overrides **this tree only**: the registry, current pointer and onboard marker, and
 records such as prepared spaces and service records. It is not a full workstation sandbox. Broker launch policy, the JetStream
@@ -420,9 +424,10 @@ project paths on the live machine.
 
 A controller stack's member records live in this tree, so commands run under another `COTAL_HOME`
 cannot see a stack started under this one. While that stack's manager or delivery daemon runs,
-`status` there says the stack runs under another Cotal home and names the home in use, and `up`
-refuses `TARGET_UNAVAILABLE` with nothing started. Both name the step: run with the `COTAL_HOME` the
-stack was started under.
+`status` there says the stack runs under another Cotal home and names the home in use, even when
+that home prepared a space at the same root. `up`, `down` and `space create` for that root refuse
+`TARGET_UNAVAILABLE` with nothing started, stopped or written. Each names the step: run with the
+`COTAL_HOME` the stack was started under.
 
 | Path | What it is |
 |---|---|

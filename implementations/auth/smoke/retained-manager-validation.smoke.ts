@@ -1,6 +1,6 @@
 /** Closed remote retained-agent validation policy cells (broker-free). */
 import assert from "node:assert/strict";
-import { createSpaceAuth, mintLifecycleUid, newIdentity, remoteManagerActors, resolveAuthProvider, type RemoteRetainedAgentValidationRequest } from "@cotal-ai/core";
+import { createSpaceAuth, EpEnvelopeError, mintLifecycleUid, newIdentity, remoteManagerActors, resolveAuthProvider, type RemoteRetainedAgentValidationRequest } from "@cotal-ai/core";
 import { recordMesh, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -296,6 +296,24 @@ await cell("every shared provider method decodes manager-authority answers from 
       for (const outcome of await outcomes({ status: 302, type: "text/plain", body: "", location: "https://other.example/steal" }))
         assert.match("error" in outcome ? outcome.error : "resolved", /^the [a-z -]+ endpoint answered 302 with redirect Location "https:\/\/other\.example\/steal" - redirects are refused$/);
     });
+    await cell("a host 4xx refuses an enrollment as not executed, and a 5xx leaves its outcome open", async () => {
+      const enroll = async (next: Partial<typeof answer>) => {
+        answer = { status: 200, type: "application/json", body: "{}", location: "", ...next };
+        return provider.enrollRemoteManagedAgent!({ store: workspaceSecretStore(root), dir: userAuthStateDir(root, space), request: { space } as never }).then(() => undefined, (error: unknown) => error);
+      };
+      for (const status of [400, 403, 409, 429]) {
+        const refused = await enroll({ status, body: JSON.stringify({ error: "denied by host" }) });
+        assert.ok(refused instanceof EpEnvelopeError, `HTTP ${status}`);
+        assert.equal(refused.code, "permission-denied");
+        assert.equal(refused.outcome, "not-executed");
+        assert.equal(refused.message, "signed in, but managed agent enrollment was refused: denied by host");
+      }
+      for (const status of [500, 502, 503]) {
+        const failed = await enroll({ status, body: JSON.stringify({ error: "host broke" }) });
+        assert.ok(failed instanceof Error && !(failed instanceof EpEnvelopeError), `HTTP ${status}`);
+        assert.equal(failed.message, "signed in, but managed agent enrollment was refused: host broke");
+      }
+    });
   } finally {
     server.close();
     for (const [key, value] of Object.entries(priorEnv)) {
@@ -306,7 +324,7 @@ await cell("every shared provider method decodes manager-authority answers from 
   }
 });
 
-const expected = 21;
+const expected = 22;
 if (pass !== expected || fail !== 0) {
   console.error(`manager retained validation smoke failed: ${pass}/${expected} passed, ${fail} failed`);
   process.exit(1);

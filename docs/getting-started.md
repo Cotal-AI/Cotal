@@ -58,8 +58,9 @@ Requirements:
   than leaving you with an install that cannot start.
 - A `nats-server` binary, version 2.12 or newer (the control surface uses its message
   schedules and per-message TTLs, and fails loud at connect against an older broker). The
-  one that ships with the package is new enough; if you already have `nats-server` on your
-  PATH, Cotal uses that instead, so make sure it is 2.12+.
+  one that ships with the package is new enough. If you already have `nats-server` on your
+  PATH, Cotal uses that instead, and `cotal up` refuses one older than 2.12, naming its path
+  and version. `cotal status` shows which one Cotal will run.
   A presence bucket created file-backed by an older Cotal needs 2.14.5 or newer, and `cotal up`
   names the broker when it is older. Cotal now creates that bucket in memory, which needs no
   newer broker.
@@ -92,7 +93,8 @@ before it writes anything:
 5. **The space name.** For a local space it defaults to the folder's name.
 
 Save writes the answers, Change asks again with your answers kept, and Cancel saves nothing.
-Without `--configure-only`, successful preparation offers Start separately with No selected.
+Without `--configure-only`, successful preparation asks separately whether to start, and only a
+typed `y` or `yes` starts it.
 `--start` requests it directly; scripts also need `--detach`. A denied or uncertain start keeps
 completed preparation saved and names the unmet startup stage.
 Setup then seeds one agent: the generic `default` persona that a bare `cotal spawn` launches,

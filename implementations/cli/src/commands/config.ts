@@ -1,15 +1,21 @@
-import { isAbsolute } from "node:path";
-import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
+import { dirname, isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
+import { agentFilePath, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   COLOR_VALUES,
   CommandFailure,
   PREFERENCE_KEYS,
+  isCommandFailure,
   describeLayer,
   extensionProvides,
+  findMesh,
+  findPreparedSpace,
   getCurrent,
   jsonFlag,
   knownHarnesses,
   loadExtensionsManifest,
+  loadMeshes,
+  loadPreparedSpaces,
   plainFlag,
   preferenceInfo,
   preferenceSpaceProblem,
@@ -29,7 +35,7 @@ import {
   type ResolvedPreference,
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { personaNameProblem } from "../lib/persona-files.js";
+import { personaCatalog, personaNameProblem } from "../lib/persona-files.js";
 
 export const configFlags = [
   { name: "user", type: "boolean", description: "read or write your own defaults, with no space's values" },
@@ -121,12 +127,23 @@ export async function config(args: ParsedArgs): Promise<void> {
     // A blank persona is left to the key's own check, which names it empty.
     if (key === "persona" && value?.trim()) checkPersona(value);
     const scope: Scope = v.space !== undefined ? { space: v.space, from: "flag" } : { space: null, from: null };
+    // A value saved for a space that is neither registered nor prepared would never apply, so a typo
+    // is refused with the spaces there are, once the write's own checks pass. Unset stays open, so a
+    // value left for a gone space can go.
+    const space = sub === "set" ? scope.space : null;
+    if (space !== null && !preferenceSpaceProblem(space) && preferenceInfo(key).perSpace && !preferenceValueProblem(key, value!) && !findMesh(space) && !findPreparedSpace(space)) {
+      const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)])].sort();
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is registered or prepared here${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
+        remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
+      });
+    }
     const previous = (scope.space === null ? prefs.defaults[key] : prefs.spaces[scope.space]?.[key]) ?? null;
     const { changed, revision } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
     // What a command here uses next: through the written space, or the selected one for a default.
     const effective = setting(key, readScope(v), readPreferences());
     const result: PreferenceWrite = { kind: "preference-write", file: preferencesPath(), revision, scope, key, previous, value: value ?? null, effective };
-    writeResult(presentation, { command: "config", target: target(scope), result, warnings: shadowedWrite(result), noOp: !changed }, writeView);
+    const missing = key === "persona" && value?.trim() ? missingPersona(value, readScope(v)) : undefined;
+    writeResult(presentation, { command: "config", target: target(scope), result, warnings: [...shadowedWrite(result), ...(missing ? [missing] : [])], noOp: !changed }, writeView);
     return;
   }
   throw usage(`cotal config has no subcommand "${sub}" - run \`cotal help config\``);
@@ -190,12 +207,27 @@ function checkPersona(value: string): void {
   if (problem) throw usage(problem);
 }
 
+const isPersonaPath = (value: string): boolean => isAbsolute(value) || /[\\/]/.test(value) || value.endsWith(".md");
+
 function personaProblem(value: string): string | undefined {
-  const path = isAbsolute(value) || /[\\/]/.test(value) || value.endsWith(".md");
-  const problem = !path
+  const problem = !isPersonaPath(value)
     ? personaNameProblem(value)
     : /[\u0000-\u001f\u007f]/u.test(value) || value !== value.trim() ? "a persona file path cannot hold control characters or surrounding spaces" : undefined;
   return problem && `invalid persona ${JSON.stringify(value)}: ${problem}`;
+}
+
+/** A persona the catalog of the space a command here uses does not hold, as a warning. The value is
+ *  still saved, since the file may be created later. A space this machine cannot resolve has no
+ *  catalog here to check. */
+function missingPersona(value: string, scope: Scope): OutputWarning | undefined {
+  if (scope.space === null) return undefined;
+  let catalog;
+  try { catalog = personaCatalog({ space: scope.space }); }
+  catch (error) { if (isCommandFailure(error)) return undefined; throw error; }
+  const path = agentFilePath(catalog.root, value);
+  if (existsSync(path)) return undefined;
+  const missing = isPersonaPath(value) ? `no persona file ${path}` : `no persona "${value}" in space ${catalog.space}'s catalog ${dirname(path)}`;
+  return { code: "PERSONA_NOT_FOUND", target: { space: catalog.space, path }, message: `${missing}; the preference was saved, and a launch there needs that file` };
 }
 
 /** A variable that wins with a value `config set` refuses still wins, as it always has. It is named

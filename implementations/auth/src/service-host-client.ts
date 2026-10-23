@@ -58,6 +58,28 @@ function recordedHostRequest(dir: string, requestId: string): RecordedHostReques
   return r as RecordedHostRequest;
 }
 
+/** The proposal fields a caller ceiling is built from. A closed proposal's tombstone has no commands. */
+type ProposalCommands = { endpoint?: string; instanceId?: string; commands?: readonly { name: string; capability: string; targeted: boolean }[] };
+
+/** `--caller-ceiling` names capabilities. Each becomes one ceiling entry per proposed command that
+ *  declares it, pinned to the proposed instance, as the host admits them. A name no proposed command
+ *  declares, or one a targeted command declares, is refused before anything is sent: a target mode
+ *  is not derivable from a capability name. */
+function callerCeilingFor(flag: string | undefined, proposal: ProposalCommands, proposalId: string): EpCapability[] {
+  const names = [...new Set((flag ?? "").split(",").map((c) => c.trim()).filter(Boolean))];
+  const commands = proposal.commands ?? [];
+  const unknown = names.filter((name) => !commands.some((c) => c.capability === name));
+  if (unknown.length) {
+    const declared = [...new Set(commands.map((c) => c.capability))];
+    throw new CommandFailure("refused", "USAGE_INVALID", `no command of proposal ${proposalId} declares ${unknown.join(", ")}; ${declared.length ? `its commands declare ${declared.join(", ")}` : "it declares no commands"}, and nothing was decided`);
+  }
+  const picked = commands.filter((c) => names.includes(c.capability));
+  const targeted = picked.filter((c) => c.targeted).map((c) => c.name);
+  if (targeted.length)
+    throw new CommandFailure("refused", "UNSUPPORTED", `--caller-ceiling covers untargeted commands only, and ${targeted.join(", ")} of proposal ${proposalId} ${targeted.length === 1 ? "is" : "are"} targeted; nothing was decided`);
+  return picked.map((c) => ({ endpoint: proposal.endpoint!, command: c.name, instanceId: proposal.instanceId!, instanceOnly: true }));
+}
+
 const describeRecorded = (r: RecordedHostRequest): string =>
   r.operation === "decide" ? `${r.input.decision} ${r.input.proposalId}` : `name-bind ${r.input.endpoint}`;
 
@@ -99,10 +121,10 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
   }
   switch (sub) {
     case "approve": case "refuse": {
-      const proposal = await post(fresh("proposal-read", { proposalId: subject })) as ServiceHostResult & { record?: { value: { nameBinding: { revision: number } | null }; revision: number } };
+      const proposal = await post(fresh("proposal-read", { proposalId: subject })) as ServiceHostResult & { record?: { value: ProposalCommands & { nameBinding: { revision: number } | null }; revision: number } };
       if (proposal.state !== "present" || proposal.record === undefined)
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no proposal ${subject} is yours to decide on space "${space}"; nothing was decided`);
-      const callerCeiling = (values["caller-ceiling"] ?? "").split(",").map((c) => c.trim()).filter(Boolean) as unknown as EpCapability[];
+      const callerCeiling = callerCeilingFor(values["caller-ceiling"], proposal.record.value, subject);
       const request = fresh("decide", {
         proposalId: subject, expectedProposalRevision: proposal.record.revision,
         expectedNameRevision: proposal.record.value.nameBinding?.revision ?? 0,

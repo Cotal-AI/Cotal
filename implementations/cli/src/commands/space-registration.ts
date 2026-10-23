@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { listSpaces, token } from "@cotal-ai/core";
@@ -23,6 +23,8 @@ import {
   removeMesh,
   removePreparedSpace,
   removeSpacePreferences,
+  stackHomeRemedy,
+  stackRunsUnderOtherHome,
   writeResult,
   type Cell,
   type Check,
@@ -403,6 +405,12 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       ? `forget it with \`cotal space forget ${name}\`, then run this create again`
       : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
   }
+  // A stack this home cannot see runs here under another Cotal home; a space prepared over it could
+  // not start, and the root's status would stop naming that home.
+  let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
+  try { journal = readStackJournal(root)?.journal; } catch { journal = undefined; }
+  if (journal && stackRunsUnderOtherHome(root, journal))
+    throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} runs under another Cotal home; ${homeCotalDir()} holds no record of its members`, target, stackHomeRemedy());
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.
   if (again && held.length === 1 && held[0] === name) return "started";
@@ -434,16 +442,29 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
  *  Returns the record it wrote and when. */
 export function recordLocalSpace(name: string, root: string): { file: string; preparedAt: string } {
   protectedLocalDirectory(root, "the project root");
+  const target = { space: name, root };
+  const dir = join(root, ".cotal");
   // Making `.cotal` is the first write, so a root this account cannot write is refused with nothing written.
-  try { mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 }); }
+  let made: string | undefined;
+  try { made = mkdirSync(dir, { recursive: true, mode: 0o700 }); }
   catch (error) {
-    if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, { space: name, root }, "create the space in a folder you own, or pass --root <dir>");
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
+      throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
+    if (!unwritable(error)) throw error;
+    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, "create the space in a folder you own, or pass --root <dir>");
   }
-  protectedLocalDirectory(join(root, ".cotal"), "the project's .cotal directory");
+  protectedLocalDirectory(dir, "the project's .cotal directory");
   const preparedAt = new Date().toISOString();
-  return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt };
+  try { return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt }; }
+  catch (error) {
+    if (!unwritable(error)) throw error;
+    // The empty `.cotal` this call made goes too, so the refusal leaves the root as it was.
+    if (made !== undefined) rmdirSync(dir);
+    throw refuse("PERMISSION_DENIED", `this account cannot write this machine's Cotal home ${homeCotalDir()}, so the space could not be recorded; nothing was written`, target, "make that folder writable by you, or set COTAL_HOME to a folder you own");
+  }
 }
+
+const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");
 
 function isDir(path: string): boolean {
   try {

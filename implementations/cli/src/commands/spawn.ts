@@ -98,7 +98,8 @@ import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, onInstance, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { askManager, failIfNotOk, onInstance, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
@@ -500,19 +501,42 @@ export interface ManagedLaunchResult {
   readiness: "joined";
   requestedModel: string | null;
   detached: boolean;
+  /** The channels the agent asked to read and post on and the ones its host granted, when the host
+   *  granted other ones. Null when it granted what was asked. */
+  acl: ManagedLaunchAcl | null;
 }
+
+/** A managed agent's read and post channels as asked for and as granted. */
+export interface ManagedLaunchAcl {
+  requested: { allowSubscribe: string[]; allowPublish: string[] };
+  effective: { allowSubscribe: string[]; allowPublish: string[] };
+}
+
+/** The manager's `acl` launch field: null when the manager sent none, undefined when it cannot be read. */
+export function managedLaunchAcl(value: unknown): ManagedLaunchAcl | null | undefined {
+  if (value === undefined) return null;
+  const lists = (raw: unknown) => {
+    const { allowSubscribe, allowPublish } = (raw ?? {}) as { allowSubscribe?: unknown; allowPublish?: unknown };
+    const channels = (list: unknown): list is string[] => Array.isArray(list) && list.every((channel) => typeof channel === "string");
+    return channels(allowSubscribe) && channels(allowPublish) ? { allowSubscribe: [...allowSubscribe], allowPublish: [...allowPublish] } : undefined;
+  };
+  const requested = lists((value as { requested?: unknown } | null)?.requested), effective = lists((value as { effective?: unknown } | null)?.effective);
+  return requested && effective ? { requested, effective } : undefined;
+}
+
+const channelList = (channels: readonly string[]): string => channels.length ? channels.join(", ") : "none";
 
 export interface ManagedLaunchObserver {
   /** A native joined receipt, not task completion. A composite command owns its one envelope. */
   ready(result: ManagedLaunchResult, warnings: readonly OutputWarning[]): void;
 }
 
-function managedLaunchView(r: ManagedLaunchResult): Report {
+export function managedLaunchView(r: ManagedLaunchResult): Report {
   const concrete = [r.name, r.space, r.managerInstanceId].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
   const target = concrete ? `${r.name} --space ${r.space} --on ${r.managerInstanceId}` : "<name> --space <space> --on <manager-instance>";
   return { sections: [
     { title: "Agent joined", blocks: [
-      { kind: "fields", rows: [["Agent", r.name], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", r.runtime], ["Role", r.role ?? "not recorded"], ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
+      { kind: "fields", rows: [["Agent", r.name], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
       { kind: "lines", lines: [{ text: "The manager confirmed presence readiness. This is not proof that the kickoff task completed.", tone: "hint" }] },
     ] },
     ...(r.detached ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [
@@ -535,7 +559,7 @@ export async function launchManagedPersona(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  const on = onInstance(values.on, "cotal spawn <persona>");
+  const on = await managerPin(values, "cotal spawn <persona>");
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.
@@ -615,14 +639,23 @@ export async function launchManagedPersona(
     const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "unimplemented": "UNSUPPORTED" };
     const code = reply.code === undefined ? undefined : refusal[reply.code];
     const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
-    if (reply.nativeOutcome === "not-executed" && code) throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: "nothing was launched; fix what the manager reported, then run the spawn again" });
+    if (reply.nativeOutcome === "not-executed" && code) {
+      // A manager without the default persona: name your other live managers whose catalog has one.
+      const elsewhere = ref === "default" && managerConfigRef === undefined && reply.error?.startsWith('no persona "default"') ? await managersWithPersona(flags, reply.managerInstanceId ?? on, "default").catch((): string[] => []) : [];
+      throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: elsewhere.length
+        ? `nothing was launched; ${elsewhere.length === 1 ? "this manager of yours has" : "these managers of yours have"} a default persona: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(" or ")}`
+        : "nothing was launched; fix what the manager reported, then run the spawn again" });
+    }
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect cotal ps and the selected manager before retrying; this launch was not submitted again" });
   }
-  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; eventsNotice?: string };
+  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; eventsNotice?: string; acl?: unknown };
   if (!d || typeof d.name !== "string" || typeof d.id !== "string" || typeof d.lifecycleUid !== "string" || typeof d.agent !== "string" || typeof d.mode !== "string" || !reply.managerInstanceId)
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "the manager reported a successful launch but did not supply the identity and manager needed for a safe handoff", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect cotal ps before doing anything else; do not relaunch" });
-  const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: t.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: values.model ?? null, detached: values.detach === true };
+  const acl = managedLaunchAcl(d.acl);
+  if (acl === undefined)
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the manager's report of the channels its host granted could not be read; no replacement was launched", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect cotal ps before doing anything else; do not relaunch" });
+  const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: t.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: values.model ?? null, detached: values.detach === true, acl };
   const presentation = presentationOf(values);
   const warnings: OutputWarning[] = d.eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: d.eventsNotice }] : [];
   if (observer) {

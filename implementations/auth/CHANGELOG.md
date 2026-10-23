@@ -1,5 +1,37 @@
 # @cotal-ai/auth
 
+## 0.100.2
+
+### Patch Changes
+
+- 6b27db6: An actor grant receipt now names the earlier grant as none, the same fields or replaced, and says when its lifecycle was retired. A re-grant with the same fields is titled `Actor grant stored unchanged`; JSON carries `previous` and `previousLifecycleRetired`. Before, every grant read "Actor grant stored", so a repeat could not be told from a change.
+- c771bd9: `cotal auth handle inspect` on a NATS credential file now says it is a credential file and not a capability handle, which is a signed JSON grant, and that a credential file is passed with `--creds`. It said "local record input is not valid UTF-8 JSON", which was wrong for a UTF-8 file and did not say what a handle is. Neither message echoes the file.
+- c91e708: `cotal auth retire` with a malformed lifecycle UID now names the format, 26 to 32 lowercase letters and digits, and points to `cotal ps --wide`, which shows each seat's UID.
+- f6d6e2a: `cotal service-endpoint name <endpoint>` now prints the host's answer. Before, the client's result parser did not accept name-read results, so every run failed with "service host result: unsupported operation result", for a bound name and an unbound one alike.
+- Updated dependencies [8d81c12]
+- Updated dependencies [bb4145f]
+  - @cotal-ai/core@0.100.2
+  - @cotal-ai/workspace@0.100.2
+  - @cotal-ai/lang@0.100.2
+
+## 0.100.1
+
+### Patch Changes
+
+- ced5b4e: `cotal auth retire` said only that this CLI "has no supported retirement instrument", with a Next
+  that named no command, while help described it as a working route. Help now says it is not available
+  here, and the refusal says that one minted credential cannot be revoked on its own and names the
+  lever that works: rotating the space identity with `cotal reset space <space>` (or `cotal clean all
+  --force`), which stops every credential the space issued.
+- 7082ed8: `cotal service-endpoint approve --caller-ceiling <capabilities>` now works. Each named capability becomes a ceiling entry, pinned to the proposed instance, for every proposed command that declares it. Before, the names were sent as bare strings and the host refused every approval that carried a ceiling with "endpoint caller policy: expected an object". A capability no proposed command declares, or one a targeted command declares, is refused before anything is sent.
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [86b2cd5]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/lang@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
 ## 0.100.0
 
 ### Patch Changes

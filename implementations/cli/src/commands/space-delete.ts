@@ -301,15 +301,19 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const started = liveStackRefusal(refreshed.entry, name);
   if (started) throw started;
   const receipt = await applySpaceDeletion(refreshed);
-  // The broker keeps running without the space's streams. A space this machine started gets them
-  // back, empty, only from a broker start, so the route back is a whole stop and a fresh up.
+  // The broker keeps running without the space's streams. A controller stack's next up creates them
+  // again, empty, on that broker. A legacy stack gets them back only from a broker start, so its
+  // route back is a whole stop and a fresh up.
   const { root, origin } = refreshed.entry;
   let controller = false;
   try { controller = origin === "up" && readStackJournal(root)?.journal.space === name; } catch { /* an unreadable journal names the legacy stop */ }
-  const next = origin === "up"
-    ? [{ command: controller ? "cotal down --yes" : "cotal down", description: `Stop the stack in ${root}; the next cotal up there creates the space's streams again, empty` },
-      { command: `cotal space forget ${name}`, description: "After that stop, drop the space from this machine instead" }]
-    : [{ command: `cotal space forget ${name}`, description: "Drop this machine's registration of the deleted space" }];
+  const next = controller
+    ? [{ command: "cotal up", description: `Run in ${root}: create the space's streams again, empty, on the running broker` },
+      { command: "cotal down --yes", description: `Run in ${root} to stop the stack instead; cotal space forget ${name} then drops the space from this machine` }]
+    : origin === "up"
+      ? [{ command: "cotal down", description: `Stop the stack in ${root}; the next cotal up there creates the space's streams again, empty` },
+        { command: `cotal space forget ${name}`, description: "After that stop, drop the space from this machine instead" }]
+      : [{ command: `cotal space forget ${name}`, description: "Drop this machine's registration of the deleted space" }];
   writeResult(presentation, { command: "space delete", target: { space: name, broker: refreshed.result.recordedBroker },
     result: { kind: "live-space-delete", space: name, brokerServerId: refreshed.result.serverId, open: refreshed.entry.mode === "open", ...receipt },
     ...(receipt.acknowledged.length === 0 ? { noOp: true } : {}) }, (data): Report => ({ sections: [{ title: data.acknowledged.length ? "Space streams deleted" : "Space streams already absent", blocks: [

@@ -38,13 +38,13 @@ export function validateTelemetryArguments(args: ParsedArgs): void {
 /** `cotal telemetry [off|minimal|regular]`: show the level in force, or set the file's level. A level
  *  the environment forces still wins over the file, and the report says so. Under an environment
  *  opt-out the file is neither read nor created, so a level is not saved: the run is a no-op that
- *  says so. */
+ *  says so. A run that creates the file changed it, even at the default level. */
 export async function telemetry(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const wanted = args.positionals[0] as TelemetryLevel | undefined;
   const before = effectiveTelemetry(process.env);
   const optedOut = wanted !== undefined && before.source !== "file" && before.level === "off";
-  const noOp = optedOut || (wanted !== undefined && before.settings?.level === wanted);
+  const noOp = optedOut || (wanted !== undefined && !before.created && before.settings?.level === wanted);
   if (wanted !== undefined && !noOp) setTelemetryLevel(wanted);
   const state = wanted === undefined || noOp ? before : effectiveTelemetry(process.env);
   const result: TelemetryResult = {

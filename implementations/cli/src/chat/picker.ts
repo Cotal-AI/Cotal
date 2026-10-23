@@ -3,9 +3,10 @@
  * the one `channelInfo` read that discloses an unregistered channel before it is used (spec line 295).
  * It never widens anything: a choice only names a destination; the broker still decides.
  */
-import { assertValidChannel, assertValidRole, isConcreteChannel, oneLine } from "@cotal-ai/core";
+import { assertValidRole, isConcreteChannel, oneLine } from "@cotal-ai/core";
 import type { AdmittedChatSession, ConnectionReport, RosterView } from "./session.js";
 import { personLabel, recipientLabel, sharedNames, type Person, type Recipient } from "./view.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
 
 /** Bound on listed choices; the rest stay reachable by typing an explicit name. Provisional. */
 export const MAX_CHOICES = 50;
@@ -51,12 +52,8 @@ export function parseRecipient(text: string): { ok: true; recipient: Recipient }
   const t = text.trim();
   if (t.startsWith("#")) {
     const ch = t.slice(1);
-    try {
-      assertValidChannel(ch);
-    } catch (e) {
-      return { ok: false, error: oneLine((e as Error).message) };
-    }
-    if (!isConcreteChannel(ch)) return { ok: false, error: "a send needs a concrete channel (no * or >)" };
+    const problem = concreteChannelProblem(ch);
+    if (problem) return { ok: false, error: oneLine(problem) };
     return { ok: true, recipient: { kind: "channel", channel: ch } };
   }
   if (t.startsWith("@")) {

@@ -2,10 +2,12 @@ import { readFileSync, statSync, type Stats } from "node:fs";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
+  ROOT,
   assertLifecycleToken,
   credsProblem,
   instancePinnedInstrumentCapabilities,
   isReachable,
+  jwtFromCreds,
   managerCallerBinding,
   mintCreds,
   mintLifecycleUid,
@@ -17,12 +19,14 @@ import {
   type IssuedCaller,
   probeConnect,
   registry,
+  token,
   type AuthProvider,
   type EpCaller,
   type MintOpts,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { brokerAddressForDisplay } from "./broker-display.js";
 import { c } from "./colors.js";
 import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
@@ -519,7 +523,16 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // real (documented) gap rather than a safe default - a `--creds` connect to a TLS broker still
     // upgrades, but is downgradeable.
     const tls = recorded?.tlsRequired === true;
-    await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
+    try {
+      await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
+    } catch (e) {
+      // A rejected credential whose own permissions name another space is reported with that space.
+      const owner = isConnectRefusal(e) && e.code === "PERMISSION_DENIED" ? spaceInCreds(creds) : undefined;
+      if (owner === undefined || owner === space) throw e;
+      const message = `credentials rejected at ${brokerAddressForDisplay(server) ?? "an invalid broker address"}: ${flags.creds} is a credential for space "${owner}"${flags.space === undefined ? "" : `, not "${space}"`}`;
+      const remedy = `${findMesh(owner) ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`}${flags.space === undefined ? "" : `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space} --out <file>\``}`;
+      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(flags.space === undefined ? {} : { space }), credentialSpace: owner, path: flags.creds } });
+    }
     return { server, space, tls, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
@@ -779,6 +792,21 @@ export function readCredsFile(path: string): string {
   const exposure = credentialFileExposure(path, stat);
   if (exposure) console.error(c.yellow(`! creds file ${path} ${exposure.reason}; ${exposure.remedy}`));
   return text;
+}
+
+/** The one space a credential's own permissions name: the `<space>` of every `cotal.<space>.…`
+ *  subject its user JWT allows or denies. Undefined when they name none, more than one or a
+ *  wildcard, or the JWT does not decode. This is what the file says, not which broker accepts it. */
+function spaceInCreds(creds: string): string | undefined {
+  try {
+    const claims = JSON.parse(Buffer.from(jwtFromCreds(creds)?.split(".")[1] ?? "", "base64url").toString("utf8")) as { nats?: Record<string, { allow?: unknown; deny?: unknown } | undefined> };
+    const subjects = ["pub", "sub"].flatMap((kind) => [claims.nats?.[kind]?.allow, claims.nats?.[kind]?.deny].flatMap((list) => Array.isArray(list) ? list : []));
+    const spaces = new Set(subjects.filter((subject): subject is string => typeof subject === "string" && subject.startsWith(`${ROOT}.`)).map((subject) => subject.split(".")[1] ?? ""));
+    const [space] = spaces;
+    return spaces.size === 1 && space !== undefined && token(space) === space ? space : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** {@link readCredsFile} with the exiting disposition. */

@@ -56,7 +56,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "./spawn.js";
 import type { SetupStackStartResult } from "./setup-start.js";
 import { runtimeProviders } from "./runtimes.js";
-import { onInstance } from "../lib/control.js";
+import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 
@@ -214,7 +214,7 @@ export function validateSetupArguments(args: ParsedArgs): void {
   if (values.detach && !values.start) throw usage("--detach requires an explicit --start");
   const interactive = presentationOf(values) === "rich" && !values.yes && canPrompt();
   if (values.on !== undefined) {
-    onInstance(values.on, "cotal setup");
+    onInstanceId(values.on, "cotal setup");
     if (values.destination === "local") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
     if (values["configure-only"] || (!values.start && !interactive)) throw usage("--on requires a possible startup; pass --start for a scripted setup");
   }
@@ -524,6 +524,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   try {
     await resolveNatsServer();
   } catch (e) {
+    if (e instanceof CommandFailure) throw e;
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22 or newer" });
   }
   return { inputs, runtimes, candidate, space: { kind: "local", state } };

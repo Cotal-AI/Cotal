@@ -485,9 +485,12 @@ export async function registerServiceInstance(
       },
     });
     if (finished.completed) {
+      // The reopen has committed, so a later registration may already have frozen the gate and
+      // saved its own cursor. Clear only the cursor this freeze saved.
       try {
         const stored = await args.barrier.progress?.load();
-        if (stored) await args.barrier.progress?.clear(stored.revision);
+        if (stored && stored.cursor.opId === args.barrier.operationId && stored.cursor.freezeToken === token)
+          await args.barrier.progress?.clear(stored.revision);
       } catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
       return { registrationRevision: finished.registrationRevision, processEpoch: finished.processEpoch };
     }

@@ -3,7 +3,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { closeSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { CotalEndpoint, isReachable, mintLifecycleUid, openPrivateAppend, type JsonValue, type ParsedArgs } from "@cotal-ai/core";
-import { c, findMesh } from "@cotal-ai/workspace";
+import { c, findMesh, parsePositiveIntegerFlag } from "@cotal-ai/workspace";
 
 type FeedbackType = "bug" | "idea" | "friction" | "praise" | "other";
 type FeedbackSeverity = "low" | "medium" | "high";
@@ -92,8 +92,8 @@ export async function runFeedbackIntake(args: ParsedArgs, hooks?: FeedbackIntake
 
   const host = values.host ?? "127.0.0.1";
   const port = portOpt(values.port);
-  const maxBytes = numberOpt(values["max-bytes"], 64 * 1024, "max-bytes");
-  const rateLimit = numberOpt(values["rate-limit"], 30, "rate-limit");
+  const maxBytes = parsePositiveIntegerFlag("--max-bytes", values["max-bytes"]) ?? 64 * 1024;
+  const rateLimit = parsePositiveIntegerFlag("--rate-limit", values["rate-limit"]) ?? 30;
   const store = hooks ? hooks.store : resolve(values.store ?? ".cotal/feedback/feedback.jsonl");
   const space = values.space ?? "beta-feedback";
   const channel = values.channel ?? "feedback";
@@ -213,13 +213,6 @@ function portOpt(raw: string | undefined): number {
   const port = Number(raw);
   if (!/^[0-9]+$/.test(raw) || port < 1 || port > 65535) throw new Error("--port must be a decimal port from 1 to 65535");
   return port;
-}
-
-function numberOpt(raw: string | undefined, fallback: number, name: string): number {
-  if (raw === undefined) return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n <= 0) throw new Error(`--${name} must be a positive integer`);
-  return n;
 }
 
 function loadTesters(path: string): FeedbackTester[] {

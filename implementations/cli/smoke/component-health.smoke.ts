@@ -359,8 +359,8 @@ try {
   const present = cli("status", "--components", "--space", SPACE, "--server", server);
   const presentText = `${present.stdout}${present.stderr}`;
   check("live lease-holder that never serves exits present-not-serving (2)", present.status === 2, presentText);
-  check("manager row names not-serving, its PID, and its unreported static reconciliation",
-    /manager\s+not-serving/.test(presentText) && presentText.includes(`pid ${held.pid}`) && presentText.includes("static reconciliation not reported by this manager build"), presentText);
+  check("manager row names not-serving and its PID, and blames no manager build that never answered",
+    /manager\s+not-serving/.test(presentText) && presentText.includes(`pid ${held.pid}`) && !presentText.includes("static reconciliation not reported by this manager build"), presentText);
   check("manager row names the lease holder rather than substituting service success",
     /lease holder local\./.test(presentText) && presentText.includes("serve no answer"), presentText);
 

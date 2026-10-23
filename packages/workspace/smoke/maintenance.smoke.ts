@@ -1166,6 +1166,31 @@ if (process.platform !== "win32") {
   releaseMaintenanceLock(p.lock);
 }
 
+// A registry restore's old source holds the only copy of the history it left out, so deleting it
+// needs explicit consent.
+{
+  const p = ready("cleanup-registry");
+  const fallback = join(p.root, "store.fallback");
+  prepareSamePathRestore(p.lock, { attemptId: "restore-registry", targetPath: p.store, fallbackPath: fallback, claim: restoreClaim(), selection: "registry" });
+  check("the restore journals its selection", (readMaintenanceJournal(p.root) as { restore?: { selection?: string } }).restore?.selection === "registry");
+  moveSamePathRestoreSource(p.lock);
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-registry", serverName: "restore-registry-listener", serverNonce: "restore-registry-nonce",
+    processOwner: owner("restore-registry-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  expectCode("a registry restore's old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-registry"));
+  check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
+  cleanupRestoreFallback(p.lock, "restore-registry", { discardHistory: true });
+  check("discardHistory deletes the old source only and retires the journal", !exists(fallback) && sameStoreIdentity(target, readStoreIdentity(p.store)) && readMaintenanceJournal(p.root) === undefined);
+  releaseMaintenanceLock(p.lock);
+}
+
 // A disaster restore retains no old source, so its explicit cleanup only retires the journal.
 {
   const p = ready("cleanup-disaster");

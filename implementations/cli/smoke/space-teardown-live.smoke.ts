@@ -11,23 +11,31 @@
  *     stack still stops cleanly.
  *  3. Reset verdicts. On the live stack `reset store --dry-run` exits 0 with a refused verdict and
  *     a remedy naming `cotal down`, and `reset space --dry-run` refuses with that remedy.
- *  4. Reset after a normal down. `reset store` is offered and removes the store, and `up` starts
- *     again. `reset space` is offered and removes the identity, keeping the prepared record and
- *     the stack journal, and `up` starts again with a new account.
+ *  4. Reset after a normal down. `reset store` is offered and removes the store, naming the
+ *     workflow runs that go with it in its preview and receipt and saying why the down listed
+ *     none, and `up` starts again. `reset space` is offered and removes the identity, keeping the
+ *     prepared record and the stack journal, and `up` starts again with a new account. It clears
+ *     the credentialRef of a saved service whose credential the removed account issued, names it,
+ *     and keeps any other.
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
  *     definitions saved for the root, and another folder starts a stack under the same name.
  *  6. Space delete under a stopped stack. With only the broker running the delete applies, and its
- *     receipt names `cotal down --yes` and `cotal space forget`. A bare `up` then refuses
- *     TARGET_NOT_FOUND (exit 2), saying the broker lost the streams and naming the restart, which
- *     starts the stack again.
+ *     receipt names `cotal up`, and `cotal down --yes` with `cotal space forget`. A bare `up` then
+ *     creates the streams again on the running broker, empty, says so and starts delivery, and a
+ *     later `up` finds them held.
+ *  7. A partial loss. When the running broker lost only the delivery bucket, `up` leaves the rest as
+ *     they are and refuses TARGET_NOT_FOUND (exit 2) naming the restart, which creates it.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { deliveryBucket, mintCreds, mintLifecycleUid, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -41,7 +49,7 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { findMesh, findPreparedSpace } = await import("@cotal-ai/workspace");
+const { findMesh, findPreparedSpace, getSpaceAuth, workspaceSecretStore } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -142,19 +150,41 @@ try {
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
-    check("reset store --dry-run after down offers the apply", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true, shown(storeStopped));
+    // This stack runs with --no-manager, so its down recorded why it could not read the runs.
+    const contents = storeStopped.env?.result?.storeContents as { removed?: string[]; listed?: boolean; runsAtLastDown?: { read?: boolean; reason?: string } | null } | undefined;
+    check("reset store --dry-run after down offers the apply, names the workflow runs it removes and says why the down listed none", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true && contents?.removed?.includes("workflow runs and their journals") === true && contents.listed === false && contents.runsAtLastDown?.read === false && contents.runsAtLastDown.reason === "the stack's manager was not running", shown(storeStopped));
     const storeApplied = cli(root, "reset", "store", space, "--yes", "--json");
-    check("reset store --yes removes the stopped store", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0, shown(storeApplied));
+    check("reset store --yes removes the stopped store and names the workflow runs that went with it", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0 && (storeApplied.env.result.removedContents as string[] | undefined)?.includes("workflow runs and their journals") === true, shown(storeApplied));
     const restarted = cli(root, "up", "--json");
     check("bare up starts the stack again on an empty store", restarted.status === 0, shown(restarted));
+    // A saved service naming a credential this account issued would hand its child a credential the
+    // next identity rejects; one naming any other file is not attributed to it.
+    const keys = folder("keys");
+    const minted = join(keys, "svc.creds"), foreign = join(keys, "foreign.creds");
+    const mint = cli(root, "auth", "mint", "svc", "--out", minted, "--space", space, "--json");
+    check("auth mint writes a credential this space's account issued", mint.status === 0 && existsSync(minted), shown(mint));
+    writeFileSync(foreign, "not a credential\n", { mode: 0o600 });
+    const saveService = (name: string, creds: string) => {
+      const file = join(keys, `${name}.json`);
+      writeFileSync(file, JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 }, credentialRef: { kind: "file", path: creds } }));
+      return cli(root, "service", "add", name, "--file", file, "--space", space, "--json");
+    };
+    const saved = [saveService("minted", minted), saveService("foreign", foreign)];
+    check("service add saves a definition naming each file", saved.every((run) => run.status === 0), saved.map(shown));
     const before = accountDigest(root);
     const stoppedAgain = cli(root, "down", "--yes", "--json");
     check("down --yes stops it again", stoppedAgain.status === 0, shown(stoppedAgain));
 
     const spacePreview = cli(root, "reset", "space", space, "--dry-run", "--json");
     check("reset space --dry-run after down offers the apply", spacePreview.status === 0 && spacePreview.env?.result?.applyVerdict?.offered === true, shown(spacePreview));
+    const issuedRefs = JSON.stringify([{ definition: "minted", path: minted }]);
+    check("the preview names the one credentialRef this identity issued", JSON.stringify(spacePreview.env?.result?.clearsCredentialRefs) === issuedRefs, spacePreview.env?.result?.clearsCredentialRefs);
     const spaceApplied = cli(root, "reset", "space", space, "--yes", "--json");
     check("reset space --yes removes the identity and keeps the stack's records", spaceApplied.status === 0 && spaceApplied.env?.result?.localIdentityRemoved === true && spaceApplied.env.result.registrationRemoved === false, shown(spaceApplied));
+    const shownMinted = cli(root, "service", "show", "minted", "--space", space, "--json"), shownForeign = cli(root, "service", "show", "foreign", "--space", space, "--json");
+    check("it clears that credentialRef and says so, and keeps the other",
+      JSON.stringify(spaceApplied.env?.result?.clearedCredentialRefs) === issuedRefs && shownMinted.status === 0 && !shownMinted.stdout.includes('"credentialRef"') && shownForeign.stdout.includes(JSON.stringify(foreign)),
+      { cleared: spaceApplied.env?.result?.clearedCredentialRefs, minted: shown(shownMinted), foreign: shown(shownForeign) });
     check("the prepared record and the stack journal stay", findPreparedSpace(space) !== undefined && existsSync(journalOf(root)));
     const fresh = cli(root, "up", "--json");
     check("bare up starts it again", fresh.status === 0, shown(fresh));
@@ -201,15 +231,42 @@ try {
 
     const deleted = cli(home, "space", "delete", space, "--yes");
     check("space delete applies with only the broker running", deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), shown(deleted));
-    check("its receipt names the route back: cotal down --yes, or cotal space forget after it",
-      /Next/.test(deleted.stdout) && deleted.stdout.includes("cotal down --yes") && deleted.stdout.includes(`Stop the stack in ${root}`) && deleted.stdout.includes(`cotal space forget ${space}`), shown(deleted));
+    check("its receipt names the route back: cotal up there, or cotal down --yes and cotal space forget",
+      /Next/.test(deleted.stdout) && deleted.stdout.includes("cotal up") && deleted.stdout.includes(`Run in ${root}: create the space's streams again`) && deleted.stdout.includes("cotal down --yes") && deleted.stdout.includes(`cotal space forget ${space}`), shown(deleted));
     const bare = cli(root, "up", "--json");
-    check("a bare up under the broker that lost the streams refuses TARGET_NOT_FOUND, exit 2", bare.status === 2 && bare.env?.error?.code === "TARGET_NOT_FOUND", shown(bare));
-    check("...saying why, and naming the restart",
-      Boolean(bare.env?.error?.message.includes("no longer holds this space's streams")) && Boolean(bare.env?.error?.remedy?.includes("cotal down --yes, then cotal up")), bare.env?.error);
+    const members = (bare.env?.result?.members as { role: string; state: string }[] | undefined) ?? [];
+    check("a bare up creates the streams again on the running broker and starts delivery", bare.status === 0 && bare.env?.result?.streamsRecreated === true && members.some((row) => row.role === "broker" && row.state === "reused") && members.some((row) => row.role === "delivery" && row.state === "started"), shown(bare));
+    const sent = cli(root, "send", "-c", "general", "after the delete", "--space", space, "--json");
+    check("the space takes a message again", sent.status === 0, shown(sent));
+    const again = cli(root, "up", "--json");
+    check("a later up finds the streams held and recreates nothing", again.status === 0 && again.env?.result?.streamsRecreated === false, shown(again));
+    const last = cli(root, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 7. A partial loss keeps the refusal.
+  {
+    const space = "tear4";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a fourth controller root", created.status === 0, shown(created));
+    anchor(root);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(root, "up", "--server", server, "--no-manager", "--json");
+    const stopped = cli(root, "service", "stop", "stack-delivery", "--space", space, "--yes", "--json");
+    check("up starts the broker and delivery, which then stops on its own", started.status === 0 && stopped.status === 0, { up: shown(started), stop: shown(stopped) });
+    // The broker loses only the delivery bucket, which a delivery start reads, with the same
+    // teardown grant space delete mints.
+    const auth = await getSpaceAuth(workspaceSecretStore(root), space);
+    const identity = newIdentity();
+    const creds = await mintCreds(auth!, identity, "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: [] });
+    const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix: `_INBOX_${identity.id}`, reconnect: false });
+    try { await (await jetstreamManager(nc)).streams.delete(`KV_${deliveryBucket(space)}`); } finally { await nc.drain(); }
+    const partial = cli(root, "up", "--no-manager", "--json");
+    check("up over a broker that lost one bucket refuses TARGET_NOT_FOUND, exit 2, naming the restart", partial.status === 2 && partial.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(partial.env.error.message.includes("missing some of this space's streams")) && Boolean(partial.env.error.remedy?.includes("cotal down --yes, then cotal up")), shown(partial));
     const down = cli(root, "down", "--yes", "--json");
-    const back = cli(root, "up", "--json");
-    check("down --yes, then up, starts the stack again", down.status === 0 && back.status === 0, { down: shown(down), up: shown(back) });
+    const back = cli(root, "up", "--no-manager", "--json");
+    check("down --yes, then up, starts it again", down.status === 0 && back.status === 0, { down: shown(down), up: shown(back) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
   }

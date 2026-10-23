@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { isIP } from "node:net";
 import { join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
@@ -19,16 +20,17 @@ import {
   stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
-import { brokerListenAddress } from "../lib/broker-service.js";
+import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstance } from "../lib/service-instances.js";
-import { prepareProcessService, removeStoppedInstanceRecords, settleExitedInstances, startProcessService } from "../lib/service-process.js";
+import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
+import { prepareKernelServiceStop, prepareProcessService, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -36,8 +38,11 @@ import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack,
 export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
-  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; seedFile?: unknown }>;
+  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown }>;
   initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown): Promise<void>;
+  /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
+   *  as after `cotal space delete`, and say whether it did. */
+  recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; channels?: string; seed?: unknown }): Promise<boolean>;
   recordMesh(entry: { space: string; server: string; root: string; mode: StackMode; tlsRequired: boolean; storeDir: string; userAuth?: UserAuthInfo; maxSessions?: number; attachHost?: string; maxFileStore?: number }): void;
   commitTransport(root: string, transport: BrokerTransport): void;
 }
@@ -125,6 +130,10 @@ export interface StackUpResult {
   admittedRestore?: string;
   /** An earlier operation with no recorded outcome that this call settled before it started. */
   settled?: StackSettlement;
+  /** The nats-server this call started the broker with. */
+  brokerExecutable?: NatsServer;
+  /** This call created the space's streams again on the running broker it reused. */
+  streamsRecreated?: true;
 }
 
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. */
@@ -237,12 +246,12 @@ function adapterDefinition(space: string, adapter: string, options: Record<strin
   return { schemaVersion: 1, space, launch: { type: "adapter", adapter, options }, readiness: { type: "adapter", timeoutMs } };
 }
 
-function membersView(journal: StackJournal, title: string): Report {
+function membersView(journal: StackJournal, title: string, executable?: NatsServer | null, streamsRecreated = false): Report {
   // A role the stack's mode never plans (auth on a static or open stack, delivery on an open one)
   // is not a member of it; it stays in the journal and JSON only.
   const members = journal.members.filter((member) => stackRoleApplies(journal.mode, member.role));
   return { sections: [{ title, blocks: [
-    { kind: "fields", rows: [["Space", journal.space], ["Root", journal.root], ["Broker", journal.server], ["Mode", journal.mode === "open" ? "open, no authentication" : journal.mode === "user" ? "user auth" : "static auth"], ["Operation", `${journal.operation.kind} ${journal.operation.phase}`], ...(journal.mode === "user" ? [["Registration", userRegistrationIncomplete(journal.space) ? "incomplete: no confirmed auth-service endpoint" : "auth-service endpoint confirmed by its provider"] as [string, string]] : [])] },
+    { kind: "fields", rows: [["Space", journal.space], ["Root", journal.root], ["Broker", journal.server], ["Mode", journal.mode === "open" ? "open, no authentication" : journal.mode === "user" ? "user auth" : "static auth"], ["Operation", `${journal.operation.kind} ${journal.operation.phase}`], ...(executable ? [["Broker executable", natsServerLabel(executable)] as [string, string]] : []), ...(streamsRecreated ? [["Space streams", "created again, empty, on the running broker"] as [string, string]] : []), ...(journal.mode === "user" ? [["Registration", userRegistrationIncomplete(journal.space) ? "incomplete: no confirmed auth-service endpoint" : "auth-service endpoint confirmed by its provider"] as [string, string]] : [])] },
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: members.map((member) => ({ role: member.role, definition: member.definition, instance: member.instanceId ?? "not allocated", state: { text: member.state.replaceAll("-", " "), tone: ["started", "reused", "stopped", "already-stopped"].includes(member.state) ? "ok" as const : ["refused", "failed"].includes(member.state) ? "failed" as const : "waiting" as const } })) },
     { kind: "lines", lines: [journal.mode === "open"
       ? "Open stack: no authentication, no delivery member and no delivery credential. Each member is one exact service-controller instance. Broker readiness means its own process reported its listener; manager readiness is the child's own local receipt, not an attributed endpoint response. This is not agent or task readiness, and a partial start is not rolled back."
@@ -255,7 +264,7 @@ function membersView(journal: StackJournal, title: string): Report {
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
-  const { journal, changed, allReused, admittedRestore, settled } = await startControllerStack(request, native);
+  const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
   // The start keeps another selected space; the receipt says so, as a legacy `up` does.
@@ -269,8 +278,8 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, written }, warnings, ...(allReused && written.length === 0 ? { noOp: true } : {}) }, (result) => {
-    const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started");
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, written }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+    const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const view: Report = result.written.length ? { ...members, sections: [...members.sections, { blocks: [{ kind: "fields", rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] } : members;
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
@@ -300,6 +309,17 @@ export function stackUpInterruptNotice(root: string, space: string): string {
     : `Interrupted before any member of the stack in ${root} started. Run cotal up to start it.`;
 }
 
+/** Whether a broker bound to `host` is reached at `server`'s address: a wildcard bind is reached at
+ *  any address, and any other host must name that address. */
+export function bindReaches(host: string, server: string): boolean {
+  if (host === "0.0.0.0" || host === "::" || host === "[::]") return true;
+  try {
+    return new URL(`nats://${isIP(host) === 6 ? `[${host}]` : host}:1`).hostname === new URL(server).hostname;
+  } catch {
+    return false;
+  }
+}
+
 /** Start the recorded stack and return its domain result without writing any receipt. */
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
@@ -314,7 +334,22 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const previous = unstarted ? undefined : recorded;
   // A stopped stack's broker is prepared again from its own recorded inputs. An explicit request for
   // a different store, cap or bind host refuses; none is replaced by a default.
-  const recordedBroker = previous?.journal.broker;
+  const recordedInputs = previous?.journal.broker;
+  // The broker binds its recorded host, or 127.0.0.1 when none was recorded. A bind that does not
+  // serve the recorded address starts a broker its clients never reach, so it pins nothing: while
+  // the broker is stopped, an explicit --host that serves the recorded address replaces it, and any
+  // other up refuses before anything starts and names that step.
+  const recordedBind = recordedInputs ? recordedInputs.host ?? "127.0.0.1" : undefined;
+  const strayHost = recordedBind !== undefined && !bindReaches(recordedBind, previous!.journal.server) ? recordedBind : undefined;
+  if (strayHost !== undefined) {
+    const brokerRuns = serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
+    if (request.host === undefined || !bindReaches(request.host, previous!.journal.server) || brokerRuns)
+      throw new CommandFailure("refused", "CONFLICT", `this stack's broker binds ${strayHost}${recordedInputs!.host === undefined ? ", as no bind host was recorded," : ","} which does not serve its recorded address ${previous!.journal.server}, so its clients cannot reach it; nothing was started`, {
+        target: { root, space, recorded: recordedInputs },
+        remedy: `${brokerRuns ? `stop its broker with cotal down --yes from ${root}, then ` : ""}run cotal up --host ${new URL(previous!.journal.server).hostname} from ${root}`,
+      });
+  }
+  const recordedBroker = strayHost !== undefined ? { ...recordedInputs!, host: request.host } : recordedInputs;
   const changedInputs = recordedBroker ? [
     request.storeDir !== undefined && resolve(request.storeDir) !== recordedBroker.storeDir ? `--store-dir ${resolve(request.storeDir)} (recorded: ${recordedBroker.storeDir})` : undefined,
     request.maxFileStore !== undefined && request.maxFileStore !== recordedBroker.maxFileStore ? `--max-file-store ${request.maxFileStore} (recorded: ${recordedBroker.maxFileStore ?? "none"})` : undefined,
@@ -436,6 +471,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // never to the next planned one.
   let failedRole: StackRole | undefined;
   let failedStage: "broker-streams" | "broker-registration" | undefined;
+  let startedBroker: { definition: ServiceDefinitionSnapshot; id: string } | undefined;
+  let brokerExecutable: NatsServer | undefined;
+  let streamsRecreated = false;
   let launch: { path: string; sha256: string } | undefined;
   // Only a broker this call starts gets the space's streams created.
   let brokerReused = false;
@@ -459,6 +497,18 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
           : `${stopHolder}, then run bare cotal up from ${root}; this stack keeps its recorded address`,
       });
     }
+    // A program that holds the address without answering NATS, such as a web server, is refused here
+    // too, before any broker instance is recorded, so a first start names another address.
+    const bindError = brokerRunning ? undefined : await listenerBindError(server);
+    if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
+      const { host, port } = brokerListenAddress(server), address = new URL(server);
+      throw new CommandFailure("refused", "CONFLICT", `another process holds the stack's broker address ${host}:${port} (bind failed: address already in use); no broker was launched`, {
+        target: { root, space, server, bindError: bindError.code },
+        remedy: previous === undefined
+          ? `start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or stop the process listening on ${host}:${port} and run cotal up again`
+          : `stop the process listening on ${host}:${port}, then run bare cotal up from ${root}; this stack keeps its recorded address`,
+      });
+    }
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
     if (!brokerRunning) {
       prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
@@ -474,11 +524,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const savedBroker = serviceDefinitionStore(space).read(STACK_DEFINITION.broker);
     const savedOptions = savedBroker?.record.value.launch.type === "adapter" ? savedBroker.record.value.launch.options : undefined;
     if (!prepared && !savedOptions) throw new CommandFailure("refused", "CONFLICT", "a broker instance runs without its saved stack definition; it was not adopted", { target: { space, definition: STACK_DEFINITION.broker } });
-    const brokerOptions = prepared ? { root, config: prepared.confPath, binary: canonicalBinary(prepared.bin), server } : { ...savedOptions! };
+    if (prepared) brokerExecutable = { path: canonicalBinary(prepared.bin), source: prepared.source, version: prepared.version };
+    const brokerOptions = prepared && brokerExecutable ? { root, config: prepared.confPath, binary: brokerExecutable.path, server } : { ...savedOptions! };
     const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root, replace("broker"));
     if (storePin) recheckExistingStore(storePin, { root, space });
-    await start("broker", broker);
+    const brokerInstance = await start("broker", broker);
     if (prepared) {
+      startedBroker = { definition: broker, id: brokerInstance.name };
       // The broker's own stream and registry setup, on the native space path, after it serves.
       failedRole = "broker";
       failedStage = "broker-streams";
@@ -489,6 +541,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // pins and stays incomplete until that child's own readiness is confirmed below.
       native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, ...(prepared.user ? { userAuth: provisionalUserAuth(prepared.user) } : {}), ...(request.maxSessions !== undefined ? { maxSessions: request.maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
       failedStage = undefined;
+      failedRole = undefined;
+    } else if (mode !== "user") {
+      // `cotal space delete` removes the streams from a broker that keeps running; it has no user-auth
+      // route. When every one is gone they are created again here, as a broker start would, and a
+      // partial loss is left alone.
+      failedRole = "broker";
+      streamsRecreated = await native.recreateDeletedStreams({ root, space, server, mode, ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
       failedRole = undefined;
     }
     // Auth service, user stacks only. Its native preparation came from this broker preparation, so
@@ -564,11 +623,29 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     }
     if (!loginBlock) settle("completed");
   } catch (caught) {
-    // `cotal space delete` removes the streams from a broker that keeps running, and a reused broker
-    // gets none back, so the stack has to restart for its broker start to create them.
+    // A reused broker that lost some of the space's streams, but not all of them as `cotal space delete`
+    // leaves it, gets none back here; a broker start creates the missing ones.
     const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)
-      ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the running broker no longer holds this space's streams, as after cotal space delete, and up creates them only when it starts the broker", { remedy: "restart the stack with cotal down --yes, then cotal up, which creates them again, empty" })
+      ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the running broker is missing some of this space's streams, and up creates them on a running broker only when every one is gone, as after cotal space delete", { remedy: "restart the stack with cotal down --yes, then cotal up, which creates the missing ones" })
       : caught;
+    // A broker this call started that could not create the space's streams serves no stack, and a
+    // later up would reuse it and fail the same way. It is stopped again here, so the next up starts
+    // a fresh broker, and the run is a failure whose cause its log names.
+    const unserved = failedStage === "broker-streams" && startedBroker ? await stopUnservedBroker(space, startedBroker.definition, startedBroker.id) : undefined;
+    if (unserved) {
+      mark("broker", { state: "stopped", code: "OPERATION_FAILED" });
+      for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
+      settle("failed");
+      const nativeCause = error instanceof JetStreamApiError && Number.isSafeInteger(error.code) ? { code: String(error.code) } : undefined;
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the broker this command started could not create the space's streams${unserved.outOfFiles ? ", because it ran out of open files" : ""}, so it was stopped again; nothing of the stack runs`, {
+        target: { root, space, operation: journal.operation.id, members: journal.members, ...(unserved.log ? { brokerLog: unserved.log } : {}) },
+        changed: [instanceProjection(unserved.stopped)],
+        ...(nativeCause ? { native: nativeCause } : {}),
+        remedy: unserved.outOfFiles
+          ? `raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up again from ${root}`
+          : `fix what the broker's log${unserved.log ? ` at ${unserved.log}` : ""} names, then run cotal up again from ${root}`,
+      });
+    }
     const failure = isCommandFailure(error) ? error : undefined;
     const uncertain = failure === undefined || failure.outcome === "unknown";
     const pending = failedRole ? journal.members.find((row) => row.role === failedRole) : journal.members.find((row) => row.state === "planned");
@@ -583,8 +660,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         : undefined;
     // The member's own sentence and remedy are what a reader can act on, such as a busy broker port.
     const cause = pending && failure ? ` (${pending.role}: ${failure.message})` : "";
-    const kept = journal.members.some((row) => row.state === "started" || row.state === "reused") ? "started members were kept" : "no member was started";
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, `the controller stack did not start every planned member${cause}; ${kept} and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${shellWord(space)} before another cotal up; a later bare cotal down stops only the recorded members` });
+    // A refusal or failure with no member started or reused leaves nothing of the stack running.
+    const none = !uncertain && !journal.members.some((row) => row.state === "started" || row.state === "reused");
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });
@@ -600,7 +678,24 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       : "the user stack's other members were already running and were reused; the manager was not attempted because no signed-in, granted login exists. This is not whole-stack readiness", { target: detail, changed, native: { code: "AUTH_REQUIRED", outcome: "refused", detail: loginBlock.message }, ...(loginBlock.remedy ? { remedy: loginBlock.remedy } : {}) });
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
-  return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}) };
+  return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}) };
+}
+
+/** Stop a broker this call started, through its exact kernel stop, and read whether its log says it
+ *  ran out of open files. A stop that does not confirm returns nothing, so the caller reports the
+ *  run as unknown and names the inspection step instead. */
+async function stopUnservedBroker(space: string, definition: ServiceDefinitionSnapshot, id: string): Promise<{ stopped: ServiceInstanceSnapshot; log: string | null; outOfFiles: boolean } | undefined> {
+  try {
+    const current = serviceInstanceStore(space).read(id);
+    if (!current) return undefined;
+    const plan = await prepareKernelServiceStop(definition, current);
+    const { instance } = await stopProcessService(definition, current, undefined, undefined, { plan });
+    if (observeServiceProcess(instance.record.value) === "running") return undefined;
+    const log = readServiceLog(space, id, 200);
+    return { stopped: instance, log: log.path, outOfFiles: log.lines.some((line) => /too many open files/i.test(line)) };
+  } catch {
+    return undefined;
+  }
 }
 
 /** The member table and evidence text a caller embeds in its own receipt. */

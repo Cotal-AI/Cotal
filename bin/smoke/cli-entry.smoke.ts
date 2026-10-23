@@ -371,6 +371,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const inProject = cotal(["persona", "--json", "--server", "nats://127.0.0.1:1"], persona, noSeed);
   check("control: in a project, persona --server <unregistered> lists that project's catalog",
     inProject.status === 0 && /"kind":"personas","items":\[\{"name":"x"/.test(inProject.stdout), shown(inProject));
+  // A channel flag entry the channel rules refuse names the flag and the entry, not the private draft.
+  for (const [flag, value] of [["--subscribe", "#general"], ["--allow-subscribe", "a b"], ["--allow-publish", "kanäle"]] as const) {
+    const r = cotal(["persona", "create", "q", "--prompt", "body", ...(flag === "--subscribe" ? [flag, value] : ["--subscribe", "", flag, value]), "--json"], persona, noSeed);
+    check(`persona create ${flag} ${value} is USAGE_INVALID, naming the flag and the entry`,
+      r.status === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && r.stdout.includes(`${flag}: invalid channel \\"${value}\\"`) && !r.stdout.includes("cotal-persona-") &&
+        (value !== "#general" || r.stdout.includes("name the channel without its #, as general")), shown(r));
+  }
+  const outside = cotal(["persona", "create", "q", "--prompt", "body", "--subscribe", "general", "--allow-subscribe", "ops", "--json"], persona, noSeed);
+  check("persona create with --subscribe outside --allow-subscribe is USAGE_INVALID, naming both flags",
+    outside.status === 1 && outside.stdout.includes('"code":"USAGE_INVALID"') && outside.stdout.includes("every --subscribe channel must be within --allow-subscribe") && !outside.stdout.includes("cotal-persona-"), shown(outside));
 }
 
 // ── team check names each located manifest problem, without quoting a persona file ───────────────

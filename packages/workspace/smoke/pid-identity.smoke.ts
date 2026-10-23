@@ -123,6 +123,21 @@ try {
     check("P6 a carriage return cannot occur inside a token", parseRecord("4321 first\rsecond").kind === "unattributable");
   }
 
+  // ── N. A PIDFILE WITH NO PID: nothing to verify, which is not a legacy record (#3553) ───────
+  {
+    const husk = join(root, ".cotal", "husk.pid");
+    check("N1 a missing pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    writeFileSync(husk, "");
+    check("N2 an empty pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    writeFileSync(husk, "not-a-pid\n");
+    check("N3 a garbled pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    const unreadable = join(root, ".cotal", "dir.pid");
+    mkdirSync(unreadable);
+    let thrown: unknown;
+    try { verifyIdentityPin(unreadable); } catch (e) { thrown = e; }
+    check("N4 a pidfile that cannot be read throws, naming it", thrown instanceof Error && thrown.message.includes(unreadable), String(thrown));
+  }
+
   // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");

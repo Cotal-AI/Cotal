@@ -358,7 +358,7 @@ export async function startIsolatedBroker(options: {
 }): Promise<IsolatedBroker> {
   const port = await freePort();
   const server = `nats://${LOOPBACK}:${port}`;
-  const { bin } = await resolveNatsServer();
+  const { path: bin } = await resolveNatsServer();
   const attempts = ensurePrivateAttemptsDir(options.root);
   const runDir = attempts.path;
   // Every mode gets the same single-principal, exact-subject permission matrix. Open mode differs
