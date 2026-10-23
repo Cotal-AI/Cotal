@@ -948,6 +948,14 @@ const RUN_ID_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string", minLength: 1 }, endpoint: { type: "string", minLength: 1 } },
 } as const;
+/** With `journal`, the reply holds the journal rows from `offset` that fit in one reply. */
+const RUN_STATUS_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId"],
+  properties: {
+    ...RUN_ID_INPUT_SCHEMA.properties,
+    journal: { type: "object", additionalProperties: false, required: ["offset"], properties: { offset: { type: "integer", minimum: 0 } } },
+  },
+} as const;
 const RUN_ID_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string" } },
@@ -1090,6 +1098,7 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
         },
       },
     },
+    journalTotal: { type: "integer", minimum: 0 },
   },
 } as const;
 /** No `by`: the answerer is the caller as the manager knows them, decided from the authenticated
@@ -1167,7 +1176,7 @@ const ROWS: CommandRow[] = [
   { name: "run-resume", capability: "manager.run", input: RUN_RESUME_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runResume" },
   { name: "run-cancel", capability: "manager.run", input: RUN_CANCEL_INPUT_SCHEMA, output: RUN_CANCEL_OUTPUT_SCHEMA, targeted: false, handler: "runCancel" },
   { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "runAnswer" },
-  { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
+  { name: "run-status", capability: "manager.read", input: RUN_STATUS_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
   { name: "goal-result", capability: "manager.read", input: GOAL_RESULT_INPUT_SCHEMA, output: GOAL_RESULT_OUTPUT_SCHEMA, targeted: false, handler: "goalResult" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
@@ -1332,7 +1341,9 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  session. New served commands cannot fold into 33.
  *
  *  35 = keyed workflow submission and submission-status.
- *  36 = authenticated workflow cancellation with observed local stop results. */
+ *  36 = authenticated workflow cancellation with observed local stop results.
+ *
+ *  38 = `run-status` accepts a journal page request and answers with `journalTotal`. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1350,7 +1361,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 37,
+    revision: 38,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

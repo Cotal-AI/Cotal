@@ -617,6 +617,9 @@ const REFUSED_BEFORE_EFFECT: Readonly<Record<string, RefusalCode>> = {
   "bad-request": "USAGE_INVALID", "unimplemented": "UNSUPPORTED", "conflict": "CONFLICT",
 };
 
+/** The local journal read a refused hosted read names. */
+const localJournal = (args: Record<string, unknown> | undefined): string => `cotal run journal ${typeof args?.runId === "string" ? args.runId : "<run-id>"} --local`;
+
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
  *  recorded it. */
@@ -626,6 +629,9 @@ function managerRefusal(command: string, space: string, args: Record<string, unk
   const code = err?.code === undefined ? undefined : REFUSED_BEFORE_EFFECT[err.code];
   const remedy = err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
+  // A reply too large for the broker changed nothing; the local read takes no reply.
+  if (command === "run-status" && err?.code === "resource-exhausted")
+    return new CommandFailure("refused", "UNSUPPORTED", message, { ...options, remedy: `read the run from its project folder with ${localJournal(args)}` });
   if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
 }
@@ -674,6 +680,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     }
     return r.reply.data;
   } catch (e) {
+    // The contract of a manager from release 0.99.3 or earlier takes no journal page, so the request
+    // is refused here, against that contract, before it is sent.
+    if (e instanceof EpEnvelopeError && command === "run-status" && e.code === "bad-request" && /additional properties: "journal"/.test(e.message))
+      throw new CommandFailure("refused", "UNSUPPORTED", "this manager is from release 0.99.3 or earlier and reads no journal page, so this command cannot read the run through it", { target: { space: t.space }, remedy: `upgrade that manager, or read the run from its project folder with ${localJournal(args)}` });
     if (e instanceof EpEnvelopeError) {
       console.error(unansweredRequest(e) ? unansweredManagerRefusal(e) : `${e.code}: ${e.message}`);
       process.exit(1);
@@ -786,9 +796,19 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   }
   if (verb === "journal") {
     if (a === undefined) { console.error(USAGE); process.exit(1); }
-    const view = await ask("run-status", { runId: a, ...endpoint }) as RunStatusView;
+    // The journal is read in pages, each one reply, so one larger than the broker's payload limit
+    // stays readable.
+    const rows: RunJournalRow[] = [];
+    let view: RunStatusView;
+    do {
+      view = await ask("run-status", { runId: a, ...endpoint, journal: { offset: rows.length } }) as RunStatusView;
+      if (view.journalTotal === undefined) throw new CommandFailure("failed", "OPERATION_FAILED", "the manager answered the journal read without a page; the journal was not read", { target: { space: space ?? null, run: a } });
+      if (view.journal.length === 0 && rows.length < view.journalTotal) throw new CommandFailure("failed", "OPERATION_FAILED", `the manager returned no journal rows at row ${rows.length} of ${view.journalTotal}; the journal was not read completely`, { target: { space: space ?? null, run: a } });
+      rows.push(...view.journal);
+    } while (rows.length < view.journalTotal);
     if (space === undefined) throw new Error("the native run target was not reported");
-    printRunDetail(space, view, values);
+    const { journalTotal: _total, ...record } = view;
+    printRunDetail(space, { ...record, journal: rows }, values);
     return;
   }
   // answer and amend: the manager records the caller as the answerer (SPEC 14.5), so no `--by`
