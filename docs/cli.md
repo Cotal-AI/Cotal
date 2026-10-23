@@ -2185,7 +2185,9 @@ one thing that cannot be derived (the broker URL), probes it, and tells you what
 requiring credentials. It then offers the spaces your `--root` already holds credentials for, states
 the mode as a fact about that broker rather than asking, and shows the exact record before writing
 anything. A broker that does not answer, or a space name already registered, becomes a choice rather
-than an error. Anything you pass on the command line is taken as given and not asked again. Without
+than an error. Replacing a registered record then asks you to type `y`; Enter keeps No. Nothing is
+written before that last question, and a cancel at any question says nothing was registered.
+Anything you pass on the command line is taken as given and not asked again. Without
 a terminal - a script, an agent, CI - nothing prompts and the flag form's errors stand
 (`COTAL_NO_PROMPT=1` forces that too).
 
