@@ -2665,7 +2665,10 @@ cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] 
 
 Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
 activity, attention mode, harness, model and host, as its presence reports them. Infrastructure
-endpoints are hidden unless `--all` asks for them; the report says how many it hid. In a user-auth
+endpoints are hidden unless `--all` asks for them; the report says how many it hid. A `cotal chat`
+session is a participant a person drives, so it is listed with the agents and never counted as
+infrastructure. The report adds a Kind column that names it `chat session`, and its JSON row carries
+`sessionKind: "chat"`. In a user-auth
 space, `--all` shows each of your managers as a row whose id ends in `manager_<instanceId>`, the id
 `--on` takes, with its host and its runtime in the activity, such as `supervisor (tmux)`. A manager
 row reads `manager <name>`, with the name the manager was started with, or `manager <host>/<runtime>`
@@ -3974,8 +3977,9 @@ Choose one destination: `--to/-t` for a direct message, `--channel/-c` for a cha
 or `--role/-r` for the role's native work queue. Choose one body source: a quoted positional
 argument, `--file/-f <path>`, or explicit `--stdin`; `--file -` reads stdin as `--stdin` does. There
 are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; their content is
-preserved and never printed in the receipt. A file that cannot be read is refused with its path,
-`TARGET_NOT_FOUND` when it does not exist.
+preserved and never printed in the receipt. A file that cannot be used is refused with its path:
+`TARGET_NOT_FOUND` when it does not exist, `PERMISSION_DENIED` when this account may not read it,
+and `USAGE_INVALID` (exit 1, without the command's help) for a directory or text that is not UTF-8.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
 `--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
