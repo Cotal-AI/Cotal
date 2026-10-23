@@ -1618,7 +1618,8 @@ cotal use [<space>] [--json|--plain]
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable`; its registration stays. A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full, the selected one when no name is
-given, and probes only that broker. Neither writes anything.
+given, and probes only that broker. Neither writes anything. A registry record that cannot be
+read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 
 `--json` writes one document. `space` gives `current` (the selected space or null),
 `currentRecorded`, `items` and `prepared`; each item is the row `cotal status --json` gives under
@@ -2941,6 +2942,8 @@ must name the requested persona and keep their original bytes. They cannot be co
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
 including `--subscribe ""` for no channels, and accepts `--role` and `--model`.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
+Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
+persona is one: its file is `default.md` and its agents launch as `default_agent`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
 preferences). A successful editor exit and valid definition are required before saving. A changed
@@ -4488,9 +4491,13 @@ the seed keeps stdout to itself:
 | Flag | Meaning |
 |---|---|
 | (none) | Reconcile: seed any never-seeded built-in, refresh a seeded one whose version the binary bumped, leave a removed one removed. A no-op once current. |
-| `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
+| `--repair` | Recover after a seed that failed or was interrupted, or a lost authority (rebuilds that seed's connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current. Refuses to downgrade a newer shared store. |
+
+A seed that fails names the connector and the reason, such as npm missing from PATH. Until
+`cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
+the last seed failed, and why, or was interrupted.
 
 When a newer `cotal` advances the operator-global seed store to its generation, it prints one
 migration line naming the old and new generations, the exact CLI entry that wrote the store, the

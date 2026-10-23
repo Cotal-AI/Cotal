@@ -51,7 +51,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   const path = personaPath(catalog.root, name!);
   if (sub === "show") {
     const source = requirePersonaSource(path);
-    const definition = validatePersona(source.bytes, name!, path);
+    const definition = validatePersona(source.bytes, path);
     writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona", name, path, definition, source: source.bytes.toString("utf8") } }, result => ({ sections: [
       { title: `Persona · ${result.name}`, blocks: [{ kind: "fields", rows: [
         ["Role", result.definition.role ?? "not set"],
@@ -114,7 +114,7 @@ function createSource(name: string, path: string, values: Values): Buffer {
   if (values.file !== undefined) {
     if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
     const bytes = readInput(values.file);
-    validatePersona(bytes, name, path);
+    validatePersona(bytes, path, name);
     return bytes;
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');

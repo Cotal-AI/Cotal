@@ -2,8 +2,9 @@
  * `cotal config` and the preferences it saves, driven through the built binary in a fresh sandbox:
  * the effective values with their sources and shadowed values, `get`, `set` and `unset` for the user
  * and for one space, the refusals, the named environment tiers, the selected space, an invalid file
- * stopping every command without being reset, a stale write refused, two concurrent writers both
- * landing, and the consumers outside `spawn`: color, the `personas edit` editor and the detach key.
+ * stopping every command but help and completion without being reset, a stale write refused, two
+ * concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
+ * editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -250,7 +251,7 @@ const ansi = /\x1b\[/;
   run(["config", "unset", "editor"]);
 }
 
-// ── an invalid file stops every command and is never reset ───────────────────────────────────────
+// ── an invalid file stops every command but help and completion, and is never reset ──────────────
 {
   for (const [name, text, message] of [
     ["not JSON", "{ nope", /not JSON/],
@@ -261,7 +262,7 @@ const ansi = /\x1b\[/;
   ] as const) {
     writeFileSync(file, text);
     const r = run(["config", "--json"]);
-    check(`an invalid file (${name}) is refused with SCHEMA_INVALID, naming the file`, r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && message.test(r.envelope.error.message) && r.envelope.error.message.includes(file) && /nothing reset it/.test(r.envelope.error.remedy ?? ""), shown(r));
+    check(`an invalid file (${name}) is refused with SCHEMA_INVALID, naming the file`, r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && message.test(r.envelope.error.message) && r.envelope.error.message.includes(file) && /nothing resets it/.test(r.envelope.error.remedy ?? ""), shown(r));
     check(`and the file (${name}) is left as it was`, fileText() === text);
   }
   const other = run(["ext", "root"]);
@@ -270,6 +271,10 @@ const ansi = /\x1b\[/;
   check("a write does not replace an invalid file", write.status === 1 && /is invalid/.test(write.stderr) && fileText()?.includes("spaces") === true, shown(write));
   const help = run(["config", "--help"]);
   check("help still works", help.status === 0 && /cotal config/.test(help.stdout), shown(help));
+  for (const args of [["help"], ["--help"], ["help", "config"], ["completion"], ["completion", "script", "bash"]]) {
+    const r = run(args);
+    check(`cotal ${args.join(" ")} still works`, r.status === 0 && r.stdout !== "" && !/is invalid/.test(r.stderr), shown(r));
+  }
   rmSync(file);
   check("removing the file restores the defaults", run(["config", "--json"]).status === 0);
 }

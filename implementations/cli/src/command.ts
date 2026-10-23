@@ -457,9 +457,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     parsed = parseOrExit(cmd, rest);
   }
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
-  // A preferences file that does not validate stops every command, as a broken config file does, so
-  // nothing runs on a default the person did not mean. Help has already returned above.
-  if (!cmd.name.startsWith("__")) {
+  // A preferences file that does not validate stops every command except help and shell completion,
+  // as a broken config file does, so nothing runs on a default the person did not mean. `--help` on a
+  // command has already returned above.
+  if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
     try {
       cachedPreferences();
     } catch (e) {

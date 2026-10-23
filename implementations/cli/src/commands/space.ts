@@ -5,6 +5,7 @@ import {
   findMesh,
   findPreparedSpace,
   getCurrent,
+  isMeshRegistryError,
   jsonFlag,
   loadMeshes,
   loadPreparedSpaces,
@@ -15,10 +16,12 @@ import {
   type Cell,
   type MeshEntry,
   type OutputWarning,
+  type Presentation,
   type PreparedSpace,
   type Report,
   type Section,
 } from "@cotal-ai/workspace";
+import { registryFailure } from "../lib/registry-errors.js";
 import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
 
@@ -118,6 +121,14 @@ export async function space(args: ParsedArgs): Promise<void> {
   if (addOnly) throw usage(`--${addOnly} is taken by \`cotal space add\` only`);
   if (sub === "forget") return spaceForget(rest, presentation);
   if (sub === "create") return spaceCreate(rest, values.root, presentation);
+  if (sub !== undefined && sub !== "show") throw usage(`cotal space has no subcommand "${sub}" - run \`cotal help space\``);
+  // Listing and show read the registry before anything else and write nothing, so a record that
+  // cannot be read refuses them.
+  try { await read(sub, rest, presentation); }
+  catch (e) { throw isMeshRegistryError(e) ? registryFailure(e) : e; }
+}
+
+async function read(sub: "show" | undefined, rest: string[], presentation: Presentation): Promise<void> {
   if (sub === undefined) {
     const sweep = await pruneStaleMeshes();
     const current = getCurrent() ?? null;
@@ -146,7 +157,6 @@ export async function space(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "space", target: { space: m.space }, result: detail(m, current, check) }, spaceView);
     return;
   }
-  throw usage(`cotal space has no subcommand "${sub}" - run \`cotal help space\``);
 }
 
 function preparedRow(p: PreparedSpace, current: string | null): PreparedRow {

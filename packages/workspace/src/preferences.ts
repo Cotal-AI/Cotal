@@ -144,7 +144,7 @@ export function preferencesPath(): string {
 
 const invalid = (problem: string): CommandFailure =>
   new CommandFailure("refused", "SCHEMA_INVALID", `the preferences file ${preferencesPath()} is invalid: ${problem}`, {
-    remedy: `fix or remove ${preferencesPath()}; nothing reset it`,
+    remedy: `fix or remove ${preferencesPath()}; nothing resets it`,
   });
 
 /** Why a space name cannot hold preferences, or undefined. */

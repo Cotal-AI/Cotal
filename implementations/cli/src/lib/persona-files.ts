@@ -67,12 +67,14 @@ export function requirePersonaSource(path: string): PersonaSource {
   return source;
 }
 
-/** Keep parser diagnostics private: YAML errors can contain the document's own sensitive values. */
-export function validatePersona(bytes: Buffer, name: string, path: string): AgentDef {
+/** Keep parser diagnostics private: YAML errors can contain the document's own sensitive values.
+ *  `name` is required of a new definition only. A stored one may launch under another name: the
+ *  seeded `default` persona launches as `default_agent`. */
+export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
   let def: AgentDef;
   try { def = parseAgentFileSource(bytes.toString("utf8"), path); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
-  if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'`);
+  if (name !== undefined && def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'`);
   return def;
 }
 
@@ -113,7 +115,7 @@ export function serializePersona(def: AgentDef): Buffer {
     try { writeSecretFile(path, ""); saveAgentFile(path, def); }
     catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "invalid persona fields"); }
     const bytes = readFileSync(path);
-    validatePersona(bytes, def.name, path);
+    validatePersona(bytes, path, def.name);
     return bytes;
   });
 }
@@ -123,7 +125,7 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
   if (json || inputDisabledByFlag())
     throw new CommandFailure("refused", "USAGE_INVALID", "persona edit opens an editor, --no-input forbids one, as does --json", { remedy: "edit interactively without --json or --no-input" });
   const source = requirePersonaSource(path);
-  validatePersona(source.bytes, name, path);
+  validatePersona(source.bytes, path);
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   const edited = withDraft(name, draft => {
@@ -133,7 +135,7 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
     if (result.error || result.status !== 0)
       throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`);
     const edited = requirePersonaSource(draft).bytes;
-    validatePersona(edited, name, path);
+    validatePersona(edited, path);
     return edited;
   });
   commitPersona(path, source, edited);

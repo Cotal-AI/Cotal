@@ -5,6 +5,7 @@
  *
  *  - first-run auto-seed of the seven first-party exts (six connectors + the web dashboard) + idempotent no-op + removability (removed stays removed)
  *  - crash cursor → auto fails loud → `--repair` re-installs the interrupted connector
+ *  - a seed that fails reports its reason; the next boot says it failed, not that it was interrupted
  *  - corrupt manifest → `--reset` quarantines + rebuilds; connectors still on disk → `--repair` rebuilds
  *  - truncated authority never resurrects a removed connector (backup union)
  *  - operator-pinned official entry not auto-refreshed on upgrade (source-aware); semver fail-loud
@@ -97,6 +98,7 @@ const files = [
   "supervise.smoke.ts",
   "removal.smoke.ts",
   "cursor-repair.smoke.ts",
+  "failed-seed.smoke.ts",
   "manifest-reset.smoke.ts",
   "manifest-repair.smoke.ts",
   "invalid-stamp.smoke.ts",
@@ -121,6 +123,8 @@ if (process.platform === "win32") {
     files.splice(files.indexOf(file), 1);
     excluded[file] = "Unix executable/symlink scenario; unchanged Windows exclusion";
   }
+  files.splice(files.indexOf("failed-seed.smoke.ts"), 1);
+  excluded["failed-seed.smoke.ts"] = "its PATH holds only a symlink to node, which needs a privilege on Windows";
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "seed-run-"));
@@ -148,7 +152,7 @@ try {
     process.exitCode = 1;
   } else {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
-    const expected = process.platform === "win32" ? 84 : 92;
+    const expected = process.platform === "win32" ? 84 : 98;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });
