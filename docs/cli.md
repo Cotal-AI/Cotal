@@ -6299,7 +6299,10 @@ The manager resolves visibility through the same fresh owner/admin policy as `ps
 count. A refused stop reports the selected manager, visibility, maintenance state and pending-work
 counts that blocked its preflight, without exposing other owners' agent rows. Owner-filtered
 visibility requires the stack operator or an authorized admin-scoped caller; the command never
-substitutes one. No stop policy is accepted while any blocker remains. This is
+substitutes one. On a user-auth space, the refusal's next step is the whole-row
+`cotal actor grant` that adds `admin` to your current grant, as the auth plane prints it from the
+ledger row; after it, `cotal down` stops the stack. No stop policy is accepted while any blocker
+remains. This is
 an observation at the reported time, not a reservation, permission to stop or a guarantee that the
 set cannot change. Older managers can omit it; the native service adapter refuses when the
 required process/lifecycle correlation is absent. Generic process launch/stop still refuses managers.
