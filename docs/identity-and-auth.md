@@ -703,8 +703,9 @@ still sets `COTAL_CREDS` itself.
   renewals from it; a copied signing *seed* still stays valid for its identity until the
   signing key is rotated. Rotation remains the revocation lever for trust material.
 - **The two `$SYS` creds renew through rotation.** `membership-observer` and
-  `connection-evictor` are signed by the system-account seed, which is never persisted, so no
-  running process re-signs them: they carry a 30-day expiry and are renewed by issuing a new
+  `connection-evictor` are signed by the system-account seed. The trust record is written without
+  it; the root keeps the seed in its own secret-store record for own-broker caller issuance only,
+  and no running process re-signs these two creds in place: they carry a 30-day expiry and are renewed by issuing a new
   system account (`cotal down` then `cotal up --rotate-sys`), which leaves the data account,
   every agent cred and the store untouched but does invalidate earlier full backups (they bind to
   the operator JWT and system account they were taken under, so re-run `cotal backup` after). Past that horizon the mesh keeps delivering, but the

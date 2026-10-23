@@ -209,8 +209,9 @@ export type Profile =
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
-  // The $SYS class: bounded exp but NOT online-renewable — the $SYS signing seed is destroyed at end
-  // of `up` (saveSpaceAuth strips it), so no running process can re-mint these. Their only renewal is
+  // The $SYS class: bounded exp but NOT online-renewable — the trust record is persisted without the
+  // $SYS signing seed (saveSpaceAuth strips it), and the root's separate seed custody serves only
+  // own-broker caller issuance, so no running process re-mints these. Their only renewal is
   // a coordinated system-account ROTATION (rotateSystemAccount) + broker restart. Named distinctly so
   // the "renewable" verb can never leak "online renewal" into the doctor/operator copy.
   | "rotation-renewed"
@@ -2939,7 +2940,7 @@ function membershipObserverPermissions(accountId: string): Record<string, unknow
 export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Identity, opts: MintOpts = {}): Promise<string> {
   if (!auth.sys.signingSeed)
     throw new Error(
-      "mintMembershipObserverCreds: no in-memory system-account signing seed - the observer can only be minted from a system account that is being (re)provisioned, because the $SYS seed is never persisted. Rotate the system account to mint a fresh one (`cotal down` then `cotal up --rotate-sys`); a plain re-`up` reuses the existing account and its existing creds.",
+      "mintMembershipObserverCreds: no in-memory system-account signing seed - the observer can only be minted from a system account that is being (re)provisioned, because the trust record carries no $SYS seed. Rotate the system account to mint a fresh one (`cotal down` then `cotal up --rotate-sys`); a plain re-`up` reuses the existing account and its existing creds.",
     );
   const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
   const perms = membershipObserverPermissions(auth.account.pub);
@@ -3004,7 +3005,7 @@ function connectionEvictorPermissions(): Record<string, unknown> {
 export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Identity, opts: MintOpts = {}): Promise<string> {
   if (!auth.sys.signingSeed)
     throw new Error(
-      "mintConnectionEvictorCreds: no in-memory system-account signing seed - the evictor can only be minted from a system account that is being (re)provisioned, because the $SYS seed is never persisted. Rotate the system account to mint a fresh one (`cotal down` then `cotal up --rotate-sys`); a plain re-`up` reuses the existing account and its existing creds.",
+      "mintConnectionEvictorCreds: no in-memory system-account signing seed - the evictor can only be minted from a system account that is being (re)provisioned, because the trust record carries no $SYS seed. Rotate the system account to mint a fresh one (`cotal down` then `cotal up --rotate-sys`); a plain re-`up` reuses the existing account and its existing creds.",
     );
   const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
   // Bounded exp: `rotation-renewed`, same posture as the observer above.
