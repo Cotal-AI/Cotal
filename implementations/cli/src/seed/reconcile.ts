@@ -1,5 +1,5 @@
 import { existsSync, renameSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -21,6 +21,7 @@ import {
   clearChildMarker,
   clearCursor,
   clearRecovery,
+  markCursorFailed,
   readCursor,
   readRecovery,
   reconcileLockActive,
@@ -126,13 +127,14 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
         if (migration && cursor) {
           console.error(
             c.dim(
-              `resuming an interrupted connector upgrade (seed store ${migration.from} -> ${generation}; ` +
+              `resuming ${cursor.failed ? "a failed" : "an interrupted"} connector upgrade (seed store ${migration.from} -> ${generation}; ` +
                 `package "${cursor.package}", phase ${cursor.phase}) …`,
             ),
           );
           await reconcile("repair");
           return NOOP;
         }
+        if (cursor?.failed) throw failedSeed(cursor);
         if (cursor) {
           const storeGeneration = readStamp()?.generation ?? "absent";
           throw new Error(
@@ -175,6 +177,12 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
       });
+    } catch (e) {
+      // This process is alive to see the failure, so the cursor it leaves says so: the next run
+      // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
+      // interruption, and the seed's own error is still the one reported.
+      try { markCursorFailed(lock.nonce, e instanceof Error ? e.message : String(e)); } catch { /* reported below */ }
+      throw e;
     } finally {
       releaseMutation();
     }
@@ -296,11 +304,12 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // seed/repair was interrupted. In maintenance mode they are kept and cleared only at the final commit.
   const cursor = readCursor();
   if (cursor) {
+    if (mode === "auto" && cursor.failed) throw failedSeed(cursor);
     if (mode === "auto")
       throw new Error(
         `a previous connector seed was interrupted (package "${cursor.package}", phase ${cursor.phase}) - run \`cotal ext seed --repair\``,
       );
-    console.error(c.dim(`recovering from an interrupted seed (package "${cursor.package}") …`));
+    console.error(c.dim(`recovering from ${cursor.failed ? "a failed" : "an interrupted"} seed (package "${cursor.package}") …`));
   }
   if (mode === "auto" && !cursor && recoveryPending())
     throw new Error("a previous connector repair was interrupted - run `cotal ext seed --repair`");
@@ -555,10 +564,27 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // runs this ahead of whatever command was typed, so on stdout it would land in front of that
   // command's result (a first-boot `cotal meshes --json` printed seven non-JSON lines).
   if (r.stdout) process.stderr.write(r.stdout);
-  if (r.status !== 0) {
-    const tail = `${r.stderr ?? ""}`.trim().split("\n").slice(-8).join("\n");
-    throw new Error(`failed to seed connector "${name}" from ${storePath}:\n${tail}`);
+  if (r.status !== 0) throw new Error(`failed to seed connector "${name}" from ${storePath}: ${childFailure(r)}`);
+}
+
+/** Why a seed child failed. It writes its progress and then its `✗` failure to stderr: the progress
+ *  is relayed as progress and the failure is the reason. A child that printed no failure is
+ *  described by its last lines, or by how it ended. */
+function childFailure(r: SpawnSyncReturns<string>): string {
+  const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+  const lines = `${r.stderr ?? ""}`.trimEnd().split("\n");
+  const at = lines.findLastIndex((line) => plain(line).startsWith("✗ "));
+  if (at < 0) {
+    const tail = lines.slice(-8).join("\n").trim();
+    return tail || (r.error?.message ?? (r.signal ? `the seed child ended on ${r.signal}` : `the seed child exited with status ${r.status}`));
   }
+  if (at > 0) process.stderr.write(`${lines.slice(0, at).join("\n")}\n`);
+  return plain(lines.slice(at).join("\n")).slice(2);
+}
+
+/** The refusal after a seed that failed: what failed, and that `--repair` finishes it. */
+function failedSeed(cursor: ReconcileCursor): Error {
+  return new Error(`a previous connector seed failed (package "${cursor.package}", phase ${cursor.phase}): ${cursor.failed} - fix that, then run \`cotal ext seed --repair\``);
 }
 
 /** Confirm a connector the reconcile claims to have (re)installed is recorded AND on disk at the

@@ -4491,9 +4491,13 @@ the seed keeps stdout to itself:
 | Flag | Meaning |
 |---|---|
 | (none) | Reconcile: seed any never-seeded built-in, refresh a seeded one whose version the binary bumped, leave a removed one removed. A no-op once current. |
-| `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
+| `--repair` | Recover after a seed that failed or was interrupted, or a lost authority (rebuilds that seed's connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current. Refuses to downgrade a newer shared store. |
+
+A seed that fails names the connector and the reason, such as npm missing from PATH. Until
+`cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
+the last seed failed, and why, or was interrupted.
 
 When a newer `cotal` advances the operator-global seed store to its generation, it prints one
 migration line naming the old and new generations, the exact CLI entry that wrote the store, the
