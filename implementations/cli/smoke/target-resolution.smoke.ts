@@ -161,6 +161,28 @@ const QUESTION = "Which one?";
   check("team deploy with a --space naming another space refuses before it connects", deploy.status === 2 && /--space differs from this manifest's exact target; no broker was contacted/.test(`${deploy.stdout}${deploy.stderr}`) && !existsSync(join(project, ".cotal")), shown(deploy));
 }
 
+// ── A refused start leaves the folder as it found it ───────────────────────────────────────────────
+{
+  // Outside every project and the machine home, so a start here would make this folder a root. Its
+  // lock creates `.cotal/maintenance` before these refusals, and a folder left with it reads as a
+  // root of the default space.
+  const fresh = mkdtempSync(join(tmpdir(), "cotal-target-resolution-fresh-"));
+  try {
+    const entries = () => readdirSync(fresh).sort().join(",");
+    writeFileSync(join(fresh, "list.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: ["${A}"] }\nchannels: {}\n`);
+    const invalid = run(["up", "-f", "list.yaml"], fresh);
+    check("up -f with a manifest that does not validate refuses, exit 1, and leaves the folder as it found it",
+      invalid.status === 1 && /expected string, received array \(at broker\.servers\)/.test(invalid.stderr) && entries() === "list.yaml", { ...shown(invalid), entries: entries() });
+    writeFileSync(join(fresh, "user.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "${A}", auth: user }\nchannels: {}\n`);
+    const contradicted = run(["up", "-f", "user.yaml", "--open"], fresh);
+    check("up -f refused after its lock, for a flag the manifest contradicts, leaves the folder as it found it",
+      contradicted.status === 1 && /--open contradicts this manifest's broker\.auth/.test(contradicted.stderr) && entries() === "list.yaml,user.yaml", { ...shown(contradicted), entries: entries() });
+    const json = run(["up", "--json", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
+    check("up --json on the retained launcher refuses UNSUPPORTED, exit 2, and leaves the folder as it found it",
+      json.status === 2 && envelope(json)?.error?.code === "UNSUPPORTED" && entries() === "list.yaml,user.yaml", { ...shown(json), entries: entries() });
+  } finally { rmSync(fresh, { recursive: true, force: true }); }
+}
+
 for (const p of ptys) p.kill();
 finish();
 process.exit(process.exitCode ?? 0);

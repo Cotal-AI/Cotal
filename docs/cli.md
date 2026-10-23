@@ -656,7 +656,10 @@ route described below. Recovery re-entry keeps its recorded mode.
 
 A whole-stack `up` or `down` takes the root's maintenance lock before it reads the journal. While
 another whole-stack or maintenance command holds it, the command refuses `LIFECYCLE_BLOCKED` and
-names that command's pid. A crashed member, or an `up` or `down` killed before it recorded its
+names that command's pid. Taking the lock makes `.cotal/maintenance` when the folder has none. A
+command that then refuses or fails, such as `up -f` with a manifest that does not validate or `up
+--json` on the retained launcher, releases the lock and removes those folders again while they are
+empty, so a fresh folder is left without a `.cotal` that later commands would read as a project. A crashed member, or an `up` or `down` killed before it recorded its
 outcome, is settled by the next bare `up` or `down` from process evidence. A member whose recorded
 process (pid and start time) is gone is recorded as failed, the earlier operation is recorded as
 failed, and the command continues with an `OPERATION_SETTLED` warning. A member that is still
