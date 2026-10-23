@@ -223,7 +223,7 @@ try {
     retainedRow?.lifecycleUid === RETAINED_UID, { row: retainedRow?.lifecycleUid, minted: RETAINED_UID });
   await must("seed channel registry",
     ["channel", "set", "preserved", "--desc", "survives user-mode restore", "--space", SPACE]);
-  await must("user-mode send seeds a CHAT message", ["send", "msg", CHANNEL, SEEDED_TEXT, "--space", SPACE]);
+  await must("user-mode send seeds a CHAT message", ["send", "--channel", CHANNEL, SEEDED_TEXT, "--space", SPACE]);
   const seededTexts = textsOf(await chatHistory());
   check("the seeded message is on the wire before the cut", seededTexts.includes(SEEDED_TEXT), seededTexts);
 
@@ -258,7 +258,7 @@ try {
   // THE IDENTITY PLANE, not just the broker: a user-mode connect has to go login → exchange →
   // bearer → callout on the RESTORED mesh, and land on the wire as the derived principal.
   const afterText = "posted after the user-mode restore";
-  await must("the restored mesh serves a USER-MODE connect", ["send", "msg", CHANNEL, afterText, "--space", SPACE]);
+  await must("the restored mesh serves a USER-MODE connect", ["send", "--channel", CHANNEL, afterText, "--space", SPACE]);
   const restored = await chatHistory();
   const restoredTexts = textsOf(restored);
   check("the seeded message survived the restore", restoredTexts.includes(SEEDED_TEXT), restoredTexts);
