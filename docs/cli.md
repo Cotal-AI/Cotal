@@ -205,6 +205,11 @@ A command with a JSON output exits by its outcome, with or without `--json`:
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure.
 
+Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
+the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
+partway, so check what it did before you retry. A reader that closes the output early, as `| head`
+does, ends the command quietly with the status it had already set, or 0.
+
 ## Commands
 
 | Area | Command | Purpose |
