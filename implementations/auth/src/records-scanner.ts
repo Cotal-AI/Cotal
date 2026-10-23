@@ -26,9 +26,10 @@
  * would drop a subject overwritten during the scan; a LastPerSubject consumer carries NO upper
  * fence, so it delivers each subject's CURRENT last and a concurrent settle is SEEN, never dropped —
  * the completeness the retirement barrier's drain-to-quiescence requires. The pre-clean, forced
- * pull/LastPerSubject shape, full bind-verify, and fresh-zero drain are the auth scanner's, and the
- * injected scanner is BRANDED to its exact space ({@link assertRecordsScannerSpace}) so a
- * hand-assembled or foreign-space scanner can never silently empty a drain.
+ * pull/LastPerSubject shape, full bind-verify, and fresh-zero drain are the auth scanner's (one
+ * {@link drainLiteralConsumer} for both scanners), and the injected scanner is BRANDED to its exact
+ * space ({@link assertRecordsScannerSpace}) so a hand-assembled or foreign-space scanner can never
+ * silently empty a drain.
  *
  * CAPABILITY INTEGRITY + SERIALIZATION (panel HIGHs on the seal claim):
  * - The returned handle is FROZEN: the brand proves construction identity, the freeze proves the
@@ -46,10 +47,11 @@
  *   drain makes an OUT-OF-FILTER delivery from a foreign re-resolution loud, while a foreign
  *   same-or-narrower filter stays covered by that composition assumption, not by the check.
  */
-import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, RECORD_KINDS, assertInboxConnId, assertPrincipalOwnerToken, isConsumerNotFound, parseGoalIndexEntry, parseRecordKey, recordsBucket, recordsKvStreamName, type GoalIndexEntry, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, RECORD_KINDS, assertInboxConnId, assertPrincipalOwnerToken, parseGoalIndexEntry, parseRecordKey, recordsBucket, recordsKvStreamName, type GoalIndexEntry, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
+import { drainLiteralConsumer, type LiteralConsumerProbe } from "./literal-consumer.js";
 import { guardedScan, type ScanGuard } from "./plane-claim.js";
 import { serializedFor } from "./serialized.js";
 
@@ -64,27 +66,6 @@ const MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME = "cotal-manager-goalidx-scan";
  *  and can never interleave pre-clean/create/fetch/delete on that name (a per-instance lock cannot
  *  see a sibling instance). */
 const SPACE_SCAN_CHAINS = new Map<string, Promise<unknown>>();
-
-/** Does a concrete delivered subject match the requested consumer filter (`*` one token, trailing
- *  `>` a non-empty remainder)? Revalidated PER MESSAGE in the drain: bind-verify proves the config
- *  once at create, this proves every delivered row still belongs to THIS scan's filter, so a
- *  foreign re-resolution of the literal name (a config swapped under the scan) is refused loud. */
-const matchesFilter = (subject: string, pattern: string): boolean => {
-  const s = subject.split("."), p = pattern.split(".");
-  for (let i = 0; i < p.length; i++) {
-    if (p[i] === ">") return s.length > i;
-    if (i >= s.length || (p[i] !== "*" && p[i] !== s[i])) return false;
-  }
-  return s.length === p.length;
-};
-/** Bounded inactivity (ns): a leaked orphan (a run that crashed before its unconditional delete) is
- *  broker-collected within this window, and the next run's pre-clean removes it by name. */
-const INACTIVE_THRESHOLD_NS = 30_000_000_000;
-/** Drain bounds (fail-closed, not spin) — the auth scanner's rationale (a quiescent subtree settles
- *  in a handful of rounds; a concurrent settle adds a bounded burst the next round re-reads). */
-const MAX_DRAIN_ROUNDS = 4096;
-/** Consecutive rounds that observe pending > 0 yet deliver nothing before the scan fails closed. */
-const MAX_NO_PROGRESS_ROUNDS = 8;
 
 /** One KV key segment (no dots — the separator — no wildcards). */
 const KEY_SEGMENT = /^[A-Za-z0-9_-]+$/;
@@ -206,12 +187,10 @@ export function makeRecordsScannerOverConnection(nc: NatsConnection, space: stri
   return buildScanner(nc, space, async () => { /* the harness owns nc */ }, probe, guard);
 }
 
-/** SMOKE-ONLY probes (mirroring the auth scanner). Never set in production.
- *  - `afterCreate` fires ONCE after create + bind-verify but BEFORE the drain (the create→drain race).
- *  - `afterFirstFetch` fires ONCE after the FIRST drain fetch (the mid-drain settle race). */
-export interface RecordsScannerProbe {
-  afterCreate?: () => Promise<void>;
-  afterFirstFetch?: () => Promise<void>;
+/** SMOKE-ONLY probes into the shared drain. Never set in production. `afterCreate` and
+ *  `afterFirstFetch` ({@link LiteralConsumerProbe}) fire on the obligation scan; the goal-index pair
+ *  fires at the same two points of the manager goal-index scan. */
+export interface RecordsScannerProbe extends LiteralConsumerProbe {
   afterManagerGoalIndexCreate?: () => Promise<void>;
   afterManagerGoalIndexFirstFetch?: () => Promise<void>;
 }
@@ -226,207 +205,43 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   const jsOf = (): JetStreamClient => (jsRef ??= jetstream(nc));
 
   const scanOnce = async (rawFilter: string): Promise<RawRecordsEntry[]> => {
-    const jsm = await jsmOf();
-    const js = jsOf();
     const filter = `$KV.${bucket}.${assertObligFilter(rawFilter)}`;
-
-    // 1. FAIL-CLOSED pre-clean: PROVE the literal name absent before create. Absence is proved ONLY
-    // by a confirmed delete (`delete(...) === true`) or a structured ConsumerNotFound; a `false`
-    // return or any other error fails the scan (a surviving stale AckNone consumer could otherwise
-    // advance deliveries and make this run silently omit rows).
-    let provedAbsent = false;
-    try {
-      provedAbsent = (await jsm.consumers.delete(stream, RECORDS_SCANNER_CONSUMER_NAME)) === true;
-    } catch (e) {
-      if (isConsumerNotFound(e)) provedAbsent = true;
-      else throw new EpEnvelopeError("unavailable", `the records scanner could not prove its literal consumer absent on ${stream} before create (pre-clean fails closed, SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
-    }
-    if (!provedAbsent)
-      throw new EpEnvelopeError("unavailable", `the records scanner's pre-clean did not confirm the literal consumer deleted or absent on ${stream}; refusing to create over an unproven consumer (fail-closed, SPEC 13.9)`);
-
-    // 2. Create with the FORCED config ONLY (the seam derives every field; no caller config).
-    try {
-      await jsm.consumers.add(stream, {
-        name: RECORDS_SCANNER_CONSUMER_NAME,
-        filter_subject: filter,
-        ack_policy: AckPolicy.None,
-        deliver_policy: DeliverPolicy.LastPerSubject,
-        mem_storage: true,
-        inactive_threshold: INACTIVE_THRESHOLD_NS,
-      });
-    } catch (e) {
-      throw new EpEnvelopeError("unavailable", `the records scanner could not create its consumer on ${stream} (${rawFilter}); the scan fails closed (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
-    }
-
-    try {
-      // 3. FULL bind-verify: the created consumer must carry EXACTLY the forced shape — the exact
-      // name and single filter (no multi-filter), pull (no `deliver_subject`), ephemeral (no
-      // `durable_name`), AckNone/LastPerSubject, memory storage, the bounded exact inactivity.
-      const info = await jsm.consumers.info(stream, RECORDS_SCANNER_CONSUMER_NAME);
-      const cfg = info.config as {
-        name?: string; filter_subject?: string; filter_subjects?: string[];
-        deliver_subject?: string; durable_name?: string; ack_policy?: string; deliver_policy?: string;
-        mem_storage?: boolean; inactive_threshold?: number;
-      };
-      const drift =
-        cfg.name !== RECORDS_SCANNER_CONSUMER_NAME ? `name=${cfg.name}` :
-        cfg.filter_subject !== filter ? `filter=${cfg.filter_subject}` :
-        (Array.isArray(cfg.filter_subjects) && cfg.filter_subjects.length > 0) ? `filter_subjects=${JSON.stringify(cfg.filter_subjects)}` :
-        cfg.deliver_subject !== undefined ? `deliver_subject=${cfg.deliver_subject}` :
-        cfg.durable_name !== undefined ? `durable=${cfg.durable_name}` :
-        cfg.ack_policy !== AckPolicy.None ? `ack=${cfg.ack_policy}` :
-        cfg.deliver_policy !== DeliverPolicy.LastPerSubject ? `deliver=${cfg.deliver_policy}` :
-        cfg.mem_storage !== true ? `mem_storage=${cfg.mem_storage}` :
-        cfg.inactive_threshold !== INACTIVE_THRESHOLD_NS ? `inactive_threshold=${cfg.inactive_threshold}` :
-        undefined;
-      if (drift !== undefined)
-        throw new EpEnvelopeError("failed-precondition", `the records scanner's consumer on ${stream} does not carry the forced pull/LastPerSubject shape (${drift}); refusing the scan (SPEC 13.9)`);
-
-      // SMOKE-ONLY race window: force a concurrent settle between create and drain.
-      if (probe?.afterCreate) await probe.afterCreate();
-
-      // 4. Drain to a FRESHLY-OBSERVED zero. `num_pending` is re-read each round (never a stale
-      // initial count): a subject settled while draining re-appears as pending and is fetched in a
-      // later round, so the result is one CURRENT row per subject. The fence is num_pending===0 —
-      // NOT a per-fetch got===want assertion, which a concurrent settle would trip falsely.
-      const latest = new Map<string, { data: Uint8Array; seq: number; op: string | undefined }>();
-      const consumer = await js.consumers.get(stream, RECORDS_SCANNER_CONSUMER_NAME);
-      let noProgress = 0;
-      for (let round = 0; ; round++) {
-        const pending = (await consumer.info()).num_pending;
-        if (pending === 0) break;
-        if (round >= MAX_DRAIN_ROUNDS)
-          throw new EpEnvelopeError("unavailable", `the records scanner under ${rawFilter} never settled to zero pending after ${round} rounds; the scan fails closed (SPEC 13.9)`);
-        const want = Math.min(pending, 256);
-        const iter = await consumer.fetch({ max_messages: want, expires: 5_000 });
-        let got = 0;
-        for await (const m of iter) {
-          got++;
-          // CLOSED subject validation, PER MESSAGE against THIS scan's exact filter (not just the
-          // oblig root): a foreign subject never enters the result, and a literal-name consumer
-          // swapped to a different config under the scan is refused loud instead of contaminating.
-          if (!matchesFilter(m.subject, filter))
-            throw new EpEnvelopeError("internal", `the records scanner received subject ${m.subject} outside its requested filter ${filter}; refusing (a foreign re-resolution of the literal consumer name never feeds a scan, SPEC 13.9)`);
-          if (!Number.isSafeInteger(m.seq) || m.seq <= 0)
-            throw new EpEnvelopeError("internal", `the records scanner received a non-positive/unsafe sequence ${m.seq} for ${m.subject}; refusing (SPEC 13.9)`);
-          const prev = latest.get(m.subject);
-          if (prev === undefined || m.seq > prev.seq)
-            latest.set(m.subject, { data: m.data, seq: m.seq, op: m.headers?.get("KV-Operation") || undefined });
-        }
-        if (round === 0 && probe?.afterFirstFetch) await probe.afterFirstFetch();
-        if (got === 0) {
-          if (++noProgress >= MAX_NO_PROGRESS_ROUNDS)
-            throw new EpEnvelopeError("unavailable", `the records scanner under ${rawFilter} reported pending but delivered nothing for ${noProgress} rounds; the scan fails closed (SPEC 13.9)`);
-        } else {
-          noProgress = 0;
-        }
-      }
-      const out: RawRecordsEntry[] = [];
-      for (const [subject, v] of latest) out.push({ key: subject.slice(keyPrefixLen), data: v.data, seq: v.seq, op: v.op });
-      return out;
-    } finally {
-      // 5. Unconditional cleanup (a leaked orphan is collected by the bounded inactivity).
-      try { await jsm.consumers.delete(stream, RECORDS_SCANNER_CONSUMER_NAME); } catch { /* orphan collected by inactivity */ }
-    }
+    const latest = await drainLiteralConsumer(await jsmOf(), jsOf(), { stream, name: RECORDS_SCANNER_CONSUMER_NAME, filter, label: "records scanner", probe });
+    const out: RawRecordsEntry[] = [];
+    for (const [subject, v] of latest) out.push({ key: subject.slice(keyPrefixLen), data: v.data, seq: v.seq, op: v.op });
+    return out;
   };
 
   const scanManagerGoalIndexOnce = async (owner: string): Promise<GoalIndexEntry[]> => {
     // A human manager's derived `u_…` owner, or the platform control manager's `p_…` owner (SPEC 13.1).
     const expectedOwner = assertPrincipalOwnerToken(owner, { allowPlatform: true });
-    const jsm = await jsmOf();
-    const js = jsOf();
     const rawFilter = `goalidx.manager.${expectedOwner}.>`;
-    const filter = `$KV.${bucket}.${rawFilter}`;
-    let provedAbsent = false;
-    try {
-      provedAbsent = (await jsm.consumers.delete(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME)) === true;
-    } catch (e) {
-      if (isConsumerNotFound(e)) provedAbsent = true;
-      else throw new EpEnvelopeError("unavailable", `the manager goal-index scanner could not prove its literal consumer absent before create: ${(e as Error)?.message ?? String(e)}`);
+    const latest = await drainLiteralConsumer(await jsmOf(), jsOf(), {
+      stream, name: MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME, filter: `$KV.${bucket}.${rawFilter}`, label: "manager goal-index scanner",
+      probe: { afterCreate: probe?.afterManagerGoalIndexCreate, afterFirstFetch: probe?.afterManagerGoalIndexFirstFetch },
+    });
+    const out: GoalIndexEntry[] = [];
+    for (const [subject, row] of latest) {
+      const key = subject.slice(keyPrefixLen);
+      if (row.op !== undefined)
+        throw new EpEnvelopeError("failed-precondition", `manager goal-index entry ${key} carries a ${row.op} marker; a deletion is never a live index row`);
+      let raw: unknown;
+      try { raw = JSON.parse(new TextDecoder().decode(row.data)); }
+      catch (e) { throw new EpEnvelopeError("internal", `manager goal-index entry ${key} does not decode as JSON: ${(e as Error).message}`); }
+      const parsed = parseGoalIndexEntry(raw, key);
+      const parsedKey = parseRecordKey(key);
+      if (parsedKey?.def !== RECORD_KINDS.goalidx || parsedKey.part !== "atomic")
+        throw new EpEnvelopeError("internal", `manager goal-index scanner received ${key}, which is not an atomic goalidx key`);
+      const bodyQualifiers = [parsed.endpoint, parsed.owner, parsed.actor, parsed.uid, parsed.goalId];
+      if (JSON.stringify(parsedKey.qualifiers) !== JSON.stringify(bodyQualifiers))
+        throw new EpEnvelopeError("internal", `manager goal-index entry body qualifiers ${JSON.stringify(bodyQualifiers)} do not match key ${key}`);
+      if (parsed.endpoint !== "manager")
+        throw new EpEnvelopeError("internal", `manager goal-index scanner returned endpoint ${parsed.endpoint}`);
+      if (parsed.owner !== expectedOwner)
+        throw new EpEnvelopeError("internal", `manager goal-index scanner delivered foreign owner ${parsed.owner} outside ${expectedOwner}`);
+      out.push(parsed);
     }
-    if (!provedAbsent)
-      throw new EpEnvelopeError("unavailable", "the manager goal-index scanner did not confirm its literal consumer deleted or absent");
-    try {
-      await jsm.consumers.add(stream, {
-        name: MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME,
-        filter_subject: filter,
-        ack_policy: AckPolicy.None,
-        deliver_policy: DeliverPolicy.LastPerSubject,
-        mem_storage: true,
-        inactive_threshold: INACTIVE_THRESHOLD_NS,
-      });
-      const info = await jsm.consumers.info(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME);
-      const cfg = info.config as {
-        name?: string; filter_subject?: string; filter_subjects?: string[];
-        deliver_subject?: string; durable_name?: string; ack_policy?: string; deliver_policy?: string;
-        mem_storage?: boolean; inactive_threshold?: number;
-      };
-      const drift =
-        cfg.name !== MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME ? `name=${cfg.name}` :
-        cfg.filter_subject !== filter ? `filter=${cfg.filter_subject}` :
-        (Array.isArray(cfg.filter_subjects) && cfg.filter_subjects.length > 0) ? `filter_subjects=${JSON.stringify(cfg.filter_subjects)}` :
-        cfg.deliver_subject !== undefined ? `deliver_subject=${cfg.deliver_subject}` :
-        cfg.durable_name !== undefined ? `durable=${cfg.durable_name}` :
-        cfg.ack_policy !== AckPolicy.None ? `ack=${cfg.ack_policy}` :
-        cfg.deliver_policy !== DeliverPolicy.LastPerSubject ? `deliver=${cfg.deliver_policy}` :
-        cfg.mem_storage !== true ? `mem_storage=${cfg.mem_storage}` :
-        cfg.inactive_threshold !== INACTIVE_THRESHOLD_NS ? `inactive_threshold=${cfg.inactive_threshold}` :
-        undefined;
-      if (drift !== undefined)
-        throw new EpEnvelopeError("failed-precondition", `the manager goal-index scanner's consumer does not carry the forced pull/LastPerSubject shape (${drift})`);
-      if (probe?.afterManagerGoalIndexCreate) await probe.afterManagerGoalIndexCreate();
-
-      const latest = new Map<string, { data: Uint8Array; seq: number; op: string | undefined }>();
-      const consumer = await js.consumers.get(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME);
-      let noProgress = 0;
-      for (let round = 0; ; round++) {
-        const pending = (await consumer.info()).num_pending;
-        if (pending === 0) break;
-        if (round >= MAX_DRAIN_ROUNDS)
-          throw new EpEnvelopeError("unavailable", `the manager goal-index scanner never settled to zero pending after ${round} rounds`);
-        const iter = await consumer.fetch({ max_messages: Math.min(pending, 256), expires: 5_000 });
-        let got = 0;
-        for await (const m of iter) {
-          got++;
-          if (!matchesFilter(m.subject, filter))
-            throw new EpEnvelopeError("internal", `the manager goal-index scanner received subject ${m.subject} outside ${filter}`);
-          if (!Number.isSafeInteger(m.seq) || m.seq <= 0)
-            throw new EpEnvelopeError("internal", `the manager goal-index scanner received invalid sequence ${m.seq}`);
-          const prev = latest.get(m.subject);
-          if (prev === undefined || m.seq > prev.seq)
-            latest.set(m.subject, { data: m.data, seq: m.seq, op: m.headers?.get("KV-Operation") || undefined });
-        }
-        if (round === 0 && probe?.afterManagerGoalIndexFirstFetch) await probe.afterManagerGoalIndexFirstFetch();
-        if (got === 0) {
-          if (++noProgress >= MAX_NO_PROGRESS_ROUNDS)
-            throw new EpEnvelopeError("unavailable", "the manager goal-index scanner reported pending but delivered nothing");
-        } else noProgress = 0;
-      }
-      const out: GoalIndexEntry[] = [];
-      for (const [subject, row] of latest) {
-        const key = subject.slice(keyPrefixLen);
-        if (row.op !== undefined)
-          throw new EpEnvelopeError("failed-precondition", `manager goal-index entry ${key} carries a ${row.op} marker; a deletion is never a live index row`);
-        let raw: unknown;
-        try { raw = JSON.parse(new TextDecoder().decode(row.data)); }
-        catch (e) { throw new EpEnvelopeError("internal", `manager goal-index entry ${key} does not decode as JSON: ${(e as Error).message}`); }
-        const parsed = parseGoalIndexEntry(raw, key);
-        const parsedKey = parseRecordKey(key);
-        if (parsedKey?.def !== RECORD_KINDS.goalidx || parsedKey.part !== "atomic")
-          throw new EpEnvelopeError("internal", `manager goal-index scanner received ${key}, which is not an atomic goalidx key`);
-        const bodyQualifiers = [parsed.endpoint, parsed.owner, parsed.actor, parsed.uid, parsed.goalId];
-        if (JSON.stringify(parsedKey.qualifiers) !== JSON.stringify(bodyQualifiers))
-          throw new EpEnvelopeError("internal", `manager goal-index entry body qualifiers ${JSON.stringify(bodyQualifiers)} do not match key ${key}`);
-        if (parsed.endpoint !== "manager")
-          throw new EpEnvelopeError("internal", `manager goal-index scanner returned endpoint ${parsed.endpoint}`);
-        if (parsed.owner !== expectedOwner)
-          throw new EpEnvelopeError("internal", `manager goal-index scanner delivered foreign owner ${parsed.owner} outside ${expectedOwner}`);
-        out.push(parsed);
-      }
-      return out;
-    } finally {
-      try { await jsm.consumers.delete(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME); } catch { /* bounded inactivity is the orphan backstop */ }
-    }
+    return out;
   };
 
   // FROZEN before branding (capability integrity): the brand keys this exact reference, and the
