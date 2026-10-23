@@ -1674,8 +1674,9 @@ skips that question, but not the confirmation of fetched pins. It never changes 
 A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
 input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`, `UNSUPPORTED`,
 `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
-registered is a `CONFLICT`. `--force` replaces a registration added by hand, never one this machine
-started or a catalog lists, and adds a `--server` space without checking its broker, which suits a
+registered is a `CONFLICT`, and its remedy offers `--force` only for a registration added by hand.
+`--force` replaces a registration added by hand, never one this machine started or a catalog lists,
+and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Declining the question is a
 `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
