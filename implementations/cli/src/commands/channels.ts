@@ -11,6 +11,7 @@ import {
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { channelMembers } from "./channel-members.js";
+import { earlierMessages } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 
 export const channelFlags = [
@@ -109,6 +110,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, registryView);
     return;
   }
+  if (action === "remove") await refuseUnknownRemoval(name!, values, target);
   if (action === "remove" && !await confirmRemoval(name!, connection.space, values, presentation)) {
     writeResult(presentation, { command: "channel", target, result: { action: "cancelled", channel: name }, noOp: true }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: ["Channel removal cancelled. Nothing was deleted."] }] }] }));
     return;
@@ -142,6 +144,24 @@ export async function channels(args: ParsedArgs): Promise<void> {
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
   ] }));
+}
+
+/** A remove names a channel the space has: one with a saved entry or retained messages. Any other
+ *  name, often a typo or another case of a registered one, is refused with the registered channels
+ *  before anything is confirmed or deleted. The registry is read on the operator credential, as
+ *  `cotal channel` reads it, because the writer and purger may not read it. When the history cannot
+ *  be read here, the remove goes ahead and reports what it found. */
+async function refuseUnknownRemoval(name: string, values: Values, target: object): Promise<void> {
+  const reader = await connectOrThrow(values, "operator");
+  const auth = reader.bearer ? { bearer: reader.bearer, sentinelCreds: reader.sentinelCreds } : { creds: reader.creds };
+  const registry = await readChannelRegistry({ servers: reader.server, space: reader.space, ...auth, directGet: !reader.bearer });
+  const registered = Object.keys(registry.channels ?? {}).sort();
+  if (registered.includes(name) || (await earlierMessages(values, name)) !== false) return;
+  const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
+  const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND",
+    `#${name} has no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
+    { target, remedy: spelled ? `name it as registered: cotal channel remove ${spelled}` : "name a channel the space has; cotal ch lists the registered ones" });
 }
 
 function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegistryFile["defaults"]): [string, string][] {

@@ -4242,9 +4242,11 @@ records. A missing feed remains unknown rather than an empty confirmed census. T
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
-space and history scope. Scripts pass `--yes`. Removing a channel that has no saved entry is a
-`no-op`, and its Metadata row says `no saved entry`; `--purge` still deletes that channel's
-retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
+space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
+is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
+naming the registered spelling when only the case differs. Removing a channel that has retained
+messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`; `--purge`
+still deletes that channel's retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
 removal nor replay settings revoke grants or stop participants; future posts can create retained
 history again.
 

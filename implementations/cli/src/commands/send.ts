@@ -16,7 +16,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
@@ -189,8 +189,8 @@ async function unregisteredChannel(values: Values, channel: string, target: obje
 
 /** Whether a channel holds retained messages, read as `cotal history` lists channels: through a
  *  short-lived observer endpoint, because the sender's operator credential reads no channel. Null
- *  when that read is not possible here. */
-async function earlierMessages(values: Values, channel: string): Promise<boolean | null> {
+ *  when that read is not possible here. `channel remove` asks the same before it removes a name. */
+export async function earlierMessages(values: ConnectFlags, channel: string): Promise<boolean | null> {
   let reader: CotalEndpoint | undefined;
   try {
     const conn = await connectOrThrow(values, "observer");

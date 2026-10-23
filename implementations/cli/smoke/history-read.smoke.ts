@@ -6,7 +6,8 @@
  * account issued, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
- * same broker, `cotal channel remove` says whether it removed a saved entry, and on the open broker
+ * same broker, `cotal channel remove` says whether it removed a saved entry and refuses a name with
+ * no saved entry and no retained messages, and on the open broker
  * `cotal channel members` refuses with `UNSUPPORTED`.
  * smoke:ps-user-mode and smoke:user-spawn:live exercise the native user-auth history path.
  *
@@ -348,15 +349,22 @@ try {
     check("a space with no channel registry has the built-in replay policy, and the read is complete", bare.status === 0 && bare.envelope?.completeness === "complete" && JSON.stringify(r?.replay) === JSON.stringify([{ channel: "general", replay: true, window: null }]) && r?.items.length === 0, shown(bare));
   }
 
-  // ── channel remove says whether it removed a saved entry ──────────────────────────────────────
+  // ── channel remove says whether it removed a saved entry, and refuses a name the space lacks ──
   {
     const removedOf = (r: { envelope?: Envelope }) => (r.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
     const removed = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing a saved channel is ok and says it removed the entry", removed.status === 0 && removed.envelope?.outcome === "ok" && removedOf(removed) === true, shown(removed));
+    // history clear above left #ops with no retained message, so with its entry gone the space lacks it.
     const again = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
-    check("removing it again is a no-op that removed nothing", again.status === 0 && again.envelope?.outcome === "no-op" && removedOf(again) === false, shown(again));
-    const typo = await run(["channel", "remove", "opz", "--yes", "--space", space]);
-    check("a name with no saved entry says nothing was removed", typo.status === 0 && typo.stdout.includes("Nothing removed · #opz") && typo.stdout.includes("no saved entry"), shown(typo));
+    check("removing it again is TARGET_NOT_FOUND, exit 2, listing the registered channels",
+      again.status === 2 && again.envelope?.error?.code === "TARGET_NOT_FOUND" && /#ops has no saved entry and no retained messages; registered channels: #general$/.test(again.envelope.error.message), shown(again));
+    const cased = await run(["channel", "remove", "General", "--purge", "--yes", "--space", space, "--json"]);
+    check("another case of a registered channel is refused before any purge, naming the registered spelling",
+      cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND" && /channel names are case-sensitive, and the registered one is #general$/.test(cased.envelope.error.message), shown(cased));
+    // A channel with retained messages and no saved entry is one the space has, so its remove is a no-op.
+    const posted = await run(["send", "-c", "opz", "kept", "--space", space]);
+    const typo = await run(["channel", "remove", "opz", "--yes", "--space", space, "--json"]);
+    check("a channel with retained messages and no saved entry is a no-op that removed nothing", posted.status === 0 && typo.status === 0 && typo.envelope?.outcome === "no-op" && removedOf(typo) === false, { posted: shown(posted), typo: shown(typo) });
   }
 
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────
