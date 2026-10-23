@@ -31,7 +31,7 @@ const SCENARIOS = [
   { name: "racer_despawn", renewal: "direct", terminal: "despawn" },
   { name: "racer_exit", renewal: "sweep", terminal: "natural-exit" },
 ] as const;
-const SCENARIO_CELLS = SCENARIOS.length * 23;
+const SCENARIO_CELLS = SCENARIOS.length * 25;
 let pass = 0;
 let fail = 0;
 
@@ -219,6 +219,16 @@ const M = mgr as unknown as {
   renewManagedStaticCred(agent: Agent): Promise<void>;
   renewDaemonCreds(): Promise<void>;
   despawnAuthorized(agent: Agent, graceful: boolean, trackNonAdmin: boolean): { ok: boolean };
+  driveStaticRetirement(target: { name: string }, surfaceFailure?: boolean): Promise<void>;
+};
+
+// What each static terminal was handed, by alias: a teardown target that carries the accepted
+// renewal as its own field and none of the live record's other fields.
+const terminalTargets = new Map<string, Record<string, unknown>>();
+const driveStaticRetirement = M.driveStaticRetirement.bind(mgr);
+M.driveStaticRetirement = (target, surfaceFailure) => {
+  terminalTargets.set(target.name, target);
+  return driveStaticRetirement(target, surfaceFailure);
 };
 
 async function openLifecycleView(alias: string, actor: string, uid: string): Promise<{
@@ -308,7 +318,8 @@ try {
 
       const pausedKey = await bounded(pause.reached, 5_000);
       check(`${name}: renewal reaches the secret-store put after journaling`, pausedKey === secretKey, pausedKey);
-      check(`${name}: renewal publishes its accepted flight`, agent.staticCredentialRenewal !== undefined);
+      const acceptedFlight = agent.staticCredentialRenewal;
+      check(`${name}: renewal publishes its accepted flight`, acceptedFlight !== undefined);
 
       const duringSlot = await readStaticSlot(view.transport, DEV_OWNER, name);
       const duringIds = duringSlot?.row.credentialIds ?? [];
@@ -326,6 +337,10 @@ try {
       check(`${name}: ${scenario.terminal} enters the terminal path`, terminalEntered);
       check(`${name}: the terminal latch closes synchronously`, agent.terminalizing === true);
       check(`${name}: terminalization registers the lifecycle hold`, M.retiring.get(name)?.target.lifecycleUid === agent.lifecycleUid, M.retiring.get(name));
+      const terminalTarget = terminalTargets.get(name);
+      check(`${name}: the static terminal is handed the accepted renewal`, acceptedFlight !== undefined && terminalTarget?.staticCredentialRenewal === acceptedFlight);
+      const recordFields = terminalTarget ? ["handle", "seed", "spawner", "startedAt"].filter((key) => key in terminalTarget) : undefined;
+      check(`${name}: the static terminal is handed a teardown target, not the live record`, recordFields?.length === 0, recordFields);
 
       let lateOutcome: string | undefined;
       const late = M.renewManagedStaticCred(agent)
