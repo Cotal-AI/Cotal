@@ -575,7 +575,8 @@ directly does not stop through its request-bound stop.
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
 `.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
-keeps its mode. The broker log `.cotal/nats.log` and the auth service,
+keeps its mode. A `.cotal`, or a root without one, that this account cannot write refuses with
+`PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
@@ -3132,8 +3133,10 @@ persona is one: its file is `default.md` and its agents launch as `default_agent
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
 preferences). The value runs as a shell command, so quote a path that holds spaces. With no editor
 set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
-and names the setting to fix. A successful editor exit and valid definition are required before
-saving. A changed
+and names the setting to fix. The draft's private folder is made in the temporary directory
+(`TMPDIR`). One this account cannot write refuses with `PERMISSION_DENIED`, and one that is missing
+or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made. A
+successful editor exit and valid definition are required before saving. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
 refusal says which one happened and keeps your edited draft in its private folder, naming it, so
 the edit is not lost. Local

@@ -120,10 +120,25 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
   } finally { lock.release(); }
 }
 
+/** A new private folder for a draft in the temporary directory. A temporary directory this account
+ *  cannot write, or one that is missing or not a folder, is refused by name before anything is made. */
+function draftFolder(): string {
+  const parent = tmpdir();
+  try { return mkdtempSync(join(parent, "cotal-persona-")); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM" || code === "EROFS")
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the temporary directory ${parent} is not writable by this account (${code}), so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: `make ${parent} writable by you, or set TMPDIR to a folder you own` });
+    if (code === "ENOENT" || code === "ENOTDIR")
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the temporary directory ${parent} ${code === "ENOENT" ? "does not exist" : "is not a directory"}, so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: "set TMPDIR to an existing folder you own, or unset it" });
+    throw error;
+  }
+}
+
 /** Own a private draft and remove only that draft. A cleanup failure is not a successful operation.
  *  A failure that `keep` accepts leaves the draft in place, because it holds work that was not saved. */
 function withDraft<T>(name: string, action: (path: string) => T, keep?: (error: unknown) => boolean): T {
-  const dir = mkdtempSync(join(tmpdir(), "cotal-persona-"));
+  const dir = draftFolder();
   let kept = false;
   try {
     hardenPrivate(dir, "dir");

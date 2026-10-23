@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { createConnection, createServer } from "node:net";
 import { homedir, hostname } from "node:os";
 import {
+  accessSync,
+  constants,
   mkdirSync,
   readFileSync,
   existsSync,
@@ -362,6 +364,20 @@ export function validateUpArguments(args: ParsedArgs): void {
       throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then use cotal up --root .; to start the home stack, run up from home itself" });
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
+  if (!(args.values.file && args.values["dry-run"] === true)) assertUpRootWritable(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot());
+}
+
+/** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder
+ *  this account cannot write is refused here, by name, instead of as the raw error of whichever
+ *  write came first. */
+function assertUpRootWritable(root: string): void {
+  const path = existsSync(join(root, ".cotal")) ? join(root, ".cotal") : root;
+  try { accessSync(path, constants.W_OK | constants.X_OK); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} is not writable by this account (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable by you, for example with chmod u+w ${path}` });
+  }
 }
 
 /** Why `--server` cannot be the address a local broker listens on, or undefined when it can. Both

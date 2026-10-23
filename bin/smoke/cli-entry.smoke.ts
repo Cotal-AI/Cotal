@@ -17,7 +17,7 @@
  * Run: pnpm smoke:cli-entry
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -303,6 +303,32 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     chmodSync(agents, 0o700);
     check("persona create refuses a read-only catalog with PERMISSION_DENIED and leaves it as it was",
       refusedCreate.status === 2 && /PERMISSION_DENIED/.test(refusedCreate.stderr) && after.mode === "500" && after.files.join() === "default.md", { ...shown(refusedCreate), after });
+    // The edit draft is made in TMPDIR. One that is missing, not a folder or not writable is refused
+    // by name, exit 2, before anything is made, instead of as a raw errno with an unknown outcome.
+    const scratch = mkdtempSync(join(tmpdir(), "cotal-entry-tmp-"));
+    cleanup.push(scratch);
+    const file = join(scratch, "file");
+    writeFileSync(file, "");
+    const unwritable = join(scratch, "locked");
+    mkdirSync(unwritable, { mode: 0o500 });
+    for (const [what, dir, code] of [["missing", join(scratch, "nope"), "TARGET_UNAVAILABLE"], ["a file", file, "TARGET_UNAVAILABLE"], ["not writable", unwritable, "PERMISSION_DENIED"]] as const) {
+      const r = cotal(["persona", "edit", "x"], persona, { ...editor, TMPDIR: dir });
+      check(`persona edit with a TMPDIR that is ${what} refuses ${code}, exit 2, naming it`,
+        r.status === 2 && r.stderr.includes(code) && r.stderr.includes(`the temporary directory ${dir} `) && r.stderr.includes("Next") && readdirSync(unwritable).length === 0, shown(r));
+    }
+    chmodSync(unwritable, 0o700);
+    // `up` writes under .cotal first, so one this account cannot write is refused before anything is
+    // started or written, naming it and the chmod.
+    let dotCotal = "";
+    const readOnly = cotal(["up", "--server", "nats://127.0.0.1:1"], (home) => {
+      mkdirSync(join(home, "..", ".cotal"), { mode: 0o700 });
+      dotCotal = realpathSync(join(home, "..", ".cotal"));
+      chmodSync(dotCotal, 0o500);
+    }, noSeed);
+    const left = readdirSync(dotCotal);
+    chmodSync(dotCotal, 0o700);
+    check("up refuses a .cotal it cannot write with PERMISSION_DENIED, exit 2, naming it and chmod u+w, and writes nothing",
+      readOnly.status === 2 && readOnly.stderr.includes("PERMISSION_DENIED") && readOnly.stderr.includes(`${dotCotal} is not writable by this account`) && readOnly.stderr.includes(`chmod u+w ${dotCotal}`) && left.length === 0, { ...shown(readOnly), left });
   }
   // A catalog travels with a cloned repo, so the legacy list escapes the control characters it reads
   // from one, and the flags that write a persona refuse them.
