@@ -243,6 +243,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     chmodSync(rc, 0o600);
     // The line is the one the owned block would hold, single-quoted as the shell needs.
     check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && existsSync(stub) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
+    check("that failure lists the files it changed instead of a receipt count", /Confirmed changes\n {2}\S*completion\.zsh\n/.test(readOnly.stderr) && !readOnly.stderr.includes("change receipt(s)"), shown(readOnly));
     const installed = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o400);
     const lockedOut = s.run(["completion", "uninstall", "zsh"]);
@@ -357,6 +358,19 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("a block with no end marker is refused even with --force, naming the file to edit", unclosed.status === 2 && unclosed.stderr.includes(`${rc} has no complete block`) && existsSync(stub), shown(unclosed));
   const misplaced = s.run(["completion", "--force"]);
   check("--force is refused where it does not apply", misplaced.status === 1 && /--force applies to completion install and uninstall/.test(misplaced.stderr), shown(misplaced));
+}
+
+// ── Receipts say what happened ───────────────────────────────────────────────────────────────────────
+{
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc"), stub = join(s.xdg, "cotal", "completion.bash");
+  s.run(["completion", "install", "bash"]);
+  const again = s.run(["completion", "install", "bash", "--plain"]);
+  check("a repeated install says nothing needed changing, not that material was changed", again.status === 0 && /Nothing needed changing/.test(again.stdout) && !/material was changed/.test(again.stdout), shown(again));
+  writeFileSync(rc, readFileSync(rc, "utf8") + `source '${stub}'\n`);
+  const blocked = s.run(["completion", "uninstall", "bash"]);
+  check("uninstall refuses a hand-added line that sources the stub, naming the file, the line and what to do",
+    blocked.status === 2 && blocked.stderr.includes(`${rc} still names this stub outside the cotal block, in "source '${stub}'"`) && blocked.stderr.includes(`remove that line from ${rc} yourself`) && existsSync(stub), shown(blocked));
 }
 
 // ── A startup file install created goes with the integration ───────────────────────────────────────

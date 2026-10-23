@@ -263,7 +263,10 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     // A startup file its owner made read-only is never replaced. Asked once its next content is known.
     const readOnly = () => paths.rc !== undefined && nextStartup !== current && startup !== undefined && (startup.mode & 0o200) === 0;
     if (operation === "uninstall") {
-      if (paths.rc && nextStartup.includes(paths.stub)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unowned startup reference still names this stub; removing the file would break custom wiring", { remedy: "review and remove that custom reference manually before uninstalling" });
+      if (paths.rc && nextStartup.includes(paths.stub)) {
+        const line = nextStartup.split("\n").find((text) => text.includes(paths.stub))!.trim();
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line)}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
+      }
       if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run cotal completion uninstall ${shell} again` });
       if (paths.rc && nextStartup !== current) {
         // A startup file install created, with nothing else in it now, goes rather than staying empty.
