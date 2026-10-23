@@ -4713,6 +4713,11 @@ A `--token` or `--creds` goes to `--server`, or else to the broker the space is 
 keeping that registration's TLS requirement. A space not registered here is refused before
 anything is dialed. The default address is never assumed for a credential.
 
+A `--creds` join binds the inbox provisioned for its lifecycle, so the space's owner mints the
+credential with `cotal auth mint <name> --provision` and hands over the lifecycle UID that mint
+reports. A credential minted without `--provision` has no inbox there, and `join` refuses, naming
+that lifecycle and the mint that makes one.
+
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
 and DM resources must already be provisioned by the space operator. It never mints static

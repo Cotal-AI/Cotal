@@ -29,10 +29,21 @@ import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 // sentence instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
 // BEFORE ep.start) and ep.start itself. Known TLS negotiation refusal is rendered here too.
 // Unexpected failures still propagate unchanged.
-function renderJoinAuthError(e: unknown, space: string): boolean {
+function renderJoinAuthError(e: unknown, space: string, credsLifecycle?: string): boolean {
   const msg = (e as Error)?.message ?? String(e);
   if (msg === "server does not support 'tls'") {
     console.error(c.red(`TLS is required to join ${space}, but this server does not support TLS. Ask the mesh operator for its TLS-enabled broker address.`));
+    return true;
+  }
+  // A --creds join binds the inbox its lifecycle was provisioned with. A credential minted without
+  // --provision has none, and neither `cotal up` nor another --creds can make one from here.
+  if (credsLifecycle !== undefined && /consumer not found|no responders|not provisioned/i.test(msg)) {
+    console.error(
+      c.red(`${space} has no inbox provisioned for this credential's lifecycle ${credsLifecycle}, so it cannot join with it. `) +
+        c.red(`Ask the space's owner to mint the credential with `) +
+        c.bold("cotal auth mint <name> --provision") +
+        c.red(`, then join with the lifecycle UID that mint reports.`),
+    );
     return true;
   }
   if (/consumer not found|no responders|not provisioned/i.test(msg)) {
@@ -344,7 +355,7 @@ export async function join(args: ParsedArgs): Promise<void> {
   } catch (e) {
     // A bare `cotal join` binds a durable DM inbox nobody pre-created on an unprovisioned space;
     // surface that (and an auth reject) as ONE human sentence, not a raw NATS stack.
-    if (!renderJoinAuthError(e, space)) throw e;
+    if (!renderJoinAuthError(e, space, values.creds ? lifecycleUid : undefined)) throw e;
     process.exit(1);
   }
 
