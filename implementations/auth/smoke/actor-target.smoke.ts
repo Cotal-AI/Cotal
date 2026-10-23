@@ -7,8 +7,9 @@
  * listing no rows. On a registered static or open space, list, grant and revoke refuse UNSUPPORTED
  * under both spellings and say that actor grants need a user-auth space; nothing is written. A
  * user-auth space lists its row under both spellings, and bare `cotal auth` fills its Next lines
- * with the named or resolved space. Broker-free; the mesh registry and the prepared spaces are
- * private to this run.
+ * with the named or resolved space. `auth retire` refuses UNSUPPORTED there too, and its help and
+ * refusal name the lever that works, rotating the space identity. Broker-free; the mesh registry and
+ * the prepared spaces are private to this run.
  *
  * Run: pnpm smoke:actor-target
  */
@@ -16,7 +17,7 @@ import { strict as nodeAssert } from "node:assert";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
+import { createSpaceAuth, mintLifecycleUid, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { authDir, exitCode, findCotalRoot, hasUserAuthState, isCommandFailure, recordMesh, recordPreparedSpace, saveSpaceAuth, userAuthStateDir, workspaceSecretStore, type CommandFailure } from "@cotal-ai/workspace";
 import { deriveOwnerForIdpSubject, ensureOwnerSecret, ensurePinnedIdp, grantActor } from "../src/index.js";
@@ -152,6 +153,15 @@ try {
     const resolved = flat((await run(authCommand, root, { plain: true }, [])).out);
     assert.ok(resolved.includes(`cotal auth grants --space ${space}`), `bare auth in a space's root fills its Next lines with that space: ${resolved}`);
     assert.doesNotMatch(resolved, /<space>/, "bare auth prints no unfilled placeholder");
+    // auth retire never sends a request from this CLI. Its help and refusal say so, and both name
+    // the lever that works: rotating the space identity, which stops every credential it issued.
+    const retire = await run(authCommand, root, { space }, ["retire", mintLifecycleUid()]);
+    assert.equal(retire.failure?.code, "UNSUPPORTED", `auth retire refuses: ${retire.failure?.message ?? retire.out}`);
+    assert.equal(exitCode(retire.failure!.outcome, retire.failure!.code), 2, "auth retire exits 2");
+    assert.match(retire.failure?.message ?? "", /^this CLI cannot retire a lifecycle or revoke one minted credential: .*no request was sent$/, "auth retire says what it cannot do");
+    assert.ok(retire.failure?.remedy?.includes(`cotal reset space ${space}`) && retire.failure.remedy.includes("stops every credential it issued"), `auth retire names identity rotation as its next step: ${retire.failure?.remedy}`);
+    const retireHelp = authCommand.subcommands?.find((sub) => sub.name === "retire")?.summary ?? "";
+    assert.ok(retireHelp.startsWith("not available from this CLI") && retireHelp.includes("reset space"), `help says retire is not available here and names the lever: ${retireHelp}`);
   }
 
   // 5. A registered open space refuses a grant the same way, naming it open.
