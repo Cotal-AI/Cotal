@@ -194,6 +194,28 @@ setCurrent("keep");
   const unserved = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
   check("an open name the broker does not serve is TARGET_NOT_FOUND, exit 2, naming the spaces it serves",
     refused(unserved, 2, "TARGET_NOT_FOUND") && unserved.env?.error?.message === `the broker at ${LIVE} serves no space named "open"; it serves ${SERVED.map((space) => `"${space}"`).join(", ")}` && /--force/.test(unserved.env?.error?.remedy ?? ""), shown(unserved));
+  // The guided form offers the same served names, so the operator picks one instead of typing it blind.
+  {
+    const { addWizard } = await import("../src/commands/meshes-wizard.js");
+    const asked: { message: string; options?: unknown[] }[] = [];
+    const answers: unknown[] = ["open3", false];
+    const next = (message: string) => {
+      if (!answers.length) throw new Error(`the wizard asked more than the script answers: "${message}"`);
+      return answers.shift();
+    };
+    const io = {
+      intro() {}, outro() {}, note() {}, cancel() {},
+      log: { info() {}, warn() {}, error() {} },
+      spinner: () => ({ start() {}, stop() {} }),
+      async text(o: { message: string }) { asked.push({ message: o.message }); return next(o.message); },
+      async select(o: { message: string; options: { value: unknown }[] }) { asked.push({ message: o.message, options: o.options.map((x) => x.value) }); return next(o.message); },
+      async confirm(o: { message: string }) { asked.push({ message: o.message }); return next(o.message); },
+    };
+    const declined = await addWizard({ server: LIVE, root: projectRoot("wizard-open") }, home, io as never);
+    const which = asked.find((a) => a.message === "Which space on that broker?");
+    check("the guided form offers the spaces an open broker serves", declined === false && SERVED.every((space) => which?.options?.includes(space)), asked);
+    check("…and a picked name goes on to the final question, where declining writes nothing", asked.some((a) => a.message === "Register this mesh?") && findMesh("open3") === undefined, asked);
+  }
   const wantsAuth = await json(["space", "add", "o2", "--server", AUTH_LIVE, "--mode", "open", "--root", root]);
   check("an open claim on a broker that requires auth is CONFLICT", refused(wantsAuth, 2, "CONFLICT"), shown(wantsAuth));
   check("its refusal and the copy cost it names are one line", (wantsAuth.env?.error?.message ?? "").includes("signing seed") && !(wantsAuth.env?.error?.message ?? "").includes("\n"), wantsAuth.env?.error?.message);

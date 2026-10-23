@@ -2072,7 +2072,8 @@ the registry still refuses the record by name.
 
 Run on a terminal with the space or `--server` missing, **`meshes add` is guided**: it asks for the
 one thing that cannot be derived (the broker URL), probes it, and tells you what answered - open or
-requiring credentials. It then offers the spaces your `--root` already holds credentials for, states
+requiring credentials. It then offers the spaces your `--root` already holds credentials for, and
+on an open broker the spaces that broker serves, states
 the mode as a fact about that broker rather than asking, and shows the exact record before writing
 anything. A broker that does not answer, or a space name already registered, becomes a choice rather
 than an error. For a name added by hand, the first choice is another name, and replacing the record
