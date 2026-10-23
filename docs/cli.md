@@ -1745,8 +1745,9 @@ it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
-refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and the root to run
-`cotal up` in. That is the state after an `up` that failed to start or a `space forget`, and the
+refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and
+`cotal space create <space> --root <root>`, which prepares the journal's space there again so that
+`cotal up` starts it. That is the state after an `up` that failed to start or a `space forget`, and the
 command never dials the default address instead. `status` there reads the machine, selects no space
 and probes no broker.
 
