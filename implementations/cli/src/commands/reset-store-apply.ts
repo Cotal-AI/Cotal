@@ -84,8 +84,10 @@ export function selectResetTarget(space: string, command: ResetCommand): ResetTa
   let recorded: ReturnType<typeof readStackJournal>;
   try { recorded = root ? readStackJournal(root) : undefined; }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the prepared root's stack journal could not be read; no reset target was inferred", { target: { space, root } }); }
+  // A legacy root has no stack journal, and its down removes the registration a reset selects, so it
+  // is cleared with clean from that root instead.
   if (!root || !recorded || recorded.journal.space !== space)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} needs a space this machine started; this one has no local registration and no stopped controller stack`, { target: { space }, remedy: `see the space with cotal space show ${space}` });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} needs a space this machine started; this one has no local registration and no stopped controller stack`, { target: { space }, remedy: `if it ran from a legacy root, whose down removes the registration a reset selects, run cotal clean ${command === "reset space" ? "all" : "store"} --force from that root, adding --store-dir <dir> if it used a custom store; cotal space lists the spaces this machine still registers` });
   const journal = recorded.journal, operation = journal.operation;
   if (stackNeverStarted(journal))
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} found nothing to reset: no member of this root's controller stack ever started, so no broker wrote a store; nothing was removed`, { target: { space, root }, remedy: `start it with cotal up from ${root}` });

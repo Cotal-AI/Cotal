@@ -256,6 +256,12 @@ try {
     check("down of that never-started stack stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
     const reset = cli(second, "reset", "space", other, "--dry-run", "--json");
     check("reset space finds nothing to reset there and names cotal up", reset.status === 2 && reset.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(reset.env.error.remedy?.includes("cotal up")), shown(reset));
+    // A space with neither a registration nor a stopped stack, as a legacy root's down leaves one, is
+    // cleared with clean from its root, and each reset names its own clean route.
+    for (const [kind, clean] of [["space", "cotal clean all --force"], ["store", "cotal clean store --force"]] as const) {
+      const unregistered = cli(second, "reset", kind, "neverregistered", "--dry-run", "--json");
+      check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run ${clean} from that root`)), shown(unregistered));
+    }
     const movedPort = await freePort();
     const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
     track(other);

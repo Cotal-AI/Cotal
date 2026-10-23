@@ -1396,7 +1396,8 @@ reset then accepts it. Only a member that no completed `down` recorded that way 
 then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
 a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
-`reset space`, with `--store-dir <dir>` when the registration records a custom store.
+`reset space`, with `--store-dir <dir>` when the registration records a custom store. A reset of
+such a space refuses `TARGET_NOT_FOUND` and names that step.
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and
