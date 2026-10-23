@@ -2977,6 +2977,8 @@ preferences). A successful editor exit and valid definition are required before 
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
 CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
+Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
+with `PERMISSION_DENIED`, and leave it and its files as they were.
 `--json` and `--no-input` refuse editing before an editor opens.
 
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
