@@ -1874,6 +1874,12 @@ does not claim that processes stopped, or remove registrations, credentials or l
 files. Open-mode impact and receipt label that any broker client can delete the space.
 `space forget` is not a substitute for live deletion.
 
+The receipt's Next names the route back. On a space this machine started, the broker keeps running
+without the streams, and only a broker start creates them. `cotal down --yes` in its root, or
+`cotal down` on a legacy root, then `cotal up` starts it again with empty streams. Running
+`space forget` after that stop drops it instead. Until then a bare `cotal up` there refuses
+`TARGET_NOT_FOUND`, exit 2, saying the broker no longer holds the streams and naming that restart.
+
 `use <space>` selects the space commands target when none is named. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
