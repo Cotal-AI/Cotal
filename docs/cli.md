@@ -1556,8 +1556,14 @@ hash snapshot or checkpoint contents. `backup verify` additionally reads each na
 and compares its size and SHA-256. Both are read-only: no staging directory, broker, restore or
 secret upload. Reports omit snapshot bytes, configuration bodies and trust material. JSON retains
 the declared metadata; terminal file lists are bounded and state their omissions. When a declared
-file is missing, an undeclared file is present, or a file does not match its declared size and
-SHA-256, the refusal names that file and the fault, and its JSON target carries `file` and `fault`.
+file is missing, an undeclared file is present, a declared file is not a regular file, such as a
+symbolic link or a FIFO, or a file does not match its declared size and SHA-256, the refusal names
+that file and the fault, and its JSON target carries `file` and `fault`. A declared name that is
+not a plain file name in the folder, such as one with `../` or an absolute path, has the fault
+`invalid-name` and is not printed. A `manifest.json` that is not a regular file, is larger than
+1 MiB or is not a valid manifest has the fault `manifest-not-regular`, `manifest-too-large` or
+`manifest-invalid`. `backup restore` and `up --restore` refuse each of these `SCHEMA_INVALID` with
+the same file and fault, before they stage or change anything.
 A directory with no `manifest.json` is refused as an incomplete artifact, the kind an interrupted
 `backup create` leaves, with the fault `manifest-missing`. A full artifact of an authenticated space
 restores only into a root that still holds the trust state it was taken under, so it cannot move to

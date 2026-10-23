@@ -81,7 +81,7 @@ try {
   writeFileSync(join(destination, "stream-a.snap"), "changed");
   assert.throws(() => stageArtifact(destination, stagingParent), (error: unknown) => error instanceof ArtifactFileFault && error.file === "stream-a.snap" && error.fault === "mismatch");
   // `backup verify` names the failing file and its fault, so an operator knows which copy is damaged.
-  const verifyFault = (file: string, fault: string, text: RegExp) => (error: unknown) => {
+  const verifyFault = (file: string | null, fault: string, text: RegExp) => (error: unknown) => {
     const target = isCommandFailure(error) ? error.target as { file?: unknown; fault?: unknown } : undefined;
     return isCommandFailure(error) && error.code === "SCHEMA_INVALID" && text.test(error.message) && target?.file === file && target.fault === fault;
   };
@@ -104,14 +104,36 @@ try {
   const traversing = JSON.parse(originalManifest) as { checkpoints: string };
   traversing.checkpoints = "../checkpoints.json";
   writeFileSync(join(destination, "manifest.json"), `${JSON.stringify(traversing)}\n`);
-  assert.throws(() => stageArtifact(destination, stagingParent), /invalid backup artifact file name/);
+  // Verify and staging name the same fault for each artifact that cannot be restored, and never
+  // print a declared name that is not a plain file name.
+  const verify = () => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] });
+  const stageFault = (file: string | null, fault: string) => (error: unknown) => error instanceof ArtifactFileFault && error.file === file && error.fault === fault;
+  assert.throws(() => stageArtifact(destination, stagingParent), stageFault(null, "invalid-name"));
+  assert.throws(verify, verifyFault(null, "invalid-name", /^backup manifest declares a file name that is not a plain name in the artifact folder.*; the name was not printed/), "verify names a traversing file name as its fault");
+  writeFileSync(join(destination, "manifest.json"), `${"[".repeat(100_000)}${"]".repeat(100_000)}`);
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /^backup artifact manifest\.json is not a valid cotal-space-backup\/v1 manifest: it is not a JSON object/), "verify names a deeply nested manifest as invalid");
+  writeFileSync(join(destination, "manifest.json"), " ".repeat(1024 * 1024 + 1));
+  assert.throws(verify, verifyFault("manifest.json", "manifest-too-large", /larger than its 1 MiB limit/), "verify names an oversized manifest and its limit");
   writeFileSync(join(destination, "manifest.json"), originalManifest);
   if (process.platform !== "win32") {
+    const outsideManifest = join(root, "outside-manifest.json");
+    writeFileSync(outsideManifest, originalManifest);
+    rmSync(join(destination, "manifest.json"));
+    symlinkSync(outsideManifest, join(destination, "manifest.json"));
+    assert.throws(verify, verifyFault("manifest.json", "manifest-not-regular", /manifest\.json is not a regular file/), "verify names a linked manifest");
+    assert.throws(() => stageArtifact(destination, stagingParent), stageFault("manifest.json", "manifest-not-regular"));
+    rmSync(join(destination, "manifest.json"));
+    writeFileSync(join(destination, "manifest.json"), originalManifest);
     const external = join(root, "external.snap");
     writeFileSync(external, Buffer.from([1, 2, 3]));
     rmSync(join(destination, "stream-a.snap"));
     symlinkSync(external, join(destination, "stream-a.snap"));
-    assert.throws(() => stageArtifact(destination, stagingParent), /not a real file/);
+    assert.throws(() => stageArtifact(destination, stagingParent), stageFault("stream-a.snap", "not-regular"));
+    assert.throws(verify, verifyFault("stream-a.snap", "not-regular", /^backup artifact file stream-a\.snap is not a regular file/), "verify names a linked snapshot");
+    // A FIFO is refused before it is opened, so verify does not wait for a writer.
+    rmSync(join(destination, "stream-a.snap"));
+    execFileSync("mkfifo", [join(destination, "stream-a.snap")]);
+    assert.throws(verify, verifyFault("stream-a.snap", "not-regular", /stream-a\.snap is not a regular file/), "verify names a FIFO snapshot");
     rmSync(join(destination, "stream-a.snap"));
     writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
 
