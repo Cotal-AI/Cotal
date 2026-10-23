@@ -21,6 +21,7 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isReachable,
+  dialerFor,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
   createSpaceAuth,
@@ -63,7 +64,6 @@ import {
   type FlagSpec,
   type CompletionResult,
 } from "@cotal-ai/core";
-import { connect } from "@nats-io/transport-node";
 import { JetStreamApiCodes, jetstreamManager, StorageType } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -1887,7 +1887,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   });
 
-  await awaitSpawnedListener({ child, server, space, creds: setup?.creds, log: "the terminal output above", boundListener });
+  await awaitSpawnedListener({ child, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: "the terminal output above", boundListener });
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
@@ -2202,7 +2202,7 @@ async function proveBoundListener(
     throw new Error(`${label} reached a foreign NATS server name/nonce`);
 
   const auth = await resumeControlAuth(attempt.root, attempt.mode);
-  const nc = await connect({
+  const nc = await dialerFor(attempt.server)({
     servers: attempt.server,
     ...standaloneConnectOpts({ ...auth, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
@@ -3331,6 +3331,8 @@ async function awaitSpawnedListener(l: {
   server: string;
   space: string;
   creds?: string;
+  /** The listener serves TLS, so a certificate this client refuses ends the wait. */
+  tls: boolean;
   /** Where the listener's output goes, named when it never answers. */
   log: string;
   boundListener?: DetachOpts["boundListener"];
@@ -3338,7 +3340,7 @@ async function awaitSpawnedListener(l: {
   const { child, server, space } = l;
   let facts: BrokerFacts;
   try {
-    if (!(await waitReady(server, l.creds))) throw new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
+    if (!(await waitReady(server, l.creds, l.tls))) throw new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
     facts = await brokerVersion(server, space, l.creds);
   } catch (e) {
     await stopFailedListener(child);
@@ -3596,7 +3598,7 @@ export async function startMeshDetached(
   let tailing = Boolean(opts.onLine);
   if (opts.onLine) tailLines(logPath, startOffset, opts.onLine, () => !tailing);
   try {
-    await awaitSpawnedListener({ child, server, space, creds: setup?.creds, log: logPath, boundListener: opts.boundListener });
+    await awaitSpawnedListener({ child, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   } finally {
     tailing = false;
   }
@@ -3952,12 +3954,41 @@ function tailLines(path: string, from: number, onLine: (l: string) => void, stop
   setTimeout(tick, 150);
 }
 
-async function waitReady(server: string, creds?: string): Promise<boolean> {
+async function waitReady(server: string, creds?: string, tls = false): Promise<boolean> {
   for (let i = 0; i < 50; i++) {
-    if (await isReachable(server, creds ? { creds } : undefined)) return true;
+    // An open listener answers the plaintext probe before any handshake, so TLS is checked either way.
+    const reachable = await isReachable(server, creds ? { creds } : undefined);
+    if (tls) await refuseUntrustedListener(server, creds);
+    if (reachable) return true;
     await new Promise((r) => setTimeout(r, 200));
   }
   return false;
+}
+
+/** Node's codes for a certificate chain this client does not trust. */
+const UNTRUSTED_CERTIFICATE = new Set(["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_UNTRUSTED"]);
+
+/** Throw when the TLS listener at `server` answers and this client refuses its certificate in the
+ *  handshake, which waiting does not change. It dials as the setup that follows does. */
+async function refuseUntrustedListener(server: string, creds?: string): Promise<void> {
+  let code: unknown, reason = "";
+  try {
+    const nc = await dialerFor(server)({ servers: server, timeout: 1_000, reconnect: false, maxReconnectAttempts: 0, ...standaloneConnectOpts({ creds, tls: false }) });
+    await nc.close();
+    return;
+  } catch (e) {
+    code = (e as NodeJS.ErrnoException)?.code;
+    reason = e instanceof Error ? e.message.split(";")[0]! : String(e);
+  }
+  const untrusted = typeof code === "string" && UNTRUSTED_CERTIFICATE.has(code);
+  if (!untrusted && code !== "ERR_TLS_CERT_ALTNAME_INVALID") return;
+  const { hostname, port } = new URL(server);
+  throw new CommandFailure("failed", "OPERATION_FAILED", `nats-server answered at ${server}, but this client refused its TLS certificate in the handshake (${reason}); up stopped it and recorded nothing`, {
+    native: { code: String(code) },
+    remedy: untrusted
+      ? "trust the certificate's CA, or a self-signed certificate itself, by setting NODE_EXTRA_CA_CERTS to that PEM file for cotal up and every cotal command of this space, then run cotal up again"
+      : /^tls:/i.test(server) ? `serve a certificate that names ${hostname}, then run cotal up again` : `pass --server tls://${hostname}:${port}, so every dial checks the certificate against ${hostname}`,
+  });
 }
 
 // SPEC §13.12: reads the connected broker's version, and refuses loud below the 2.12 floor
@@ -3969,7 +4000,7 @@ type BrokerFacts = { version: string; presenceFileBacked: boolean };
  *  it in memory (#1356), so only a bucket an older cotal created is file-backed; an absent one
  *  will be created in memory by `setupSpaceStreams`. */
 async function brokerVersion(server: string, space: string, creds?: string): Promise<BrokerFacts> {
-  const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
+  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
   try {
     requireBrokerFloor(nc);
     const version = nc.info?.version ?? "";
@@ -4159,7 +4190,7 @@ async function postStart(
  *  it, stream and all (#1356 made presence memory-backed). Recreate those, and only those, from the
  *  same `ttlBuckets` list `setupSpaceStreams` creates them from, before any daemon opens them. */
 async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }): Promise<void> {
-  const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
+  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
   try {
     requireBrokerFloor(nc);
     const kvm = new Kvm(nc);
@@ -4189,7 +4220,7 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
     if (!auth) throw new Error(`space "${opts.space}" has no trust material under ${authDir(opts.root)}; cannot read its streams on the running broker`);
     setup = { creds: await mintCreds(auth, newIdentity(), "provisioner") };
   } else if (opts.mode !== "open") throw new Error("a user-auth stack's streams are not recreated on a running broker");
-  const nc = await connect({ servers: opts.server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
+  const nc = await dialerFor(opts.server)({ servers: opts.server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
   let held = false;
   try {
     requireBrokerFloor(nc);

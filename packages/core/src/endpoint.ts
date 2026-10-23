@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { createConnection } from "node:net";
+import { createConnection, isIP } from "node:net";
 import {
   connect,
   credsAuthenticator,
@@ -7837,13 +7837,31 @@ export function defaultProbeTimeoutMs(servers: string): number {
  *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
  *  transport options: the URL scheme already decides TLS there, and the w3c transport refuses a
  *  `tls` block outright ("'tls' is not configurable"), so it is stripped here — at the one point
- *  that knows which transport is dialing — rather than at every caller composing auth options. */
+ *  that knows which transport is dialing — rather than at every caller composing auth options.
+ *  A TCP dial that requires TLS to one IP address names that address as the host its certificate
+ *  must cover (see {@link withDialedTlsHost}). */
 export function dialerFor(servers: string): typeof connect {
-  if (!wsServers(servers)) return connect;
+  if (!wsServers(servers)) return ((opts?: Parameters<typeof connect>[0]) => connect(withDialedTlsHost(servers, opts))) as typeof connect;
   return ((opts: Parameters<typeof connect>[0]) => {
     const { tls: _tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
     return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
   }) as typeof connect;
+}
+
+/** `opts` for a dial to `servers`, with the IP address it names as the host a TLS certificate must
+ *  cover when the dial requires TLS: a `tls` block, or a `tls://` address. The TCP transport upgrades
+ *  to TLS with no server name for an IP, and Node then checks the certificate against "localhost":
+ *  a certificate for the dialed address alone is refused, and one naming localhost passes for any
+ *  address. A dial that does not require TLS keeps its options, because a `tls` block refuses a
+ *  plaintext broker, and so does a list of several servers, whose one host the options cannot name. */
+function withDialedTlsHost(servers: string, opts: Parameters<typeof connect>[0]): Parameters<typeof connect>[0] {
+  const urls = servers.split(",").map((url) => url.trim()).filter(Boolean);
+  const tls = opts?.tls;
+  if (urls.length !== 1 || tls === null || tls === undefined && !/^tls:\/\//i.test(urls[0]!)) return opts;
+  let host: string;
+  try { ({ host } = hostPort(urls[0]!)); } catch { return opts; }
+  // Node checks an upgraded socket's certificate against `host` when no server name is set.
+  return isIP(host) ? { ...opts, tls: { host, ...tls } as NonNullable<typeof tls> } : opts;
 }
 
 /** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
