@@ -2,7 +2,7 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -57,6 +57,22 @@ try {
   const staged = stageArtifact(destination, stagingParent);
   assert.deepEqual(readFileSync(join(staged.directory, "stream-a.snap")), Buffer.from([1, 2, 3]));
   staged.cleanup();
+  // Hashes cannot show a consistent rewrite, so verify and staging refuse an artifact another local
+  // account could write, name each such path, and leave no staging directory behind.
+  if (process.platform !== "win32") {
+    const directory = realpathSync(destination);
+    const manifestPath = join(directory, "manifest.json");
+    chmodSync(directory, 0o702);
+    chmodSync(manifestPath, 0o602);
+    const exposed = (error: unknown) => isCommandFailure(error) && error.code === "PERMISSION_DENIED"
+      && error.message === `the backup artifact is not protected against other local writers: ${directory} and ${manifestPath} are writable by every local account`
+      && error.remedy === `chmod o-w ${directory} ${manifestPath}`;
+    assert.throws(() => backupRead({ positionals: ["verify", directory], values: {}, raw: [] }), exposed, "verify refuses an artifact others can write");
+    assert.throws(() => stageArtifact(directory, stagingParent), exposed, "staging refuses an artifact others can write");
+    assert.deepEqual(readdirSync(stagingParent), [], "a refused staging leaves no staging directory");
+    chmodSync(directory, 0o700);
+    chmodSync(manifestPath, 0o600);
+  }
 
   writeFileSync(join(destination, "extra"), "x");
   assert.throws(() => stageArtifact(destination, stagingParent), (error: unknown) => error instanceof ArtifactFileFault && error.file === "extra" && error.fault === "undeclared");

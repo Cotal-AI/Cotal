@@ -25,7 +25,7 @@ import {
   type SpaceBackupSelection,
   realDirNoSymlink,
 } from "@cotal-ai/core";
-import { readLocalRecordSource, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
+import { protectedLocalEntries, readLocalRecordSource, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
 
 export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v1" as const;
@@ -302,6 +302,13 @@ function validateArtifactInventory(artifact: string, manifest: BackupManifest): 
     throw new Error("backup stream records do not match snapshot file metadata");
 }
 
+/** The hashes detect corruption, not a consistent rewrite, so an artifact that verify vouches for or
+ *  a restore reads must be one no other local account can write: its directory, each file in it and
+ *  each directory above it follow the protected-path rule. */
+function assertArtifactProtected(artifact: string, manifest: BackupManifest): void {
+  protectedLocalEntries(artifact, ["manifest.json", ...manifest.files.map((file) => file.path)], "the backup artifact");
+}
+
 /** Inspect manifest bytes, or hash every named file, without staging, starting a broker or restoring. */
 export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
   const artifact = resolve(artifactPath);
@@ -320,6 +327,7 @@ export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
   const current = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
   if (before.dev !== after.dev || before.ino !== after.ino || !current?.equals(bytes)) throw new Error("backup artifact changed during inspection");
   validateArtifactInventory(artifact, manifest);
+  if (verify) assertArtifactProtected(artifact, manifest);
   return {
     kind: verify ? "backup-integrity" as const : "backup-inspection" as const,
     directory: artifact, format: manifest.format, createdAt: manifest.createdAt,
@@ -359,6 +367,7 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
   const identity = { dev: identityStat.dev, ino: identityStat.ino };
   try {
     for (const file of manifest.files) copyPinnedFile(join(artifact, file.path), join(directory, file.path), file);
+    assertArtifactProtected(artifact, manifest);
     writeFileSync(join(directory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     fsyncDirectory(directory);
   } catch (error) {

@@ -1532,7 +1532,13 @@ with their canonical configs before exposing the normal listener, so active endp
 lifecycles, and sessions do not cross a backup. Artifacts are exclusively created `0700`;
 snapshot/checkpoint files and
 the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
-directory is trusted operator input: hashes detect corruption, not malicious rewriting.
+directory is trusted operator input: hashes detect corruption, not malicious rewriting. So
+`backup verify`, `backup restore` and `up --restore` apply the
+[`space create`](#selecting-a-space) rule for other local writers to the artifact directory, each
+file in it and each directory above it. An artifact another account could write refuses
+`PERMISSION_DENIED`, exit 2, before a restore stages or changes anything, and the refusal names each
+such path and one remedy such as `chmod g-w <paths>`. `backup inspect` does not check this, and a
+copy that other accounts can only read is accepted.
 
 Restore validates and stages the exact allowlisted artifact bytes before moving or creating a store.
 It requires the same space and existing trust state. The whole pre-commit window holds a journaled
