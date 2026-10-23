@@ -1863,6 +1863,12 @@ in `error.remedy`, apart from `error.message`.
 the `--space` is registered at, `main` when no space is named, and keeps that registration's TLS
 requirement. A space not registered here is refused with `TARGET_NOT_FOUND`, exit 2, before
 anything is dialed. The default address is never assumed for a credential.
+The file is read and checked with the NATS client's own parser before anything is dialed, and the
+refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A directory, an empty file and
+a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
+no seed block, an invalid seed, or Windows (CRLF) line endings. A file that other accounts can read
+is still used, with a warning on stderr that gives the `chmod 600` command. `join --creds` reads its
+file the same way.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before

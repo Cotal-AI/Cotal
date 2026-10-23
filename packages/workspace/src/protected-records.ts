@@ -336,6 +336,16 @@ export function protectedCredentialReference(path: string): void {
   }
 }
 
+/** Why a credential file is not private to this user, and the command that makes it private, or
+ *  undefined when it is. The rule is {@link protectedCredentialReference}'s: an owned file with no
+ *  group or other access. The Windows model has no POSIX owner or mode, so it reports nothing. */
+export function credentialFileExposure(path: string, stat: Pick<Stats, "uid" | "mode">): { reason: string; remedy: string } | undefined {
+  if (localRecordAccess() !== "posix") return undefined;
+  if (stat.uid !== process.getuid!()) return { reason: "is owned by another account", remedy: `copy it to a file you own and run chmod 600 on the copy` };
+  if ((stat.mode & 0o077) !== 0) return { reason: `is not private to you (mode ${(stat.mode & 0o777).toString(8).padStart(4, "0")})`, remedy: `chmod 600 ${shellPath(path)}` };
+  return undefined;
+}
+
 /** Explicit exports stay outside managed state; canonical credentials use their declared store kind. */
 export function assertExternalCredentialExport(path: string, roots: readonly string[]): void {
   const output = resolve(path);

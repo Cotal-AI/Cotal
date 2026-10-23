@@ -22,7 +22,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mintLifecycleUid } from "@cotal-ai/core";
+import { mintLifecycleUid, newIdentity } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -52,7 +52,9 @@ const credsPath = pathJoin(dir, "x.creds");
 const cotalHome = pathJoin(dir, "cotal-home");
 process.env.COTAL_HOME = cotalHome; // sandbox the registry before the module that reads it loads
 const { recordMesh } = await import("@cotal-ai/workspace");
-writeFileSync(credsPath, "-----BEGIN NATS USER JWT-----\nplaceholder\n------END NATS USER JWT------\n");
+// The client parses a file before it dials, so the stand-in has both blocks and a real seed. The
+// broker never sees it: every probe stops at a gate or at an address nothing listens on.
+writeFileSync(credsPath, `-----BEGIN NATS USER JWT-----\nplaceholder\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${newIdentity().seed}\n------END USER NKEY SEED------\n`, { mode: 0o600 });
 
 try {
   {
