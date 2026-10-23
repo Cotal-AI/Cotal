@@ -707,10 +707,10 @@ export class CotalEndpoint extends EventEmitter {
    *  self-heals on recovery instead of leaving the channel silently live-only. Surfaced to the connector
    *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
   private readonly pendingBootJoins = new Set<string>();
-  /** Chat-join subjects currently being broker-confirmed. An out-of-ACL subscribe among these trips an
-   *  EXPECTED async permission violation that joinChannel turns into a clean throw, so watchStatus
-   *  suppresses it rather than surfacing a spurious connection error. */
-  private readonly confirmingChatSubs = new Set<string>();
+  /** The refusals a channel's live subscription callback received. nats.js hands a subscription
+   *  refusal to the refused subscription's callback and then dispatches that same instance on the
+   *  connection status, so the callback owns it (see {@link subscribeChat}) and watchStatus skips it. */
+  private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
   /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
    *  running membership scans (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
@@ -1783,7 +1783,6 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.chatSubs.clear();
     this.chatSubDenied.clear();
-    this.confirmingChatSubs.clear();
     this.ownWatchDeletePrefixes.clear();
     this.roster.clear();
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
@@ -3101,12 +3100,11 @@ export class CotalEndpoint extends EventEmitter {
       // The confirm boundary (flush) failed — the connection drained/closed mid-join, so we have NO
       // confirmation the subscribe was accepted. Fail closed: undo the half-open join rather than
       // returning as if it were confirmed (a reconnect re-confirms from this.channels, which we never
-      // pushed to). unsubscribeChat clears chatSubs + confirmingChatSubs.
+      // pushed to). unsubscribeChat clears chatSubs.
       this.unsubscribeChat(channel);
       this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     if (this.chatSubDenied.has(channel)) {
       this.unsubscribeChat(channel);
       this.joinSeq.delete(channel);
@@ -4245,6 +4243,7 @@ export class CotalEndpoint extends EventEmitter {
    * failing call — so without this an over-tight ACL silently drops the agent's
    * traffic and it just looks "absent". A denied request is the exception: nats.js also
    * rejects that request with the denial, so its caller owns it (see {@link trackRequestDenials}).
+   * So is a refused channel subscription, whose callback owns it (see {@link subscribeChat}).
    * We annotate permission denials explicitly so a denial is never mistaken for absence
    * (which already has a benign cause: MCP reconnect).
    */
@@ -4274,11 +4273,7 @@ export class CotalEndpoint extends EventEmitter {
           continue;
         }
         if (s.type !== "error") continue;
-        // Suppress the EXPECTED permission violation from a manager-free join we're confirming: an
-        // out-of-ACL `nc.subscribe` is refused async on its chat subject, which joinChannel catches
-        // and turns into a clean throw — it is not a connection error to surface.
-        if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
-          continue;
+        if (s.error instanceof PermissionViolationError && this.chatSubRefusals.has(s.error)) continue;
         if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
         // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
         // history reads, whose refusal can arrive after that delete timed out.
@@ -6271,7 +6266,6 @@ export class CotalEndpoint extends EventEmitter {
       const armed = this.firstConnect ? await this.armJoin(this.channels) : undefined;
       for (const ch of this.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      for (const ch of this.channels) this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", ch));
       if (armed) await this.backfillArmed(armed, this.backfillFloor);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
@@ -6438,7 +6432,6 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.nc || this.chatSubs.has(channel)) return;
     this.chatSubDenied.delete(channel);
     const subject = chatSubject(this.space, "*", "*", channel);
-    this.confirmingChatSubs.add(subject);
     const sub = this.nc.subscribe(subject, {
       callback: (err, m) => {
         if (err) {
@@ -6446,12 +6439,11 @@ export class CotalEndpoint extends EventEmitter {
           // leak (the broker refused it). Drop the channel from local joined state even if it was
           // already treated as joined — a LATE refusal beyond the confirm window: conformance #13
           // "drop on late refusal". (During the join's own confirm the channel isn't pushed yet, so
-          // this fires nothing then; joinChannel reads `chatSubDenied` and throws cleanly.)
+          // this fires nothing then; joinChannel reads `chatSubDenied` and throws cleanly.) Either way
+          // the refusal is reported from here, by that throw or the leave below, so watchStatus skips it.
+          if (err instanceof PermissionViolationError) this.chatSubRefusals.add(err);
           this.chatSubDenied.add(channel);
           this.chatSubs.delete(channel);
-          // NOTE: do NOT remove `subject` from confirmingChatSubs here — that set gates watchStatus's
-          // suppression of this expected violation, and is cleared by joinChannel after confirm (or by
-          // unsubscribeChat). Removing it in the callback races the watcher and leaks a spurious error.
           const i = this.channels.indexOf(channel);
           if (i >= 0) {
             this.channels.splice(i, 1);
@@ -6465,7 +6457,7 @@ export class CotalEndpoint extends EventEmitter {
             if (gen !== undefined) void this.closeRefusedMembership(channel, gen);
             this.emit(
               "error",
-              new Error(`left channel "${channel}": its live subscription was refused by the broker`),
+              new Error(`left channel "${channel}": its live subscription was refused by the broker`, { cause: err }),
             );
           }
           return;
@@ -6494,7 +6486,6 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Close a channel's core subscription (manager-free leave). */
   private unsubscribeChat(channel: string): void {
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     const sub = this.chatSubs.get(channel);
     if (sub) {
       try {
