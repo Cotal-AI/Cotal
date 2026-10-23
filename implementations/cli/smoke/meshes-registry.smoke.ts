@@ -40,7 +40,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { createSpaceAuth, isReachable, registry } = await import("@cotal-ai/core");
-const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
+const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -288,6 +288,20 @@ try {
   check("…and the registration is unchanged", findMesh("started-here")?.server === LIVE && findMesh("started-here")?.origin === "up", findMesh("started-here"));
   const besideStarted = await run(["add", "started-here"], { server: DEAD, root });
   check("add without --force refuses it without offering --force", besideStarted.code === 2 && besideStarted.out.includes("it is a space this machine started") && !besideStarted.out.includes("--force"), besideStarted.out);
+  // A service whose root or broker disagrees with the registration is refused, and the refusal says
+  // which one disagrees and where to look. It used to name neither and carry no next step.
+  const targetRefusal = (work: () => unknown): Error | undefined => {
+    try { work(); } catch (e) { return e as Error; }
+    return undefined;
+  };
+  const otherBroker = targetRefusal(() => resolveNativeServiceTarget(root, "started-here", DEAD));
+  check("a service broker that disagrees with the registration is refused CONFLICT, naming both addresses",
+    isCommandFailure(otherBroker) && otherBroker.code === "CONFLICT" && otherBroker.message.includes(`"started-here" is registered at ${LIVE}, not ${DEAD}`), otherBroker?.message);
+  check("…with a next step", isCommandFailure(otherBroker) && (otherBroker.remedy ?? "").includes("cotal space show started-here"), isCommandFailure(otherBroker) ? otherBroker.remedy : otherBroker);
+  const otherRoot = projectRoot("other-service-root");
+  const elsewhere = targetRefusal(() => resolveNativeServiceTarget(otherRoot, "started-here"));
+  check("a service root that disagrees with the registration is refused, naming both folders",
+    isCommandFailure(elsewhere) && elsewhere.code === "CONFLICT" && elsewhere.message.includes(`"started-here" is registered for ${root}, not ${otherRoot}`), elsewhere?.message);
   removeMesh("started-here");
   recordPreparedSpace({ space: "prepared-here", root, ts: new Date(0).toISOString() });
   const overPrepared = await run(["add", "prepared-here"], { server: DEAD, root, force: true });
