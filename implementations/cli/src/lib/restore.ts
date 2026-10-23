@@ -84,7 +84,7 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, missingBackupPath, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
@@ -785,6 +785,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   // With no journal there is no cut to restore into. Refuse before the lock creates the maintenance
   // directory, so a refused restore leaves the folder as it found it and `up` there sees no state.
   if (!readMaintenanceJournal(root)) throw notRestorable(root, undefined);
+  // A path that names nothing is refused here too, saying whether its folder or the artifact is missing.
+  const named = resolve(flags.restore);
+  const missing = missingBackupPath(named);
+  if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing === "folder" ? `there is no folder ${dirname(named)}, so there is no backup artifact ${named}; nothing was restored` : `the folder ${dirname(named)} holds no backup artifact ${basename(named)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; cotal backup verify <dir> checks one before a restore" });
   let lock = acquireStackOperationLock(root);
   let staged: StagedArtifact | undefined;
   let transitioned = false;

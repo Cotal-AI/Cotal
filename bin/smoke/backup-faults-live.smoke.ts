@@ -2,7 +2,8 @@
  *  chunk-handoff timeout. Both halves assert the same contract from opposite ends: a failed attempt
  *  publishes nothing, keeps nothing, and leaves the cut retryable at the SAME destination. A restore
  *  or create interrupted by Ctrl-C inside its claim names its recovery, which works once its
- *  processes are gone, before the claim deadline. */
+ *  processes are gone, before the claim deadline. A create into a missing folder and a restore of a
+ *  missing path refuse TARGET_NOT_FOUND before any lock. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -122,6 +123,26 @@ async function backupStageFaultScenario(): Promise<void> {
     must("preserve cut", run("down", "--preserve-state"));
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
+
+    // A path that names nothing is refused before any lock, saying whether its folder or the
+    // artifact is missing.
+    const nowhere = join(root, "no-such-folder", "artifact");
+    const createMissing = run("backup", "create", nowhere, "--json");
+    assert.equal(createMissing.status, 2, `a create into a missing folder refuses, exit 2\n${createMissing.stdout}${createMissing.stderr}`);
+    const created = JSON.parse(createMissing.stdout) as { error?: { code?: string; message?: string }; target?: { missing?: string } };
+    assert.equal(created.error?.code, "TARGET_NOT_FOUND", "a create into a missing folder is TARGET_NOT_FOUND");
+    assert.equal(created.target?.missing, "folder", "it says the folder is missing");
+    assert.match(created.error?.message ?? "", /there is no folder \S*no-such-folder to create the backup in/, "it names that folder");
+    for (const [path, missing] of [[nowhere, "folder"], [join(root, "no-such-artifact"), "artifact"]] as const) {
+      const restore = run("backup", "restore", path, "--json");
+      assert.equal(restore.status, 2, `a restore of a missing ${missing} refuses, exit 2\n${restore.stdout}${restore.stderr}`);
+      const restored = JSON.parse(restore.stdout) as { error?: { code?: string }; target?: { directory?: string; missing?: string } };
+      assert.equal(restored.error?.code, "TARGET_NOT_FOUND", `a restore of a missing ${missing} is TARGET_NOT_FOUND`);
+      assert.equal(restored.target?.missing, missing, `it says the ${missing} is missing`);
+      assert.equal(restored.target?.directory, path, "it names the path");
+    }
+    assert.equal(journalState(root), "ready", "the refused create and restores leave the cut ready");
+    assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
 
     for (const [stage, injected] of Object.entries(BACKUP_STAGES)) {
       const destination = join(root, `artifact-${stage}`);

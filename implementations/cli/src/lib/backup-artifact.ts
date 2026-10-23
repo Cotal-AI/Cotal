@@ -428,6 +428,13 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
   };
 }
 
+/** Why a backup path names nothing: the folder that would hold it is not there (`folder`), or only
+ *  its last name is missing (`artifact`). `undefined` when the path exists. */
+export function missingBackupPath(path: string): "folder" | "artifact" | undefined {
+  if (statSync(path, { throwIfNoEntry: false })) return undefined;
+  return statSync(dirname(path), { throwIfNoEntry: false })?.isDirectory() ? "artifact" : "folder";
+}
+
 export function readStagedCheckpoints(staged: StagedArtifact): PersistentConsumerCheckpoint[] {
   const value = JSON.parse(readFileSync(join(staged.directory, staged.manifest.checkpoints), "utf8")) as unknown;
   if (!Array.isArray(value)) throw new Error("backup checkpoints must be an array");

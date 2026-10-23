@@ -1546,7 +1546,9 @@ preserved source, or the maintenance attempt tree.
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
 A root with no preserved cut refuses and names `cotal down --preserve-state`. A cut in another state
 refuses and names that state and its space. A destination that already exists is a `CONFLICT`
-refusal, because create writes only a new directory. Any other refusal or failure shows the check's
+refusal, because create writes only a new directory. A destination whose folder does not exist
+refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
+folder. Any other refusal or failure shows the check's
 own sentence as its native detail, such as a broker still listening at the cut's recorded endpoint.
 A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
 `backup create` to run again once that cause is fixed.
@@ -1640,7 +1642,10 @@ that `backup cleanup-fallback` deletes that store only with `--discard-history`.
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
-state from the attempt, and `up --restore` refuses the same way. A restore that fails after it
+state from the attempt, and `up --restore` refuses the same way. An artifact path that names
+nothing refuses `TARGET_NOT_FOUND` (exit 2) at the same point. It names the path, and its JSON
+target says in `missing` whether the folder that should hold the artifact (`folder`) or only the
+artifact (`artifact`) is missing. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. `up --restore`
 remains as the equivalent startup form, and its terminal output is unchanged. Unlike the other
