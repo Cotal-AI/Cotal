@@ -83,7 +83,11 @@ export function epWatchEvents(
       handlers.onEvent({ endpoint: parsed.endpoint, instanceId: parsed.instanceId, epoch: parsed.epoch, topic: parsed.topic, event });
     },
   });
-  return { stop: () => sub.drain() };
+  // A drain settles on the server's PONG, and nats-core rejects no pending flush when the connection
+  // closes, so a stop racing the connection's close would never settle: the drain is bounded by the
+  // connection's own closed(), and a stop on a closed connection settles instead of rejecting.
+  const gone = nc.closed().then(() => undefined);
+  return { stop: async () => { await Promise.race([sub.drain().catch(() => undefined), gone]); } };
 }
 
 // ---- scatter (§13.5: frozen expected set, attributed gather) ------------------------------------
