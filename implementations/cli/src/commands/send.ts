@@ -34,7 +34,7 @@ export const sendFlags = [
   { name: "to", short: "t", type: "string", value: "<agent>", description: "send directly to one agent" },
   { name: "channel", short: "c", type: "string", value: "<channel>", description: "publish to one channel" },
   { name: "role", short: "r", type: "string", value: "<role>", description: "queue for one agent with this role" },
-  { name: "file", short: "f", type: "string", value: "<path>", description: "read the message body from this UTF-8 file, instead of a positional body" },
+  { name: "file", short: "f", type: "string", value: "<path>", description: "read the message body from this UTF-8 file (- reads stdin), instead of a positional body" },
   { name: "stdin", type: "boolean", description: "read the message body from explicit stdin, instead of a positional body" },
   { name: "mention", type: "string", multiple: true, value: "<agent>", description: "channel: wake this authorized peer; repeat for several peers" },
   { name: "reply-to", type: "string", value: "<message-id>", description: "direct send: name the message this body answers" },
@@ -94,7 +94,8 @@ export function sendArguments(args: ParsedArgs): SendInput {
     throw new CommandFailure("refused", "UNSUPPORTED", "native mention hints belong to channel publications; they do not change a direct or role destination");
   if (values.mention?.some((name) => !name.replace(/^@/, "").trim() || /[\/\u0000-\u001f\u007f]/u.test(name)))
     throw new CommandFailure("refused", "USAGE_INVALID", "each --mention names one agent or full instance id");
-  return { ...destination, source: values.file !== undefined ? "file" : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
+  // `--file -` is stdin, as `persona create --from -` reads it.
+  return { ...destination, source: values.file !== undefined ? (values.file === "-" ? "stdin" : "file") : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
 }
 
 function bodyOf(input: SendInput, values: Values): string {
@@ -105,7 +106,9 @@ function bodyOf(input: SendInput, values: Values): string {
   try { bytes = readFileSync(input.source === "file" ? values.file! : 0); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    throw new CommandFailure("refused", code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : code === "ENOENT" ? "TARGET_NOT_FOUND" : "USAGE_INVALID", "the explicit message input could not be read");
+    throw new CommandFailure("refused", code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : code === "ENOENT" ? "TARGET_NOT_FOUND" : "USAGE_INVALID",
+      input.source === "file" ? `the message file ${JSON.stringify(values.file)} could not be read` : "the message on stdin could not be read",
+      input.source === "file" ? { target: { file: values.file } } : {});
   }
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }

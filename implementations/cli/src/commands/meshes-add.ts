@@ -57,9 +57,9 @@ const bad = (message: string, code: RefusalCode): Check<never> => ({ ok: false, 
  *  authority, not credentials, and the operator hears it at the moment they are told to copy
  *  rather than only in a guide they may never open. */
 const CA_COST =
-  "\n  Note: that directory carries the space's account signing seed, so any machine holding it can mint" +
-  "\n  any identity in the space until the signing key is rotated and every credential re-minted. Copy it" +
-  "\n  only to machines you would trust with the whole mesh.";
+  ". Note: that directory carries the space's account signing seed, so any machine holding it can mint" +
+  " any identity in the space until the signing key is rotated and every credential re-minted. Copy it" +
+  " only to machines you would trust with the whole mesh.";
 const good = <T>(value: T): Check<T> => ({ ok: true, value });
 
 /** Is this path a directory? `existsSync` is not the question: a regular FILE named `.cotal` would
@@ -225,8 +225,14 @@ export async function probeEnforcement(server: string): Promise<"auth" | "open" 
 export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "open" | "unreachable", server: string, space: string, root: string): Check<void> {
   if (mode === "auth" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`, "CONFLICT");
-  if (mode === "open" && enforces === "auth")
+  if (mode === "open" && enforces === "auth") {
+    // A root that holds another space's trust is the reason, and nothing there needs copying.
+    const held = spacesAtRoot(root);
+    const others = held.ok ? held.value.filter((s) => s !== space) : [];
+    if (others.length)
+      return bad(`✗ the broker at ${server} requires auth, and ${authDir(root)} holds the trust for "${others.join('", "')}", not "${space}" - register the space it holds under its own name, or point --root at where "${space}"'s trust is`, "DEPENDENCY_UNAVAILABLE");
     return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST, "CONFLICT");
+  }
   if (mode === "user" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as a user-auth mesh - user auth means the broker REFUSES a bare connect and admits only exchanged bearers; check that the bundle's server points at the user-auth broker for "${space}"`, "CONFLICT");
   if (mode === "user" && enforces === "unreachable")

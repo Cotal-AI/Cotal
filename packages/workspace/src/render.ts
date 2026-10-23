@@ -78,7 +78,9 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       // A prepared space names itself. A root whose stack journal recorded a broker names that broker,
       // and `up` there refuses until `space create` prepares the journal's space at that root again. A
       // stack running under another Cotal home names the home in use, because `up` there refuses.
-      if (d.space !== undefined) return parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
+      if (d.space !== undefined) return d.rootMissing
+        ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
+        : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
       return d.home === undefined
         ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${d.root}\`, then start it with \`cotal up\` there`)

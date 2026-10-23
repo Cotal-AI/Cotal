@@ -221,5 +221,18 @@ for (const [k, v] of [["model", "   "], ["name", "bob"], ["owner", "mallory-id"]
 const hinted = reread(join(dir, "hinted.md"), { name: "hinted", subscribe: [], model: "valid", meta: { theme: "dark", retries: "3" } });
 ok("unknown scalar hints round-trip beside a modeled model", hinted.model === "valid" && JSON.stringify(hinted.meta) === JSON.stringify({ theme: "dark", retries: "3" }), hinted);
 
+// 10) A file saved with CRLF line endings or a UTF-8 BOM, as Windows editors and git's autocrlf
+//     write it, reads as the LF file does. Both used to fail the frontmatter fence.
+const lf = "---\nname: crlf\nrole: reviewer\nsubscribe: [general]\n---\nReviews code.\nSecond line.\n";
+writeFileSync(join(dir, "lf.md"), lf);
+const plain = loadAgentFile(join(dir, "lf.md"));
+for (const [label, text] of [["CRLF", lf.replaceAll("\n", "\r\n")], ["a BOM", "\uFEFF" + lf], ["a BOM and CRLF", "\uFEFF" + lf.replaceAll("\n", "\r\n")]]) {
+  const file = join(dir, `${label.replaceAll(" ", "-")}.md`);
+  writeFileSync(file, text);
+  let read: AgentDef | undefined;
+  try { read = loadAgentFile(file); } catch { read = undefined; }
+  ok(`a file with ${label} reads as the LF file`, JSON.stringify(read) === JSON.stringify(plain), read);
+}
+
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

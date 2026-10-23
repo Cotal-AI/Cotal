@@ -142,9 +142,10 @@ export function loadAgentFile(path: string): AgentDef {
   return parseAgentFileSource(readFileSync(path, "utf8"), path);
 }
 
-/** Parse an agent-file document already in memory. `path` is only for error text. */
+/** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
+ *  BOM and CRLF line endings, as Windows editors and git's `core.autocrlf` write them, read as LF. */
 export function parseAgentFileSource(src: string, path: string): AgentDef {
-  const m = AGENT_FILE_FENCE.exec(src);
+  const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
   if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();

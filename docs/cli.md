@@ -29,8 +29,9 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the selected space, lists common commands, and points a machine with no selected space to
-`cotal setup`. Every command generates its own help, usage, and shell completion from its declared
+the selected space, or with none selected the space prepared in the current folder, and lists common
+commands. It points a prepared space to the `cotal up` that starts it, and a machine with no space
+to `cotal setup`. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. `-v` is not a
 version flag.
 
@@ -1677,8 +1678,11 @@ skips that question, but not the confirmation of fetched pins. It never changes 
 A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
 input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`, `UNSUPPORTED`,
 `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
-registered is a `CONFLICT`. `--force` replaces a registration added by hand, never one this machine
-started or a catalog lists, and adds a `--server` space without checking its broker, which suits a
+registered is a `CONFLICT`, and its remedy offers `--force` only for a registration added by hand.
+A broker that requires auth, with a `--root` that holds another space's trust, is a
+`DEPENDENCY_UNAVAILABLE` that names the space the folder holds.
+`--force` replaces a registration added by hand, never one this machine started or a catalog lists,
+and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Declining the question is a
 `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
@@ -1769,6 +1773,11 @@ the selection. A selection that names a space no longer registered is reported w
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
+
+A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
+included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
+`cotal space forget <space>`. `cotal space create <space> --root <dir>` then prepares it again.
+`use`, `up --space` and `space forget` also say the folder no longer exists.
 
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
@@ -2083,8 +2092,8 @@ no `--json`, `--plain` or `--all`. It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
-state wins). That exit replaces the report's own, so a partial report followed by a clean pass exits
-0:
+state wins). An optional component that is not installed prints `not-installed`, which exits `0`.
+That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
   `status` service reachability from this host. Manager builds that do not report static
@@ -2095,8 +2104,9 @@ state wins). That exit replaces the report's own, so a partial report followed b
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
-- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded
-  once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
+- **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
+  Otherwise, the local PID record, then the `/api/meta` response at the address the dashboard
+  recorded once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
   on the `Web process` row: a service-run dashboard's own session record, found through its web
   service instance and named on the row as `service instance <id>`, or `web.session` for any other
   holder. The probe presents the readiness nonce recorded beside that address, the one credential
@@ -2366,7 +2376,8 @@ cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
 
 Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
-it is not limited to child processes owned by the manager.
+it is not limited to child processes owned by the manager. The Participant column holds the name
+that `endpoint describe` takes, and the role has its own column.
 
 ## who
 
@@ -2994,7 +3005,10 @@ Show and edit accept a definition whose `name` is not its catalog name. The seed
 persona is one: its file is `default.md` and its agents launch as `default_agent`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
-preferences). A successful editor exit and valid definition are required before saving. A changed
+preferences). The value runs as a shell command, so quote a path that holds spaces. With no editor
+set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
+and names the setting to fix. A successful editor exit and valid definition are required before
+saving. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
 CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
@@ -3613,8 +3627,10 @@ cotal send -r <role> "<text>"
 
 Choose one destination: `--to/-t` for a direct message, `--channel/-c` for a channel,
 or `--role/-r` for the role's native work queue. Choose one body source: a quoted positional
-argument, `--file/-f <path>`, or explicit `--stdin`. There are no implicit stdin reads. Files and
-stdin must contain nonempty UTF-8 text; their content is preserved and never printed in the receipt.
+argument, `--file/-f <path>`, or explicit `--stdin`; `--file -` reads stdin as `--stdin` does. There
+are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; their content is
+preserved and never printed in the receipt. A file that cannot be read is refused with its path,
+`TARGET_NOT_FOUND` when it does not exist.
 No destination, several destinations, several body sources or an empty message is refused.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar; a channel publication cannot name a wildcard.
@@ -4714,7 +4730,12 @@ explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access. A startup file its owner made read-only is never replaced. `install`
+owner or unsafe file access. A refused directory on the way to a file is named with its reason, and
+a group- or other-writable one with `chmod go-w <path>` as the fix. A startup file that is a
+symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
+it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
+warns that it is a symlink and does not read it. A startup file its owner made read-only is never
+replaced. `install`
 still writes its stub, then fails, exit 5, and names the line to add to that file yourself.
 `uninstall` refuses it, exit 2, and changes nothing until you remove that line. On Windows, PowerShell script generation works but automatic
 profile editing remains unsupported: the guarded POSIX file writer cannot safely replace
