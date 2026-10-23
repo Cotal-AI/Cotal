@@ -771,6 +771,7 @@
     "smoke:daemon-connect": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-connect.smoke.ts",
     "smoke:daemon-register": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-register.smoke.ts",
     "smoke:daemon-service-connect": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-service-connect.smoke.ts",
+    "smoke:daemon-home": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-home.smoke.ts",
     "smoke:manager-preset:live": "tsx bin/smoke/manager-preset-live.smoke.ts",
     "smoke:persona-agent": "tsx bin/smoke/persona-agent.smoke.ts",
     "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",

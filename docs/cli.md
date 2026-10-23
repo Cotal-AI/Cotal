@@ -3074,14 +3074,14 @@ condition.
 ## daemon
 
 ```bash
-cotal daemon serve [--json|--plain]
-cotal daemon status [--json|--plain]
-cotal daemon login --idp <auth base URL> [--client-id <id>] [--json|--plain]
-cotal daemon connect-check --space <s> [--json|--plain]
-cotal daemon register --space <s> [--json|--plain]
-cotal daemon service-connect --space <s> [--json|--plain]
-cotal daemon service-disconnect --space <s> [--json|--plain]
-cotal daemon service-status --space <s> [--json|--plain]
+cotal daemon serve [--daemon-home <dir>] [--json|--plain]
+cotal daemon status [--daemon-home <dir>] [--json|--plain]
+cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]
+cotal daemon register --space <s> [--daemon-home <dir>] [--json|--plain]
+cotal daemon service-connect --space <s> [--daemon-home <dir>] [--json|--plain]
+cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plain]
+cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
 This release serves a local endpoint for status, sign-in, a connection check, a registration request
@@ -3109,6 +3109,27 @@ SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SI
 including closing the terminal, leaves a stale socket. To recover, run `cotal daemon status`.
 If it reports `NOT_RUNNING`, confirm no daemon process is running, then remove the named socket
 path by hand and start again.
+
+`--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
+sign-in session, its per-space identity, register request and service store, all at the paths
+below with `<dir>` in place of `<COTAL_HOME>`. Spaces are still read from the shared Cotal home's
+mesh registry, which this daemon never writes. Its socket is
+`$XDG_RUNTIME_DIR/cotal/home-<16 hex>/daemon.sock`, derived from the directory, so it runs beside
+the default daemon. `<dir>` must already exist as an absolute directory you own with mode `0700`,
+and cannot be the Cotal home. A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
+directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
+created or repaired.
+
+`serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. A second `serve` for the same
+directory refuses `CONFLICT` (`LOCK_HELD`), naming the live holder. A start that fails for any other
+reason releases the lock again. A killed daemon leaves its socket behind, which still refuses
+`CONFLICT` (`ALREADY_RUNNING`) and is never removed, so recover as above. Every client command with
+`--daemon-home` sends nothing unless the process at that socket is the lock's live owner (same pid
+and process start). Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`).
+
+This daemon is a different machine identity. Nothing is copied from the default daemon: it needs
+its own `login`, its own `register`, and the space owner's approval of its own instance. Without
+`--daemon-home` every command behaves exactly as before.
 
 `login` signs the running daemon in with device approval. The daemon runs the same sign-in as
 `cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The
