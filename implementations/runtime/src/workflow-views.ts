@@ -25,11 +25,19 @@ export function printRunList(space: string | undefined, items: readonly RunListR
 type StepRow = Extract<RunJournalRow, { kind: "step" }>;
 type AnswerFacts = { readonly value?: unknown; readonly by?: string; readonly artifact?: string; readonly at?: number; readonly answerId: string };
 
+/** The characters of an answer's value the Answers table prints; `--json` carries the value whole. */
+const ANSWER_VALUE_SHOWN = 120;
+const shownValue = (value: unknown): string => {
+  const text = [...JSON.stringify(value)];
+  return text.length > ANSWER_VALUE_SHOWN ? `${text.slice(0, ANSWER_VALUE_SHOWN - 1).join("")}…` : text.join("");
+};
+const valueCut = (answer: AnswerFacts) => Object.hasOwn(answer, "value") && [...JSON.stringify(answer.value)].length > ANSWER_VALUE_SHOWN;
+
 /** One answer or amendment line of a settled pause. */
 function answerRow(step: string, record: string, answer: AnswerFacts, artifacts: boolean): Record<string, string> {
   return {
     step, record,
-    value: Object.hasOwn(answer, "value") ? JSON.stringify(answer.value) : "no value",
+    value: Object.hasOwn(answer, "value") ? shownValue(answer.value) : "no value",
     by: answer.by ?? "not recorded",
     ...(artifacts ? { artifact: answer.artifact ?? "" } : {}),
     at: answer.at === undefined ? "not recorded" : new Date(answer.at).toISOString(),
@@ -47,6 +55,7 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
   const answered = [...steps.values()].filter((row) => row.answer !== undefined);
   const artifacts = answered.some((row) => row.answer?.artifact !== undefined || row.amendments?.some((m) => m.artifact !== undefined));
   const answers = answered.flatMap((row) => [answerRow(row.step, "answered", row.answer!, artifacts), ...(row.amendments ?? []).map((m) => answerRow(row.step, "amended", m, artifacts))]);
+  const cut = answered.some((row) => valueCut(row.answer!) || (row.amendments ?? []).some(valueCut));
   // A recorded message is the handler's or the program's text, so each of its lines is escaped.
   const errored = [...steps.values()].filter((row) => row.errorMessage !== undefined);
   const failure = view.status?.state === "failed" ? view.status.failure : undefined;
@@ -65,7 +74,8 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
     // no answer, so the view says that and offers no answer command.
     ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }], rows: needsAnswer.map((row) => ({ step: row.step, asks: row.asks ?? "" })) },
       ...(view.revoked ? [{ kind: "lines" as const, lines: [{ text: "The run's admission is revoked, so these requests take no answer.", tone: "failed" as const }] }] : [])] }] : []),
-    ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const }] }] }] : []),
+    ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const },
+      ...(cut ? [{ text: `A value longer than ${ANSWER_VALUE_SHOWN} characters is cut here; --json carries it whole.`, tone: "hint" as const }] : [])] }] }] : []),
     // The run's failure, as its status records it. When a step's error is that failure, it is
     // printed once, under Step errors, and named here.
     ...(failure ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: failedStep

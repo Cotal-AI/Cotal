@@ -5210,7 +5210,8 @@ under `Needs an answer`, and only then does Next offer `answer`. A pause counts 
 last journal row is pending, so a settled or expired one is not listed there.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
-order the store committed them, so the last is the current position.
+order the store committed them, so the last is the current position. A value longer than 120
+characters is cut there, with a line that says so; `--json` carries it whole.
 Expired pauses and ordinary steps print no answer line.
 A step whose last journal row recorded an error prints its outcome and the recorded message under
 `Step errors`, a caught failure included, with each control character shown as its `\uXXXX`

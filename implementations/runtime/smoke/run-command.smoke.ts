@@ -342,6 +342,20 @@ let P = "";
     settled?.answer?.value === "yes" && settled.answer.by === "smoke" && settled.answer.artifact === "artifact://run-command"
       && typeof settled.answer.answerId === "string" && typeof settled.answer.at === "number",
     settled ?? shown);
+  // A long value is cut in the table, so one answer cannot widen every row to its own width.
+  const long = "z".repeat(1000);
+  reset();
+  await wf(["amend", cid, "/checkpoint:approve#0"], { by: "smoke", value: JSON.stringify(long) });
+  reset();
+  await wf(["journal", cid]);
+  const amendedLine = lines().find((l) => l.includes("/checkpoint:approve#0") && l.includes("amended")) ?? "";
+  c("a long amended value is cut in the Answers table, and a line says so and points to --json",
+    amendedLine.includes(`"${"z".repeat(100)}`) && amendedLine.includes("…") && !amendedLine.includes(long) && Math.max(...lines().map((l) => l.length)) < 400
+      && captured().includes("A value longer than 120 characters is cut here; --json carries it whole."),
+    { amendedLine: amendedLine.slice(0, 300), longest: Math.max(...lines().map((l) => l.length)) });
+  const amendedRow = ((await envelopeOf(["journal", cid]))?.result as { view?: { journal?: Array<JournalRowJson & { amendments?: Array<{ value?: unknown }> }> } } | undefined)?.view?.journal
+    ?.find((r) => r.step === "/checkpoint:approve#0" && r.amendments !== undefined);
+  c("show --json still carries the long value whole", amendedRow?.amendments?.at(-1)?.value === long, amendedRow?.amendments?.length);
 }
 
 // ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
@@ -662,7 +676,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 65;
+const DECLARED = 67;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
