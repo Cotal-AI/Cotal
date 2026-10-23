@@ -945,8 +945,11 @@ summary points to this read-only command from the recorded root.
 On a root with a controller journal, bare `down` reads only its recorded full instance IDs. It
 shows the member set and the live manager's native agent impact before confirmation, then stops
 manager, delivery and broker in that order. `--yes` acknowledges that scope in scripts; `--with-agents`
-requests the manager's native retirement policy. The broker scope is checked again after its
-dependants stop. A failure stops the sequence and preserves completed and unattempted members.
+requests the manager's native retirement policy. Another live service instance in the space
+refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
+`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. The broker scope
+is checked again after its dependants stop. A failure stops the sequence and preserves completed and
+unattempted members.
 Only a complete confirmed stop removes the delivery credential and local registration. When the
 delivery daemon was already gone, its credential stays: that daemon never released its lease, and
 the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
@@ -3541,7 +3544,7 @@ cotal service status <name> [--instance <id>]
 cotal service logs <name> [--instance <id>] [--tail <n>] [--follow]
 cotal service install <name> [--instance <id>] [--dry-run]
 cotal service uninstall <name> [--instance <id>] [--yes|--dry-run]
-cotal service remove <name> [--yes]
+cotal service remove <name> [--instance <id>] [--yes]
 ```
 
 `svc` and `services` are aliases. Every form takes `--space`, `--json` and `--plain`.
@@ -3619,6 +3622,11 @@ installed unit, a `restart` whose process is already gone stops nothing, so it d
 start or stop that finds nothing to do says so and reports `no-op`.
 
 `remove` forgets a definition once every instance is stopped and no unit is installed. Logs stay.
+With `--instance <id>` it forgets only that stopped instance record, and keeps the definition and
+its other instances. A command that names no instance while several records exist refuses
+`TARGET_AMBIGUOUS`; its Next lists each instance with its state and the `remove --instance` command
+for each stopped one, so a finished record stops blocking the bare form. A controller stack's
+member records are not removed this way; they go with `cotal space forget`.
 
 `install` writes an owned systemd user unit for a saved direct-process definition with no
 `envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
