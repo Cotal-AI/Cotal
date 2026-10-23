@@ -25,6 +25,7 @@ import { fetchIdpJwt, saveIdpSession } from "../src/login.js";
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo } from "../src/service-authority-client.js";
+import { serviceEndpointHostCall } from "../src/service-host-client.js";
 import { serviceAuthorityEngineRequestId, serviceHostGranterFor } from "../src/service-endpoint-authority.js";
 import { serviceHostOperationId } from "../src/service-host-ops.js";
 import { authServiceConfiguration, startAuthService, type AuthServiceHandle } from "../src/service.js";
@@ -384,6 +385,52 @@ try {
   c.check("L12 a proposal read over the route names its endpoint's binding only when that binding is the reader's: B's proposal under A's name reads nameBinding null; the operator reads it",
     lOtherB.status === 200 && lOtherB.body.state === "present" && lOtherB.body.record?.value?.owner === ownerB && lOtherB.body.record?.value?.nameBinding === null
     && lOtherOp.state === "present" && (lOtherOp.record.value as { nameBinding: { owner: string } | null }).nameBinding?.owner === ownerA, { b: lOtherB.body.record?.value?.nameBinding, op: (lOtherOp as { record?: { value: unknown } }).record?.value });
+  // ---- M: `cotal service-endpoint` decisions and their replay, at the command's own request path ----
+  const mReg = await viaProvider("a", register(rid()));
+  const mPid = mReg.state === "approval-required" ? mReg.proposalId : "";
+  signIn("a");
+  const m1 = await serviceEndpointHostCall(clientDir, space, ["approve", mPid], {});
+  const m1Replay = await serviceEndpointHostCall(clientDir, space, ["approve", mPid], { "request-id": m1.requestId });
+  c.check("M1 the command approves and prints its request id; run again with --request-id after the proposal moved, it sends the recorded request verbatim and the host replays the approval",
+    mReg.state === "approval-required" && m1.answer.state === "approved" && m1.answer.outcome === "applied" && m1.requestId !== undefined
+    && m1Replay.answer.state === "approved" && m1Replay.answer.outcome === "recorded" && m1Replay.requestId === m1.requestId
+    && JSON.stringify(m1Replay.answer.approval) === JSON.stringify(m1.answer.approval), { m1, m1Replay });
+  const refusal = async (positionals: string[], values: Record<string, string>): Promise<string> => {
+    try { await serviceEndpointHostCall(clientDir, space, positionals, values); return "answered"; }
+    catch (e) { return (e as { code?: string }).code ?? (e instanceof Error ? e.message : String(e)); }
+  };
+  const m2 = await refusal(["approve", mPid], { "request-id": rid() });
+  const m3 = await refusal(["refuse", mPid], { "request-id": m1.requestId! });
+  const m3b = await refusal(["approve", mPid], { "request-id": m1.requestId!, "caller-ceiling": "a" });
+  const m3read = await propRead(mPid);
+  c.check("M2 an id this root never recorded is refused, M3 a recorded id under another command or with new flags is refused, and nothing is sent",
+    m2 === "TARGET_NOT_FOUND" && m3 === "USAGE_INVALID" && m3b === "USAGE_INVALID" && m3read.state === "present" && (m3read.record.value as { state: string }).state === "approved", { m2, m3, m3b, m3read });
+  // A lost answer: a proxy in front of the loopback face forwards the proposal read and drops the
+  // connection on the decide, so the decision is recorded but never reaches the host.
+  const mReg2 = await viaProvider("a", register(rid()));
+  const mPid2 = mReg2.state === "approval-required" ? mReg2.proposalId : "";
+  const lossy = createServer((req, res) => {
+    let body = ""; req.on("data", (d: Buffer) => { body += d.toString(); });
+    req.on("end", () => {
+      if (/"operation":"decide"/.test(body)) return void req.socket.destroy();
+      void fetch(`${on.url}${req.url}`, { method: req.method, headers: { "content-type": "application/json", ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}) }, body })
+        .then(async (r) => { res.writeHead(r.status, { "content-type": "application/json" }); res.end(await r.text()); });
+    });
+  });
+  await new Promise<void>((r) => lossy.listen(0, "127.0.0.1", () => r()));
+  signIn("a");
+  saveAuthServiceInfo(clientDir, { url: `http://127.0.0.1:${(lossy.address() as { port: number }).port}`, pid: process.pid, cap: on.cap });
+  let mLost = "";
+  try { await serviceEndpointHostCall(clientDir, space, ["approve", mPid2], {}); mLost = "answered"; } catch (e) { mLost = e instanceof Error ? e.message : String(e); }
+  saveAuthServiceInfo(clientDir, { url: on.url, pid: process.pid, cap: on.cap });
+  lossy.closeAllConnections(); await new Promise<void>((r) => lossy.close(() => r()));
+  const mLostId = /--request-id ([0-9a-f]{32})/.exec(mLost)?.[1];
+  const mUnseen = mLostId === undefined ? undefined : await propRead(mPid2);
+  const m4 = mLostId === undefined ? undefined : await serviceEndpointHostCall(clientDir, space, ["approve", mPid2], { "request-id": mLostId });
+  c.check("M4 a decision whose answer never came back is recorded first: the failure names its id, the host never saw it, and --request-id sends it as the host's first sight",
+    mReg2.state === "approval-required" && /fetch failed/.test(mLost) && mLostId !== undefined
+    && mUnseen?.state === "present" && (mUnseen.record.value as { state: string }).state === "proposed"
+    && m4?.answer.state === "approved" && m4.answer.outcome === "applied" && m4.requestId === mLostId, { mLost, mUnseen, m4 });
   const parsed = (values: Record<string, string | boolean | undefined>) => authServiceConfiguration({ values: { space, server: "nats://127.0.0.1:1", ...values }, positionals: [], raw: [], positionalIndices: [] } as unknown as ParsedArgs);
   c.check("L10 --service-endpoints turns the engine on; its absence leaves it off", parsed({ "service-endpoints": true }).serviceEndpoints === true && parsed({}).serviceEndpoints === false);
 } finally {

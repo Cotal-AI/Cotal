@@ -1,8 +1,5 @@
 import { authServiceFlags } from "./daemon-flags.js";
-import { randomBytes } from "node:crypto";
-import type { EpCapability } from "@cotal-ai/core";
-import { postServiceEndpointHost, type ServiceHostRouteRequest } from "./service-host-client.js";
-import type { ServiceHostInputs, ServiceHostOperation, ServiceHostResult } from "./service-host-contract.js";
+import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-host-client.js";
 /**
  * Self-registering `login` / `logout` commands (the delivery-daemon pattern): importing
  * `@cotal-ai/auth` registers them into the core `Registry`, and the `cotal` binary pulls the
@@ -311,57 +308,14 @@ function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[
   ] }] };
 }
 
-const SERVICE_ENDPOINT_USAGE = "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>>";
-
-/** One host request over the authenticated `/service-endpoint-host` route, as the signed-in owner
- *  or, for `name-bind`, as the operator on the loopback face. A decision reads the proposal first,
- *  with the name binding that read carries, and decides at those revisions, so a proposal or name
- *  that moved in between is a conflict the host reports, never a decision on something else. */
+/** `cotal service-endpoint`: one host request ({@link serviceEndpointHostCall}) at the resolved
+ *  local authority root, and its answer rendered. */
 async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise<void> {
-  const [sub, subject, ...extra] = args.positionals;
-  const values = args.values as { owner?: string; claim?: string; "caller-ceiling"?: string; "request-id"?: string };
   const { dir, space } = actorState(target);
   const presentation = presentationOf(args.values);
-  const replayId = values["request-id"];
-  if (replayId !== undefined && !/^[0-9a-f]{32}$/.test(replayId)) throw new CommandFailure("refused", "USAGE_INVALID", "--request-id is the 32 lowercase hex characters an earlier run printed");
-  // A read is always a fresh request; a decision or a binding takes --request-id so the identical
-  // request can be sent again (the host replays it), and prints the id it used otherwise.
-  let usedRequestId: string | undefined;
-  const request = <K extends ServiceHostOperation>(operation: K, input: ServiceHostInputs[K]): ServiceHostRouteRequest<K> => {
-    const effectful = operation === "decide" || operation === "name-bind";
-    const requestId = effectful && replayId !== undefined ? replayId : randomBytes(16).toString("hex");
-    if (effectful) usedRequestId = requestId;
-    return { v: 1, kind: "service-endpoint-host", requestId, operation, input };
-  };
-  const post = (r: ServiceHostRouteRequest) => postServiceEndpointHost(dir, space, r, `service-endpoint ${sub}`);
-  const usage = () => new CommandFailure("refused", "USAGE_INVALID", SERVICE_ENDPOINT_USAGE);
   await legibly(async () => {
-    if (!sub || !subject || extra.length) throw usage();
-    let answer: ServiceHostResult;
-    switch (sub) {
-      case "approve": case "refuse": {
-        const read = await post(request("proposal-read", { proposalId: subject })) as ServiceHostResult & { record?: { value: { nameBinding: { revision: number } | null }; revision: number } };
-        if (read.state !== "present" || read.record === undefined)
-          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no proposal ${subject} is yours to decide on space "${space}"; nothing was decided`);
-        const callerCeiling = (values["caller-ceiling"] ?? "").split(",").map((c) => c.trim()).filter(Boolean) as unknown as EpCapability[];
-        answer = await post(request("decide", {
-          proposalId: subject, expectedProposalRevision: read.record.revision,
-          expectedNameRevision: read.record.value.nameBinding?.revision ?? 0,
-          decision: sub, callerCeiling,
-        }));
-        break;
-      }
-      case "proposal": answer = await post(request("proposal-read", { proposalId: subject })); break;
-      case "operation": answer = await post(request("operation-read", { operationId: subject })); break;
-      case "name": answer = await post(request("name-read", { endpoint: subject })); break;
-      case "name-bind": {
-        if (!values.owner || !values.claim) throw usage();
-        answer = await post(request("name-bind", { endpoint: subject, owner: values.owner, expectedRevision: 0, claimReference: values.claim }));
-        break;
-      }
-      default: throw usage();
-    }
-    writeResult(presentation, { command: "service-endpoint", target: { space }, result: { kind: "service-endpoint-host", request: sub, subject, ...(usedRequestId !== undefined ? { requestId: usedRequestId } : {}), answer } }, (result) => ({
+    const call = await serviceEndpointHostCall(dir, space, args.positionals, args.values as ServiceEndpointValues);
+    writeResult(presentation, { command: "service-endpoint", target: { space }, result: { kind: "service-endpoint-host", ...call } }, (result) => ({
       space,
       sections: [{ title: `Service endpoint ${result.request}`, blocks: [
         { kind: "fields" as const, rows: [["Space", space], ["Subject", result.subject], ["State", String((result.answer as { state: string }).state)],
@@ -670,7 +624,7 @@ const authCommands: Command[] = [
       { name: "owner", type: "string", value: "<u_…>", description: "name-bind: the derived owner token the name is bound to" },
       { name: "claim", type: "string", value: "<ref>", description: "name-bind: your claim reference for the namespace (the host verifies no domain control)" },
       { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: the capability ceiling callers of this service may be granted (default: none)" },
-      { name: "request-id", type: "string", value: "<hex32>", description: "approve, refuse, name-bind: send the identical request again under the id an earlier run printed; the host replays its answer" },
+      { name: "request-id", type: "string", value: "<hex32>", description: "approve, refuse, name-bind: send the request an earlier run here recorded under this id again, as it was; the host replays its answer" },
     ],
     run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
   },
