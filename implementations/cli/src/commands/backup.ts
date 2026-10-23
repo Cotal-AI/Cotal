@@ -38,7 +38,7 @@ import {
   type MaintenanceReadyRecord,
   type ProcessOwner,
 } from "@cotal-ai/workspace";
-import { createArtifactWriter, snapshotFileName, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
+import { createArtifactWriter, isTrustBound, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
 import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
 import { refuseControllerCut } from "../lib/stack-journal.js";
@@ -384,6 +384,8 @@ interface BackupCreateResult {
   readonly fileCount: number;
   readonly attemptId: string;
   readonly sourceGeneration: string;
+  /** Whether it restores only into a root that still holds the trust state it was taken under. */
+  readonly trustBound: boolean;
   readonly restored: false;
 }
 interface BackupObservation {
@@ -441,7 +443,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
 
 function backupCreateView(result: BackupCreateResult & { cleanupConfirmed: boolean }): Report {
   return { sections: [{ title: "Private backup artifact published", blocks: [
-    { kind: "fields", rows: [["Artifact", result.directory], ["Space", result.space], ["Selection", result.selection], ["Created", result.createdAt], ["Streams", String(result.streamCount)], ["Files", String(result.fileCount)], ["Original attempt", result.attemptId], ["Source generation", result.sourceGeneration], ["Maintenance cleanup", result.cleanupConfirmed ? "native cleanup completed" : { text: "not confirmed", tone: "waiting" }], ["Restore", { text: "not attempted or proved", tone: "waiting" }]] },
+    { kind: "fields", rows: [["Artifact", result.directory], ["Space", result.space], ["Selection", result.selection], ...(result.trustBound ? [["Restores into", TRUST_BOUND_TEXT] as [string, string]] : []), ["Created", result.createdAt], ["Streams", String(result.streamCount)], ["Files", String(result.fileCount)], ["Original attempt", result.attemptId], ["Source generation", result.sourceGeneration], ["Maintenance cleanup", result.cleanupConfirmed ? "native cleanup completed" : { text: "not confirmed", tone: "waiting" }], ["Restore", { text: "not attempted or proved", tone: "waiting" }]] },
     { kind: "lines", lines: [{ text: "The artifact's completion manifest was published from the native preserved cut. Creation does not prove restoration or future authority continuity. Snapshot bytes, checkpoint contents and credentials remain private and are not printed or uploaded.", tone: "hint" }] },
   ] }] };
 }
@@ -588,7 +590,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       streams,
       checkpoints: checkpointName,
     }, files);
-    observed.published = { kind: "backup-created", directory: writer.directory, space: ready.space, selection: selected, createdAt: published.createdAt, streamCount: streams.length, fileCount: files.length, attemptId, sourceGeneration: ready.source.generation, restored: false };
+    observed.published = { kind: "backup-created", directory: writer.directory, space: ready.space, selection: selected, createdAt: published.createdAt, streamCount: streams.length, fileCount: files.length, attemptId, sourceGeneration: ready.source.generation, trustBound: isTrustBound(selected, ready.mode), restored: false };
   } finally {
     // Ownership is surrendered ONLY once every owned resource is proven stopped and removed (or
     // published). Any cleanup failure keeps the claim so retry/stale-recovery finishes it — attempt
