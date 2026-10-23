@@ -308,6 +308,24 @@ try {
     ended?.[1] === 2 && once.envelope?.error !== undefined && fl.stderr().includes(once.envelope.error.message) && fl.stderr().includes(once.envelope.error.remedy ?? "?") && !/re-establish|Authentication Expired/.test(fl.stderr() + fl.lines.join("\n")),
     { ended, lines: fl.lines.slice(-3), stderr: fl.stderr() });
 
+  // A membership follow whose credential expires ends the same way, with nothing about its cleanup.
+  const briefAdmin = join(home, "brief-admin.creds");
+  writeFileSync(briefAdmin, await mintCreds(auth, newIdentity(), "admin", { expiresInSeconds: 8 }), { mode: 0o600 });
+  const adminArgs = ["--creds", briefAdmin, "--space", space, "--server", servers];
+  const mj = follow(["channel", "members", "general", "--follow", "--json", ...adminArgs]);
+  const ml = follow(["channel", "members", "general", "--follow", "--plain", ...adminArgs]);
+  const memberSnap = await mj.until((l) => l.includes('"type":"snapshot"'));
+  const membersEnded = await Promise.race([Promise.all([mj.exited, ml.exited]), wait(40_000).then(() => undefined)]);
+  const memberOnce = await run(["channel", "members", "general", "--json", ...adminArgs]);
+  const memberRecords = mj.lines.map((l) => JSON.parse(l) as { type: string; data: { code?: string; message?: string; remedy?: string; reason?: string } });
+  const memberErrors = memberRecords.filter((r) => r.type === "error");
+  check("an expired credential ends a membership --json follow: one AUTH_REQUIRED error with the one-shot's message and Next, then end, exit 2",
+    memberSnap && membersEnded?.[0] === 2 && memberOnce.envelope?.error?.code === "AUTH_REQUIRED" && memberErrors.length === 1 && memberErrors[0]?.data.code === "AUTH_REQUIRED" && memberErrors[0].data.message === memberOnce.envelope.error.message && memberErrors[0].data.remedy === memberOnce.envelope.error.remedy && memberRecords.at(-1)?.type === "end" && memberRecords.at(-1)?.data.reason === "refused",
+    { membersEnded, records: mj.lines.slice(-3), stderr: mj.stderr(), once: shown(memberOnce) });
+  check("an expired credential ends a membership --plain follow with the one-shot's refusal, exit 2",
+    membersEnded?.[1] === 2 && memberOnce.envelope?.error !== undefined && ml.stderr().includes(memberOnce.envelope.error.message) && !/cleanup|interrupted/i.test(ml.stderr()),
+    { membersEnded, stderr: ml.stderr() });
+
   // A credential the broker rejects, as after `reset space` replaced the trust it was minted from.
   // Given as a file it ends a follow with the one-shot's Next; minted by the follow from the space's
   // trust, the Next says to run it again.

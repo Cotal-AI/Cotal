@@ -1,6 +1,6 @@
 import { CotalEndpoint, subjectMatches, type FlagValues, type MembershipSnapshot } from "@cotal-ai/core";
-import { CommandFailure, streamRecord, writeStreamRecord, writeResult, renderReport, terminalWidth, type Presentation, type Report } from "@cotal-ai/workspace";
-import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, terminalWidth, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
+import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import type { channelFlags } from "./channels.js";
 
 type Values = FlagValues<typeof channelFlags>;
@@ -40,17 +40,46 @@ export async function channelMembers(values: Values, channel: string, presentati
   let stopped = false;
   let last: Members | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let retry: ReturnType<typeof setTimeout> | undefined;
   let reading: Promise<void> | undefined;
   let pending = false;
   let watch: { stop(): Promise<void> } | undefined;
   let reason = "interrupted";
+  let refusal: ConnectRefusal | undefined;
+  let checking = false;
+  // While observation is interrupted, one record says so and the failed reads that follow are not shown.
+  let interruption = false;
   let end: () => void = () => {};
   const ended = new Promise<void>((resolve) => { end = resolve; });
   const stop = () => { stopped = true; end(); };
   const emit = (type: "snapshot" | "event" | "gap" | "error" | "end", data: unknown) => {
     if (presentation === "json") writeStreamRecord(streamRecord("membership", type, target, data));
   };
-  const failed = () => {
+  const show = (next: Members) => {
+    emit("event", next);
+    if (presentation !== "json") console.log(renderReport(membersView(next), presentation, terminalWidth(process.stdout)));
+  };
+  // A dropped connection or a failed read ends the follow only once its credential can no longer
+  // connect, with the refusal a one-shot command with it gets. Otherwise it is reported once, and the
+  // feed is read again until it answers, so a follow outlives a broker restart.
+  const interrupted = (lostConnection: boolean) => {
+    if (stopped || checking) return;
+    checking = true;
+    void credentialEnded(connection).catch(() => undefined).then((ending) => {
+      checking = false;
+      if (stopped) return;
+      if (ending) { refusal = ending; reason = "refused"; stop(); return; }
+      if (!interruption) {
+        interruption = true;
+        const message = lostConnection ? `the connection to ${brokerAddressForDisplay(connection.server) ?? "the broker"} was lost; re-establishing it` : "The last observations are not a current membership census; reading the feed again.";
+        emit("error", { code: lostConnection ? "TARGET_UNAVAILABLE" : "OPERATION_PARTIAL", message });
+        if (presentation !== "json") console.error(message);
+      }
+      retry ??= setTimeout(() => { retry = undefined; refresh(); }, 2_000);
+    });
+  };
+  // A watch whose consumer closed delivers no more changes, so reading again cannot recover it.
+  const watchClosed = () => {
     if (stopped) return;
     reason = "error";
     process.exitCode = 4;
@@ -67,18 +96,32 @@ export async function channelMembers(values: Values, channel: string, presentati
       while (pending && !stopped) {
         pending = false;
         const next = resultOf(await ep.readMembership());
-        if (stopped || JSON.stringify(last) === JSON.stringify(next)) continue;
+        if (stopped) continue;
+        // The first read that answers after an interruption reports the gap and the census as it is now.
+        if (interruption) {
+          interruption = false;
+          emit("gap", { reason: "Membership observation was interrupted; changes during the interruption are not shown.", lastAsOf: last?.asOf ?? null });
+          if (presentation !== "json") console.error("Membership observation resumed; changes during the interruption are not shown.");
+          last = next;
+          show(next);
+          continue;
+        }
+        if (JSON.stringify(last) === JSON.stringify(next)) continue;
         last = next;
-        emit("event", next);
-        if (presentation !== "json") console.log(renderReport(membersView(next), presentation, terminalWidth(process.stdout)));
+        show(next);
       }
-    })().catch(failed).finally(() => { reading = undefined; });
+    })().catch(() => interrupted(false)).finally(() => { reading = undefined; });
   };
   const changed = () => {
     if (stopped || timer) return;
     timer = setTimeout(() => { timer = undefined; refresh(); }, 40);
   };
-  ep.on("error", () => { if (streaming) failed(); });
+  ep.on("error", () => { if (streaming) interrupted(false); });
+  ep.on("transport", ({ connected }: { connected: boolean }) => {
+    if (!streaming) return;
+    if (connected) changed();
+    else interrupted(true);
+  });
   try {
     await ep.start();
     last = resultOf(await ep.readMembership());
@@ -89,29 +132,47 @@ export async function channelMembers(values: Values, channel: string, presentati
       emit("snapshot", last);
       if (presentation !== "json") console.log(renderReport(membersView(last), presentation, terminalWidth(process.stdout)));
       if (last.asOf === null) emit("gap", { reason: "The membership feed has no successful poll yet." });
-      watch = await ep.watchMembership(changed, failed);
+      watch = await ep.watchMembership(changed, watchClosed);
       await ended;
     }
   } catch (error) {
     if (!streaming) throw error;
-    failed();
+    reason = "error";
+    process.exitCode = 4;
+    emit("error", { code: "OPERATION_PARTIAL", message: "The last observations are not a current membership census." });
+    if (presentation !== "json") console.error("Membership observation interrupted. The last snapshot is not current.");
   } finally {
     stopped = true;
     if (timer) clearTimeout(timer);
+    if (retry) clearTimeout(retry);
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
+    if (refusal && presentation === "json") {
+      const failure = refusal.failure();
+      emit("error", { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) });
+      process.exitCode = exitCode(failure.outcome, failure.code);
+    }
     try {
-      try { await watch?.stop(); }
-      finally { await ep.stop(); }
+      // The endpoint's stop is what settles the watch's own stop once the connection is closed for
+      // good, so it must not wait behind it.
+      const watchStopped = watch?.stop().then(() => undefined, (error: unknown) => error ?? new Error("membership watch stop failed"));
+      await ep.stop();
+      const watchError = await watchStopped;
+      if (watchError) throw watchError;
     } catch (error) {
       if (!streaming) throw error;
-      reason = "cleanup-not-confirmed";
-      process.exitCode = 4;
-      emit("error", { code: "OPERATION_PARTIAL", message: "Observer cleanup did not return a confirmation." });
-      if (presentation !== "json") console.error("Observer cleanup was not confirmed.");
+      // After a refusal the credential cannot connect to delete the watch's consumer. That consumer
+      // is ephemeral, so the broker drops it once nothing reads it, and the refusal stays the outcome.
+      if (!refusal) {
+        reason = "cleanup-not-confirmed";
+        process.exitCode = 4;
+        emit("error", { code: "OPERATION_PARTIAL", message: "Observer cleanup did not return a confirmation." });
+        if (presentation !== "json") console.error("Observer cleanup was not confirmed.");
+      }
     }
     if (streaming) emit("end", { reason, lastAsOf: last?.asOf ?? null });
   }
+  if (refusal && presentation !== "json") throw refusal.failure();
   if (!streaming && last) writeResult(presentation, {
     command: "channel", target, result: { kind: "membership", ...last },
     ...(last.asOf === null ? { completeness: "partial" as const, partial: { message: "The membership feed has no successful poll to establish a census.", remedy: "Check the selected space's delivery service." } } : {}),

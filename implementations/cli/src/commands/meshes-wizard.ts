@@ -61,6 +61,9 @@ export interface WizardIO {
   confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean>;
 }
 
+/** What a cancel says. Nothing is written before the last confirmation, so a cancel changed nothing. */
+const CANCELLED = "Cancelled. Nothing was registered.";
+
 /** The real terminal, via clack. Cancellation (Ctrl-C / Esc) exits here rather than returning a
  *  sentinel the wizard body would have to thread through every branch. */
 export function clackIO(): WizardIO {
@@ -74,13 +77,13 @@ export function clackIO(): WizardIO {
       const s = p.spinner();
       return { start: (m) => s.start(m), stop: (m) => s.stop(m) };
     },
-    text: async (opts) => abortIfCancel(await p.text(opts as never)),
+    text: async (opts) => abortIfCancel(await p.text(opts as never), CANCELLED),
     select: async <T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }) =>
-      abortIfCancel(await p.select<T>(opts as never)) as T,
+      abortIfCancel(await p.select<T>(opts as never), CANCELLED) as T,
     // `initialValue` is a per-call decision, not a house style: an ordinary "register this?"
     // may default yes, but a consent to an unencrypted transport must not be given by pressing
     // Enter. Callers that omit it keep the old default.
-    confirm: async (opts) => abortIfCancel(await p.confirm({ initialValue: true, ...opts })),
+    confirm: async (opts) => abortIfCancel(await p.confirm({ initialValue: true, ...opts }), CANCELLED),
   };
 }
 
@@ -410,7 +413,9 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     ].join("\n"),
     brand("About to record"),
   );
-  const go = await io.confirm({ message: "Register this mesh?" });
+  // Replacing a record is the one write here that loses something, so Enter must not do it: it takes
+  // a typed yes, and Enter keeps No.
+  const go = await io.confirm({ message: replace ? `Replace the record for "${space}"?` : "Register this mesh?", ...(replace ? { initialValue: false } : {}) });
   if (!go) return cancelled(io, "Nothing was registered.");
 
   // The guided consent is PERSISTED, exactly as the flag form persists it. Asking the operator and
@@ -464,7 +469,7 @@ async function askRoot(io: WizardIO, cwd: string, defaultTo: string | undefined)
   }
 }
 
-function cancelled(io: WizardIO, message = "Cancelled."): false {
+function cancelled(io: WizardIO, message = CANCELLED): false {
   io.cancel(message);
   return false;
 }

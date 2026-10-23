@@ -1286,6 +1286,8 @@ try {
   const seededOut = await addWizard({ server: LIVE, root, allowUnencryptedOverlay: true } as never, root, seededSafe.io as never);
   check("a pre-seeded acceptance does not attach itself to a loopback registration",
     seededOut === true && findMesh("seeded-safe")?.unencryptedOverlay === undefined, findMesh("seeded-safe"));
+  const newAsk = seededSafe.asked.find((a) => a.kind === "confirm");
+  check("a new record's last question keeps its default", newAsk?.message === "Register this mesh?" && newAsk.initialValue === undefined, seededSafe.asked);
   removeMesh("seeded-safe");
 
   // 1. A name that came in on the command line must still hit the clash gate.
@@ -1295,6 +1297,12 @@ try {
   check("the wizard asks before replacing a record named on the command line",
     clashOut === false && clash.asked.some((a) => a.kind === "select" && a.message.includes("already registered")), clash.asked);
   check("…and cancelling there writes nothing", findMesh("taken")?.ts === new Date(0).toISOString(), findMesh("taken"));
+  // Taking Replace and passing the checks, the last question is the one Enter must not answer yes.
+  const replaceKept = driver(["replace", false]);
+  const replaceKeptOut = await addWizard({ space: "taken", server: LIVE, root }, root, replaceKept.io as never);
+  const replaceAsk = replaceKept.asked.find((a) => a.kind === "confirm");
+  check("replacing a record asks a default-No question naming it, and No writes nothing",
+    replaceKeptOut === false && replaceAsk?.message === 'Replace the record for "taken"?' && replaceAsk.initialValue === false && findMesh("taken")?.ts === new Date(0).toISOString(), { asked: replaceKept.asked, record: findMesh("taken") });
   removeMesh("taken"); // this block's fixture; later cases assert on an empty registry
 
   // 2. "Point at a different folder" must ASK for one, not re-infer the folder it just rejected.

@@ -2185,7 +2185,9 @@ one thing that cannot be derived (the broker URL), probes it, and tells you what
 requiring credentials. It then offers the spaces your `--root` already holds credentials for, states
 the mode as a fact about that broker rather than asking, and shows the exact record before writing
 anything. A broker that does not answer, or a space name already registered, becomes a choice rather
-than an error. Anything you pass on the command line is taken as given and not asked again. Without
+than an error. Replacing a registered record then asks you to type `y`; Enter keeps No. Nothing is
+written before that last question, and a cancel at any question says nothing was registered.
+Anything you pass on the command line is taken as given and not asked again. Without
 a terminal - a script, an agent, CI - nothing prompts and the flag form's errors stand
 (`COTAL_NO_PROMPT=1` forces that too).
 
@@ -4264,7 +4266,11 @@ cotal channel remove <name> [--purge] [--yes]
 metadata, not every channel with traffic. `show` includes inherited replay and delivery settings.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
-records. A missing feed remains unknown rather than an empty confirmed census. The delivery service
+records. A missing feed remains unknown rather than an empty confirmed census. A lost connection is
+one `TARGET_UNAVAILABLE` error record, or one line, while the follow re-establishes it, and a `gap`
+record and the current census follow once the feed answers again, so a follow outlives a broker
+restart. A credential that can no longer connect ends the follow with the refusal a one-shot
+command with that credential gets, as [`history --follow`](#history) does. The delivery service
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
