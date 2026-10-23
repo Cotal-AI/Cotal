@@ -6118,6 +6118,11 @@ resolved native class, instance and epoch. The CLI holds its cooperative writer 
 the same bytes before invocation. `--on` must agree with a saved instance pin. A missing pinned
 instance does not fall back to the class queue. Unknown native effects are not blindly retried.
 
+Both read the endpoint's contract first, and so does `auth mint --endpoint`. When no instance
+answers that read within 10 seconds, the command refuses with `TARGET_UNAVAILABLE`: nothing is
+serving the endpoint, or nothing could reach this caller. Its Next says to start the service that
+serves the endpoint. Nothing was invoked or issued.
+
 A reference's file credential uses the [paired native caller adapter](#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
 conflicting explicit `--creds` refuses. Arbitrary raw files do not supply a caller triple, and a
