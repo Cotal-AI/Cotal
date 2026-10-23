@@ -84,7 +84,7 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, missingBackupPath, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, missingBackupPath, missingBackupPathText, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
@@ -788,7 +788,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   // A path that names nothing is refused here too, saying whether its folder or the artifact is missing.
   const named = resolve(flags.restore);
   const missing = missingBackupPath(named);
-  if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing === "folder" ? `there is no folder ${dirname(named)}, so there is no backup artifact ${named}; nothing was restored` : `the folder ${dirname(named)} holds no backup artifact ${basename(named)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; cotal backup verify <dir> checks one before a restore" });
+  if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; cotal backup verify <dir> checks one before a restore" });
   let lock = acquireStackOperationLock(root);
   let staged: StagedArtifact | undefined;
   let transitioned = false;

@@ -100,6 +100,11 @@ try {
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(partial)], values: {}, raw: [] }), (error: unknown) =>
     isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`
       && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").includes("cotal backup recover <attempt> --yes"));
+  // A path that names nothing says whether its folder or the artifact is missing, as restore does.
+  for (const [mode, path, missing] of [["verify", join(root, "no-such-folder", "artifact"), "folder"], ["inspect", join(root, "no-such-artifact"), "artifact"]] as const)
+    assert.throws(() => backupRead({ positionals: [mode, path], values: {}, raw: [] }), (error: unknown) =>
+      isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.outcome === "refused" && (error.target as { missing?: unknown }).missing === missing
+        && error.message.endsWith("; nothing was checked") && error.message.includes(missing === "folder" ? `there is no folder ${join(root, "no-such-folder")}` : "holds no backup artifact no-such-artifact"), `${mode} names the missing ${missing}`);
   writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
   // A path through a linked folder names the artifact create published there, and verify reads it at
   // its real path, as restore stages it.

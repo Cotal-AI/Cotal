@@ -17,7 +17,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import {
   hardenPrivate,
   type BackupStreamState,
@@ -433,6 +433,11 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
 export function missingBackupPath(path: string): "folder" | "artifact" | undefined {
   if (statSync(path, { throwIfNoEntry: false })) return undefined;
   return statSync(dirname(path), { throwIfNoEntry: false })?.isDirectory() ? "artifact" : "folder";
+}
+
+/** What a {@link missingBackupPath} answer means, naming the missing folder or artifact. */
+export function missingBackupPathText(path: string, missing: "folder" | "artifact"): string {
+  return missing === "folder" ? `there is no folder ${dirname(path)}, so there is no backup artifact ${path}` : `the folder ${dirname(path)} holds no backup artifact ${basename(path)}`;
 }
 
 export function readStagedCheckpoints(staged: StagedArtifact): PersistentConsumerCheckpoint[] {

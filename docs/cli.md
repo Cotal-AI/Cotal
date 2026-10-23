@@ -1585,7 +1585,9 @@ not a plain file name in the folder, such as one with `../` or an absolute path,
 `manifest-invalid`. `backup restore` and `up --restore` refuse each of these `SCHEMA_INVALID` with
 the same file and fault, before they stage or change anything.
 A directory with no `manifest.json` is refused as an incomplete artifact, the kind an interrupted
-`backup create` leaves, with the fault `manifest-missing`. A full artifact of an authenticated space
+`backup create` leaves, with the fault `manifest-missing`. A path that names nothing refuses
+`TARGET_NOT_FOUND` (exit 2) and says in `missing` whether its folder or the artifact is missing, as
+`backup restore` does. A full artifact of an authenticated space
 restores only into a root that still holds the trust state it was taken under, so it cannot move to
 another machine or a fresh root. `backup create`, `backup inspect` and `backup verify` say so in a
 `Restores into` row, and their JSON carries `trustBound`. A registry restore does not check the trust
