@@ -729,7 +729,8 @@ open files, with raising `ulimit -n` as its next step. Otherwise its next step n
 Before it launches a broker, the controller binds the broker address once. When another process
 holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches nothing. A
 first start names another `--server` as its next step, and a stack that ran keeps its recorded
-address. A text `up` prints one `Starting <definition>` line
+address. When no member started, the refusal says the stack
+started no member. A text `up` prints one `Starting <definition>` line
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's
 Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager after `--no-manager`,
 and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, so a bare

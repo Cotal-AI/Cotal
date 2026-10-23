@@ -622,7 +622,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         : undefined;
     // The member's own sentence and remedy are what a reader can act on, such as a busy broker port.
     const cause = pending && failure ? ` (${pending.role}: ${failure.message})` : "";
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
+    // A refusal or failure with no member started or reused leaves nothing of the stack running.
+    const none = !uncertain && !journal.members.some((row) => row.state === "started" || row.state === "reused");
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });
