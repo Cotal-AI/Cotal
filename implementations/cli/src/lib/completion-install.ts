@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, fchmodSync, linkSync, lstatSync, mkdir
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
-import { SCRIPTS } from "./completion-scripts.js";
+import { LOAD_NOW, SCRIPTS } from "./completion-scripts.js";
 import { CommandFailure } from "@cotal-ai/workspace";
 
 interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number }
@@ -53,13 +53,26 @@ function safeParents(path: string, create = false): void {
     mkdirSync(path, { mode: 0o700 }); info = lstatSync(path);
   }
   const sticky = info.uid === 0 && (info.mode & 0o1000) !== 0;
-  if (!info.isDirectory() || info.isSymbolicLink() || (info.uid !== 0 && info.uid !== process.getuid!()) || ((info.mode & 0o022) !== 0 && !sticky)) throw new CommandFailure("refused", "PERMISSION_DENIED", "completion paths cross a symlink, untrusted owner or writable ancestor; custom shell wiring was not changed");
+  const writable = "is writable by group or others";
+  const problem = info.isSymbolicLink() ? "is a symlink" : !info.isDirectory() ? "is not a directory"
+    : info.uid !== 0 && info.uid !== process.getuid!() ? "is owned by another user" : (info.mode & 0o022) !== 0 && !sticky ? writable : undefined;
+  if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `the completion path ${path} ${problem}; custom shell wiring was not changed`, {
+    target: { path },
+    remedy: problem === writable
+      ? `remove group and other write permission (chmod go-w ${path}) and run the command again, or wire completion yourself from cotal completion script <shell>`
+      : "wire completion yourself from cotal completion script <shell>",
+  });
 }
 function read(path: string, privateFile = false): Snapshot | undefined {
   safeParents(dirname(path));
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new CommandFailure("refused", "PERMISSION_DENIED", "the shell integration file could not be opened safely; its contents were not printed", { target: { path } }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "ELOOP") throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} is a symlink, which completion does not follow; its contents were not printed`, { target: { path } });
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "the shell integration file could not be opened safely; its contents were not printed", { target: { path } });
+  }
   try {
     const before = fstatSync(fd);
     if (!before.isFile() || before.uid !== process.getuid!() || (before.mode & (privateFile ? 0o077 : 0o022)) !== 0 || before.size > 2 * 1024 * 1024) throw new CommandFailure("refused", "PERMISSION_DENIED", "shell integration needs an owned, bounded regular file without group/other write access", { target: { path } });
@@ -147,6 +160,13 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     safeParents(dirname(paths.rc));
     try { lstatSync(dirname(paths.rc)); }
     catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the shell startup directory must exist before completion installation"); }
+    // A startup file linked from elsewhere, as a dotfile manager such as stow links it, is never
+    // written through. The load line needs no stub, so it works from the file the link points to.
+    if (lstatSync(paths.rc, { throwIfNoEntry: false })?.isSymbolicLink())
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is a symlink, and completion does not write through one; nothing was changed`, {
+        target: { shell, path: paths.rc },
+        remedy: operation === "install" ? `add this line to the file it points to yourself: ${LOAD_NOW[shell]}` : "remove the cotal completion lines from the file it points to yourself",
+      });
   }
   safeParents(dirname(paths.stub), true);
   const held = acquireLock(`${recordPath(paths)}.lock`, { label: "shell completion ownership", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another completion writer holds this shell integration") });

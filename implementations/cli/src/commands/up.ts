@@ -3482,11 +3482,13 @@ function ensureRootForSpace(space: string): void {
   // A prepared space starts only in the root `cotal space create` gave it. Checked before the mkdir
   // below, so a refused start leaves nothing behind.
   const prepared = findPreparedSpace(space);
-  if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root))
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}`, {
+  if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root)) {
+    const gone = !existsSync(prepared.root);
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, {
       target: { space, root: prepared.root },
-      remedy: `start it with \`cotal up\` there, or \`cotal space forget ${space}\` to start it here`,
+      remedy: gone ? `forget it with \`cotal space forget ${space}\`, then start it here` : `start it with \`cotal up\` there, or \`cotal space forget ${space}\` to start it here`,
     });
+  }
   // What spaces does this root already host? Prefer auth material; fall back to a live MeshEntry
   // whose root is this directory (open meshes have no auth dir).
   const hosted = listSpaceAccounts(authDir(root));

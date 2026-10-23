@@ -405,6 +405,8 @@ try {
   check("no manager process exits component-absent (1)", absent.status === 1, absentText);
   check("manager absence remains distinct from present-not-serving",
     /manager\s+absent/.test(absentText) && !/manager\s+not-serving/.test(absentText), absentText);
+  // The web extension is not installed yet, so the optional dashboard does not add its own failure.
+  check("an uninstalled optional dashboard reads not-installed", /web\s+not-installed · optional/.test(absentText), absentText);
 
   // A live PID record with no recorded bound address must not be transformed into a green web
   // probe by a default-port guess.  The component has a record, but its own HTTP control surface

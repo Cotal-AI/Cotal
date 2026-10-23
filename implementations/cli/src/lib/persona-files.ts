@@ -22,7 +22,7 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
     return catalogAt(target.root, target.space);
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && !values.server && error.details.root && error.details.space)
+    if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
       return catalogAt(error.details.root, error.details.space);
     const { message, remedy } = workspaceErrorParts({ kind: "target", error });
     // Every caller selects with --space, and some take no --server, so the shared remedy's
@@ -41,10 +41,16 @@ function catalogAt(root: string, space: string): PersonaCatalog {
   }
 }
 
+/** Why `name` cannot name a persona, or undefined when it can. */
+export function personaNameProblem(name: string): string | undefined {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return "persona names use letters, digits, '_' or '-'";
+  try { assertValidName(name); } catch { return "invalid persona name"; }
+  return undefined;
+}
+
 export function personaPath(root: string, name: string): string {
-  if (!/^[A-Za-z0-9_-]+$/.test(name))
-    throw new CommandFailure("refused", "USAGE_INVALID", "persona names use letters, digits, '_' or '-'");
-  try { assertValidName(name); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid persona name"); }
+  const problem = personaNameProblem(name);
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   return agentFilePath(root, name);
 }
 
@@ -120,6 +126,9 @@ function withDraft<T>(name: string, action: (path: string) => T): T {
 
 /** Use the existing serializer for flag-built definitions; file inputs keep their original bytes. */
 export function serializePersona(def: AgentDef): Buffer {
+  for (const [flag, value] of [["--role", def.role], ["--model", def.model]] as const)
+    if (value !== undefined && /[\u0000-\u001f\u007f]/u.test(value))
+      throw new CommandFailure("refused", "USAGE_INVALID", `${flag} takes a label without control characters`);
   return withDraft(def.name, path => {
     try { writeSecretFile(path, ""); saveAgentFile(path, def); }
     catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "invalid persona fields"); }
@@ -142,6 +151,12 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
     writeSecretFile(draft, source.bytes);
     const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
     const result = spawnSync(`${editor} ${quoted}`, { shell: true, stdio: "inherit" });
+    // A POSIX shell exits 127 when it finds no such command and 126 when it cannot run it: the editor
+    // is missing, as it is when none is set, and nothing was edited.
+    if (process.platform !== "win32" && !result.error && (result.status === 127 || result.status === 126))
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} ${result.status === 127 ? "was not found" : "could not be run"} - not saved`, {
+        remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; the value runs as a shell command, so quote a path that holds spaces",
+      });
     if (result.error || result.status !== 0)
       throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`);
     const edited = requirePersonaSource(draft).bytes;

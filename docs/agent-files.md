@@ -22,6 +22,9 @@ capabilities: [spawn, run] # may manage teammates and start workflow runs
 You are a builder on a shared mesh of peer agents…   ← the body is the persona
 ```
 
+The file may use LF or CRLF line endings and may start with a UTF-8 byte order mark, so a
+catalog checked out on Windows reads the same.
+
 **Frontmatter is identity** (an A2A-style `AgentCard`,
 [SPEC §6](../SPEC.md#6-presence-and-discovery)); **the body is the persona**, appended to
 the session's system prompt at launch: the one field that *must* be applied at launch,

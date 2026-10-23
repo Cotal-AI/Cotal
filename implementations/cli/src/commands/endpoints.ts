@@ -40,9 +40,11 @@ function endpointsView(items: ReturnType<typeof rowsOf>, space: string): Report 
   return { sections: [
     { title: `Live presence · ${space}`, blocks: [items.length ? {
       kind: "table",
-      columns: [{ key: "name", label: "Participant" }, { key: "kind", label: "Kind" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Activity" }, { key: "id", label: "Identity" }],
+      columns: [{ key: "name", label: "Participant" }, { key: "role", label: "Role" }, { key: "kind", label: "Kind" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Activity" }, { key: "id", label: "Identity" }],
       rows: items.map((item) => ({
-        name: { text: item.label, tone: "command" },
+        // The bare name, which `endpoint describe` takes; the role has its own column.
+        name: { text: peerLabel({ name: item.name }), tone: "command" },
+        role: item.role === null ? "none" : peerLabel({ name: item.role }),
         kind: item.kind ?? "not reported",
         state: { text: `${item.reportedStatus === "working" ? "working · progress unknown" : item.reportedStatus}${item.facts.condition}${item.facts.ages}`, tone: item.reportedStatus === "waiting" ? "waiting" : "hint" },
         activity: item.activity ? `${presenceText(item.activity)}${item.activityAge}` : "not reported",
