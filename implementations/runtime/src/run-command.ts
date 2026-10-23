@@ -23,6 +23,7 @@ import { Kvm, type KV } from "@nats-io/kv";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  hasDuplicateNames,
   assertLifecycleToken,
   LANG_PROBLEM_DETAIL_KIND,
   dialerFor,
@@ -853,6 +854,30 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   }
 }
 
+/** How deep an answer value may nest. Serializing it recurses, and a host runs out of stack a few
+ *  thousand levels down, at a depth that depends on the host, so the bound sits well below that. */
+const ANSWER_VALUE_DEPTH = 1000;
+
+/** `--value` as the answer record carries it, refused before anything is sent when the record
+ *  would differ from what was typed: JSON keeps only the last of two equal names, writes a number
+ *  past the double range as null, and cannot send a value nested past the serializer's stack. */
+function checkAnswerValue(text: string, usage: (message: string) => never): void {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { usage("--value must be valid JSON"); }
+  const refuse = (message: string): never => { throw new CommandFailure("refused", "SCHEMA_INVALID", `${message}; nothing was sent`); };
+  const duplicate = hasDuplicateNames(text);
+  if (duplicate.duplicate) refuse(`--value names "${duplicate.name}" twice in one object, and JSON keeps only the last`);
+  // Iterative, because the value can nest deeper than the stack a recursive walk has.
+  const pending: Array<{ v: unknown; depth: number }> = [{ v: value, depth: 1 }];
+  while (pending.length > 0) {
+    const { v, depth } = pending.pop()!;
+    if (typeof v === "number" && !Number.isFinite(v)) refuse("--value holds a number outside the range JSON carries, which would be recorded as null");
+    if (v === null || typeof v !== "object") continue;
+    if (depth > ANSWER_VALUE_DEPTH) refuse(`--value nests more than ${ANSWER_VALUE_DEPTH} levels deep, deeper than an answer can be sent`);
+    for (const child of Object.values(v)) pending.push({ v: child, depth: depth + 1 });
+  }
+}
+
 /** Public workflow grammar, before catalog preparation or native requests. */
 export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: string; a?: string; b?: string } {
   const values = { ...args.values } as RunValues;
@@ -900,7 +925,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
   if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
-  if (values.value !== undefined) { try { JSON.parse(values.value); } catch { usage("--value must be valid JSON"); } }
+  if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
   if (verb === "yield") {

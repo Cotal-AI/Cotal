@@ -65,6 +65,25 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
     usageRefusal(hooked, gateMessage), hooked);
 }
 
+{
+  // An answer value whose record would differ from what was typed is refused before anything is
+  // sent: JSON keeps the last of two equal names, writes 1e999 as null, and cannot send a value
+  // nested past the serializer's stack, so a value nests at most 1000 levels.
+  const schemaRefusal = (got: unknown, says: string) =>
+    isCommandFailure(got) && got.outcome === "refused" && got.code === "SCHEMA_INVALID" && got.message.includes(says) && got.message.includes("nothing was sent");
+  const answerWith = (value: string) => gate(["answer", "run-0", "/checkpoint:probe#0"], { value });
+  const duplicate = answerWith('{"a":1,"a":2}');
+  c("an answer value that names a key twice is refused SCHEMA_INVALID", schemaRefusal(duplicate, '--value names "a" twice in one object'), duplicate);
+  const huge = answerWith('{"n":[1e999]}');
+  c("an answer value with a number outside the range JSON carries is refused SCHEMA_INVALID", schemaRefusal(huge, "outside the range JSON carries"), huge);
+  const deep = answerWith("[".repeat(1001) + "]".repeat(1001));
+  c("an answer value nested more than 1000 levels deep is refused SCHEMA_INVALID", schemaRefusal(deep, "--value nests more than 1000 levels deep"), deep);
+  const fine = answerWith('{"a":1,"b":[1e300,"a"]}');
+  const deepest = answerWith("[".repeat(1000) + "]".repeat(1000));
+  c("and a value JSON carries as typed, 1000 levels deep at most, passes the gate",
+    !(fine instanceof Error) && fine.verb === "answer" && !(deepest instanceof Error) && deepest.verb === "answer", { fine, deepest });
+}
+
 // The gate and the declaration are two lists of the same verbs, kept by hand. Grade that they agree:
 // every verb the gate routes is declared, every declared name passes the gate, and the usage line
 // names every listed subcommand.
