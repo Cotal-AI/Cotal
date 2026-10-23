@@ -1,5 +1,33 @@
 # @cotal-ai/cli
 
+## 0.99.2
+
+### Patch Changes
+
+- 74a688d: Lead a signed-in Cloud user to the spaces they can use. `cotal login` lists the spaces its catalog
+  discovered and names `cotal use <name>`. A space registered from elsewhere that refuses an ungranted
+  account now answers with those discovered spaces, or with `cotal sync` when there are none, instead
+  of the operator's `cotal actor grant` command, which only the space's operator can run. The root that
+  holds the space's grant ledger still prints that command. `credentialFailure` takes an optional
+  remedy, which a structured command reports as `error.remedy`.
+  
+  A failing space catalog warns once when it starts failing and stays quiet while the outage lasts;
+  `cotal status` and `cotal sync` still report it, and a command aimed at one of its spaces still
+  refuses. A failed `AuthSpaceCatalogResult` carries `ongoing: true` when it continues an earlier
+  failure.
+  
+  `cotal setup` no longer calls Cloud in development: `--destination cloud` and the terminal choice say
+  to sign in with `cotal login` and set the space up as self-hosted. A scripted run with missing flags
+  prints the error, the missing flags and the scripted form without the full command help.
+- 8b7d625: `cotal send` no longer reports a possibly stored message when nothing was stored. A channel post the
+  broker refuses is `PERMISSION_DENIED` and lists the channels you may post to, or the space's
+  registered channels when your grant is on another machine. A message over the broker's message
+  limit is refused with its size and the limit before anything is sent. Bare `cotal down` blocked by
+  an additive ledger now names each ledger and the `cotal down --run <id>` that finishes it.
+- Updated dependencies [74a688d]
+  - @cotal-ai/core@0.99.2
+  - @cotal-ai/workspace@0.99.2
+
 ## 0.99.1
 
 ### Patch Changes
