@@ -695,6 +695,7 @@ try {
     // A frozen manager holds the down in its impact read, which holds the root's maintenance lock.
     const manager = pidOf(space, "stack-manager");
     if (manager !== null) process.kill(manager, "SIGSTOP");
+    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes"], { cwd: root, env });
     const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
     let downErr = "";
     stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
