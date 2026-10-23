@@ -5,6 +5,8 @@ import {
   assertValidChannel,
   assertValidRole,
   isConcreteChannel,
+  isPublishPermissionDenied,
+  resolveAuthProvider,
   effectiveDeliveryClass,
   effectiveReplay,
   readChannelRegistry,
@@ -15,7 +17,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CommandFailure, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
@@ -127,6 +129,30 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name } });
 }
 
+/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
+function payloadRefused(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
+  return false;
+}
+
+/** The broker refused a channel publication, so it was not stored. The remedy names what this
+ *  identity may post to: its grant when this machine holds it, read as `cotal whoami` reads it, and
+ *  otherwise the space's registered channels. */
+async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[]): Promise<CommandFailure> {
+  let post: string[] | undefined;
+  if (connection.mode === "user" && connection.root) {
+    try {
+      const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(connection.root), dir: userAuthStateDir(connection.root, connection.space), space: connection.space, actor: CLI_USER_ACTOR });
+      post = status.grant === "not-granted" ? [] : status.grant?.allowPublish;
+    } catch { /* the grant stays unknown */ }
+  }
+  const list = (channels: readonly string[]) => channels.map((name) => `#${name}`).join(", ");
+  const remedy = post === undefined
+    ? `this machine cannot read this identity's post grant${registered.length ? `; the channels registered in ${target.space} are ${list(registered)}` : ""}`
+    : post.length ? `post to a channel this identity may post to: ${list(post)}` : `this identity may post to no channel in ${target.space}`;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; the broker refused the message, so it was not stored`, { target: { ...target, post: post ?? null }, remedy });
+}
+
 /** Read the explicit body once, send once, close the transient sender, then print one receipt. */
 export async function send(args: ParsedArgs): Promise<void> {
   const input = sendArguments(args);
@@ -149,12 +175,14 @@ export async function send(args: ParsedArgs): Promise<void> {
   let failure: unknown;
   try {
     let policy: NonNullable<typeof receipt>["channelPolicy"] = null;
+    let registered: string[] = [];
     if (input.mode === "msg") {
       try {
         // One Direct Get with a static or open credential, as the transient endpoint reads: the
         // default scan's consumer outlives the send by five minutes (#4091). A user bearer has no
         // Direct Get row, so it keeps the scan.
         const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }), directGet: !connection.bearer });
+        registered = Object.keys(registry.channels ?? {});
         const config = Object.hasOwn(registry.channels ?? {}, input.target) ? registry.channels![input.target] : undefined;
         policy = { registered: config !== undefined, replay: effectiveReplay(config, registry.defaults), window: config?.replayWindow ?? registry.defaults?.replayWindow ?? null, delivery: effectiveDeliveryClass(config, registry.defaults) };
         if (!policy.registered) warnings.push({ code: "CHANNEL_UNREGISTERED", target, message: "Unregistered channel: publication uses the native space policy and does not create channel metadata." });
@@ -174,6 +202,11 @@ export async function send(args: ParsedArgs): Promise<void> {
       mentions.push(peer.card.name);
     }
     const peer = input.mode === "dm" ? await directPeer(ep, space, input.target) : undefined;
+    // The envelope only adds to the body. A body under the limit can still make a frame over it,
+    // which the client refuses before writing any of it.
+    const bytes = Buffer.byteLength(text, "utf8");
+    const tooLarge = () => new CommandFailure("refused", "UNSUPPORTED", `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
+    if (bytes > ep.maxPayload) throw tooLarge();
     let messageId: string;
     let sequence: number | null = null;
     try {
@@ -185,7 +218,9 @@ export async function send(args: ParsedArgs): Promise<void> {
         const { msg, ack } = await ep.anycastAttributed(input.target, text);
         messageId = msg.id; sequence = ack.seq;
       } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
-    } catch {
+    } catch (error) {
+      if (payloadRefused(error)) throw tooLarge();
+      if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered);
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "No storage acknowledgement was established. The message may have been stored; it was not retried.", { target, remedy: "Inspect the destination before sending again. The native publisher did not return a message identifier." });
     }
     receipt = { kind: "send", messageId, sequence, destination: peer?.card.id ?? input.target, sender: { principal: ep.card.id, kind: ep.card.kind }, stored: true, delivery: null, acceptance: null, completion: null, replyListener: false, replyTo: values["reply-to"] ?? null, bodySource: input.source, mentions: [...new Set(mentions)], channelPolicy: policy };

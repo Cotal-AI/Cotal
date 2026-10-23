@@ -48,7 +48,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 43;
+const EXPECTED = 44;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -307,6 +307,13 @@ try {
   const missing = await run(["send", "-t", "nobody-here", "x"]);
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);
   check("`cotal send -t` to an absent agent says TARGET_NOT_FOUND and no matching participant", missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes("no matching participant"), missing.stderr);
+
+  // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.
+  const bigFile = join(storeDir, "big.txt");
+  writeFileSync(bigFile, "a".repeat(1_100_000));
+  const big = await run(["send", "-c", "general", "--file", bigFile, "--json"]);
+  check("an oversized `cotal send -c` is refused UNSUPPORTED, exit 2, naming the limit and that nothing was sent",
+    big.code === 2 && big.stdout.includes('"code":"UNSUPPORTED"') && big.stdout.includes("1048576-byte message limit; nothing was sent"), big);
 
   // The admin credential for the `deliver pending` reads below is minted before bob stops, so no
   // setup sits inside the retained-card window that the by-name read depends on.
