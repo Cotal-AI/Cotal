@@ -16,7 +16,7 @@ import { endpointResolution, resolveEndpointSelection, validateEndpointSelector 
 import { endpointFailure, NativeReplyError, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
 import { refuseUnmappedHandle } from "../lib/endpoint-capability-gates.js";
 import { invokeEndpointScatter, writeEndpointScatter } from "../lib/endpoint-scatter.js";
-import { onInstance, onFlag } from "../lib/control.js";
+import { onInstanceId, onFlag } from "../lib/control.js";
 import { openEndpointConnection as epConnection, pairedCallerCommand } from "../lib/endpoint-client.js";
 
 const endpointTargetFlags = targetFlags.map((flag) => flag.name === "creds" ? { ...flag, description: "explicit credential file; native calls require its paired standalone context and registered static root" } : flag);
@@ -47,7 +47,7 @@ export function validateEndpointArguments(args: ParsedArgs, operation: "describe
     if (operation === "invoke") assertCommandToken(args.positionals[1]!);
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use a valid native endpoint class and command token"); }
   if (args.values.creds !== undefined && (typeof args.values.creds !== "string" || !args.values.creds || args.values.creds.length > 4096 || /[\u0000-\u001f\u007f]/u.test(args.values.creds))) throw new CommandFailure("refused", "USAGE_INVALID", "--creds needs one bounded protected file reference without terminal controls");
-  if (args.values.on !== undefined) onInstance(String(args.values.on), `cotal ${operation}`);
+  if (args.values.on !== undefined) onInstanceId(String(args.values.on), `cotal ${operation}`);
   if (operation === "describe") return;
   const values = args.values as FlagValues<typeof invokeFlags>;
   if (values.all && (values.cast || values.wait || values.on !== undefined || values.self || values.name !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--all is an untargeted class scatter and cannot combine with --on, --self, --name, --cast or --wait");
@@ -71,7 +71,7 @@ function parsedInput(text: string | undefined): Record<string, unknown> | undefi
 
 export async function describeCmd(args: ParsedArgs, commandName = "describe"): Promise<void> {
   validateEndpointArguments(args, "describe");
-  const requestedInstance = args.values.on === undefined ? undefined : onInstance(String(args.values.on), "cotal endpoint describe");
+  const requestedInstance = args.values.on === undefined ? undefined : onInstanceId(String(args.values.on), "cotal endpoint describe");
   const selection = resolveEndpointSelection(args.positionals[0]!, args.values as { space?: string; server?: string; creds?: string }, requestedInstance);
   const { endpoint, instanceId: on } = selection;
   recordOperationSpace(selection.space);
@@ -109,7 +109,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   const values = args.values as FlagValues<typeof invokeFlags>;
   const [selector, command] = args.positionals as [string, string];
   const input = parsedInput(values.args);
-  const requestedInstance = values.on === undefined ? undefined : onInstance(values.on, "cotal endpoint invoke");
+  const requestedInstance = values.on === undefined ? undefined : onInstanceId(values.on, "cotal endpoint invoke");
   const selection = resolveEndpointSelection(selector, values, requestedInstance);
   const { endpoint, instanceId: on } = selection;
   recordOperationSpace(selection.space);

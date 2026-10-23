@@ -56,7 +56,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "./spawn.js";
 import type { SetupStackStartResult } from "./setup-start.js";
 import { runtimeProviders } from "./runtimes.js";
-import { onInstance } from "../lib/control.js";
+import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 
@@ -214,7 +214,7 @@ export function validateSetupArguments(args: ParsedArgs): void {
   if (values.detach && !values.start) throw usage("--detach requires an explicit --start");
   const interactive = presentationOf(values) === "rich" && !values.yes && canPrompt();
   if (values.on !== undefined) {
-    onInstance(values.on, "cotal setup");
+    onInstanceId(values.on, "cotal setup");
     if (values.destination === "local") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
     if (values["configure-only"] || (!values.start && !interactive)) throw usage("--on requires a possible startup; pass --start for a scripted setup");
   }

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+  assertLifecycleToken,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
-  assertLifecycleToken,
   GOAL_BEARING_COMMANDS,
   goalFollowRefusal,
   epProbeInstanceInterest,
@@ -293,40 +293,39 @@ export interface ManagerPin {
 /** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
  *  ps/stop/attach/input/describe/models so they cannot drift. For stop and attach it is the seat-locality
  *  escape hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily
- *  the one that wins the class queue. */
-export const onFlag = { name: "on", type: "string", value: "<instance>", description: "ask only this manager instance, by the id `ps` prints, in a space with several managers" } as const satisfies FlagSpec;
+ *  the one that wins the class queue. On a user-auth mesh it also takes a manager's name or host
+ *  ({@link managerPin}). */
+export const onFlag = { name: "on", type: "string", value: "<instance>", description: "ask only this manager, by the instance id `ps` prints or, on a user-auth mesh, by its name or host" } as const satisfies FlagSpec;
 
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
  *  it is falsy, so every `if (on)` branch would treat it as absent and drop the pin (a `stop` would
  *  fall through to seat locality, an open-mesh `ps` to the scatter), while the mint and core's
  *  route builder treat it as PRESENT and refuse it as an invalid token. Two answers for one input;
- *  a dropped pin is a silent fallback, so neither branch gets to see it. A non-empty value is also
- *  shape-checked here now, against core's own lifecycle-token grammar: the mint's bare grammar
- *  error named neither the identifier `--on` wants nor where to read it, which cost operators
- *  spawn attempts on a format mismatch (#423). */
+ *  a dropped pin is a silent fallback, so neither branch gets to see it. A roster principal id
+ *  (`local.…`) is refused here too, naming the identifier `--on` wants (#423). Any other value is an
+ *  instance id, name or host, which {@link managerPin} resolves to an instance id before use. */
 export function onInstance(on: string | undefined, verb: string): string | undefined {
   if (on === undefined) return undefined;
   if (on === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`);
-  try {
-    assertLifecycleToken(on, "instanceId");
-  } catch (e) {
-    const principalClause = on.startsWith("local.") ? `; "${on}" is a principal id` : "";
-    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance\` field of \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${principalClause}: \`${verb} --on <instance>\``);
-  }
+    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it), or on a user-auth mesh a manager's name or host: \`${verb} --on <instance>\`. An empty value is refused, not dropped`);
+  if (on.startsWith("local."))
+    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance\` field of \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it): \`${verb} --on <instance>\``);
   return on;
 }
 
-/** {@link onInstance} for a command that reports no structured output: the refusal is printed and
- *  ends the process with exit 1. */
-export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
+/** {@link onInstance} for an `--on` that takes only an instance id: an endpoint's instance, or a
+ *  step that runs before the mesh can be read. The value is shape-checked against core's
+ *  lifecycle-token grammar, so a malformed id is refused naming the identifier `--on` wants. */
+export function onInstanceId(on: string | undefined, verb: string): string | undefined {
+  const value = onInstance(on, verb);
+  if (value === undefined) return undefined;
   try {
-    return onInstance(on, verb);
+    assertLifecycleToken(value, "instanceId");
   } catch (e) {
-    stderrLine("✗ ", (e as Error).message, c.red);
-    process.exit(1);
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance\` field of \`cotal ps --wide\`): \`${verb} --on <instance>\``);
   }
+  return value;
 }
 
 /** Render an ep-rail failure for the operator. Three outcomes, told apart by core's markers and never

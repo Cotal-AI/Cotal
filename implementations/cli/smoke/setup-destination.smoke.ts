@@ -472,8 +472,8 @@ if (process.platform !== "win32") {
       (await t.at(SAVE)) && t.s.text().includes(`project      ${dir}`) && /space\s+pty-local/.test(t.s.text()) && /application\s+codex/.test(t.s.text()) && /runtimes\s+pty, tmux/.test(t.s.text()), t.s.text().slice(-900));
     check("nothing is written before the save", findPreparedSpace("pty-local") === undefined);
     await t.answer(SAVE, ENTER);
-    check("after the save the terminal offers to start, with No selected",
-      (await t.at(START_LOCAL, t.cursor())) && /○ Yes \/ ● No/.test(t.s.text().slice(t.cursor())), t.s.text().slice(-600));
+    check("after the save the terminal offers to start, and Enter alone keeps No",
+      (await t.at(START_LOCAL, t.cursor())) && /type y to confirm; Enter keeps No/.test(t.s.text().slice(t.cursor())), t.s.text().slice(-600));
     await t.answer(START_LOCAL, ENTER);
     check("saving prepares the space and records the application", (await t.exited()) && t.s.code === 0 && findPreparedSpace("pty-local")?.root === dir && harnessOf("pty-local") === "codex" && existsSync(join(dir, ".cotal", "agents", "default.md")), { code: t.s.code, out: t.s.text().slice(-900) });
   }

@@ -47,7 +47,8 @@ import { chooseMeshTarget } from "./lib/choose-target.js";
 import { ConfirmationRequired } from "./lib/confirmation-required.js";
 import { MissingFlags } from "./lib/missing-flags.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
-import { managerChoiceFailure, rosterOf } from "./lib/manager-choice.js";
+import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
+import { canPrompt } from "./commands/meshes-wizard.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
@@ -214,6 +215,26 @@ function readsOnly(cmd: Command, first: string | undefined): boolean {
 function isArgError(e: unknown): boolean {
   const code = (e as { code?: string })?.code;
   return typeof code === "string" && code.startsWith("ERR_PARSE_ARGS");
+}
+
+/** The managed verbs whose unpinned manager selection is asked on a terminal: each is refused
+ *  before any effect when several of your managers are live. */
+const PICKS_MANAGER: ReadonlySet<string> = new Set(["spawn", "ps", "stop", "attach", "input", "models", "persona", "status"]);
+
+/** Whether `e` refused the unpinned manager selection of a command in {@link PICKS_MANAGER} and
+ *  this terminal then picked a manager, which `parsed` now pins with `--on`. A script, `--json`,
+ *  `--no-input` or `COTAL_NO_PROMPT=1` is not asked and keeps the refusal. A cancelled question exits 0, having
+ *  done nothing. */
+async function pinPickedManager(e: unknown, cmd: Command, parsed: ParsedArgs, argv: readonly string[]): Promise<boolean> {
+  if (!PICKS_MANAGER.has(cmd.name) || parsed.values.on !== undefined || !canPrompt()) return false;
+  const failure = isCommandFailure(e) ? e : isConnectRefusal(e) ? e.failure() : undefined;
+  if (!failure) return false;
+  const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
+  const picked = await pickManager(failure, () => rosterOf(target), argv);
+  if (picked === null) process.exit(0);
+  if (picked === undefined) return false;
+  parsed.values.on = picked.instanceId;
+  return true;
 }
 
 /** One dispatcher-owned catalog gate for every command that uses the shared mesh target grammar,
@@ -496,7 +517,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   }
   // A failure raised after the command recorded the space it resolved is reported in that space.
   const scope: OperationScope = {};
-  try {
+  const execute = async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }
@@ -505,7 +526,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
     });
+  };
+  try {
+    await execute();
   } catch (e) {
+    // On a terminal, a refused unpinned manager selection among several live managers is asked
+    // once, and the command runs again on the manager picked, as the refusal's Next would rerun it.
+    if (await pinPickedManager(e, cmd, parsed, argv)) {
+      try { await execute(); return; } catch (again) { e = again; }
+    }
     recordTelemetryError(e);
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;

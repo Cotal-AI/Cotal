@@ -169,6 +169,13 @@ On a terminal, a long value, line, warning or failure wraps at spaces, and each 
 starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
 own and is never split. Help wraps the same way, including the title of `cotal help --all`.
 
+A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
+`persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter
+alone, any other text, Esc or Ctrl-C keeps No, so a word typed at the prompt by mistake never
+confirms a step you cannot undo. `space delete` asks you to type the space's name instead. A
+question that defaults to Yes is a Yes and No choice: the arrow keys move the selection, `y` and `n`
+answer at once, and Enter takes the selection.
+
 A usage line breaks only between options, never between an option and its argument. A ` | ` stays
 on the line before it whenever it fits there. A compact `|`, such as the one in
 `<persona.md>|--prompt`, is a break point too: the line ends right after it, the next line starts
@@ -337,7 +344,8 @@ exit 2. Its remedy names `cotal ext seed` on a released install. A source checko
 connectors unless `COTAL_ALLOW_CHECKOUT_SEED=1` marks a sandboxed release test, and the remedy says
 so.
 
-After successful preparation, the terminal offers Start separately with No selected. An explicit
+After successful preparation, the terminal asks separately whether to start, and only a typed `y`
+or `yes` starts it. An explicit
 `--configure-only` suppresses that question. `--start` skips it; scripts must also pass `--detach`.
 Missing application/runtime prerequisites keep preparation saved and do not launch anything.
 
@@ -461,7 +469,7 @@ current.
 ## up
 
 ```bash
-cotal up [--foreground|--detach] [--open] [--space <s>] [--root <prepared-dir>] [--server <url>] [--channels <path>] [--runtime <name>]
+cotal up [--foreground|--detach] [--open] [--space <s>] [--root <prepared-dir>] [--server <url>] [--channels <path>] [--runtime <name>] [--manager-name <name>]
 cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
          [--advertised-server <url>] [--agent-provisioning-url <https://…>]
 cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
@@ -499,6 +507,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `-f`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `-f`, overrides the manifest's runtime |
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh and reused by every later manager launch, so a repair or resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
+| `--manager-name <name>` | none | Name this root's manager. `who --all` and the manager choice show the name, and on a user-auth mesh `--on` takes it. It is recorded in the root, so a restart or repair keeps it. A running manager keeps the name it started with, so a different name is refused until `cotal down`. The name is one line of at most 128 characters with no `/` or `\`, and it may not look like an instance id (26 to 32 lowercase letters and digits). Cannot be combined with `--no-manager`, `--file` or `--restore` |
 | `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
 | `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
 
@@ -2434,7 +2443,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--allow-publish <a,b>` | deny | Post-ACL override; `""` clears it |
 | `--detach`, `-d` | off | Launch through the manager, wait until the agent joins, and return without attaching (reattach with `cotal attach`) |
 | `--foreground` | off | Run the application directly in this process. Its exit, or the terminal's, may end the agent. Refuses `--detach`, `--creds`, `--on`, `--restarts`, and `--json` or `--plain` except with `--dry-run` |
-| `--on <instance>` | class anycast | Managed launches only: pin the launch to one manager instance id (the whole id, as `ps` prints it). Refused with `--foreground` (no manager to pin) and when empty |
+| `--on <instance>` | class anycast | Managed launches only: pin the launch to one manager instance id (the whole id, as `ps` prints it), or on a user-auth mesh a manager's name or host, as [`ps`](#managed-seats) takes them. Refused with `--foreground` (no manager to pin) and when empty |
 | `--restarts <n>`, `--restart-window <ms>` | none | Managed launches only, and given together: the manager restarts the agent at most `<n>` times within `<ms>`. Each must be a positive integer |
 | `--live-only` | off | `--foreground` only: skip the durable backstop |
 | `--enrollment-file <private-file>` | none | With `--foreground` and `--space`: a private file holding one seat's enrollment URL (see above) |
@@ -2466,7 +2475,9 @@ a managed handoff, and an enrollment onto a mesh this machine has not registered
 persona file against the working directory. A missing
 persona is refused with the catalog directory or the file that was checked. A missing `default`
 persona also names the command that writes one: `cotal up` in the root of a space this machine
-started, or `cotal persona create default` for any other space. The launch flags
+started, or `cotal persona create default` for any other space. When a managed launch on a
+user-auth mesh is refused because the chosen manager's catalog has no `default`, the Next gives the
+spawn again with `--on` for each of your other live managers whose catalog lists one. The launch flags
 override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
 spawn is refused with that explanation before any request is sent. `--foreground` runs the agent
@@ -2490,7 +2501,11 @@ refusal left behind. A foreground `--share-tools` selection that names a server 
 refused before anything is provisioned. A managed spawn is an
 **action**: the manager accepts it and allocates the identity, and the CLI waits for a real outcome
 (the agent joins, exits, or about 30 seconds pass) before it reports or attaches (see
-[the control surface](control-surface.md)). See [Connect Claude Code](connect-claude.md) and
+[the control surface](control-surface.md)). On a user-auth mesh the manager enrolls the agent with
+the host first. When the host refuses that enrollment, for example for a role or a channel your grant
+does not carry, and the manager removes the secrets it staged for the agent, the spawn is refused
+with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or does not answer leaves
+`OPERATION_UNKNOWN`. See [Connect Claude Code](connect-claude.md) and
 [Agent files](agent-files.md). (`cotal start` was merged into `cotal spawn --detach`.)
 A managed spawn onto a manager from another Cotal release is refused before any request is sent
 when the manager's contract does not declare a field this CLI sends. The refusal names the field,
@@ -2549,7 +2564,7 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--harness <connector>`, `-H` | all registered applications | Application whose catalog to list |
-| `--on <manager-instance>` | native selection | Ask only the named manager instance. An unavailable or unauthorized pin refuses without choosing another. |
+| `--on <manager-instance>` | native selection | Ask only the named manager instance, or on a user-auth mesh the manager a name or host picks, as [`ps`](#managed-seats) takes them. An unavailable or unauthorized pin refuses without choosing another. |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
 | `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate |
 | `--plain` | off | The same report without color |
@@ -2601,9 +2616,10 @@ cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] 
 Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
 activity, attention mode, harness, model and host, as its presence reports them. Infrastructure
 endpoints are hidden unless `--all` asks for them; the report says how many it hid. In a user-auth
-space, `--all` shows each of your managers as a `manager/manager` row whose id ends in
-`manager_<instanceId>`, the id `--on` takes, with its host and its runtime in the activity, such as
-`supervisor (tmux)`.
+space, `--all` shows each of your managers as a row whose id ends in `manager_<instanceId>`, the id
+`--on` takes, with its host and its runtime in the activity, such as `supervisor (tmux)`. A manager
+row reads `manager <name>`, with the name the manager was started with, or `manager <host>/<runtime>`
+for one started without a name.
 
 `managed` says whether a manager runs the seat. With no manager on the roster it is `false` for
 every row and no manager is asked. Otherwise every registered manager is asked for its seats, and a
@@ -2889,7 +2905,7 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | none | Managed agent to stop / attach (required) |
-| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
+| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. On a user-auth mesh it also takes a manager's name, its host, or the `<host>/<runtime>` an unnamed manager shows as (its runtime alone when its presence names no host), when only one of your live managers matches it; otherwise it refuses as `TARGET_AMBIGUOUS` or `TARGET_NOT_FOUND`, lists your live managers and gives the command again on each. On a static or open mesh a manager's presence does not carry its instance id, so a name is refused as `USAGE_INVALID` and the Next asks for the instance id. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
 | `--wide` (`ps`) | off | Print each seat as a labeled record that adds the operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
 | `--json` / `-j` (`ps`) | off | One JSON document (see below). Mutually exclusive with `--wide` and `--plain` |
 | `--plain` (`ps`) | off | The same report without color or marks |
@@ -3004,10 +3020,25 @@ run from a managed seat's shell selects the manager that launched the seat (`COT
 and any other caller's selection must be unique. Discovery and the command use that instance route.
 The caller gains no registry read or scatter permission. An absent, ambiguous or unauthorized
 selection refuses before sending the command. With several of your managers live, the refusal lists
-each one on its own row with its instance id, host, activity and the time its process started, and
-its Next gives your command again with `--on <instanceId>` for each. The code stays
+each one on its own row with its name, instance id, host, activity and the time its process started.
+A manager started without a name is listed as `<host>/<runtime>`. A manager started by a cotal
+before 0.100.0 puts no host in its presence, so its host reads
+`not reported (started by an older cotal)` and it is listed by its runtime, such as `tmux`.
+Restarting it with the current cotal shows its host. Its Next gives your command again with `--on`
+for each, using the name, `<host>/<runtime>` or runtime when that picks the manager out, and the
+instance id otherwise. The code stays
 `PERMISSION_DENIED` and the exit 2. `who --all` lists the same managers at any time. By default, when every manager you registered has
 exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
+
+On a terminal, `spawn`, `ps`, `stop`, `attach`, `input`, `models`, `persona` and `status` ask
+instead of refusing. Every manager the exchange counts is one of yours in the space the command
+resolved, from the folder or `--space`, so the question lists those managers with the most recently
+started first, and that one is the default. The command then runs on the manager you pick, as the
+Next would run it. The question and a `Manager chosen` receipt, with the manager, its instance id
+and the `--on` that skips the question, go to stderr. Cancelling the question does nothing and
+exits 0. Without a terminal on stdin and stdout, with `--no-input`, with `--json`, which implies
+`--no-input`, or with `COTAL_NO_PROMPT=1`, the command refuses as above. A `--json` caller passes
+`--on`, and the result's `target.managerInstanceId` names the manager that answered.
 
 A trusted hosted composition may opt into an [interactive local primary](embedding.md#interactive-manager-primary).
 Under that policy, unpinned human control selects the genuine local Manager up front, even when your
@@ -3271,7 +3302,7 @@ file byte for byte when its output is piped or redirected. Only its explicit `--
 ## supervise
 
 ```bash
-cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
+cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--name <name>] [--spawn <names>]
 ```
 
 `supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
@@ -3289,6 +3320,7 @@ starts runs the same code through a hidden entry and prints no warning.
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair keeps it |
+| `--name <name>` | none | The manager's name. Its presence card carries it, `who --all` and the manager choice show it, and `--on` takes it on a user-auth mesh. It is recorded in this root, so a later start without `--name` keeps it. Without a name, the manager shows as `<host>/<runtime>` |
 | `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.md#roster-files) |
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `team boot`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
@@ -5503,7 +5535,10 @@ separate read.
 attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
 not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capable receipt after
 the same readiness result. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
-role and model request separately from any provider acceptance claim. Its Next section names the actual agent, space and accepting manager
+role and model request separately from any provider acceptance claim. When the host granted the
+agent other read or post channels than it asked for, as a host that narrows a request to your grant
+does, the receipt adds a `Granted` line with the channels it got and the ones it asked for, and
+`--json` carries both as `acl.requested` and `acl.effective`. Its Next section names the actual agent, space and accepting manager
 in attach/status commands when their tokens are safe shell words; it otherwise retains
 placeholders beside the full identity fields. Without usable input/output terminals, default attachment refuses
 before allocation and names detached or direct execution. A shell tool's inherited parent PTY
@@ -6217,7 +6252,7 @@ required process/lifecycle correlation is absent. Generic process launch/stop st
 The `manager` service preset uses the `manager-service` adapter. It requires the selected registered
 `root` and an explicit installed `runtime`; an optional `server` can repeat the registered broker.
 The optional `console-port`, `console-host`, `ws-port` and `max-sessions` pass explicit native
-settings. Omitting the host keeps the native loopback binding; port zero requests an allocated
+settings, and an optional `name` names the manager as `supervise --name` does. Omitting the host keeps the native loopback binding; port zero requests an allocated
 console port. A declared `launch` also requires `launch-sha256`. It names an existing private
 resolved launch spec, pins its full SHA-256 and must name this space. The child parses those
 verified bytes before authority preparation and keeps that snapshot through startup. An optional

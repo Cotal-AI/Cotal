@@ -373,10 +373,18 @@ export const cotalAuthProvider: AuthProvider = {
    *  digest of the standing actorToken — the participant wrote the plaintext at 0600 before calling
    *  — so a refused or lost response never leaks an agent's exchange secret. Redirects are refused
    *  for the same reason the retained-validation client refuses them: a 302 could walk the login
-   *  proof, and the enrollment it authorizes, onto another host. */
+   *  proof, and the enrollment it authorizes, onto another host. A host 4xx is its refusal, so it
+   *  enrolled nothing: that rejects as a `permission-denied` envelope whose outcome is `not-executed`.
+   *  A 5xx or no answer says nothing about what the host did, so that failure keeps no outcome. */
   async enrollRemoteManagedAgent({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagedAgentEnrollmentRequest }): Promise<RemoteManagedAgentEnrollmentResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "enrolling a managed agent");
-    return postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent enrollment") as Promise<RemoteManagedAgentEnrollmentResult>;
+    try {
+      return await postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent enrollment") as RemoteManagedAgentEnrollmentResult;
+    } catch (error) {
+      if (error instanceof ManagerAuthorityRefusal && error.status < 500)
+        throw new EpEnvelopeError("permission-denied", error.message, undefined, "not-executed");
+      throw error;
+    }
   },
 
   /** Client half of host-owned terminal release preparation (#1972 phase P0/P1). The opId is derived
@@ -749,16 +757,23 @@ async function postManagerAuthority(
  *  version of the manager whose requests this client sends. */
 const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+/** A host's non-2xx answer to a manager-authority request, with the HTTP status it answered. */
+class ManagerAuthorityRefusal extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 /** A manager-authority refusal, with the host's reason verbatim. The protocol is closed, so a host
  *  that names a field this request carries as unknown predates that field: say it is version skew
  *  and which side has to move. The field is never dropped to fit the older host. */
-function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): Error {
+function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): ManagerAuthorityRefusal {
   const reason = (body as { error?: string }).error ?? `HTTP ${status}`;
   const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`
     : "";
-  return new Error(`signed in, but ${what} was refused: ${reason}${skew}`);
+  return new ManagerAuthorityRefusal(`signed in, but ${what} was refused: ${reason}${skew}`, status);
 }
 
 function carriesField(value: unknown, field: string): boolean {
