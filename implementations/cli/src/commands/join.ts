@@ -19,7 +19,7 @@ import {
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { findMesh, inputDisabledByFlag, readCredsFileOrExit, refreshRegistrationPolicy, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
+import { credsSpace, findMesh, inputDisabledByFlag, readCredsFileOrExit, refreshRegistrationPolicy, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
@@ -135,7 +135,8 @@ export async function join(args: ParsedArgs): Promise<void> {
   // escape hatch. Otherwise resolve the running mesh from any directory (server + trust material)
   // and self-mint, so a bare `cotal join` works outside the project instead of crashing credless.
   if (link || values.token || values.creds) {
-    space = values.space ?? link?.space ?? resolveSpace(process.cwd());
+    // With no space or broker named, the credential goes to the selected space or this folder's.
+    space = values.space ?? link?.space ?? ((values.server ?? link?.servers) === undefined ? credsSpace(process.cwd())?.space : undefined) ?? resolveSpace(process.cwd());
     // The credential goes only to a broker the caller paired it with: `--server`, the link's own
     // address, or the address the space is registered at. The default address is never assumed for it.
     const recorded = (values.server ?? link?.servers) === undefined ? findMesh(space) : undefined;

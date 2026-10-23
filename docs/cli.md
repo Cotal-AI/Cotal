@@ -2046,9 +2046,12 @@ in `error.remedy`, apart from `error.message`, and names the space and root it c
 `target` when they are known, as for a prepared space that is not started.
 
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
-the `--space` is registered at, `main` when no space is named, and keeps that registration's TLS
-requirement. A space not registered here is refused with `TARGET_NOT_FOUND`, exit 2, before
-anything is dialed. The default address is never assumed for a credential.
+its space is registered at and keeps that registration's TLS requirement. The space is `--space`,
+else the selected space, else the space of the project the command runs in, else `main`. A command
+never picks the only running space for a credential. A space not registered here is refused with
+`TARGET_NOT_FOUND`, exit 2, before anything is dialed. The refusal says whether it is the selected
+space, this folder's space or the default space, and a space other than the default is also under
+`target`. The default address is never assumed for a credential.
 The file is read and checked with the NATS client's own parser before anything is dialed, and the
 refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A directory, an empty file and
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
@@ -4907,8 +4910,8 @@ harness. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.md) and [Identity and auth](identity-and-auth.md).
 
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
-keeping that registration's TLS requirement. A space not registered here is refused before
-anything is dialed. The default address is never assumed for a credential.
+keeping that registration's TLS requirement. With no `--space`, that is the selected space, else
+this folder's. A space not registered here is refused before anything is dialed. The default address is never assumed for a credential.
 
 A `--creds` join binds the inbox provisioned for its lifecycle, so the space's owner mints the
 credential with `cotal auth mint <name> --provision` and hands over the lifecycle UID that mint

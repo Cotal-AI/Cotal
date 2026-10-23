@@ -37,7 +37,7 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
 
@@ -95,9 +95,9 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key ===
 // Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[]): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], cwd = shell): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd: shell, env: isolatedEnv, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd, env: isolatedEnv, timeout: 120_000 }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -269,6 +269,38 @@ try {
         (followed.envelope.target as { server?: string } | null)?.server === servers, shown(followed));
   } finally {
     inHome(() => removeMesh("elsewhere"));
+  }
+  // With neither --space nor --server, a credential goes to the selected space, else to the space of
+  // the folder the command runs in, and a refusal names that space rather than the default.
+  const observer = join(home, "observer.creds");
+  writeFileSync(observer, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  const spaceOf = (r: { envelope?: Envelope }) => (r.envelope?.target as { space?: string } | null)?.space;
+  const bySelection = await run(["history", "general", "--json", "--creds", observer]);
+  check("--creds with no --space or --server reads the selected space", bySelection.status === 0 && bySelection.envelope?.outcome === "ok" && spaceOf(bySelection) === space, shown(bySelection));
+  inHome(() => setCurrent("histunreg"));
+  try {
+    const unregistered = await run(["history", "general", "--json", "--creds", observer]);
+    check("a selected space not registered here is refused by name, not as the default space",
+      unregistered.status === 2 && unregistered.envelope?.error?.code === "TARGET_NOT_FOUND" &&
+        unregistered.envelope.error.message === '--creds needs --server <url> or a registered --space: the selected space "histunreg" is not registered here, so nothing was dialed' &&
+        spaceOf(unregistered) === "histunreg", shown(unregistered));
+    inHome(() => clearCurrent());
+    const byFolder = await run(["history", "general", "--json", "--creds", observer], meshRoot);
+    check("with nothing selected, it reads the space registered for the folder it runs in", byFolder.status === 0 && spaceOf(byFolder) === space, shown(byFolder));
+    const prepRoot = join(home, "prep-root");
+    mkdirSync(prepRoot);
+    const prepared = await run(["space", "create", "histprep"], prepRoot);
+    check("control: a space is prepared in another folder", prepared.status === 0, shown(prepared));
+    const unstarted = await run(["history", "general", "--json", "--creds", observer], prepRoot);
+    check("there, the refusal names that folder's space",
+      unstarted.status === 2 && unstarted.envelope?.error?.message === '--creds needs --server <url> or a registered --space: this folder\'s space "histprep" is not registered here, so nothing was dialed' &&
+        spaceOf(unstarted) === "histprep", shown(unstarted));
+    const nowhere = await run(["history", "general", "--json", "--creds", observer]);
+    check("control: with nothing selected and no space in the folder, it is still the default space, not a registered one",
+      nowhere.status === 2 && nowhere.envelope?.error?.message === `--creds needs --server <url> or a registered --space: the default space "main" is not registered here, so nothing was dialed` &&
+        nowhere.envelope.target === null, shown(nowhere));
+  } finally {
+    inHome(() => setCurrent(space));
   }
 
   // ── a write the broker refuses for the credential's grant applied nothing ───────────────────────
