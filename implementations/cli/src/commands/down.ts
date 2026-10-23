@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, resolve as resolvePath } from "node:path";
+import { basename, join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -301,7 +301,11 @@ function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
   try { ledgers = listLedgerFiles(root, { requireReadable: true }); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the root's additive ledger directory could not be inspected; bare down did not infer that it owns every resource", { target: scoped }); }
   if (ledgers.valid.length || ledgers.refused.length)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "additive ownership ledgers or unreadable ledger records remain under this root; bare down did not adopt or stop their resources", { target: { ...scoped, deploymentIds: ledgers.valid.map(({ ledger }) => ledger.runId), unreadable: ledgers.refused.map(({ path }) => path) }, remedy: "finish each additive deployment's own lifecycle before a guarded whole-stack stop" });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "additive ownership ledgers or unreadable ledger records remain under this root; bare down did not adopt or stop their resources", { target: { ...scoped, deploymentIds: ledgers.valid.map(({ ledger }) => ledger.runId), unreadable: ledgers.refused.map(({ path }) => path) }, remedy: [
+      ...ledgers.valid.map(({ ledger }) => `run \`cotal down --run ${ledger.runId}\` to tear down additive deployment ${ledger.runId}`),
+      ...ledgers.refused.map(({ path, why }) => `repair the unreadable record (${why}), then run \`cotal down --run ${basename(path, ".json")}\``),
+      "then run `cotal down` again",
+    ].join("; ") });
   let additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
   try { additiveAttempts = listAdditiveTeamAttempts(root); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive attempt inventory could not be read; bare down did not infer an empty resource set", { target: scoped }); }

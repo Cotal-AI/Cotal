@@ -906,7 +906,9 @@ Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
 a real isolated project root and refuses pending maintenance transitions, any valid or
 unreadable additive ledger or attempt under that root, or any other local registration at
-the exact recorded broker address. It reads each record its sweep stops as the stopped-stack check
+the exact recorded broker address. The additive ledger refusal names each ledger with the command
+that finishes it: `cotal down --run <id>` for a readable one, and for an unreadable one the reason it
+could not be read and the same command once it is repaired. It reads each record its sweep stops as the stopped-stack check
 above does. A record that check leaves unread, such as one behind a link, refuses `LIFECYCLE_BLOCKED`
 before the first stop and is named once, where reading stopped. No process behind it is read or
 signalled, and no record is removed. These are known-blocker
@@ -3572,7 +3574,13 @@ or completion. A direct send to an agent the roster shows offline also warns on 
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
 `--verbose/-v` to show the actual sending principal. An unregistered channel is labeled; its native
 space policy still controls publication and no registry metadata is created. Unreadable metadata
-stays not checked. An unconfirmed publish outcome is unknown and never retried automatically.
+stays not checked. A message over the broker's message limit, envelope included, refuses
+`UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A channel post the broker
+refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
+the space or this identity may not post to it. The remedy lists the channels this identity may post
+to, read from the grant ledger as `cotal whoami` reads it. When the ledger is on another machine it
+says so and lists the space's registered channels instead. Any other unconfirmed publish outcome is
+unknown and never retried automatically.
 The command sends once and exits. It does not wait for an answer, retain an inbox
 or transfer replies to a later chat session.
 
