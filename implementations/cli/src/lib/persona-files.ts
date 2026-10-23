@@ -126,6 +126,9 @@ function withDraft<T>(name: string, action: (path: string) => T): T {
 
 /** Use the existing serializer for flag-built definitions; file inputs keep their original bytes. */
 export function serializePersona(def: AgentDef): Buffer {
+  for (const [flag, value] of [["--role", def.role], ["--model", def.model]] as const)
+    if (value !== undefined && /[\u0000-\u001f\u007f]/u.test(value))
+      throw new CommandFailure("refused", "USAGE_INVALID", `${flag} takes a label without control characters`);
   return withDraft(def.name, path => {
     try { writeSecretFile(path, ""); saveAgentFile(path, def); }
     catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "invalid persona fields"); }

@@ -274,6 +274,25 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check("persona create refuses a read-only catalog with PERMISSION_DENIED and leaves it as it was",
       refusedCreate.status === 2 && /PERMISSION_DENIED/.test(refusedCreate.stderr) && after.mode === "500" && after.files.join() === "default.md", { ...shown(refusedCreate), after });
   }
+  // A catalog travels with a cloned repo, so the legacy list escapes the control characters it reads
+  // from one, and the flags that write a persona refuse them.
+  const E = "\x1b]0;PWN\x07\x1b[2J";
+  const raw = /[\x07\x1b]/;
+  const hostile = (home: string) => {
+    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", ".cotal", "agents", "h.md"), `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`);
+  };
+  for (const argv of [["personas", "list"], ["personas", "list", "-v"]]) {
+    const r = cotal(argv, hostile, noSeed);
+    check(`cotal ${argv.join(" ")} escapes the catalog's control characters`,
+      r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("r\\u001b]0;PWN\\u0007R") && r.stdout.includes("d\\u001b[2JD") &&
+        (argv.length === 2 || r.stdout.includes("    body \\u001b]0;PWN\\u0007\\u001b[2JB")), shown(r));
+  }
+  for (const argv of [["persona", "create", "q", "--role"], ["persona", "create", "q", "--model"], ["personas", "new", "q", "--role"]]) {
+    const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
+    check(`cotal ${argv.join(" ")} refuses control characters`,
+      r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
+  }
 }
 
 // ── Unknown words, prefixes, uninstalled seeded commands ──────────────────────────────────────────
