@@ -17,7 +17,8 @@
  *      (the pre-created filter rides the ACL, never widened to the launcher default), and the
  *      identity reads fix.x live but cannot join general
  *   5. --provision / --role / --allow-subscribe / --allow-publish off the agent profile, --signer on
- *      mint, and the footprint flags on `auth signer` → exit 1, one sentence, nothing written; and
+ *      mint, and the footprint flags on `auth signer` → exit 1, one sentence, nothing written; `auth
+ *      signer` into a missing folder → exit 2 naming it, nothing created; and
  *      the control that the same ACL flag on the agent profile still works
  *   6. --provision naming a mesh on another trust root; from a FRESH open root (no auth on disk, as
  *      `cotal up` leaves one), where mint and signer export refuse as unsupported; from a root holding
@@ -308,6 +309,13 @@ try {
     const r3s = await runCotal(["auth", "signer", "--provision", "--role", "board", "--out", signerOut]);
     check("auth signer with --provision/--role exits 1 with the reason", r3s.code === 1 && /use auth signer --out <private-file>/.test(r3s.out), r3s.out);
     check("  and writes no signer file", !existsSync(signerOut));
+    // No folder is created for signing material: a missing one is named, with the command that makes it.
+    const missingFolder = join(root, "no-such-folder");
+    const r3m = await runCotal(["auth", "signer", "--out", join(missingFolder, "signer.json")]);
+    check("auth signer into a missing folder exits 2 TARGET_NOT_FOUND naming the folder and how to make it",
+      r3m.code === 2 && /^\s*Code:\s+TARGET_NOT_FOUND$/m.test(r3m.out) && r3m.out.includes(`the --out folder ${missingFolder} does not exist; nothing was written`)
+        && r3m.out.includes(`(umask 077 && mkdir -p ${missingFolder})`), r3m.out);
+    check("  and creates nothing", !existsSync(missingFolder));
     // THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED, AND THAT COST AN
     // OPERATOR A CREDENTIAL. `permissionsFor`'s observer/admin arm emits a FIXED read set over the
     // whole chat plane, and the command read `--allow-subscribe` only inside its agent branch. So

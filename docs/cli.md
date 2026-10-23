@@ -2808,7 +2808,9 @@ A cached login is not signing authority. The selected root must hold validated s
 conflicting current-folder and selected-root account authorities refuse before publication. A space
 registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
 
-`--out` is required. Its parent must exist and pass the protected physical-directory checks.
+`--out` is required. Its parent must exist and pass the protected physical-directory checks. A
+parent that does not exist refuses `TARGET_NOT_FOUND`, naming the folder, before anything is
+written.
 Managed `.cotal` and workstation state are not valid explicit export destinations. The file is private, and secret contents
 never appear on stdout, in the receipt or in diagnostics. Keep this account-wide signer out of
 logs and support bundles; it is not a least-privilege endpoint credential.

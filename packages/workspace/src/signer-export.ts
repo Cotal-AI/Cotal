@@ -41,8 +41,14 @@ function replacementIsSigner(bytes: Buffer, auth: SpaceAuth): void {
 /** Export existing account-signing material only. Never issue a caller, rotate a key or start a service. */
 export async function exportSpaceSigner(values: SignerExportInput, cwd = process.cwd()) {
   validateSignerExportInput(values);
-  const path = resolve(values.out as string);
-  protectedLocalDirectory(dirname(path));
+  const path = resolve(values.out as string), folder = dirname(path);
+  // No folder is created for signing material, so a missing one is refused by name.
+  try { lstatSync(folder); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the --out folder ${folder} does not exist; nothing was written`, { target: { path }, remedy: `create it privately with (umask 077 && mkdir -p ${folder}), or choose a file in an existing private folder` });
+  }
+  protectedLocalDirectory(folder);
   const lock = acquireLock(`${path}.cotal-export.lock`, { label: "signer export", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds this signer export path") });
   try {
     let before: ReturnType<typeof lstatSync> | undefined;
