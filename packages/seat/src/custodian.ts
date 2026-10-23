@@ -79,12 +79,14 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       note(`${(e as Error).message}\n`);
     }
   };
+  // Writes a line to the seat log, or stderr with no log. A failed write is dropped: it must not take
+  // down the custodian of a live seat.
   const note = (line: string): void => {
     try {
       if (launch.logPath) appendPrivate(launch.logPath, line);
       else process.stderr.write(line);
     } catch {
-      /* the seat directory may already be gone */
+      /* the seat directory may already be gone, or the log sits on failed storage */
     }
   };
 
@@ -107,11 +109,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     throw e;
   }
   const oomPref = preferSeatForOomKill(proc.pid);
-  if (!oomPref.applied) {
-    const line = `oom preference not applied to child ${proc.pid}: ${oomPref.reason}\n`;
-    if (launch.logPath) appendPrivate(launch.logPath, line);
-    else process.stderr.write(line);
-  }
+  if (!oomPref.applied) note(`oom preference not applied to child ${proc.pid}: ${oomPref.reason}\n`);
   // Pin both start identities NOW, before the child can exit and be reaped: a successor that finds
   // these pids later must be able to tell this custodian and this child from an unrelated process
   // that inherited the pid. A zombie still reports its start token, a reaped pid does not: a child
@@ -265,14 +263,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       if (settling || controllers.size > 0) return;
       // An unattended custodian has nobody to tell, so record the reason where an operator reading
       // an empty seat directory can still find it.
-      const note = `${JSON.stringify({ unattended: true, afterMs: UNATTENDED_MS, childPid: proc.pid, custodianPid: process.pid, run: launch.run })}\n`;
-      if (launch.logPath) {
-        try {
-          appendPrivate(launch.logPath, note);
-        } catch {
-          /* the seat directory may already be gone */
-        }
-      }
+      note(`${JSON.stringify({ unattended: true, afterMs: UNATTENDED_MS, childPid: proc.pid, custodianPid: process.pid, run: launch.run })}\n`);
       if (alive) {
         // `seenClient` gates the settle, and a custodian nobody ever adopted must still be able to
         // exit: without this the stop below kills the child and the settle refuses, which is the
@@ -327,18 +318,12 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       // loses the only account a later reap has, so it is said where an operator can find it, and
       // the reap reports the record missing or unreadable.
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-        const line = `exit record not written: ${(e as Error).message}\n`;
         try {
           unlinkSync(`${exitFile}.tmp`);
         } catch {
           /* never created */
         }
-        try {
-          if (launch.logPath) appendPrivate(launch.logPath, line);
-          else process.stderr.write(line);
-        } catch {
-          /* the log can sit on the same failed storage */
-        }
+        note(`exit record not written: ${(e as Error).message}\n`);
       }
     }
     // The child is gone, so it has made every read it will make. Remove its files before anyone is
