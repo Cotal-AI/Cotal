@@ -714,7 +714,10 @@ same space name refuses `CONFLICT`, naming that folder and every stack definitio
 `space forget` removes them once that folder's stack is stopped. A preserve or resume that
 never recorded its outcome stays with its own maintenance attempt. A member that exits before
 readiness is recorded as failed with its exit code, and the refusal names its log with
-`cotal service logs <definition> --instance <id> --space <space>`.
+`cotal service logs <definition> --instance <id> --space <space>`. When the broker this `up` started cannot
+create the space's streams, `up` stops that broker again, so the next `up` starts a fresh one. It
+fails `OPERATION_FAILED`, exit 5, and names the cause when the broker's log shows it ran out of
+open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log.
 
 Before it launches a broker, the controller binds the recorded broker address once. When another
 process holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches

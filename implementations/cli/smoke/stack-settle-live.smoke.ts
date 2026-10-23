@@ -55,6 +55,9 @@
  *     that killed `down` took.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
+ * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
+ *     stops that broker again and fails `OPERATION_FAILED`, naming the open-file limit. The next `up`
+ *     under the normal limit starts the stack.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -652,6 +655,25 @@ try {
     const refused = cli(root, "down", "--with-agents", "--yes", "--json");
     check(`${space}: after a down without --with-agents it still refuses LIFECYCLE_BLOCKED`, restarted.status === 0 && spared.status === 0 && refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED", { up: shown(restarted), down: shown(spared), refused: shown(refused) });
   }
+
+  // 11. A first up whose broker cannot create the space's streams.
+  {
+    const space = "fewfiles";
+    const root = prepare(space);
+    const port = await freePort();
+    const limited = spawnSync("/bin/sh", ["-c", 'ulimit -n 32 && exec "$@"', "sh", process.execPath, "--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
+    let failed: Envelope | undefined;
+    try { failed = JSON.parse(limited.stdout) as Envelope; } catch { failed = undefined; }
+    track(space);
+    check(`${space}: under ulimit -n 32 the up stops the broker it started, fails OPERATION_FAILED, exit 5, and names the open-file limit`,
+      limited.status === 5 && failed?.error?.code === "OPERATION_FAILED" && /ran out of open files/.test(failed.error.message) && (failed.error.remedy ?? "").includes("ulimit -n") && gone(space, "stack-broker"),
+      { status: limited.status, envelope: failed, stderr: limited.stderr.slice(-1500) });
+    const recovered = cli(root, "up", "--json");
+    track(space);
+    const stopped = cli(root, "down", "--yes", "--json");
+    check(`${space}: the next up under the normal limit starts the stack, and down stops it`, recovered.status === 0 && stopped.status === 0 && gone(space, "stack-broker"), { up: shown(recovered), down: shown(stopped) });
+  }
+
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
 }

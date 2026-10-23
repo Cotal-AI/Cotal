@@ -23,8 +23,8 @@ import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress } from "../lib/broker-service.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { instanceProjection, observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { prepareProcessService, removeStoppedInstanceRecords, settleExitedInstances, startProcessService } from "../lib/service-process.js";
+import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
+import { prepareKernelServiceStop, prepareProcessService, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
@@ -438,6 +438,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // never to the next planned one.
   let failedRole: StackRole | undefined;
   let failedStage: "broker-streams" | "broker-registration" | undefined;
+  let startedBroker: { definition: ServiceDefinitionSnapshot; id: string } | undefined;
   let launch: { path: string; sha256: string } | undefined;
   // Only a broker this call starts gets the space's streams created.
   let brokerReused = false;
@@ -479,8 +480,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const brokerOptions = prepared ? { root, config: prepared.confPath, binary: canonicalBinary(prepared.bin), server } : { ...savedOptions! };
     const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root, replace("broker"));
     if (storePin) recheckExistingStore(storePin, { root, space });
-    await start("broker", broker);
+    const brokerInstance = await start("broker", broker);
     if (prepared) {
+      startedBroker = { definition: broker, id: brokerInstance.name };
       // The broker's own stream and registry setup, on the native space path, after it serves.
       failedRole = "broker";
       failedStage = "broker-streams";
@@ -571,6 +573,24 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)
       ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the running broker no longer holds this space's streams, as after cotal space delete, and up creates them only when it starts the broker", { remedy: "restart the stack with cotal down --yes, then cotal up, which creates them again, empty" })
       : caught;
+    // A broker this call started that could not create the space's streams serves no stack, and a
+    // later up would reuse it and fail the same way. It is stopped again here, so the next up starts
+    // a fresh broker, and the run is a failure whose cause its log names.
+    const unserved = failedStage === "broker-streams" && startedBroker ? await stopUnservedBroker(space, startedBroker.definition, startedBroker.id) : undefined;
+    if (unserved) {
+      mark("broker", { state: "stopped", code: "OPERATION_FAILED" });
+      for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
+      settle("failed");
+      const nativeCause = error instanceof JetStreamApiError && Number.isSafeInteger(error.code) ? { code: String(error.code) } : undefined;
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the broker this command started could not create the space's streams${unserved.outOfFiles ? ", because it ran out of open files" : ""}, so it was stopped again; nothing of the stack runs`, {
+        target: { root, space, operation: journal.operation.id, members: journal.members, ...(unserved.log ? { brokerLog: unserved.log } : {}) },
+        changed: [instanceProjection(unserved.stopped)],
+        ...(nativeCause ? { native: nativeCause } : {}),
+        remedy: unserved.outOfFiles
+          ? `raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up again from ${root}`
+          : `fix what the broker's log${unserved.log ? ` at ${unserved.log}` : ""} names, then run cotal up again from ${root}`,
+      });
+    }
     const failure = isCommandFailure(error) ? error : undefined;
     const uncertain = failure === undefined || failure.outcome === "unknown";
     const pending = failedRole ? journal.members.find((row) => row.role === failedRole) : journal.members.find((row) => row.state === "planned");
@@ -602,6 +622,23 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
   return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}) };
+}
+
+/** Stop a broker this call started, through its exact kernel stop, and read whether its log says it
+ *  ran out of open files. A stop that does not confirm returns nothing, so the caller reports the
+ *  run as unknown and names the inspection step instead. */
+async function stopUnservedBroker(space: string, definition: ServiceDefinitionSnapshot, id: string): Promise<{ stopped: ServiceInstanceSnapshot; log: string | null; outOfFiles: boolean } | undefined> {
+  try {
+    const current = serviceInstanceStore(space).read(id);
+    if (!current) return undefined;
+    const plan = await prepareKernelServiceStop(definition, current);
+    const { instance } = await stopProcessService(definition, current, undefined, undefined, { plan });
+    if (observeServiceProcess(instance.record.value) === "running") return undefined;
+    const log = readServiceLog(space, id, 200);
+    return { stopped: instance, log: log.path, outOfFiles: log.lines.some((line) => /too many open files/i.test(line)) };
+  } catch {
+    return undefined;
+  }
 }
 
 /** The member table and evidence text a caller embeds in its own receipt. */
