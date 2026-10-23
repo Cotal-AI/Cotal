@@ -341,11 +341,12 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     // `space add` refuses it, so only another name is offered.
     const owner = findPreparedSpace(space) ? "a space prepared on this machine" : clash && clash.origin !== "manual" ? clash.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started" : undefined;
     if (!owner && (!clash || replace)) break;
+    // Another name comes first, so pressing Enter never replaces a record.
     const next = await io.select({
         message: owner ? `"${space}" is ${owner}, so it is not replaced.` : `"${space}" is already registered here (${clash!.server}).`,
         options: [
-          ...(owner ? [] : [{ value: "replace", label: "Replace that record", hint: clash!.root }]),
           { value: "rename", label: "Use a different name" },
+          ...(owner ? [] : [{ value: "replace", label: "Replace that record", hint: clash!.root }]),
           { value: "cancel", label: "Cancel" },
         ],
       });
@@ -413,7 +414,8 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     ].join("\n"),
     brand("About to record"),
   );
-  const go = await io.confirm({ message: "Register this mesh?" });
+  // Replacing a record is never the default answer.
+  const go = await io.confirm({ message: "Register this mesh?", initialValue: !(replace && findMesh(space)) });
   if (!go) return cancelled(io, "Nothing was registered.");
 
   // The guided consent is PERSISTED, exactly as the flag form persists it. Asking the operator and

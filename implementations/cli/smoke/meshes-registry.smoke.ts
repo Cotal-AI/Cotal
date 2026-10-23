@@ -1320,6 +1320,15 @@ try {
   check("the wizard asks before replacing a record named on the command line",
     clashOut === false && clash.asked.some((a) => a.kind === "select" && a.message.includes("already registered")), clash.asked);
   check("…and cancelling there writes nothing", findMesh("taken")?.ts === new Date(0).toISOString(), findMesh("taken"));
+  // Pressing Enter must never replace a record: another name is the first choice, and a confirmed
+  // replacement defaults to No.
+  const clashAsk = clash.asked.find((a) => a.kind === "select" && a.message.includes("already registered"));
+  check("…offering another name first, ahead of replacing", clashAsk?.options?.[0] === "rename" && clashAsk.options.includes("replace"), clashAsk);
+  const replaceAsked = driver(["replace", false]);
+  const replaceAskedOut = await addWizard({ space: "taken", server: LIVE }, root, replaceAsked.io as never);
+  const replaceConfirm = replaceAsked.asked.find((a) => a.kind === "confirm" && a.message === "Register this mesh?");
+  check("a chosen replacement still asks, defaulting to No", replaceAskedOut === false && replaceConfirm?.initialValue === false, replaceAsked.asked);
+  check("…and declining it writes nothing", findMesh("taken")?.ts === new Date(0).toISOString(), findMesh("taken"));
   removeMesh("taken"); // this block's fixture; later cases assert on an empty registry
   // A registration this machine started is never offered for replacement, even under --force: it is
   // how `cotal down` finds that stack.
