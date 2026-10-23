@@ -1784,7 +1784,9 @@ immediately before store mutation and never includes secret seeds. Restore never
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
 source needs explicit `--accept-missing-source`. Without it, the restore refuses `TARGET_NOT_FOUND`
-(exit 2), names the missing path and changes nothing. Quarantine and target restores use current canonical
+(exit 2), names the missing path and changes nothing. A default `.cotal/nats` that is a symbolic
+link to the recorded source is that source, so the restore runs in place at the real path and the
+link keeps naming it. Quarantine and target restores use current canonical
 configs on isolated random-loopback brokers, never expose native snapshot consumers, and publish a
 commit-intent immediately before the normal listener starts. Archive bytes never instantiate the real
 target: after quarantine validation, every stream is re-snapshotted from the validated quarantine

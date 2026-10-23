@@ -305,6 +305,12 @@ function canonicalServerEndpoint(value: string): string {
   return `${endpoint.protocol}//${endpoint.hostname.toLowerCase()}:${endpoint.port || "4222"}`;
 }
 
+/** Whether `path` is a link that resolves to `target`. A dangling link resolves nowhere. */
+function linksTo(path: string, target: string): boolean {
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) return false;
+  try { return realpathSync.native(path) === target; } catch { return false; }
+}
+
 function contains(parent: string, child: string): boolean {
   const path = relative(parent, child);
   const separator = process.platform === "win32" ? "\\" : "/";
@@ -838,7 +844,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       throw new Error("restore artifact must not overlap the preserved source store");
     if (contains(stageParent, artifactPath) || contains(artifactPath, stageParent))
       throw new Error("restore artifact must not overlap the maintenance attempt directory");
-    targetPath = resolve(flags["store-dir"] ?? (controller ? journal.source.path : join(root, ".cotal", "nats")));
+    // The cut records its source by real path, so a default .cotal/nats that links there is that
+    // source and is restored in place, not taken for an alternate target.
+    const defaultStore = join(root, ".cotal", "nats");
+    targetPath = resolve(flags["store-dir"] ?? (controller || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
     if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
     assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
     // The journal is ready with no live claim, and the artifact/target are proven disjoint from

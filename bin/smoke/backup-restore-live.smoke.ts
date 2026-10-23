@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
@@ -898,7 +898,53 @@ async function backupRestoreCycleScenario(): Promise<void> {
   }
 }
 
+/** A store moved behind a link, `.cotal/nats` -> another disk, and an artifact written through a
+ *  linked folder. The cut records the store by its real path, so a default restore is a same-path
+ *  restore there, not an alternate target equal to the source, and verify reads the linked artifact
+ *  path at its real path, as create and restore do. */
+async function linkedStoreScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-linked-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-linked-home-")));
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const space = "backup_linked";
+  const { run } = sandboxRun(root, home);
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `linked ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  };
+  const store = join(root, "disk2", "nats");
+  try {
+    mkdirSync(store, { recursive: true, mode: 0o700 });
+    mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
+    symlinkSync(store, join(root, ".cotal", "nats"));
+    must("up", run("up", "--detach", "--server", server, "--space", space));
+    must("seed registry", run("channel", "set", "linked", "--desc", "restored behind a link", "--space", space));
+    must("preserve cut", run("down", "--preserve-state"));
+    mkdirSync(join(root, "bkreal"), { mode: 0o700 });
+    symlinkSync(join(root, "bkreal"), join(root, "bklink"));
+    const artifact = join(root, "bklink", "one");
+    must("backup through a linked folder", run("backup", "create", artifact));
+    const verified = run("backup", "verify", artifact, "--json");
+    must("verify through the linked folder", verified);
+    assert.equal(JSON.parse(verified.stdout).result.directory, join(root, "bkreal", "one"), "verify reads the linked artifact at its real path");
+    must("default restore onto the linked store", run("backup", "restore", artifact));
+    assert.equal(readlinkSync(join(root, ".cotal", "nats")), store, "the restore leaves .cotal/nats linking to the store");
+    const journal = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string; restore: { method: string; targetPath: string } };
+    assert.equal(journal.state, "active");
+    assert.equal(journal.restore.method, "same-path", "a default restore onto a linked store replaces it in place");
+    assert.equal(journal.restore.targetPath, store);
+    const listed = run("channel", "--space", space);
+    must("list the restored registry", listed);
+    assert.match(listed.stdout, /#linked/);
+    must("down", run("down"));
+  } finally {
+    run("down");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 await missingPidfileListenerScenario();
+await linkedStoreScenario();
 await preservationCommitCrashScenario();
 await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();
