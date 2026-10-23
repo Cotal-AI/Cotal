@@ -1,5 +1,12 @@
 # @cotal-ai/workspace
 
+## 0.97.1
+
+### Patch Changes
+
+- Updated dependencies [aa8d11e]
+  - @cotal-ai/core@0.97.1
+
 ## 0.97.0
 
 ### Minor Changes
