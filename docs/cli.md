@@ -2805,9 +2805,12 @@ cotal auth signer --out <private-file> [--space <space>] [--force] [--json|--pla
 This exports the selected space's existing data-account signer through the native stripped-signer
 format. It does not create a caller, rotate a key, start a service or export the operator root.
 A cached login is not signing authority. The selected root must hold validated static trust;
-conflicting current-folder and selected-root account authorities refuse before publication.
+conflicting current-folder and selected-root account authorities refuse before publication. A space
+registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
 
-`--out` is required. Its parent must exist and pass the protected physical-directory checks.
+`--out` is required. Its parent must exist and pass the protected physical-directory checks. A
+parent that does not exist refuses `TARGET_NOT_FOUND`, naming the folder, before anything is
+written.
 Managed `.cotal` and workstation state are not valid explicit export destinations. The file is private, and secret contents
 never appear on stdout, in the receipt or in diagnostics. Keep this account-wide signer out of
 logs and support bundles; it is not a least-privilege endpoint credential.
@@ -4593,7 +4596,8 @@ cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>
 
 The fixed-profile forms use the existing native static credential profiles. No generic host
 profile is exposed.
-Open and per-user-auth spaces refuse; a cached login does not replace signing authority. The
+A space registered as open refuses `UNSUPPORTED`, since it authenticates no one and issues no
+credentials. Per-user-auth spaces refuse too; a cached login does not replace signing authority. The
 resolved root supplies the persona ACL, signer and default storage together. A root that cannot be
 resolved refuses with its next step, such as `cotal up`. Conflicting current-folder and
 selected-root accounts refuse before issuance.
@@ -4626,7 +4630,8 @@ and does not retry the mint.
 
 Lifetime inputs use native seconds. The receipt reports the resulting JWT expiry, rather than
 promising a default lifetime. `--expires-in` and `--expires-at` are mutually exclusive, and an
-`--expires-at` that is not in the future refuses before anything is written. JSON is
+`--expires-at` that is not in the future refuses before anything is written. So does an expiry
+after the last date Cotal can represent, in the year 275760. JSON is
 one finite document; plain output uses the same public receipt. Signing material is exported by
 [auth signer](#account-signer-export), not a signer flag on mint. The old top-level `mint` spelling
 is refused with the literal namespace replacement.
@@ -4793,7 +4798,8 @@ rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a 
 spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
 spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
-lists.
+lists. In the root of a space registered as open, the report says that the space issues no
+credentials, so there are none to check, and the result is a no-op (exit 0).
 
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.
@@ -6299,7 +6305,10 @@ The manager resolves visibility through the same fresh owner/admin policy as `ps
 count. A refused stop reports the selected manager, visibility, maintenance state and pending-work
 counts that blocked its preflight, without exposing other owners' agent rows. Owner-filtered
 visibility requires the stack operator or an authorized admin-scoped caller; the command never
-substitutes one. No stop policy is accepted while any blocker remains. This is
+substitutes one. On a user-auth space, the refusal's next step is the whole-row
+`cotal actor grant` that adds `admin` to your current grant, as the auth plane prints it from the
+ledger row; after it, `cotal down` stops the stack. No stop policy is accepted while any blocker
+remains. This is
 an observation at the reported time, not a reservation, permission to stop or a guarantee that the
 set cannot change. Older managers can omit it; the native service adapter refuses when the
 required process/lifecycle correlation is absent. Generic process launch/stop still refuses managers.

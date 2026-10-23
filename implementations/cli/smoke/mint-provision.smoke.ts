@@ -17,17 +17,19 @@
  *      (the pre-created filter rides the ACL, never widened to the launcher default), and the
  *      identity reads fix.x live but cannot join general
  *   5. --provision / --role / --allow-subscribe / --allow-publish off the agent profile, --signer on
- *      mint, and the footprint flags on `auth signer` → exit 1, one sentence, nothing written; and
+ *      mint, and the footprint flags on `auth signer` → exit 1, one sentence, nothing written; `auth
+ *      signer` into a missing folder → exit 2 naming it, nothing created; and
  *      the control that the same ACL flag on the agent profile still works
  *   6. --provision naming a mesh on another trust root; from a FRESH open root (no auth on disk, as
- *      `cotal up` leaves one); from a root holding its OWN auth for a mesh of the same name that runs
- *      on another trust root → refused (exit 2) each, naming why, nothing minted
+ *      `cotal up` leaves one), where mint and signer export refuse as unsupported; from a root holding
+ *      its OWN auth for a mesh of the same name that runs on another trust root → refused (exit 2)
+ *      each, naming why, nothing minted
  *   7. --expires-in bounds the credential: the JWT's exp is iat + the flag, within a second; a
  *      bare mint carries no exp (the unbounded default, kept)
  *   8. --identity <creds> re-mints for the SAME nkey: the new credential's principal equals the
  *      original's; the seed file is read by core's own loader
  *   9. the refusals: both lifetime flags at once; --expires-in the seam would refuse (0, negative,
- *      fractional) without echoing it; --identity on a file with no seed; --identity with a missing
+ *      fractional) without echoing it; an expiry past the last representable date; --identity on a file with no seed; --identity with a missing
  *      path → refused each, one sentence, nothing written
  *
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
@@ -307,6 +309,13 @@ try {
     const r3s = await runCotal(["auth", "signer", "--provision", "--role", "board", "--out", signerOut]);
     check("auth signer with --provision/--role exits 1 with the reason", r3s.code === 1 && /use auth signer --out <private-file>/.test(r3s.out), r3s.out);
     check("  and writes no signer file", !existsSync(signerOut));
+    // No folder is created for signing material: a missing one is named, with the command that makes it.
+    const missingFolder = join(root, "no-such-folder");
+    const r3m = await runCotal(["auth", "signer", "--out", join(missingFolder, "signer.json")]);
+    check("auth signer into a missing folder exits 2 TARGET_NOT_FOUND naming the folder and how to make it",
+      r3m.code === 2 && /^\s*Code:\s+TARGET_NOT_FOUND$/m.test(r3m.out) && r3m.out.includes(`the --out folder ${missingFolder} does not exist; nothing was written`)
+        && r3m.out.includes(`(umask 077 && mkdir -p ${missingFolder})`), r3m.out);
+    check("  and creates nothing", !existsSync(missingFolder));
     // THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED, AND THAT COST AN
     // OPERATOR A CREDENTIAL. `permissionsFor`'s observer/admin arm emits a FIXED read set over the
     // whole chat plane, and the command read `--allow-subscribe` only inside its agent branch. So
@@ -355,16 +364,23 @@ try {
       r.out);
     check("  and mints nothing", !existsSync(out));
 
-    // From the fresh open root: an open space holds no static signing trust, so mint refuses for that
-    // (not "run cotal up first" to an operator whose open mesh is up).
+    // From the fresh open root: a space registered as open issues no credentials, so mint and signer
+    // export refuse as unsupported and say so (not "run cotal up first" to an operator whose open mesh
+    // is up, and not a missing-trust refusal that reads as something to supply).
     process.chdir(openRoot);
     const out2 = join(openRoot, "open.creds");
     const r2 = await runMint(["x", "--profile", "agent", "--provision", "--out", out2]);
+    const signerDir = mkdtempSync(join(tmpdir(), "cotal-mint-prov-signer-"));
+    cleanup.push(() => rmSync(signerDir, { recursive: true, force: true }));
+    const signerOut = join(signerDir, "signer.json");
+    const r2s = await runCotal(["auth", "signer", "--out", signerOut]);
     process.chdir(root);
-    check("--provision on a fresh open mesh (no auth on disk) is refused for its missing signing trust",
-      r2.code === 2 && /^\s*Code:\s+AUTH_REQUIRED$/m.test(r2.out) && /no validated static signing trust/.test(r2.out), r2.out);
+    check("--provision on a registered open mesh is refused as unsupported, saying it issues no credentials",
+      r2.code === 2 && /^\s*Code:\s+UNSUPPORTED$/m.test(r2.out) && /this space is open: it authenticates no one and issues no credentials, so nothing was minted/.test(r2.out), r2.out);
     check("  and does not say to run cotal up", !/cotal up/.test(r2.out), r2.out);
     check("  and mints nothing", !existsSync(out2));
+    check("auth signer on a registered open mesh is refused as unsupported, saying it has no signer to export",
+      r2s.code === 2 && /^\s*Code:\s+UNSUPPORTED$/m.test(r2s.out) && /this space is open: it issues no credentials, so it has no signing authority to export; nothing was written/.test(r2s.out) && !existsSync(signerOut), r2s.out);
 
     // Two roots that each ran `cotal up` for a space called "same": root B's mesh is the registered
     // one, root A holds its OWN, independently generated trust material for the same label. Minting
@@ -480,6 +496,12 @@ try {
     for (const at of ["1", String(Math.floor(Date.now() / 1000))]) {
       const r = await runMint(["x", "--profile", "observer", "--expires-at", at, "--out", out]);
       check(`--expires-at ${at === "1" ? "in the past" : "now"} exits 1 with the reason and mints nothing`, r.code === 1 && /--expires-at is not in the future/.test(r.out) && !existsSync(out), r.out);
+    }
+    // An expiry no date can show used to mint, and every use then overflowed a client timer.
+    for (const flags of [["--expires-in", "99999999999999"], ["--expires-at", "8640000000001"]]) {
+      const r = await runMint(["x", "--profile", "observer", ...flags, "--out", out]);
+      check(`${flags[0]} past the last representable date exits 1 with the reason and mints nothing`,
+        r.code === 1 && /the credential would expire after \+275760-09-13T00:00:00\.000Z, the last date Cotal can represent; nothing was written/.test(r.out) && !existsSync(out), r.out);
     }
     for (const bad of ["0", "-5", "1.5", "abc"]) {
       // A leading-dash value needs the `=` form to get past parseArgs' strict token parser; the
