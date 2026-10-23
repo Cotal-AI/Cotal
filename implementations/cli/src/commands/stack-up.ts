@@ -15,8 +15,8 @@ import { JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, hasUserAuthState,
-  isCommandFailure, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
-  terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
+  homeCotalDir, isCommandFailure, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
+  stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress } from "../lib/broker-service.js";
@@ -175,6 +175,8 @@ export function controllerStackApplies(root: string, space: string, values: Pars
 
 /** Returns a settled active restore of the recorded stack that was admitted, for the result to name. */
 function stackPreflight(root: string, space: string, recorded: StackJournal | undefined, ownAttempt?: string): string | undefined {
+  // Its members' own pidfiles would read as legacy processes under a Cotal home with no record of them.
+  if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack runs under another Cotal home; this one holds no record of its members, so nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy() });
   const maintenance: { fenced: boolean; admittedRestore?: string } = recorded ? stackMaintenanceFence(root, recorded) : { fenced: readMaintenanceJournal(root) !== undefined };
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; the controller stack did not substitute an ordinary startup", { target: { root, space } });
   const legacy = foreignLocalProcesses(root, space);

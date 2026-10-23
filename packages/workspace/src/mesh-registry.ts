@@ -193,8 +193,8 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
 /** The cotal machine-home dir, overridable via `COTAL_HOME`.
  *
  *  WHAT THE OVERRIDE ENFORCES (and only this): the mesh registry (`meshes/`), the current-mesh
- *  pointer, and the onboard marker resolve under this directory. POSIX default `~/.cotal`; Windows
- *  `%LOCALAPPDATA%\Cotal`.
+ *  pointer, the onboard marker, prepared spaces (`prepared/`) and service records (`services/`)
+ *  resolve under this directory. POSIX default `~/.cotal`; Windows `%LOCALAPPDATA%\Cotal`.
  *
  *  WHAT IT DOES NOT ENFORCE: project-root state. `cotal up`, broker launch policy
  *  (`.cotal/broker-policy.json`), the NATS store, manager/delivery pidfiles, and auth material all
