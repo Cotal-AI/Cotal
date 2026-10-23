@@ -3102,7 +3102,8 @@ entry, is the route that does.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
-header.
+header. With no agents its Next is `cotal spawn`, or `cotal setup` when no agent application is set
+up here, as `status` reports it.
 
 The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
 one envelope whose `result` is:
