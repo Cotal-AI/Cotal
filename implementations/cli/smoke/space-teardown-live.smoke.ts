@@ -25,12 +25,14 @@
  *     later `up` finds them held.
  *  7. A partial loss. When the running broker lost only the delivery bucket, `up` leaves the rest as
  *     they are and refuses TARGET_NOT_FOUND (exit 2) naming the restart, which creates it.
+ *  8. A store directory that also holds the user's files. After `up --store-dir` and `down`,
+ *     `reset store` and its dry run refuse CONFLICT naming those files, and the folder keeps them.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -269,6 +271,28 @@ try {
     check("down --yes, then up, starts it again", down.status === 0 && back.status === 0, { down: shown(down), up: shown(back) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 8. A controller stack whose --store-dir also holds the user's files: the reset keeps them.
+  {
+    const space = "tear5";
+    const root = folder(space);
+    const store = folder(`${space}-store`);
+    writeFileSync(join(store, "notes.txt"), "mine\n");
+    mkdirSync(join(store, "photos"));
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a root for a store beside the user's files", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", server, "--store-dir", store, "--no-manager", "--json");
+    check("up starts the stack on that --store-dir", started.status === 0, shown(started));
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down --yes stops it", stopped.status === 0, shown(stopped));
+    for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", "store", space, mode, "--json");
+      check(`reset store ${mode} refuses CONFLICT, naming the files beside the store`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`${store} also holds notes.txt, photos`)), shown(reset));
+    }
+    check("the folder keeps the user's files and the store", existsSync(join(store, "notes.txt")) && existsSync(join(store, "photos")) && existsSync(join(store, "jetstream")));
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");
