@@ -166,7 +166,9 @@ The file is private to its owner and versioned:
 the command read it, and replaces the file atomically, so two writers never lose an edit. A file that
 does not validate (not JSON, a newer `schemaVersion`, an unknown key or an invalid value) stops every
 command except help and shell completion, with an error that names the file and the problem.
-Nothing resets it: fix or remove the file.
+Nothing resets it: fix or remove the file. A `preferences.json` that is a symbolic link stops them the
+same way with `PERMISSION_DENIED` (exit 2), naming the file it points to: `editor` runs as a shell
+command, so the file is neither read through the link nor replaced by `cotal config set`.
 
 ## Environment variables
 

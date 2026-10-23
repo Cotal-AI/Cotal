@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure } from "./output.js";
+import { CommandFailure, isCommandFailure } from "./output.js";
+import { localRecordAccess } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 
 /**
@@ -190,13 +191,27 @@ function parsePreferences(text: string): Preferences {
   return doc as Preferences;
 }
 
+/** Refuse a preferences file that is a symbolic link, as every private record's link is, naming its
+ *  target: `editor` runs as a shell command, and `harness` and `persona` choose what `spawn` launches,
+ *  so the file is neither read through the link nor replaced by a write. */
+function assertPreferencesNotLinked(path: string): void {
+  if (localRecordAccess() === "posix" && lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink())
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences file ${path} is a symbolic link to ${readlinkSync(path)}; preferences are kept only in a regular file, so nothing was read or changed`, {
+      target: { path },
+      remedy: `replace the link ${path} with a regular copy of the file it names`,
+    });
+}
+
 /** The saved preferences. A missing file is no preferences at revision 0; a file that does not
- *  validate refuses with `SCHEMA_INVALID`, and is never reset. */
+ *  validate refuses with `SCHEMA_INVALID`, and is never reset. A linked file refuses with
+ *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}). */
 export function readPreferences(): Preferences {
   let text: string;
   try {
+    assertPreferencesNotLinked(preferencesPath());
     text = readFileSync(preferencesPath(), "utf8");
   } catch (e) {
+    if (isCommandFailure(e)) throw e;
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return EMPTY;
     throw invalid(`it could not be read (${(e as Error).message})`);
   }

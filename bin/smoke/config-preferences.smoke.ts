@@ -2,7 +2,8 @@
  * `cotal config` and the preferences it saves, driven through the built binary in a fresh sandbox:
  * the effective values with their sources and shadowed values, `get`, `set` and `unset` for the user
  * and for one space, the refusals, the named environment tiers, the selected space, an invalid file
- * stopping every command but help and completion without being reset, a stale write refused, two
+ * stopping every command but help and completion without being reset, a linked file stopping them
+ * the same way, a stale write refused, two
  * concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
  * editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
@@ -11,7 +12,7 @@
  * Run: pnpm smoke:config-preferences
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -282,6 +283,30 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   } finally {
     chmodSync(dir, 0o700);
   }
+}
+
+// ── a linked preferences file is refused as a private record's link is, and never replaced ──────────
+if (process.platform !== "win32") {
+  run(["config", "set", "editor", "vi"]);
+  const before = fileText();
+  const target = join(home, "dotfiles-preferences.json");
+  writeFileSync(target, before!, { mode: 0o600 });
+  rmSync(file);
+  symlinkSync(target, file);
+  try {
+    const read = run(["config", "--json"]);
+    check("a symlinked preferences file is refused with PERMISSION_DENIED, exit 2, naming the link and its target",
+      read.status === 2 && read.envelope?.error?.code === "PERMISSION_DENIED" && (read.envelope.error.message ?? "").includes(`${file} is a symbolic link to ${target}`), shown(read));
+    const other = run(["version"]);
+    check("it stops other commands too, as an invalid file does", other.status === 2 && other.stderr.includes(target), shown(other));
+    const write = run(["config", "set", "editor", "ed"]);
+    check("config set leaves the link and its target as they were",
+      write.status === 2 && lstatSync(file).isSymbolicLink() && readFileSync(target, "utf8") === before, shown(write));
+  } finally {
+    rmSync(file);
+    writeFileSync(file, before!, { mode: 0o600 });
+  }
+  run(["config", "unset", "editor"]);
 }
 
 // ── an invalid file stops every command but help and completion, and is never reset ──────────────
