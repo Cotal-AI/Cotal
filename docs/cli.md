@@ -4150,7 +4150,8 @@ refusal waits its turn too, so every `result` and `error` record comes back in t
 arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
 by its id. A missing field, a field the type does not take or a malformed value refuses with
 `USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and is refused with the sentence `cotal send -c` gives for that name. A role must be a
-valid role name.
+valid role name. A `text` that is empty or only whitespace is refused with `the message is empty`,
+as `cotal send` refuses an empty message.
 
 | `type` | Fields | Result |
 |---|---|---|
