@@ -199,8 +199,8 @@ try {
   }));
   const port = await freePort();
   const servers = `nats://127.0.0.1:${port}`;
-  writeFileSync(join(root, "server.conf"), serverConfig(broker, accounts, { transport: { kind: "plaintext" }, port, storeDir: jsDir, extraAccounts: ctx.map((c) => ({ pub: c.callout.account.pub, jwt: c.callout.account.jwt })) }));
-  nats = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  writeFileSync(join(jsDir, "server.conf"), serverConfig(broker, accounts, { transport: { kind: "plaintext" }, port, storeDir: jsDir, extraAccounts: ctx.map((c) => ({ pub: c.callout.account.pub, jwt: c.callout.account.jwt })) }));
+  nats = spawn("nats-server", ["-c", join(jsDir, "server.conf")], { stdio: "ignore" });
   release = teardownOnSignal(nats, jsDir);
   for (let i = 0; i < 50 && !(await isReachable(servers)); i++) await sleep(200);
   for (const c of ctx) await setupSpaceStreams({ servers, space: c.space, creds: await mintCreds(c.auth, newIdentity(), "provisioner") });
