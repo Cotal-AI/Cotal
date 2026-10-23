@@ -2288,14 +2288,24 @@ in a stored row's field name, prints as its `\uXXXX` escape.
 cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] [options]
 ```
 
-A bare `spawn` launches through the running manager, waits until the agent joins, and attaches this
-terminal to it (see [Managed launch view](#managed-launch-view)). It needs usable input and output
-terminals and refuses `--json` and `--plain`, before an identity is allocated. `--detach` (`-d`)
-returns once the agent has joined, without attaching. `--foreground` runs the application directly
-in this process. `--file` (`-f`) names a persona file, never a manifest: manifests deploy with
-`cotal team deploy <file>`, and a manifest passed to `--file` is refused with that command.
+A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
+involved. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
+ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
+without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
+agent (see [Managed launch view](#managed-launch-view)). Attaching needs usable input and output
+terminals and refuses `--json` and `--plain`, before an identity is allocated. A spawn in this
+terminal writes no structured receipt, so `--json` and `--plain` need `-d`, except with
+`--dry-run`. `--foreground` names the default and is kept for scripts. `--file` (`-f`) names a
+persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
+passed to `--file` is refused with that command.
 
-On a user-auth mesh, an ordinary `--foreground` spawn without `--name` allocates the first free actor
+On a user-auth mesh that runs elsewhere, a spawn in this terminal provisions its agent with your
+login, through the agent-provisioning endpoint the mesh advertises. A mesh that advertises none is
+refused in one line. The line names the remedies: ask the mesh operator to advertise one, run the
+agent where the mesh runs, or add `-d` to launch it through one of your managers. A one-time
+enrollment, described below, also stands in for the endpoint.
+
+On a user-auth mesh, an ordinary spawn in this terminal without `--name` allocates the first free actor
 in the persona's series: `default_agent`, `default_agent_2`, `default_agent_3`, and so on. Held
 local material and existing grants are occupied, even when no presence is visible. Allocation
 preserves the existing session and its credentials. An explicit `--name`, a signed enrollment,
@@ -2363,7 +2373,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 |---|---|---|
 | `--space <s>` | resolved mesh | Target space |
 | `--server <url>` | registry entry | Broker URL override |
-| `--creds <path>` | none | Control-caller creds for an off-registry manager. Managed launches only; refused with `--foreground` and from a managed seat's own shell |
+| `--creds <path>` | none | Control-caller creds for an off-registry manager. Managed launches only, with `-d` or `--on`; refused for a spawn in this terminal and from a managed seat's own shell |
 | `--name <n>`, `-n` | persona's `name:` | Presence-name override (does not choose the persona) |
 | `--file <persona-file>`, `-f` | none | Persona file to launch, on the execution host. A value with no path separator that does not end in `.md` is read as `./<value>`. Refused together with a positional persona, and when the file is a Mesh manifest |
 | `--config <persona-or-path>` | none | Reserved for internal launchers that set `COTAL_MANAGED_HANDOFF_FILE`, `COTAL_ENROLLMENT_FILE` or `COTAL_ENROLLMENT_URL`; any other use is refused and names `--file` |
@@ -2371,7 +2381,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>`, `-m` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
-| `--cwd <dir>`, `-C` | the serving manager's workspace root; with `--foreground`, this cwd | Working directory to root the agent at. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. |
+| `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. |
 | `--prompt <text>`, `-p` | none | Initial prompt auto-submitted at start |
 | `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)). The manager records the source session id, and `ps --wide` shows it. On a managed launch with `--on <instance>`, a Claude session held on this host is carried to that instance first ([Resume a session](connect-claude.md#resume-a-session)); carrying one needs `--on` |
@@ -2380,12 +2390,12 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--subscribe <a,b>` | persona's | Channel read-set override; `""` clears it |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override; `""` sets it to the read set |
 | `--allow-publish <a,b>` | deny | Post-ACL override; `""` clears it |
-| `--detach`, `-d` | off | Launch through the manager, wait until the agent joins, and return without attaching (reattach with `cotal attach`) |
-| `--foreground` | off | Run the application directly in this process. Its exit, or the terminal's, may end the agent. Refuses `--detach`, `--creds`, `--on`, `--restarts`, and `--json` or `--plain` except with `--dry-run` |
-| `--on <instance>` | class anycast | Managed launches only: pin the launch to one manager instance id (the whole id, as `ps` prints it), or on a user-auth mesh a manager's name or host, as [`ps`](#managed-seats) takes them. Refused with `--foreground` (no manager to pin) and when empty |
-| `--restarts <n>`, `--restart-window <ms>` | none | Managed launches only, and given together: the manager restarts the agent at most `<n>` times within `<ms>`. Each must be a positive integer |
-| `--live-only` | off | `--foreground` only: skip the durable backstop |
-| `--enrollment-file <private-file>` | none | With `--foreground` and `--space`: a private file holding one seat's enrollment URL (see above) |
+| `--detach`, `-d` | off | Launch through a manager, wait until the agent joins, and return without attaching (reattach with `cotal attach`) |
+| `--foreground` | on without `-d` or `--on` | Run the application in this terminal, as a spawn without `-d` or `--on` does; kept for scripts. Its exit, or the terminal's, may end the agent. Refuses `--detach`, `--creds`, `--on`, `--restarts`, and `--json` or `--plain` except with `--dry-run` |
+| `--on <instance>` | none | Launch through one manager instance and attach to the agent, or with `-d` return once it joins. Takes the instance id (the whole id, as `ps` prints it), or on a user-auth mesh a manager's name or host, as [`ps`](#managed-seats) takes them. Refused with `--foreground` and when empty |
+| `--restarts <n>`, `--restart-window <ms>` | none | Managed launches only, with `-d` or `--on`, and given together: the manager restarts the agent at most `<n>` times within `<ms>`. Each must be a positive integer |
+| `--live-only` | off | A spawn in this terminal only: skip the durable backstop |
+| `--enrollment-file <private-file>` | none | With `--space`, for a spawn in this terminal: a private file holding one seat's enrollment URL (see above) |
 | `--dry-run` | off | Preview the launch without allocating an identity, provisioning anything or starting an application |
 | `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
 | `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
@@ -2412,17 +2422,18 @@ else `default`) is loaded from the target mesh's `.cotal/agents/` when it is a b
 ends in `.md` is loaded from that file. A relative path resolves against the mesh root, except that
 a managed handoff, and an enrollment onto a mesh this machine has not registered yet, resolve the
 persona file against the working directory. A missing
-persona is refused with the catalog directory or the file that was checked. A missing `default`
-persona also names the command that writes one: `cotal up` in the root of a space this machine
-started, or `cotal persona create default` for any other space. When a managed launch on a
+persona is refused in one line with the catalog directory or the file that was checked, and the
+line names `--file <persona.md>` for a persona file elsewhere. A missing `default` persona also
+names the command that writes one: `cotal up` in the root of a space this machine started, or
+`cotal persona create default` for any other space. When a managed launch on a
 user-auth mesh is refused because the chosen manager's catalog has no `default`, the Next gives the
 spawn again with `--on` for each of your other live managers whose catalog lists one. The launch flags
 override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
-spawn is refused with that explanation before any request is sent. `--foreground` runs the agent
-attached to your terminal; a bare spawn and `--detach` hand the launch to the running manager. Every
-mode gets the durable backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a
-`--foreground` spawn (messages posted while it is disconnected are then not replayed). A foreground exit retires
+spawn is refused with that explanation before any request is sent. A spawn runs the agent attached
+to your terminal; `--detach` and `--on` hand the launch to a manager. Every mode gets the durable
+backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a spawn in this
+terminal (messages posted while it is disconnected are then not replayed). A foreground exit retires
 the agent's creds and broker footprint, like a manager despawn. On a static-auth mesh, a spawn that
 fails after its footprint exists, for example because the creds directory cannot be written,
 retires that footprint the same way before it exits with the error. The creds and the footprint are
@@ -2467,8 +2478,9 @@ fails, and a managed seat frees its slot only when it stops. The refusal counts 
 only while it holds a slot, so a launch whose seat already ended is not counted. The roster counts
 presence, which also includes peers no manager owns, so its total is a different number.
 
-Run from a managed seat's own shell on a static or open mesh, a managed `cotal spawn` launches as
-that seat when it targets the seat's own space. Without `--space` it picks that target the way the
+Run from a managed seat's own shell on a static or open mesh, a managed `cotal spawn` (with `-d`
+or `--on`) launches as that seat when it targets the seat's own space. A bare `spawn` there runs in
+that shell, as anywhere else. Without `--space` it picks that target the way the
 operator path does, so a recorded mesh that is not running is skipped. The CLI reads the seat's
 launch identity (`COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`, and on a static
 mesh the seat's own credential), so the manager records the seat as the spawner, the same as for
@@ -2966,7 +2978,7 @@ instance id otherwise. The code stays
 `PERMISSION_DENIED` and the exit 2. `who --all` lists the same managers at any time. By default, when every manager you registered has
 exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
 
-On a terminal, `spawn`, `ps`, `stop`, `attach`, `input`, `models`, `persona` and `status` ask
+On a terminal, `spawn -d`, `ps`, `stop`, `attach`, `input`, `models`, `persona` and `status` ask
 instead of refusing. Every manager the exchange counts is one of yours in the space the command
 resolved, from the folder or `--space`, so the question lists those managers with the most recently
 started first, and that one is the default. The command then runs on the manager you pick, as the
@@ -5440,8 +5452,8 @@ separate read.
 
 ### Managed launch view
 
-`spawn [<persona>]` now uses the manager and attaches after its native readiness result. The
-attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
+`spawn [<persona>] --on <instance>` launches through that manager and attaches after its native
+readiness result. The attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
 not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capable receipt after
 the same readiness result. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
 role and model request separately from any provider acceptance claim. When the host granted the
@@ -5449,9 +5461,9 @@ agent other read or post channels than it asked for, as a host that narrows a re
 does, the receipt adds a `Granted` line with the channels it got and the ones it asked for, and
 `--json` carries both as `acl.requested` and `acl.effective`. Its Next section names the actual agent, space and accepting manager
 in attach/status commands when their tokens are safe shell words; it otherwise retains
-placeholders beside the full identity fields. Without usable input/output terminals, default attachment refuses
-before allocation and names detached or direct execution. A shell tool's inherited parent PTY
-is not enough.
+placeholders beside the full identity fields. Without usable input/output terminals, an attaching
+`--on` launch refuses before allocation and names `-d` or a spawn in this terminal. A shell tool's
+inherited parent PTY is not enough.
 
 `--harness/-H`, `--model/-m`, `--name/-n`, `--prompt/-p` and `--cwd/-C` retain their declared
 meanings. The legacy `--agent` spelling remains accepted; using both harness spellings refuses.

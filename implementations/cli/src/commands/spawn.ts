@@ -102,7 +102,7 @@ import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstance, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
-import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
+import { callerHarness, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -384,28 +384,28 @@ async function provisionFreshForeground<T>(
 }
 
 
-/** `cotal spawn`'s grammar: managed launch/attach by default, explicit native foreground,
- *  and one positional persona or explicit persona file. Declared `as const` so the values cast
+/** `cotal spawn`'s grammar: the application in this terminal by default, a manager's launch only
+ *  with `--detach` or `--on`, and one positional persona or explicit persona file. Declared `as const` so the values cast
  *  below is compile-checked against exactly these specs. Foreground and detached parse the SAME
  *  flags — the old `spawn` vs `start` ability drift is structurally gone. */
 export const spawnFlags = [
   spaceFlag,
   serverFlag,
-  { ...credsFlag, description: "control-caller creds for an off-registry manager (managed launch only, not --foreground)" },
+  { ...credsFlag, description: "control-caller creds for an off-registry manager (with --detach or --on)" },
   ...launchFlags,
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "application connector; an explicit flag wins over persona and saved defaults" },
-  { name: "foreground", type: "boolean", description: "run the native application directly; terminal exit may end it" },
-  { name: "restarts", type: "string", value: "<n>", description: "maximum manager-supervised restarts in the selected restart window" },
+  { name: "foreground", type: "boolean", description: "run the application in this terminal, as a spawn without --detach or --on does; terminal exit may end it" },
+  { name: "restarts", type: "string", value: "<n>", description: "with --detach or --on: maximum manager-supervised restarts in the selected restart window" },
   { name: "restart-window", type: "string", value: "<ms>", description: "time window for --restarts; both flags are required together" },
   jsonFlag, plainFlag,
-  { name: "detach", type: "boolean", short: "d", description: "launch through the manager, await readiness and return without attaching" },
+  { name: "detach", type: "boolean", short: "d", description: "launch through a manager, await readiness and return without attaching" },
   { name: "live-only", type: "boolean", description: "foreground only: skip the durable backstop (no read-ACL row; messages missed while disconnected are not replayed)" },
   { name: "file", type: "string", short: "f", value: "<persona-file>", description: "persona file on the execution host; never a manifest deploy or implicit upload" },
   { name: "dry-run", type: "boolean", description: "preview the launch without allocation, provisioning or starting an application" },
-  { name: "enrollment-file", type: "string", value: "<private-file>", description: "with --foreground: protected file holding this one seat's enrollment URL; never print or forward it" },
+  { name: "enrollment-file", type: "string", value: "<private-file>", description: "foreground only: protected file holding this one seat's enrollment URL; never print or forward it" },
   { name: "allow-stale", type: "string", value: "<a,b>", description: "refused: a manifest deployment option; use cotal team deploy <file>" },
   { name: "runtime", type: "string", value: "<name>", description: "refused: a manifest deployment option; use cotal team deploy <file>" },
-  { name: "on", type: "string", value: "<instance>", description: "managed launch only: launch through one manager instance, by the id `ps` prints, in a space with several managers; by default any one takes it" },
+  { name: "on", type: "string", value: "<instance>", description: "launch through this manager instance, by the id `ps` prints, and attach; with --detach, return once it joins" },
   { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
@@ -418,26 +418,26 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
   if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", `--expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`);
-  const direct = values.foreground === true || internal;
+  const direct = values.foreground === true || internal || !spawnUsesManager(values);
   if (values.file !== undefined && (args.positionals.length || values.config !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one positional persona or --file/-f, not multiple explicit persona sources");
   if (!internal && values.config !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--config is reserved for persisted internal launch callers; use cotal spawn --file <persona-file>");
   if (values.file !== undefined) { try { personaFileReference(values.file); } catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", (error as Error).message); } }
   if (values.runtime !== undefined || values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to cotal team deploy <file>, not spawn");
   if (values["enrollment-file"] !== undefined && !values.space) throw new CommandFailure("refused", "USAGE_INVALID", "--enrollment-file requires an explicit --space");
-  if (values["enrollment-file"] !== undefined && !values.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "this native enrollment path runs one foreground seat; use --foreground explicitly. It does not substitute for managed enrollment authority");
+  if (values["enrollment-file"] !== undefined && !direct) throw new CommandFailure("refused", "UNSUPPORTED", "this native enrollment path runs one foreground seat. It does not substitute for managed enrollment authority");
   if (values["enrollment-file"] !== undefined && (internal || values.detach || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one foreground enrollment source without a manager pin, credential override or internal handoff");
   if (values.harness !== undefined && values.agent !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --harness/-H or the legacy --agent spelling, not both");
   if (values.detach && direct) throw new CommandFailure("refused", "USAGE_INVALID", "--detach and direct foreground execution are different launch modes");
-  if (values.foreground && ((!values["dry-run"] && (values.json || values.plain)) || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "direct --foreground execution takes no structured receipt, manager credential or manager pin");
+  if (direct && ((!values["dry-run"] && (values.json || values.plain)) || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "a spawn in this terminal takes no structured receipt, manager credential or manager pin", { remedy: "add -d to launch it through a manager, which returns a receipt once the agent joins" });
   if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
   if (values.restarts !== undefined) {
-    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not direct foreground execution");
+    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
     for (const field of ["restarts", "restart-window"] as const) if (!/^[1-9][0-9]*$/.test(values[field]!) || !Number.isSafeInteger(Number(values[field])))
       throw new CommandFailure("refused", "USAGE_INVALID", `--${field} must be a positive safe integer`);
   }
   if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
   if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
-    throw new CommandFailure("refused", "USAGE_INVALID", "managed attachment needs usable input and output terminals before an identity is allocated", { remedy: "use cotal spawn -d to wait for readiness without attaching, or --foreground for direct execution" });
+    throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: "add -d to wait for readiness without attaching, or drop --on to run it in this terminal" });
   for (const field of ["harness", "agent", "model", "variant", "name"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
   if (values.events && values["no-events"]) throw new CommandFailure("refused", "USAGE_INVALID", "choose --events or --no-events, not both");
@@ -752,9 +752,10 @@ async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, insta
 }
 
 /**
- * `cotal spawn [<persona>] [--file <persona-file>]` launches through the manager and attaches
- * to its allocated incarnation. `--detach` returns after readiness; `--foreground` explicitly
- * runs the native application in this terminal. File validation belongs to that execution host.
+ * `cotal spawn [<persona>] [--file <persona-file>]` runs the native application in this terminal.
+ * `--detach` launches it through a manager and returns after readiness, and `--on <instance>`
+ * launches it through that manager and attaches to its allocated incarnation. File validation
+ * belongs to the execution host.
  *
  * The launch recipe is the connector's `buildLaunch` (the single source of truth,
  * shared with the manager); only *how the spec runs* differs — foreground exec
@@ -843,7 +844,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`));
     process.exit(1);
   }
-  const direct = values.foreground === true || handoffText !== undefined || enrollmentUrl !== undefined;
+  const direct = values.foreground === true || handoffText !== undefined || enrollmentUrl !== undefined || !spawnUsesManager(values);
   const enrollmentBootstrap = Boolean(enrollmentUrl && values.space && !findMesh(values.space));
   if (enrollmentBootstrap) {
     if (!values.config || (!values.config.includes("/") && !values.config.includes("\\") && !values.config.endsWith(".md"))) {
@@ -861,7 +862,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Explicit files retain the execution host's path semantics. A manager pin is meaningful for
   // either managed persona spelling; direct execution has no manager placement to select.
   if (values.on !== undefined && direct) {
-    console.error(c.red("✗ --on pins a managed imperative launch; direct --foreground does not take that manager selector"));
+    console.error(c.red("✗ --on pins a managed imperative launch; a spawn in this terminal does not take that manager selector"));
     process.exit(1);
   }
   // `--resume ""` / `--resume=` means the operator asked to resume but named no session — fail loud
@@ -901,8 +902,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // with a notice, so an unconditional default-true would be refused for an ordinary actor.
   const events = values.events ? true : values["no-events"] ? false : undefined;
 
-  // Managed by default; the persona remains on the manager's execution host. Direct foreground
-  // execution keeps its separate native custody path below.
+  // A manager runs it only with --detach or --on, and the persona then stays on the manager's
+  // execution host. Every other spawn keeps the native custody path below, in this terminal.
   if (!direct) return launchManagedPersona(values, positionals, events, cliLaunchOptions);
   console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
@@ -1002,8 +1003,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       console.error(
         c.red(
           ref === "default" && personaFrom === undefined
-            ? `✗ no default persona in ${where} - ${write}, or name a persona: \`cotal spawn <name>\``
-            : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
+            ? `✗ no default persona in ${where} - ${write}, name a persona: \`cotal spawn <name>\`, or pass a persona file: \`cotal spawn --file <persona.md>\``
+            : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or a persona file elsewhere with \`--file <persona.md>\``,
         ),
       );
     } else {
@@ -1160,7 +1161,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     : undefined;
   if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl && !redeemedEnrollment) {
     console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
-    console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
+    console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), run the agent there, or add -d to launch it through one of your managers`));
     process.exit(1);
   }
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the

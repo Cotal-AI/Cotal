@@ -1266,6 +1266,27 @@ async function completionOut(positionals: string[]): Promise<string> {
 }
 
 {
+  // A bare spawn runs the application in this terminal; a manager runs it only with -d or --on.
+  // This process has no terminal, so an attaching launch is refused and a spawn in this terminal is not.
+  const { validateSpawnArguments } = await import("../src/commands/spawn.js");
+  const { spawnUsesManager } = await import("../src/lib/spawn-defaults.js");
+  assert.equal(spawnUsesManager({}), false, "a bare spawn asks no manager");
+  assert.equal(spawnUsesManager({ detach: true }), true, "-d hands the launch to a manager");
+  assert.equal(spawnUsesManager({ on: "a".repeat(30) }), true, "and so does --on");
+  const refusal = (values: Record<string, unknown>) => {
+    try { validateSpawnArguments({ values, positionals: [], raw: [] } as never); return undefined; } catch (error) { return error as { code?: string; message: string; remedy?: string }; }
+  };
+  assert.equal(refusal({}), undefined, "a bare spawn without a terminal is not refused as a managed attachment");
+  const json = refusal({ json: true });
+  assert.equal(json?.code, "USAGE_INVALID", "a bare spawn with --json is refused");
+  assert.match(json?.message ?? "", /a spawn in this terminal takes no structured receipt/, "because a spawn in this terminal writes no receipt");
+  assert.match(json?.remedy ?? "", /add -d/, "and the Next adds -d");
+  assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
+  assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
+  assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
+}
+
+{
   // A host that granted a managed agent other channels than it asked for: the receipt shows what was
   // granted on one line, and the result `--json` writes carries both lists.
   const { managedLaunchAcl, managedLaunchView } = await import("../src/commands/spawn.js");

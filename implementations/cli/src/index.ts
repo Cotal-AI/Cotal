@@ -570,7 +570,7 @@ const baseCommands: Command[] = [
     aliases: ["sp"],
     group: "Agents",
     summary:
-      "launch through the manager and attach; -d returns after readiness, --foreground runs the application directly",
+      "run an agent in this terminal; -d launches it through a manager and returns once it joins, --on <instance> launches through that manager and attaches",
     usage: "spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] [options]",
     positionals: "[<persona>]",
     flags: spawnFlags,

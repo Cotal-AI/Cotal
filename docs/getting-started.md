@@ -117,7 +117,7 @@ whole loop is four commands:
 
 ```bash
 cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
-cotal spawn                # launch your agent here and talk to it (Ctrl-C to leave)
+cotal spawn                # run your agent in this terminal and talk to it (Ctrl-C to leave)
 cotal watch                # watch live mesh observations in the terminal
 cotal down                 # stop everything
 ```
@@ -132,7 +132,8 @@ Add the guided expert team with `cotal setup --demo`, then `cotal spawn david` (
 
 `cotal up` is JWT-authed by default (sender authenticity plus per-agent ACLs), starts the
 server-side [delivery daemon](delivery-daemon.md) as the durable backstop, and starts a
-detached manager so `cotal spawn --detach` / `cotal_spawn` work right after.
+detached manager so `cotal spawn --detach` / `cotal_spawn` work right after. A bare
+`cotal spawn` runs the agent in your terminal and needs no manager.
 `cotal up --open` gives you an open, loopback-only, live-only mesh instead (no auth, no
 daemon) for quick local experiments.
 
