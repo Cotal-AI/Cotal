@@ -375,6 +375,9 @@ export type LocalSpaceState = "created" | "prepared" | "started";
  */
 export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean): LocalSpaceState {
   const target = { space: name };
+  // `cotal up` starts a space only under a name that is one native routing token.
+  if (name.length > 200 || token(name) !== name)
+    throw refuse("USAGE_INVALID", "a space name is 1 to 200 letters, digits, underscores or hyphens, which `cotal up` needs to start it", target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
   const here = (other: string): boolean => canonicalRoot(other) === canonicalRoot(root);

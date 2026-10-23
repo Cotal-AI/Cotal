@@ -413,7 +413,11 @@ setCurrent("keep");
   check("a --root that is not a directory is USAGE_INVALID", refused(await json(["space", "create", "other", "--root", join(home, "absent")]), 1, "USAGE_INVALID"));
   check("create takes exactly one name", refused(await json(["space", "create"], spare), 1, "USAGE_INVALID") && refused(await json(["space", "create", "a", "b"], spare), 1, "USAGE_INVALID"));
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
-  check("no refused create prepared anything or made a .cotal", findPreparedSpace("other") === undefined && findPreparedSpace("a") === undefined && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
+  for (const name of ["a b", "dot.name", "é"]) {
+    const bad = await json(["space", "create", name], spare);
+    check(`a name cotal up cannot start (${name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
+  }
+  check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
   check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
 
