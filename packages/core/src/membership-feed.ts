@@ -59,7 +59,7 @@ export interface MembershipFeedOpts {
    *  read's issuer and its exact permission block (so its account scope); the user nkey may change. */
   observerCreds: string | (() => string | Promise<string>);
   /** Scoped DATA-account read/write creds (conn B — members read + feed write): a literal string, or
-   *  a SOURCE (D5 slice 5 class 2) that reads them through the {@link SecretStore} seam — the manager
+   *  a SOURCE that reads them through the {@link SecretStore} seam — the manager
    *  re-signs the SAME nkey into the store and the feed adopts it. May be async (a hosted `store.get`)
    *  or sync (a local FS read / literal). A source-fed cred is renewed on a 75% timer that PROVES each
    *  candidate on a disposable preflight before conn B ever presents it; conn B's authenticator only
@@ -674,7 +674,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   return {
     poll,
     async reloadRwCreds(expected?: string) {
-      // Explicit class-2 adoption for conn B (D5 slice 5). Capture the ABSOLUTE deadline at ENTRY,
+      // Explicit class-2 adoption for conn B. Capture the ABSOLUTE deadline at ENTRY,
       // before the single-flight enqueue, so a reload queued behind a hung-store 75% tick is bounded by
       // the SAME window (the queue wait counts) and can never commit/swap after the renewal owner's
       // request bound has already elapsed. The prove-then-adopt transaction runs under runRwTxn so it

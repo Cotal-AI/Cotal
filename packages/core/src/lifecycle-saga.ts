@@ -5,7 +5,7 @@
  * its crash-resume, and the barrier-internal head steps (epoch advance, root stamp, retirement
  * begin/complete).
  *
- * Three-way split (the Unit B design note, panel-locked): the key/value GRAMMAR lives in
+ * Three-way split: the key/value GRAMMAR lives in
  * `lifecycle-state.ts`; THIS module is the SEQUENCING, parameterized by an injected
  * {@link LifecycleStateTransport} so every executor (the user-mesh auth service over its sealed
  * registry, the manager's static adapter over its direct KV binding) drives the SAME saga —

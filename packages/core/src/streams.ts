@@ -700,7 +700,7 @@ export async function setupSpaceStreams(opts: {
     await kvm.create(membership.bucket, membership.createOptions);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
-    // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates
+    // start reconcile re-ensures for pre-existing spaces — and the up-time seed creates
     // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
     // drift fails loud.
     await createEndpointStreams(jsm, kvm, opts.space);

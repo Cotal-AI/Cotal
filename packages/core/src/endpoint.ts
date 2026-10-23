@@ -288,7 +288,7 @@ export interface EndpointOptions {
   /** NATS user creds file *content* (JWT + nkey seed), or a SOURCE that mints/reads a fresh copy.
    *  When set, the endpoint authenticates as that user and adopts the creds' identity as its card.id.
    *
-   *  A STRING is the ordinary static cred. A FUNCTION is the STANDING-RENEWAL seam (D5 slice 5) for
+   *  A STRING is the ordinary static cred. A FUNCTION is the STANDING-RENEWAL seam for
    *  bounded-lifetime standing creds: the endpoint fetches before the first connect, re-fetches at
    *  75% of each JWT's lifetime (then swaps the connection onto the fresh cred with a controlled
    *  reconnect) and on rebuilds, and every (re)connect attempt presents the freshest copy — the
@@ -636,7 +636,7 @@ export class CotalEndpoint extends EventEmitter {
     reloadMembershipCreds?: (expected?: string) => Promise<unknown>;
     /** Composition-root hook: notified when delivery credentials have been successfully proved and adopted. */
     onDeliveryCredsAdopted?: () => void;
-    /** Composition-root hook: the live-eviction executor (D5 slice 6) — scan→KICK→verify a denied
+    /** Composition-root hook: the live-eviction executor — scan→KICK→verify a denied
      *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
     evictPrincipal?: (principal: string) => Promise<unknown>;
     /** Composition-root hook: {@link evictPrincipal} for a SET of denied principals in one shared
@@ -2624,7 +2624,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** This endpoint's v0.4 caller triple (§13.2) — the identity its minted ep-rail rows pin. The
    *  owner/actor principal is mode-correct by construction (static: DEV_OWNER + the connection
-   *  identity; user mode: the bearer's callout-derived pair — 1c.2c), and the lifecycle UID is the
+   *  identity; user mode: the bearer's callout-derived pair), and the lifecycle UID is the
    *  launcher-supplied incarnation the rows are keyed on (ledger-consistent: the §13.1 presence
    *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
@@ -5724,7 +5724,7 @@ export class CotalEndpoint extends EventEmitter {
         : { ok: true, data: { delivery, membership } };
     }
     if (req.op === "evictPrincipal") {
-      // The LIVE-EVICTION executor (D5 slice 6): force-drop a denied principal's connections.
+      // The LIVE-EVICTION executor: force-drop a denied principal's connections.
       // Composition-root hook because the $SYS observer/evictor creds live outside this endpoint's
       // trust boundary; absent hook = a daemon build without the executor, refused loudly.
       if (!this.plane3?.evictPrincipal)
@@ -7182,7 +7182,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private applyPresence(id: string, raw: Presence): void {
-    // Defense-in-depth (per-user-auth closure (i), residual 3): the KV key IS the publisher's identity —
+    // Defense-in-depth: the KV key IS the publisher's identity —
     // publishPresence() writes its record under card.id — so a record whose embedded card.id disagrees
     // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
     // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a
