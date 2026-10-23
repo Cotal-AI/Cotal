@@ -4229,7 +4229,7 @@ them, so type `@<owner>.<actor>` instead. A target that parses as `<owner>.<acto
 principal whether or not it is present or was heard from, and is never matched against display
 names. A peer whose display name parses as a principal therefore cannot be reached by that name;
 `/reply` and its full principal still reach it. Typing the session's own principal refuses with
-`USAGE_INVALID`. A `--stdio` `dm` request resolves its `to` the same way.
+`USAGE_INVALID`, and so does its own name when no other participant carries it. A `--stdio` `dm` request resolves its `to` the same way.
 
 Every admission presents the session as an endpoint, so `--kind endpoint` is accepted and changes
 nothing. `--kind agent` refuses with exit 1 because a chat session never presents as an agent, and

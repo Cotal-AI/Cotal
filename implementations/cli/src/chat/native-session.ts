@@ -105,6 +105,7 @@ export function resolveDmTarget(
   rosterState: PresenceView["state"],
   engine: ParticipantEngine,
   selfPrincipal: string,
+  selfName?: string,
 ): { readonly id: string; readonly name: string } | Refused {
   if (typeof to !== "string" || parsePrincipalKey(to)) {
     const principal = typeof to === "string" ? to : to.principal;
@@ -127,6 +128,8 @@ export function resolveDmTarget(
     return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${[...named.keys()].join(", ")}); use the full principal` };
   const only = [...named.values()][0];
   if (only) return only;
+  if (selfName !== undefined && to.trim().toLowerCase() === selfName.trim().toLowerCase())
+    return refusedUsage(`"${to}" is this session's own name; a direct message needs another participant`);
   if (rosterState !== "current") return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: `cannot verify "${to}": the roster is ${rosterState}` };
   return { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${to}" in this space` };
 }
@@ -222,13 +225,13 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async resolveDm(to: DmTarget): Promise<Result<{ readonly id: string; readonly name: string }>> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal);
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal, this.inputs.identity.label);
     return "outcome" in recipient ? recipient : { outcome: "ok", value: recipient };
   }
 
   async dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal);
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal, this.inputs.identity.label);
     if ("outcome" in recipient) return recipient;
     const recipientStatusAtSend: PresenceStatus | "unrostered" = ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {

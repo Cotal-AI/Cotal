@@ -420,6 +420,12 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
   check("an exact target that is this session refuses as usage", "outcome" in self && self.code === "USAGE_INVALID", self);
   const unknown = resolveDmTarget("zed", roster, "stale", engine, identity.principal);
   check("an unknown name on a stale roster is unavailable, never absent", "outcome" in unknown && unknown.code === "TARGET_UNAVAILABLE", unknown);
+  // A DM to the session's own name used to say no peer has it.
+  const ownName = resolveDmTarget("Dana", roster, "current", engine, identity.principal, "dana");
+  check("a name only this session carries refuses as usage, saying it is the session's own name",
+    "outcome" in ownName && ownName.code === "USAGE_INVALID" && ownName.message === `"Dana" is this session's own name; a direct message needs another participant`, ownName);
+  const sharedOwn = resolveDmTarget("bob", roster, "current", engine, identity.principal, "bob");
+  check("a name this session shares with a present peer still resolves to that peer", !("outcome" in sharedOwn) && sharedOwn.id === "o.bob", sharedOwn);
 }
 /** An engine that received one message on #review from each sender. A channel's subject names its
  *  sender as a DM's does, so each is a heard sender. */
