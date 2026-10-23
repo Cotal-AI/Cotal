@@ -43,6 +43,7 @@ import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { ConfirmationRequired } from "./lib/confirmation-required.js";
 import { MissingFlags } from "./lib/missing-flags.js";
+import { reportLostOutput } from "./lib/stdout-owner.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
@@ -123,7 +124,8 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   }
   writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}
 `);
-  if (json) writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure)));
+  // The refusal is on stderr and its exit status below stands whether or not the envelope lands.
+  if (json) try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure))); } catch (error) { reportLostOutput(error as NodeJS.ErrnoException); }
   debugStacks(failure);
   process.exit(exitCode(failure.outcome, failure.code));
 }

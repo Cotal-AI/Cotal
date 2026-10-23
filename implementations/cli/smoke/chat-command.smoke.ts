@@ -146,6 +146,8 @@ console.log("6. a close report sets the exit code");
   check("an unconfirmed connection close exits 3, whatever the retirement",
     (["retired", "requested", "not-applicable"] as const).every((r) => closeExitCode(report(r, "not-confirmed")) === 3));
   check("no close report exits 3", closeExitCode(undefined) === 3);
+  check("a confirmed close of a session that could not continue exits 5", closeExitCode({ ...report("retired", "confirmed"), lost: "gone" }) === 5);
+  check("...and 3 when its close is not confirmed", closeExitCode({ ...report("retired", "not-confirmed"), lost: "gone" }) === 3);
 }
 
 console.log("7. completion needs no mesh for these words");

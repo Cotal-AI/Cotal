@@ -205,6 +205,11 @@ A command with a JSON output exits by its outcome, with or without `--json`:
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure.
 
+Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
+the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
+partway, so check what it did before you retry. A reader that closes the output early, as `| head`
+does, ends the command quietly with the status it had already set, or 0.
+
 ## Commands
 
 | Area | Command | Purpose |
@@ -2087,7 +2092,8 @@ unreadable extensions manifest is refused while loading the command surface, bef
 can run. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
-`running · service unchecked`.
+`running · service unchecked`. A broker that takes the connection and does not answer, as a
+stopped one does, leaves it unchecked too, and `status` still exits.
 
 The local auth reader uses a stripped signer only when both split trust records are absent.
 The load refuses dangling and looping links at either record even when an older stripped signer is present.
@@ -2161,7 +2167,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
 means the component record is live but its service/readiness surface did not answer or is not ready.
 Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
-absent component or a clean zero. A PID record that exists but cannot be read, or exists under both
+absent component or a clean zero. A broker that takes the connection and does not answer, as a
+stopped one does, refuses the manager and delivery probes, and the pass still exits. A PID record that exists but cannot be read, or exists under both
 its current and a pre-upgrade name, refuses only its own row. A record that its component removes
 while the pass runs reads as `absent`.
 
@@ -3806,7 +3813,9 @@ A session that ends by leaving, by end of input or at its lifetime exits 0 when 
 close was confirmed and it was retired, or was an open-mesh session with nothing to retire. It exits
 4 when its connection close was confirmed and its retirement was requested but not confirmed. It
 exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
-was observed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
+space restarted and retired it while the connection was down, ends by itself with that reason and
+exits 5 when its close is confirmed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
 input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
 signal that arrives before the view starts is held: no session is opened if admission has not
 begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
@@ -3903,7 +3912,8 @@ to redeliver. When a write waits for stdout to drain, or more than 4 MiB of reco
 session stops reading stdin until stdout drains.
 
 `end` is the last record. Its `reason` is `input closed` when stdin ended or a signal ended input,
-and `session ended` when the session ended by itself, for example at a static session's expiry.
+and `session ended` when the session ended by itself, for example at a static session's expiry. A
+session that could not reconnect gives that reason instead, and its `close` carries it as `lost`.
 When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
 `requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
 `message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
@@ -5068,7 +5078,8 @@ controls. Leaving with `q`, Esc or Ctrl-C stops only this observer.
 Use `--view events` or `--view messages` to select a feed, or press `f` to change it in the
 terminal. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most
 300 entries. A reported turn ending is not task completion. An interrupted feed keeps its
-last observations and reports the gap instead of showing them as current.
+last observations and reports the gap instead of showing them as current. When the connection
+comes back, after a broker restart too, the feed resumes and reports the transition as a gap.
 
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
 are not supported by that stream. Authenticated observer views keep direct messages out of

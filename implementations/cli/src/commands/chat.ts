@@ -107,11 +107,13 @@ function admit(target: MeshTarget, admission: ChatAdmission): Promise<AdmittedCh
   }
 }
 
-/** The exit code of a session that ended by leaving, end of input or expiry. Only a confirmed
- *  close is 0. Retirement asked for and not confirmed is 4. An unknown outcome, an unconfirmed
- *  connection close, or no close report is 3. */
+/** The exit code of a session that ended by leaving, end of input, expiry or loss. Only a confirmed
+ *  close is 0. A session that ended itself because it could not continue is 5. Retirement asked
+ *  for and not confirmed is 4. An unknown outcome, an unconfirmed connection close, or no close
+ *  report is 3. */
 export function closeExitCode(close: CloseReport | undefined): number {
   if (!close || close.retirement === "unknown" || close.connectionClosed !== "confirmed") return 3;
+  if (close.lost) return 5;
   return close.retirement === "requested" ? 4 : 0;
 }
 
