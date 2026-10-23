@@ -1393,7 +1393,7 @@ channels and history. Backup and restore of a controller-owned stack return in a
 rest of this section applies to a root without a stack journal.
 
 Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact
-store match, no recorded process that may still be running (the same test `clean` uses), and an
+store match (`--store-dir` defaults to the cut's recorded source store), no recorded process that may still be running (the same test `clean` uses), and an
 unreachable exact endpoint from the recorded cut. That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
 is still refused. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
