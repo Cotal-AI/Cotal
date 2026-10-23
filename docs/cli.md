@@ -699,7 +699,9 @@ replacement's instance and launch request before the old instance is retired, an
 definition's revision before the replacement launches. After an `up` cut off in between, the next
 bare `up` or `down` adopts the replacement only when its record carries that launch request and
 revision for the same operation; `down` stops it and `up` reuses it. Any other instance record
-refuses `CONFLICT`, and nothing is adopted. A preserve or resume that
+refuses `CONFLICT`, and nothing is adopted. A stack definition saved for another folder under the
+same space name refuses `CONFLICT`, naming that folder and every stack definition saved for it;
+`space forget` removes them once that folder's stack is stopped. A preserve or resume that
 never recorded its outcome stays with its own maintenance attempt. A member that exits before
 readiness is recorded as failed with its exit code, and the refusal names its log with
 `cotal service logs <definition> --instance <id> --space <space>`.
@@ -1824,6 +1826,11 @@ that `space create` made stays. Forgetting the selected space clears the selecti
 removes the per-space preferences saved under that name, so a later space with the same name starts
 without them, and the receipt lists each removed key and value so you can set them again. If that
 removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it.
+Forget also removes the stack definitions `cotal up` saved for the space at its root, with their
+stopped instance records, so another folder can start a stack under the same name. The result lists
+them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
+result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
+names `cotal down --yes` in the root and then `space forget` again.
 `status` in a forgotten space's root then selects no space and probes no broker.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.

@@ -14,6 +14,8 @@
  *  4. Reset after a normal down. `reset store` is offered and removes the store, and `up` starts
  *     again. `reset space` is offered and removes the identity, keeping the prepared record and
  *     the stack journal, and `up` starts again with a new account.
+ *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
+ *     definitions saved for the root, and another folder starts a stack under the same name.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -154,6 +156,28 @@ try {
     check("bare up starts it again", fresh.status === 0, shown(fresh));
     check("with a new account identity", accountDigest(root) !== before && accountDigest(root) !== "absent", { before, after: accountDigest(root) });
     const last = cli(root, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 5. A forgotten space's stack definitions go with it, so its name starts in another folder.
+  {
+    const space = "tear2";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a second controller root", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("up starts it and down --yes stops it", started.status === 0 && stopped.status === 0, { up: shown(started), down: shown(stopped) });
+    const forgot = cli(home, "space", "forget", space, "--json");
+    check("space forget removes the stack definitions saved for the root",
+      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery"]), shown(forgot));
+    const elsewhere = folder(`${space}b`);
+    const again = cli(home, "space", "create", space, "--root", elsewhere, "--json");
+    anchor(elsewhere);
+    const reused = cli(elsewhere, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
+    const last = cli(elsewhere, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
   }
 } finally {

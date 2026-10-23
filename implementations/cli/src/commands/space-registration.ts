@@ -35,6 +35,7 @@ import {
 } from "@cotal-ai/workspace";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
+import { releaseStackDefinitions } from "../lib/stack-journal.js";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -107,6 +108,9 @@ interface SpaceForgotten {
   readonly root: string;
   /** How it came to be here: a registration's origin, or `prepared` for a space `space create` made. */
   readonly origin: MeshEntry["origin"] | "prepared" | null;
+  /** The stopped controller stack definitions this machine saved for the space at its root, removed
+   *  so that another folder can start a stack under the same name. */
+  readonly releasedDefinitions: readonly string[];
   /** Whether it was the selected space, so no space is selected now. */
   readonly selectionCleared: boolean;
   /** The per-space preferences saved under its name that the forget removed, by key. */
@@ -464,7 +468,9 @@ function createdView(r: SpaceCreated): Report {
  * stopped with `cotal down`, which also drops its record, and a discovered space follows its
  * catalog. A stack member whose process is gone without its stop receipt does not block, and the
  * result warns about each one. Forgetting the selected space clears the selection. A prepared space
- * is forgotten the same way, and the `.cotal/` folder `space create` made stays.
+ * is forgotten the same way, and the `.cotal/` folder `space create` made stays. The stopped stack
+ * definitions saved for the space at its root are removed with it, so the name can start elsewhere;
+ * any that cannot be removed are kept and the result warns about them.
  */
 export async function spaceForget(rest: readonly string[], presentation: Presentation): Promise<void> {
   if (rest.length !== 1) throw usage("usage: cotal space forget <name>");
@@ -476,8 +482,9 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   if (!m) {
     const p = findPreparedSpace(name);
     if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, target, "see the registered spaces with `cotal space`");
+    const release = releaseStackDefinitions(p.root, name);
     removePreparedSpace(name);
-    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared" }, preferencesRevision);
+    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared", releasedDefinitions: release.released }, preferencesRevision, keptWarnings(name, release.kept));
   }
   if (m.origin === "catalog")
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
@@ -492,9 +499,14 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     }
     if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
   }
+  const release = releaseStackDefinitions(m.root, name);
   removeMesh(name);
   const warnings = unsettled.map((member) => ({ code: "STACK_MEMBER_UNSETTLED", target, message: `the stack member ${member} is gone but was never stopped cleanly: its record has no stop receipt` }));
-  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null }, preferencesRevision, warnings);
+  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released }, preferencesRevision, [...warnings, ...keptWarnings(name, release.kept)]);
+}
+
+function keptWarnings(name: string, kept: ReturnType<typeof releaseStackDefinitions>["kept"]): OutputWarning[] {
+  return kept ? [{ code: "STACK_DEFINITIONS_KEPT", target: { space: name, definitions: kept.names }, message: `${kept.names.length ? `the stack definitions ${kept.names.join(", ")} were` : "its saved stack definitions were"} kept, so another folder cannot start "${name}" until they are removed: ${kept.why}` }] : [];
 }
 
 /** The space's per-space preferences go with it, so a later space of the same name starts without
@@ -520,6 +532,7 @@ function forgottenView(r: SpaceForgotten): Report {
   ];
   const removed = Object.entries(r.removedPreferences).filter(([, value]) => value !== undefined);
   if (removed.length) lines.push({ text: `  removed its per-space preferences: ${removed.map(([key, value]) => `${key}=${value}`).join(", ")} - \`cotal config set <key> <value> --space ${r.space}\` sets one again`, tone: "hint" });
+  if (r.releasedDefinitions.length) lines.push({ text: `  removed its stopped stack definitions (${r.releasedDefinitions.join(", ")}), so another folder can start ${r.space}`, tone: "hint" });
   if (r.selectionCleared) lines.push({ text: "no space is selected now - select one with `cotal use <name>`", tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }

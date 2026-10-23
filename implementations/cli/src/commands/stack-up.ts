@@ -27,7 +27,7 @@ import { prepareProcessService, removeStoppedInstanceRecords, settleExitedInstan
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -212,8 +212,12 @@ function ensureDefinition(space: string, role: StackRole, input: ServiceDefiniti
   const wanted = input.launch;
   if (existing) {
     const launch = existing.record.value.launch;
-    if (launch.type !== "adapter" || wanted.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== root)
+    if (launch.type !== "adapter" || wanted.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== root) {
+      const other = launch.type === "adapter" && launch.adapter === STACK_ADAPTER[role] && typeof launch.options.root === "string" ? launch.options.root : undefined;
+      if (other) throw new CommandFailure("refused", "CONFLICT", `the saved ${name} definition belongs to the stack at ${other}; it was not replaced`, { target: { space, definition: name, root: other },
+        remedy: `if ${other} no longer runs ${space}, remove the stack definitions saved for it (${stackDefinitionsAt(space, other).map((row) => row.name).join(", ")}) with cotal service remove <name> --space ${space} --yes` });
       throw new CommandFailure("refused", "CONFLICT", "a saved definition under a stack name belongs to another adapter or root; it was not replaced", { target: { space, definition: name }, remedy: `inspect cotal service show ${name} --space ${space}` });
+    }
     if (JSON.stringify(launch.options) === JSON.stringify(wanted.options)) return existing;
     // A running member keeps the definition it was launched from; it is reused, never redefined.
     if (serviceInstances(space, name).some((row) => observeServiceProcess(row.record.value) === "running")) return existing;
