@@ -99,7 +99,8 @@ import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, onInstance, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { askManager, failIfNotOk, onInstance, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { managerPin } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
@@ -537,7 +538,7 @@ export async function launchManagedPersona(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  const on = onInstance(values.on, "cotal spawn <persona>");
+  const on = await managerPin(values, "cotal spawn <persona>");
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.

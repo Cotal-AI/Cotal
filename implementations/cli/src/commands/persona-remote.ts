@@ -14,6 +14,7 @@ import {
 import { openEndpointConnection } from "../lib/endpoint-client.js";
 import { nativeEndpointRefusal } from "../lib/endpoint-errors.js";
 import { onInstance } from "../lib/control.js";
+import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import type { PersonaValues } from "./persona.js";
 
@@ -108,7 +109,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
   const values = args.values as PersonaValues;
   const [mode = "list", name] = args.positionals;
   const input = mode === "create" ? definitionInput(values, name!) : undefined;
-  const instanceId = onInstance(values.on!, "cotal persona --on");
+  const instanceId = (await managerPin(values, "cotal persona --on"))!;
   const requestId = randomUUID();
   let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
   let sender: Awaited<ReturnType<typeof openTransient>> | undefined;

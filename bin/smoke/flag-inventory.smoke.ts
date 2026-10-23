@@ -64,7 +64,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
-      "idp:string", "max-sessions:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "idp:string", "manager-name:string", "max-sessions:string", "open:boolean", "runtime:string", "server:string", "space:string",
       // `up` starts in the background by default; `--foreground` keeps the stack in this terminal
       // and `--root` names the prepared project.
       "foreground:boolean", "root:string", "json:boolean:j", "plain:boolean",
@@ -282,11 +282,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // scripts, containers) and warn on each run. `up` launches the twins, which share each entry's
   // declaration without the warning.
   supervise: {
-    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   "__daemon-manager": {
-    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   deliver: {
@@ -384,7 +384,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   "__service-manager": {
     flags: [
       "console-host:string", "console-port:string", "launch:string", "launch-request:string", "launch-sha256:string",
-      "max-sessions:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string",
+      "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string",
       "root:string", "roster:string", "runtime:string", "server:string", "service-instance:string", "space:string",
       "state-directory:string", "ws-port:string",
     ],

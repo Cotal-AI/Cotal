@@ -1223,18 +1223,42 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(restated.outcome, "refused", "the outcome is kept");
   assert.equal(restated.code, "PERMISSION_DENIED", "the code is kept");
   assert.deepEqual((restated.native?.detail as { managers: unknown }).managers, [
-    { instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", since: "2026-10-01T00:00:00.000Z" },
-    { instanceId: "bbb2", host: null, activity: null, since: null },
-  ], "each manager carries what its presence reports, and nothing it does not");
-  assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on aaa1 or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager");
+    { name: "box-a/orca", instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", since: "2026-10-01T00:00:00.000Z" },
+    { name: "manager", instanceId: "bbb2", host: null, activity: null, since: null },
+  ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>");
+  assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on box-a/orca or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager, by the shortest value that picks it");
   const shown = renderReport(commandFailureReport(restated), "plain");
-  assert.match(shown, /Live managers[\s\S]*aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row");
+  assert.match(shown, /Live managers[\s\S]*Manager\s+Instance[\s\S]*box-a\/orca\s+aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row, by name first");
   const unread = await managerChoiceFailure(refusal, async () => { throw new Error("no roster"); }, ["ps"]);
   assert.deepEqual((unread?.native?.detail as { managers: { instanceId: string }[] }).managers.map((m) => m.instanceId), ["aaa1", "bbb2"], "an unreadable roster still names the instance ids");
   let read = false;
   const other = await managerChoiceFailure(new CommandFailure("refused", "PERMISSION_DENIED", "manager-caller selection found no manager candidate for owner u_own"), async () => { read = true; return roster; }, ["ps"]);
   assert.equal(other, undefined, "any other refusal passes through");
   assert.equal(read, false, "and reads no roster");
+}
+
+{
+  // A manager shows by the name it was started with, or by <host>/<runtime> without one. A `--on`
+  // that picks no single manager is restated with the command again on each candidate, replacing
+  // the `--on` the caller gave in either spelling.
+  const { ManagerPinUnmatched, managerChoiceFailure, managerLabel } = await import("../src/lib/manager-choice.js");
+  const { displayCmd } = await import("../src/lib/self-exec.js");
+  const row = (name: string, meta: Record<string, string>, activity?: string) => ({ card: { id: "u_own.manager_x", name, kind: "endpoint", role: "manager", meta }, status: "idle", ...(activity ? { activity } : {}), ts: 0 }) as unknown as import("@cotal-ai/core").Presence;
+  assert.equal(managerLabel(row("factory", { host: "pc" }, "supervisor (tmux)")), "factory", "a named manager shows by its name");
+  assert.equal(managerLabel(row("manager", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "an unnamed one shows by <host>/<runtime>");
+  assert.equal(managerLabel(row("manager", { host: "pc" }, "busy")), "pc", "without a runtime in its activity, by its host");
+  const candidates = [
+    { name: "factory", instanceId: "a".repeat(30), host: "pc", activity: "supervisor (tmux)", since: null },
+    { name: "pc/pty", instanceId: "b".repeat(30), host: "pc", activity: "supervisor (pty)", since: null },
+  ];
+  const ambiguous = new ManagerPinUnmatched("pc", candidates, 2);
+  assert.equal(ambiguous.code, "TARGET_AMBIGUOUS", "a value that matches several managers is ambiguous");
+  assert.equal(new ManagerPinUnmatched("nosuch", candidates, 0).code, "TARGET_NOT_FOUND", "one that matches none names no target");
+  const restated = await managerChoiceFailure(ambiguous, async () => { throw new Error("not read"); }, ["ps", "--on", "pc", "--json"]);
+  assert.equal(restated?.remedy, `rerun it on one: ${displayCmd()} ps --on factory --json or ${displayCmd()} ps --on pc/pty --json`, "the Next replaces the caller's --on with the name of each candidate");
+  const equals = await managerChoiceFailure(ambiguous, async () => { throw new Error("not read"); }, ["ps", "--on=pc"]);
+  assert.equal(equals?.remedy, `rerun it on one: ${displayCmd()} ps --on factory or ${displayCmd()} ps --on pc/pty`, "and replaces an --on=<value> the same way");
+  assert.equal(await managerChoiceFailure(new ManagerPinUnmatched("x", [], 0), async () => [], ["ps", "--on", "x"]), undefined, "with no manager to offer, the refusal stands as it is");
 }
 
 console.log("✓ command-kernel smoke passed");

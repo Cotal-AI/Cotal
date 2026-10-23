@@ -23,8 +23,9 @@
  *   G: the remote space's OWN split records — refused with the combination message.
  *   I: an unreadable auth/auth.json — refused on the store's parse message before any exchange.
  *   H: no trust text may name auth/auth.json in F's output.
- *   J: with two of the owner's managers up, an unpinned `ps` lists each one with its host and
- *      gives the command again with `--on` for each.
+ *   J: with two of the owner's managers up, one started with `--name`, an unpinned `ps` lists each
+ *      one by name with its host and gives the command again with `--on` for each, by name where
+ *      the name picks it; `ps --on <name>` is answered and `who --all` shows the name.
  *
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/supervise-remote-dial.json
  */
@@ -485,7 +486,7 @@ try {
     mkdirSync(join(cellRoot, ".cotal"), { recursive: true });
     recordMesh({ space, server: trustServer, root: cellRoot, mode: "user", userAuth: trustUserAuth, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
     cpSync(trustHome, cellHome, { recursive: true });
-    const child = spawnProc(tsxBin, [cliBin, "supervise", "--space", space], { cwd: cellRoot, env: childHomeEnv(cellHome), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnProc(tsxBin, [cliBin, "supervise", "--space", space, ...(label === "J1" ? ["--name", "j-one"] : [])], { cwd: cellRoot, env: childHomeEnv(cellHome), stdio: ["ignore", "pipe", "pipe"] });
     kids.push(child);
     twoManagers.push(child);
     let output = "";
@@ -503,20 +504,26 @@ try {
   writeFileSync(sentinelCredsPath, callout!.sentinelCreds, { mode: 0o600 });
   recordMesh({ space, server: trustServer, root: callerRoot, mode: "user", userAuth: { ...trustUserAuth, sentinelCredsPath }, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
   cpSync(trustHome, callerHome, { recursive: true });
-  const ps = await new Promise<{ code: number | null; err: string }>((resolveRun) => {
-    const child = spawnProc(tsxBin, [cliBin, "ps", "--space", space], { cwd: callerRoot, env: childHomeEnv(callerHome), stdio: ["ignore", "ignore", "pipe"] });
+  const caller = (...args: string[]) => new Promise<{ code: number | null; out: string; err: string }>((resolveRun) => {
+    const child = spawnProc(tsxBin, [cliBin, ...args], { cwd: callerRoot, env: childHomeEnv(callerHome), stdio: ["ignore", "pipe", "pipe"] });
     kids.push(child);
-    let err = "";
+    let out = "", err = "";
+    child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer) => { err += chunk.toString(); });
-    child.on("close", (code) => resolveRun({ code, err }));
+    child.on("close", (code) => resolveRun({ code, out, err }));
   });
+  const ps = await caller("ps", "--space", space);
   ok("J: an unpinned ps with several live managers refuses as PERMISSION_DENIED, exit 2",
     ps.code === 2 && /Code:\s+PERMISSION_DENIED/.test(ps.err) && /\d+ of your managers are live/.test(ps.err), ps);
-  const hosts = new Map([...(ps.err.split("Live managers")[1] ?? "").matchAll(/^\s+(\S+)\s+(\S+)\s/gm)].map((m) => [m[1]!, m[2]!]));
-  ok("J: the refusal lists each of its live managers on its own row, with the host its presence reports",
-    twoIds.length === 2 && twoIds.every((id) => hosts.get(id) === hostname()), { twoIds, err: ps.err.slice(-900) });
-  ok("J: its Next reruns the caller's own ps with --on for each of them",
-    twoIds.length === 2 && twoIds.every((id) => ps.err.includes(`ps --space ${space} --on ${id}`)), ps.err.slice(-600));
+  const rows = new Map([...(ps.err.split("Live managers")[1] ?? "").matchAll(/^\s+(\S+)\s+([a-z0-9]{26,32})\s+(\S+)\s/gm)].map((m) => [m[2]!, { name: m[1]!, host: m[3]! }]));
+  ok("J: the refusal lists each of its live managers on its own row, by name, with the host its presence reports",
+    twoIds.length === 2 && twoIds.every((id) => rows.get(id)?.host === hostname()) && rows.get(twoIds[0]!)?.name === "j-one" && rows.get(twoIds[1]!)?.name === `${hostname()}/pty`, { twoIds, err: ps.err.slice(-900) });
+  ok("J: its Next reruns the caller's own ps on each of them, by the name or <host>/<runtime> that picks it, otherwise by instance id",
+    ps.err.includes(`ps --space ${space} --on j-one`) && [`${hostname()}/pty`, twoIds[1]].some((selector) => ps.err.includes(`ps --space ${space} --on ${selector}`)), ps.err.slice(-600));
+  const pinned = await caller("ps", "--space", space, "--on", "j-one");
+  ok("J: ps --on <name> is answered by the manager started with that name", pinned.code === 0, pinned);
+  const who = await caller("who", "--all", "--space", space);
+  ok("J: who --all shows that manager by its name", who.code === 0 && who.out.includes("manager j-one"), who.out.slice(-900));
   for (const child of twoManagers) child.kill("SIGTERM");
   await Promise.all(twoManagers.map((child) => awaitExit(child, 15_000)));
 
