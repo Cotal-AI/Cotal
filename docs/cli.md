@@ -1814,9 +1814,9 @@ prepared record is written, without changing its permissions. The refusal names 
 in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that lists each path.
 It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
 it starts in, before it writes anything, so it never starts a stack that `down` would refuse to
-stop from that root. `cotal up` starts a space only under a name of 1 to 200 letters, digits,
-underscores or hyphens, so any other name refuses with `USAGE_INVALID`, exit 1, before anything is
-written. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
+stop from that root. A space name is 1 to 64 letters, digits, underscores or hyphens, because
+`cotal up` starts a space only under one routing token and names files after it, so any other name
+refuses with `USAGE_INVALID`, exit 1, before anything is written. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
 space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written. `space` lists
 prepared spaces under their own heading, and `space show` and `use` accept one. A command that

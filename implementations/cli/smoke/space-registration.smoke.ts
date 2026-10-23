@@ -518,11 +518,13 @@ setCurrent("keep");
   }
   check("create takes exactly one name", refused(await json(["space", "create"], spare), 1, "USAGE_INVALID") && refused(await json(["space", "create", "a", "b"], spare), 1, "USAGE_INVALID"));
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
-  for (const name of ["a b", "dot.name", "é"]) {
+  // A name past 64 characters names files too long for `cotal up`.
+  const tooLong = ["a".repeat(65), "a".repeat(150), "a".repeat(300)];
+  for (const name of ["a b", "dot.name", "é", ...tooLong]) {
     const bad = await json(["space", "create", name], spare);
-    check(`a name cotal up cannot start (${name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
+    check(`a name cotal up cannot start (${name.length > 20 ? `${name.length} characters` : name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
   }
-  check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
+  check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é", ...tooLong].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
   check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
 
@@ -554,6 +556,11 @@ setCurrent("keep");
   check("status --verbose notes the selected space is prepared, not started", verbose.status === 0 && /current mesh "demo" is prepared, not started/.test(verbose.stdout), shown(verbose));
   const listed = await json(["space"]);
   check("a selected prepared space is not warned about as missing", listed.status === 0 && listed.env?.warnings.length === 0 && listed.env.result.prepared[0]?.current === true, listed.env?.warnings);
+  // After the prepared-list reads above, so a second prepared space does not reorder them.
+  const longest = join(home, "longest");
+  mkdirSync(longest);
+  const sixtyFour = await json(["space", "create", "b".repeat(64)], longest);
+  check("a 64-character name is prepared", sixtyFour.status === 0 && findPreparedSpace("b".repeat(64)) !== undefined, shown(sixtyFour));
   const human = await run(["space", "--plain"]);
   check("the listing shows it under its own heading", /Prepared, not started/.test(human.stdout) && /demo \(selected\)/.test(human.stdout), shown(human));
   const target = await json(["who"]);
