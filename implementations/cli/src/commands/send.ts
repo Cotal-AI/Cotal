@@ -18,7 +18,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
