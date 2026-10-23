@@ -2853,6 +2853,12 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // up -f never adopts a running broker. The old spawn -f route is no longer a manifest deploy.
   if (await isReachable(server)) {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "the selected address already has a broker; fresh boot did not adopt it or start a competing listener", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "inspect the existing broker and selected local records, or use another prepared address" });
+    // This folder's own mesh for the manifest's space is named as running, as a bare `up` names it,
+    // with the routes that change it instead of the advice for a foreign broker.
+    if (loadMeshes().some((row) => row.server === server && row.root === cotalRoot() && row.space === m.space)) {
+      console.error(c.red(`✗ mesh "${m.space}" is already running at ${brokerAddressForDisplay(server) ?? "its address"} from this folder - \`up -f\` boots a fresh mesh and does not apply a manifest to a running one; \`cotal team deploy ${file}\` adds all-new channels and agents to it, or \`cotal down\` it first, then \`cotal up -f ${file}\``));
+      process.exit(1);
+    }
     console.error(c.red(`✗ ${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`));
     process.exit(1);
   }
