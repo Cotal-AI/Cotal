@@ -12,6 +12,7 @@ import {
   plainFlag,
   preferenceInfo,
   preferenceSpaceProblem,
+  preferenceValueProblem,
   preferencesPath,
   presentationOf,
   readPreferences,
@@ -98,7 +99,7 @@ export async function config(args: ParsedArgs): Promise<void> {
     if (rest.length) throw usage("usage: cotal config [--user | --space <name>]");
     const scope = readScope(v);
     const result: PreferencesResult = { kind: "preferences", file: preferencesPath(), revision: prefs.revision, scope, settings: PREFERENCE_KEYS.map((key) => setting(key, scope, prefs)) };
-    writeResult(presentation, { command: "config", target: target(scope), result }, (value) => preferencesView(value, Boolean(v.verbose)));
+    writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues(result.settings) }, (value) => preferencesView(value, Boolean(v.verbose)));
     return;
   }
   if (sub === "get") {
@@ -106,7 +107,7 @@ export async function config(args: ParsedArgs): Promise<void> {
     const key = keyOf(rest[0]!);
     const scope = readScope(v);
     const result: PreferenceResult = { kind: "preference", file: preferencesPath(), revision: prefs.revision, scope, setting: setting(key, scope, prefs) };
-    writeResult(presentation, { command: "config", target: target(scope), result }, preferenceView);
+    writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues([result.setting]) }, preferenceView);
     return;
   }
   if (sub === "set" || sub === "unset") {
@@ -151,20 +152,40 @@ function setting(key: PreferenceKey, scope: Scope, prefs: Preferences): Setting 
 /** A harness must name a connector this workstation knows, so a typo is refused at the write.
  *  `persona create --harness` takes the same check. */
 export function checkHarness(value: string): void {
+  const problem = harnessProblem(value);
+  if (problem) throw usage(problem);
+}
+
+function harnessProblem(value: string): string | undefined {
   const installed = loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name));
   const known = knownHarnesses(installed);
-  if (!known.includes(value)) throw usage(`no harness ${JSON.stringify(value)}; known harnesses: ${known.join(", ")}`);
+  return known.includes(value) ? undefined : `no harness ${JSON.stringify(value)}; known harnesses: ${known.join(", ")}`;
 }
 
 /** A persona default is a catalog name or a persona file path, the two forms a launch resolves (a path
  *  is absolute, holds a slash or ends in `.md`, as `agentFilePath` decides), so a value that can be
  *  neither is refused at the write. Whether it exists is decided at launch, in the space it runs in. */
 function checkPersona(value: string): void {
+  const problem = personaProblem(value);
+  if (problem) throw usage(problem);
+}
+
+function personaProblem(value: string): string | undefined {
   const path = isAbsolute(value) || /[\\/]/.test(value) || value.endsWith(".md");
   const problem = !path
     ? personaNameProblem(value)
     : /[\u0000-\u001f\u007f]/u.test(value) || value !== value.trim() ? "a persona file path cannot hold control characters or surrounding spaces" : undefined;
-  if (problem) throw usage(`invalid persona ${JSON.stringify(value)}: ${problem}`);
+  return problem && `invalid persona ${JSON.stringify(value)}: ${problem}`;
+}
+
+/** A variable that wins with a value `config set` refuses still wins, as it always has. It is named
+ *  in a warning, so the mistake shows before a launch or an attach reads it. */
+export function invalidEnvironmentValues(settings: readonly ResolvedPreference[]): OutputWarning[] {
+  return settings.flatMap(({ key, winner }) => {
+    if (winner?.source !== "environment") return [];
+    const problem = preferenceValueProblem(key, winner.value) ?? (key === "harness" ? harnessProblem(winner.value) : key === "persona" ? personaProblem(winner.value) : undefined);
+    return problem ? [{ code: "PREFERENCE_INVALID", target: { variable: winner.name, key }, message: `${winner.name}: ${problem}; config set refuses this value, and the variable still wins in this shell` }] : [];
+  });
 }
 
 /** A write that a higher layer still outranks in this shell says so, so the edit is not mistaken for

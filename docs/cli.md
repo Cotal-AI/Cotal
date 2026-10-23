@@ -4696,7 +4696,9 @@ key. A read looks through `--space`, else the space selected with `cotal use`, e
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
 and `persona` have per-space values. A write that a variable outranks in this shell is still saved,
-with a `PREFERENCE_SHADOWED` warning naming the variable. Setting a value that is already saved, or
+with a `PREFERENCE_SHADOWED` warning naming the variable. A variable whose value `config set`
+would refuse still wins, and `config`, `config get` and `status` name it in a `PREFERENCE_INVALID`
+warning with the reason. Setting a value that is already saved, or
 unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
 with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
 refused with `CONFLICT`. A preferences folder you cannot write is refused with `PERMISSION_DENIED`
