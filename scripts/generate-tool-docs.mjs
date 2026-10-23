@@ -61,11 +61,16 @@ const ANNOTATIONS = {
     notes:
       "Fails loud when the channel is outside your `allowPublish`. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.",
   },
-  cotal_dm: { effect: "sends a private message to one peer", availability: "always" },
+  cotal_dm: {
+    effect: "sends a private message to one peer",
+    availability: "always",
+    notes:
+      "A name must match a present peer's name in full (case-insensitive) or its instance id. On a miss nothing is sent, and the refusal lists present names that start with the target so you can choose one; it never picks one for you. Your own name is refused as this session, not as a missing peer.",
+  },
   cotal_anycast: {
     effect: "queues a request for one holder of a role",
     availability: "always",
-    notes: "A request with no holder online waits on the role's queue.",
+    notes: "When no holder is online the reply says that the request waits on the role's queue.",
   },
   cotal_status: {
     effect: "updates your own presence / attention",
@@ -77,7 +82,7 @@ const ANNOTATIONS = {
     effect: "read-only",
     availability: "always",
     notes:
-      "An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic.",
+      "An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic. An agent's event channel (`events.<owner>.<actor>`) is described as one, and your own as yours.",
   },
   cotal_channels: { effect: "read-only", availability: "always" },
   cotal_channel_mode: {

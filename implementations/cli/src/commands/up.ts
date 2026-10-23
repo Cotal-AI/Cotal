@@ -149,6 +149,7 @@ import {
   connectUserControlOrThrow,
   userViewAuth,
   recordOperationSpace,
+  retainSystemSigningSeed,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
@@ -282,6 +283,7 @@ export const upFlags: FlagSpec[] = [
   { name: "exchange-public-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the advertised public base URL (the reverse proxy's address)" },
   { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
   { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
+  { name: "service-endpoints", type: "boolean", description: "with --user-auth: the auth service also hosts service endpoints (the registration door and the owner-decision host route)" },
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "detach", type: "boolean", description: "run in the background (the default; stop with cotal down)" },
@@ -521,7 +523,7 @@ const NO_MANAGER_DURING_RECOVERY = "--no-manager is refused while this root has 
 
 async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
   const values = args.values as {
-    server?: string; "store-dir"?: string; "max-file-store"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
+    server?: string; "store-dir"?: string; "max-file-store"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; foreground?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
@@ -896,7 +898,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // a manager that will never start is a misunderstanding, and dropping it quietly is the exact
   // silent-no-op shape this repo refuses everywhere else.
   const noManager = Boolean(values["no-manager"]);
-  const publicExchange = publicExchangeArgs(values, wantUser);
+  const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
   const maxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
   // The manifest path renders its broker from the manifest, which has no store fields, so the flag
@@ -2521,6 +2523,14 @@ function publicExchangeArgs(
     ...(advertised !== undefined ? ["--advertised-server", advertised] : []),
     ...(provisioning !== undefined ? ["--agent-provisioning-url", provisioning] : []),
   ];
+}
+
+/** The daemon argv for `--service-endpoints`: the auth service hosts the service endpoint door and
+ *  host route. User-auth only; an open mesh has no owner to decide. */
+function serviceEndpointsArgs(v: { "service-endpoints"?: boolean }, wantUser: boolean): string[] {
+  if (!v["service-endpoints"]) return [];
+  if (!wantUser) throw new Error("--service-endpoints is for user-auth spaces - pair it with --user-auth");
+  return ["--service-endpoints"];
 }
 
 /** Bring the space's USER-AUTH service up with the broker (user mode only — `setup.prepared` is the
@@ -4161,8 +4171,9 @@ async function authSetup(
   if (!auth) {
     auth = await createSpaceAuth(space);
     await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
+    await retainSystemSigningSeed(store, auth); // … and the host keeps the seed itself, beside the record, for own-broker caller issuance
     await provisionMembershipCreds(auth, cotalRoot(), space); // … so the observer can still be minted here (fresh-space only)
-    // A fresh space's $SYS material was just minted from the seed that only exists in this branch, so
+    // A fresh space's $SYS material was just minted from the seed this branch holds in memory, so
     // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never
     // report a rotation that did not happen.
     if (rotateSys) console.log(c.dim("• --rotate-sys: this space is new, so its $SYS creds were just minted - nothing to rotate"));
@@ -4380,8 +4391,8 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: str
 
 /** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph
  *  membership), at the FRESH `cotal up` while the in-memory `$SYS` signing seed still exists:
- *   - `membership-observer.creds` — SYSTEM-account CONNZ reader (the only window it can be minted: the
- *     `$SYS` seed is never persisted).
+ *   - `membership-observer.creds` — SYSTEM-account CONNZ reader (the only window it is minted here:
+ *     the trust record carries no `$SYS` seed, and the retained custody record serves caller issuance only).
  *   - `membership-rw.creds` — DATA-account members-read + feed-write.
  *   - `membership.json` — the DATA account id (the CONNZ/event subjects pin it; non-secret, but kept
  *     0600 alongside the creds).

@@ -1,5 +1,348 @@
 # cotal-ai
 
+## 0.97.0
+
+### Minor Changes
+
+- f4529ef: Bind the daemon's existing void machine-status responder using the stock verified guest serve grant. Each serving credential is checked against the registered authority's issuer identity and the unchanged embedded contract. Flush the responder before ready, bind replacement connections, and stop responders on disconnect. Callers still need explicit exact-instance grants; the public descriptor identifies the endpoint and derived owner token and includes protocol and command schemas. No hostname, machine metadata or vitals are returned.
+
+### Patch Changes
+
+- Updated dependencies [624e71f]
+- Updated dependencies [ec7dbfc]
+- Updated dependencies [352bbe7]
+- Updated dependencies [030fba8]
+- Updated dependencies [9c193e5]
+- Updated dependencies [d03c223]
+- Updated dependencies [a5b5731]
+- Updated dependencies [e2fc5e1]
+- Updated dependencies [1321eb8]
+  - @cotal-ai/core@0.97.0
+  - @cotal-ai/auth@0.97.0
+  - @cotal-ai/cli@0.97.0
+  - @cotal-ai/workspace@0.97.0
+  - @cotal-ai/connector-core@0.97.0
+  - @cotal-ai/delivery@0.97.0
+  - @cotal-ai/manager@0.97.0
+  - @cotal-ai/runtime@0.97.0
+  - @cotal-ai/seat@0.97.0
+
+## 0.96.1
+
+### Patch Changes
+
+- 2c7fd83: Add `cotal daemon service-connect`, `service-disconnect` and `service-status` on Linux. The running daemon connects to a space as its own approved service, using the stock service renewal, and reports `connected` only when the broker accepted the connection and the space accepted it as ready. Approval pending, a refusal, an unreachable space, a lost broker connection and a revocation are each reported as not connected. While the daemon runs, the connection renews and reconnects on its own; a restarted daemon starts disconnected until `service-connect` runs again, and stopping the daemon closes it.
+- @cotal-ai/connector-core@0.96.1
+  - @cotal-ai/auth@0.96.1
+  - @cotal-ai/cli@0.96.1
+  - @cotal-ai/delivery@0.96.1
+  - @cotal-ai/manager@0.96.1
+  - @cotal-ai/runtime@0.96.1
+  - @cotal-ai/core@0.96.1
+  - @cotal-ai/seat@0.96.1
+  - @cotal-ai/workspace@0.96.1
+
+## 0.96.0
+
+### Patch Changes
+
+- Updated dependencies [083205e]
+  - @cotal-ai/core@0.96.0
+  - @cotal-ai/auth@0.96.0
+  - @cotal-ai/connector-core@0.96.0
+  - @cotal-ai/cli@0.96.0
+  - @cotal-ai/delivery@0.96.0
+  - @cotal-ai/manager@0.96.0
+  - @cotal-ai/runtime@0.96.0
+  - @cotal-ai/workspace@0.96.0
+  - @cotal-ai/seat@0.96.0
+
+## 0.95.2
+
+### Patch Changes
+
+- 393870a: Usage telemetry at `regular` now carries a failure's error text: `errorMessage` with quoted values, URLs, email addresses, IP addresses, paths and token-shaped runs masked, and `errorStack` with at most 12 frames whose paths are cut down to their part inside `node_modules`. docs/telemetry.md lists the masking rules and notes that the intake derives a country from the request address without storing it.
+- Updated dependencies [393870a]
+  - @cotal-ai/cli@0.95.2
+  - @cotal-ai/connector-core@0.95.2
+  - @cotal-ai/auth@0.95.2
+  - @cotal-ai/delivery@0.95.2
+  - @cotal-ai/manager@0.95.2
+  - @cotal-ai/runtime@0.95.2
+  - @cotal-ai/core@0.95.2
+  - @cotal-ai/seat@0.95.2
+  - @cotal-ai/workspace@0.95.2
+
+## 0.95.1
+
+### Patch Changes
+
+- 3571fdf: `cotal daemon register` reports what actually happened when nothing reached the space. A sign-in the provider rejected is `AUTH_REQUIRED` with the sign-in step, and any other failure before sending is `DEPENDENCY_UNAVAILABLE`; only an answer that may have reached the space is `OPERATION_UNKNOWN`. A space refusal reason or pending phase the daemon does not recognize is reported as `UNRECOGNIZED`, and the space's own text is never shown.
+- 047d68f: Add `cotal daemon register --space <s>` on Linux. The running daemon requests its own service registration with a space through the space's stock service authority, signed in as this machine, and reports the answer: `approval-required`, `pending` or `registered`. Registration is not activation or serving, so the machine is not connected yet. The request ID is saved before the first send and replayed unchanged on every later call, including after a restart. A space without service endpoints, and every other readiness failure from `connect-check`, refuses without sending anything. A refusal by the space owner is reported with the space's reason. The daemon never approves itself, binds its own name, or touches a Manager.
+- @cotal-ai/connector-core@0.95.1
+  - @cotal-ai/auth@0.95.1
+  - @cotal-ai/cli@0.95.1
+  - @cotal-ai/delivery@0.95.1
+  - @cotal-ai/manager@0.95.1
+  - @cotal-ai/runtime@0.95.1
+  - @cotal-ai/core@0.95.1
+  - @cotal-ai/seat@0.95.1
+  - @cotal-ai/workspace@0.95.1
+
+## 0.95.0
+
+### Patch Changes
+
+- Updated dependencies [b7acdcc]
+  - @cotal-ai/cli@0.95.0
+  - @cotal-ai/workspace@0.95.0
+  - @cotal-ai/auth@0.95.0
+  - @cotal-ai/delivery@0.95.0
+  - @cotal-ai/manager@0.95.0
+  - @cotal-ai/runtime@0.95.0
+  - @cotal-ai/connector-core@0.95.0
+  - @cotal-ai/core@0.95.0
+  - @cotal-ai/seat@0.95.0
+
+## 0.94.7
+
+### Patch Changes
+
+- a1c9a19: Add `cotal daemon connect-check --space <s>` on Linux. The running daemon checks whether it could register with a space as its own service, separate from any Manager. It reads the space's registration on this machine, its own sign-in, and the space's public account identity from the auth service. It registers nothing and holds no credential. A space that does not host service endpoints, an unregistered space, a space without user sign-in, a machine that is not signed in, and an unreachable or unusable auth service each refuse with a typed code. The daemon does not fall back to anything else. The first success creates the daemon's own per-space identity (an instance ID and the pinned account, no credential). A later different account refuses and changes nothing.
+- @cotal-ai/connector-core@0.94.7
+  - @cotal-ai/auth@0.94.7
+  - @cotal-ai/cli@0.94.7
+  - @cotal-ai/delivery@0.94.7
+  - @cotal-ai/manager@0.94.7
+  - @cotal-ai/runtime@0.94.7
+  - @cotal-ai/core@0.94.7
+  - @cotal-ai/seat@0.94.7
+  - @cotal-ai/workspace@0.94.7
+
+## 0.94.6
+
+### Patch Changes
+
+- Updated dependencies [ba9155a]
+- Updated dependencies [520c66b]
+- Updated dependencies [dd16ed8]
+  - @cotal-ai/workspace@0.94.6
+  - @cotal-ai/manager@0.94.6
+  - @cotal-ai/cli@0.94.6
+  - @cotal-ai/core@0.94.6
+  - @cotal-ai/auth@0.94.6
+  - @cotal-ai/delivery@0.94.6
+  - @cotal-ai/runtime@0.94.6
+  - @cotal-ai/connector-core@0.94.6
+  - @cotal-ai/seat@0.94.6
+
+## 0.94.5
+
+### Patch Changes
+
+- 56c1062: Add `cotal daemon login` on Linux. The running daemon signs in with device approval through the same flow as `cotal login` and keeps the session in the machine's Cotal home. The command shows only the approval link, code and expiry, then the signed-in account. No session token crosses the local endpoint. One sign-in runs at a time. Ctrl-C or a dropped connection requests cancellation. If it takes effect before persistence, nothing is saved, even if device approval already happened. An already-completed attempt remains completed; cancellation revokes nothing at the provider. A failed sign-in is reported with a fixed sentence per reason and never relays the provider's error text. A denial, an expired code or an unreachable provider saves nothing. Any other failure may come after the session was saved, and the command says so. `status` keeps answering during a sign-in. Each connection may send at most 64 requests.
+- Updated dependencies [2ff5fc8]
+- Updated dependencies [4b64fe7]
+  - @cotal-ai/cli@0.94.5
+  - @cotal-ai/workspace@0.94.5
+  - @cotal-ai/manager@0.94.5
+  - @cotal-ai/auth@0.94.5
+  - @cotal-ai/delivery@0.94.5
+  - @cotal-ai/runtime@0.94.5
+  - @cotal-ai/connector-core@0.94.5
+  - @cotal-ai/core@0.94.5
+  - @cotal-ai/seat@0.94.5
+
+## 0.94.4
+
+### Patch Changes
+
+- Updated dependencies [489e9c6]
+- Updated dependencies [464413c]
+  - @cotal-ai/connector-core@0.94.4
+  - @cotal-ai/workspace@0.94.4
+  - @cotal-ai/manager@0.94.4
+  - @cotal-ai/cli@0.94.4
+  - @cotal-ai/auth@0.94.4
+  - @cotal-ai/delivery@0.94.4
+  - @cotal-ai/runtime@0.94.4
+  - @cotal-ai/core@0.94.4
+  - @cotal-ai/seat@0.94.4
+
+## 0.94.3
+
+### Patch Changes
+
+- Updated dependencies [606059c]
+  - @cotal-ai/auth@0.94.3
+  - @cotal-ai/cli@0.94.3
+  - @cotal-ai/manager@0.94.3
+  - @cotal-ai/connector-core@0.94.3
+  - @cotal-ai/delivery@0.94.3
+  - @cotal-ai/runtime@0.94.3
+  - @cotal-ai/core@0.94.3
+  - @cotal-ai/seat@0.94.3
+  - @cotal-ai/workspace@0.94.3
+
+## 0.94.2
+
+### Patch Changes
+
+- Updated dependencies [454cb0e]
+  - @cotal-ai/connector-core@0.94.2
+  - @cotal-ai/auth@0.94.2
+  - @cotal-ai/manager@0.94.2
+  - @cotal-ai/cli@0.94.2
+  - @cotal-ai/delivery@0.94.2
+  - @cotal-ai/runtime@0.94.2
+  - @cotal-ai/core@0.94.2
+  - @cotal-ai/seat@0.94.2
+  - @cotal-ai/workspace@0.94.2
+
+## 0.94.1
+
+### Patch Changes
+
+- bb95f28: Add `cotal daemon serve` and `cotal daemon status` on Linux. `serve` runs the local machine daemon in the foreground and serves an owner-only status endpoint at `$XDG_RUNTIME_DIR/cotal/daemon.sock`. `status` reads its state, version, process ID and uptime over that endpoint. Both commands refuse a runtime directory that is not owned by the current user or is not mode 0700. The status client also checks socket ownership and mode 0600. The server never removes a pre-existing socket-path entry and drops connections from other users. A socket left by a killed daemon makes the next `serve` refuse with `CONFLICT` and a manual recovery. This release does not sign in, start a Manager or install a system service.
+- Updated dependencies [bb95f28]
+  - @cotal-ai/cli@0.94.1
+  - @cotal-ai/connector-core@0.94.1
+  - @cotal-ai/auth@0.94.1
+  - @cotal-ai/delivery@0.94.1
+  - @cotal-ai/manager@0.94.1
+  - @cotal-ai/runtime@0.94.1
+  - @cotal-ai/core@0.94.1
+  - @cotal-ai/seat@0.94.1
+  - @cotal-ai/workspace@0.94.1
+
+## 0.94.0
+
+### Patch Changes
+
+- Updated dependencies [a7aa9e0]
+- Updated dependencies [1caaf63]
+- Updated dependencies [311a26e]
+- Updated dependencies [a0db172]
+  - @cotal-ai/auth@0.94.0
+  - @cotal-ai/core@0.94.0
+  - @cotal-ai/cli@0.94.0
+  - @cotal-ai/manager@0.94.0
+  - @cotal-ai/connector-core@0.94.0
+  - @cotal-ai/delivery@0.94.0
+  - @cotal-ai/runtime@0.94.0
+  - @cotal-ai/workspace@0.94.0
+
+## 0.93.0
+
+### Patch Changes
+
+- Updated dependencies [92f0b8c]
+- Updated dependencies [e27c44c]
+- Updated dependencies [69b0538]
+- Updated dependencies [2a56547]
+- Updated dependencies [42fe091]
+- Updated dependencies [6e44a02]
+- Updated dependencies [6703917]
+- Updated dependencies [babeb0c]
+  - @cotal-ai/connector-core@0.93.0
+  - @cotal-ai/core@0.93.0
+  - @cotal-ai/cli@0.93.0
+  - @cotal-ai/auth@0.93.0
+  - @cotal-ai/manager@0.93.0
+  - @cotal-ai/delivery@0.93.0
+  - @cotal-ai/runtime@0.93.0
+  - @cotal-ai/workspace@0.93.0
+
+## 0.92.2
+
+### Patch Changes
+
+- Updated dependencies [d454988]
+- Updated dependencies [43a5715]
+- Updated dependencies [736207e]
+  - @cotal-ai/cli@0.92.2
+  - @cotal-ai/manager@0.92.2
+  - @cotal-ai/core@0.92.2
+  - @cotal-ai/auth@0.92.2
+  - @cotal-ai/connector-core@0.92.2
+  - @cotal-ai/delivery@0.92.2
+  - @cotal-ai/runtime@0.92.2
+  - @cotal-ai/workspace@0.92.2
+
+## 0.92.1
+
+### Patch Changes
+
+- Updated dependencies [5a0b741]
+  - @cotal-ai/core@0.92.1
+  - @cotal-ai/workspace@0.92.1
+  - @cotal-ai/cli@0.92.1
+  - @cotal-ai/manager@0.92.1
+  - @cotal-ai/connector-core@0.92.1
+  - @cotal-ai/auth@0.92.1
+  - @cotal-ai/delivery@0.92.1
+  - @cotal-ai/runtime@0.92.1
+
+## 0.92.0
+
+### Minor Changes
+
+- 88cc5a1: Fix the backup and restore journey. A full restore now starts: the delivery daemon binds the fanout and reader durables a restore recreates at their recorded start sequence, and still refuses a durable that differs in any other setting. When a delivery daemon that `up` launched exits, the error quotes the failure the daemon logged and no longer blames a lost lease, and a failure on a root that holds a restore or preserved cut never suggests `clean store`. A restore with no preserved cut refuses before it takes the maintenance lock and leaves no state, and `up --restore` refuses the same way instead of reporting an unknown outcome. `up` refuses to take over a space name whose root holds a maintenance journal, whose root or journal cannot be read, or whose recorded root is not an absolute path, and says when it takes over another root's dead registration. A recorded root matches only by the folder it resolves to on disk, so a path that names this root only as text, through a link behind an unreadable folder, keeps its name. A root counts as gone only when it no longer exists or is not a directory, and a readable root with no maintenance journal also gives up its name. These refusals end `refused` with exit 2 on both the controller stack and the retained launcher, with the reason and the next step, where they used to end as an unknown outcome with exit 3. Restore failures, `cotal status` and the recover and cleanup refusals show the `restore-<uuid>` attempt id and the next step for its state. A detached `up` from the machine home names `cotal down --preserve-state`, which is the stop that works there. `backup create` refuses before any claim with the reason and next step, and a destination that already exists is a `CONFLICT` refusal. `backup verify` names the file that is missing, undeclared or does not match its declared size and SHA-256.
+- 88cc5a1: `cotal chat` answers by principal. `/reply` answers the latest direct message or role task the session received: it addresses the sender's principal and quotes the message id, with no name lookup, and after the reply is stored the recipient stays that principal. A transcript sender, a `/who` row, an `/inbox` or `/history` line and a recipient choice show the principal beside a display name that another principal in the session carries; `--plain` names those principals once when a name becomes shared. A typed DM target that parses as a principal `<owner>.<actor>`, from `@` or a `--stdio` `dm`, goes to that principal whether or not it is present or was heard from, and is never matched against display names, so no display name can capture it. A peer whose display name parses as a principal is reached by its principal or `/reply`, and typing the session's own principal refuses with `USAGE_INVALID`. A display name that more than one principal carries among the present peers and the heard senders now refuses and lists them, where before a present peer with that name took the message.
+
+### Patch Changes
+
+- 88cc5a1: Name the next step when an auth command has no space to act on or a grant cannot apply there.
+
+  - On a static or open space, `cotal auth grants`, `grant` and `revoke` and their `cotal actor` spellings refuse with `UNSUPPORTED` and say that actor grants apply only to a space started with `cotal up --user-auth`. On any other space the refusal still points to the machine and root that hold its ledger, and a refused revoke says nothing was revoked instead of "no inert grant was written".
+  - With no space to resolve, the auth grant commands and `cotal auth mint` refuse with a next step, such as `cotal up`. `cotal doctor auth` in a folder whose root holds no space adds a remedy to its partial result: run it in a space's root, which `cotal space` lists.
+  - Bare `cotal auth` fills its Next lines with the `--space` you gave or the space it resolves, and points to `cotal space` when there is none, instead of printing an unfilled `--space <space>`.
+  - The `cotal doctor` help line describes the report it prints, instead of promising it ends in `healthy` or a next command.
+
+- 88cc5a1: When the reader of `cotal chat --plain` or `--stdio` output closes it, input ends, the session closes and the command exits with that close's status instead of the closed-pipe exit 0. `cotal watch`, `service logs --follow` and the service journal follow now run their own shutdown on a closed output before the process exits. Elsewhere a closed stdout still exits quietly, and it now keeps an exit status the command already set. `--plain` prints its close line once. A send, join or channel mode outside the session's grant refuses with `PERMISSION_DENIED` before anything reaches the broker, so a `--stdio` join outside the read list is a refusal instead of an unknown outcome, and a session opened on no channel says to open a new session on the channel instead of showing a broker subject. A channel sender now counts as a heard sender: a DM to a name only a channel sender carries reaches that principal, and a name a channel sender shares with another principal refuses and lists them. Chat message times show in local time, with the date when it is not today, as `history` shows them. The chat header opens with `Mesh:`. The `--stdio` requests and records are documented.
+- 97e3bf9: A bare `cotal down` of a running legacy stack reads each process record it stops in place, as the stopped-stack check does. A record that check leaves unread, such as one behind a link, a directory or an oversized file, now refuses `LIFECYCLE_BLOCKED` before the first stop and names where reading stopped. Before, the stop read a record through a link into another root and signalled that root's process.
+- 957b2a8: `cotal help --all` fits a 40-column terminal again. The `doctor` summary lists the credential states as separate words, so the line wraps between them.
+- e893458: `cotal down --preserve-state` on a stack with no manager, such as one started with `--no-manager`, now refuses `TARGET_UNAVAILABLE` (exit 2) before it stops anything, and names `cotal up` to start the manager first. It used to stop the delivery daemon, wait about 20 seconds on a manager that never ran, end with an unknown outcome and leave the broker running. A machine-home `up --no-manager` summary names both steps.
+- Updated dependencies [88cc5a1]
+- Updated dependencies [719ac35]
+- Updated dependencies [e242d82]
+- Updated dependencies [c0f79e7]
+- Updated dependencies [eb9aef9]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [97e3bf9]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [957b2a8]
+- Updated dependencies [e893458]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [ab2acc8]
+- Updated dependencies [465fbd1]
+- Updated dependencies [1db940e]
+- Updated dependencies [239d1c7]
+- Updated dependencies [36800cf]
+- Updated dependencies [f276a46]
+- Updated dependencies [c935e28]
+- Updated dependencies [588a5a7]
+- Updated dependencies [3cefc75]
+- Updated dependencies [64fe35a]
+- Updated dependencies [edf54df]
+- Updated dependencies [b3441b1]
+- Updated dependencies [a27663e]
+- Updated dependencies [07c0c26]
+- Updated dependencies [03d9e7b]
+  - @cotal-ai/auth@0.92.0
+  - @cotal-ai/cli@0.92.0
+  - @cotal-ai/connector-core@0.92.0
+  - @cotal-ai/core@0.92.0
+  - @cotal-ai/workspace@0.92.0
+  - @cotal-ai/manager@0.92.0
+  - @cotal-ai/runtime@0.92.0
+  - @cotal-ai/delivery@0.92.0
+
 ## 0.91.0
 
 ### Minor Changes

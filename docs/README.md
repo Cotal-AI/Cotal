@@ -102,6 +102,7 @@ For protocol implementers:
 | [Mesh manifest](manifest.md) | Every field of `cotal.yaml`. |
 | [Channels & permissions](channels-and-permissions.md) | The three access verbs and how to grant them. |
 | [Config & env](config.md) | The config file, the operator-facing `COTAL_*` variables, the on-disk layout. |
+| [Telemetry](telemetry.md) | What the CLI's anonymous usage telemetry sends, and how to turn it off. |
 | [MeshView](mesh-view.md) | The observer model behind console and web (reference implementation). |
 | [Glossary](glossary.md) | Definitions of every term. |
 | [cotal-lang card](lang-card.md) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |

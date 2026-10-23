@@ -120,15 +120,6 @@ export function manifestToChannels(prepared: PreparedManifest): ChannelRegistryF
   return { ...(prepared.manifest.defaults ? { defaults: prepared.manifest.defaults } : {}), channels };
 }
 
-/** A seed of ONLY the given channels and NO defaults — for `spawn -f`, which seeds the brand-new
- *  keys it creates onto a shared mesh and must never rewrite the mesh-wide defaults or a pre-existing
- *  (unmanaged) card. */
-export function channelsSeed(channels: ResolvedChannel[]): ChannelRegistryFile {
-  const out: Record<string, ChannelConfig> = {};
-  for (const ch of channels) out[ch.name] = cardOf(ch);
-  return { channels: out };
-}
-
 /** Preflight the connectors: MATERIALIZE every distinct connector type from the manifest (seeded or
  *  `ext add`ed — nothing static-imports them on the published binary) and require its binaries on
  *  PATH. Fail before any mutation (no fallback). Returns an error sentence, or "". */

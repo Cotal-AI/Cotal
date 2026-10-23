@@ -14,8 +14,8 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { createAccount } from "@nats-io/nkeys";
 import { Kvm } from "@nats-io/kv";
 import {
-  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA_DIGEST, epAuthBucket, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
-  singleDocumentClosure, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
+  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, VOID_SCHEMA_DIGEST, contractDigest, epAuthBucket, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
+  serveAuthenticityOf, singleDocumentClosure, type ParsedArgs, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { cotalAuthProvider } from "../src/provider.js";
@@ -25,9 +25,9 @@ import { fetchIdpJwt, saveIdpSession } from "../src/login.js";
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo } from "../src/service-authority-client.js";
-import { serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
+import { serviceAuthorityEngineRequestId, serviceHostGranterFor } from "../src/service-endpoint-authority.js";
 import { serviceHostOperationId } from "../src/service-host-ops.js";
-import { startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { authServiceConfiguration, startAuthService, type AuthServiceHandle } from "../src/service.js";
 import { checks } from "./_service-custody-fixture.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
@@ -115,7 +115,7 @@ try {
   };
   const request = (operation: string, fields: object, instanceId: string, requestId = rid()) =>
     ({ v: 1, kind: "service-endpoint-authority", operation, requestId, space, accountPublicKey, endpoint, instanceId, ...fields }) as ServiceAuthorityRequest;
-  const register = (instanceId: string, reg = registration(orders), requestId = rid()) =>
+  const register = (instanceId: string, reg: { clusterDigests: string[]; contractArtifacts: unknown[] } = registration(orders), requestId = rid()) =>
     request("register", { registration: reg, expected: { state: "unregistered" } }, instanceId, requestId);
   const status = (instanceId: string, requestId: string) => request("status", { target: { kind: "operation", operation: "register", requestId } }, instanceId);
   const viaProvider = async (who: "a" | "b" | "c", r: ServiceAuthorityRequest): Promise<ServiceAuthorityResult> => {
@@ -133,6 +133,11 @@ try {
   c.check("B1 the provider reads the receiver's own account and space over the loopback face", info.space === space && info.accountPublicKey === accountPublicKey, info);
   const pubInfo = await readRemoteServiceAuthorityInfo(pub, space), pubGet = await raw(pub, null, { method: "GET" });
   c.check("B2 the public face serves the same info, not stored", pubInfo.accountPublicKey === accountPublicKey && pubGet.cacheControl === "no-store", pubGet);
+  const jwks = (await (await fetch(`${on.url}/jwks`)).json()) as { keys: Array<{ kid: string; x: string }> };
+  const identity = serveAuthenticityOf(info);
+  c.check("B3 the info names the issuer and the same public Ed25519 keys GET /jwks publishes, on both faces",
+    identity.issuer.length > 0 && identity.keys.length === jwks.keys.length && identity.keys.every((k, i) => k.kid === jwks.keys[i]!.kid && k.x === jwks.keys[i]!.x)
+    && JSON.stringify(pubInfo) === JSON.stringify(info), { info, jwks });
 
   // ---- C: register through the provider ----
   const i1 = rid(), i2 = rid(), i3 = rid(), i4 = rid();
@@ -206,6 +211,32 @@ try {
   c.check("F1 a missing, extraneous or tampered artifact refuses as closure-invalid", results.every((r) => denied(r, "closure-invalid")), results);
   c.check("F2 a journal-class command refuses as unsupported-runtime", denied(journalled, "unsupported-runtime"), journalled);
   c.check("F3 no refused closure reached the capacity index: the selector is still free", (await viaProvider("a", register(i4))).state === "approval-required");
+  // A registration may carry the schema closures its commands reference (here the canonical void
+  // closure), verified whole; a legacy body without them is still admitted.
+  const voidClosure = singleDocumentClosure(VOID_SCHEMA);
+  const withVoid = { clusterDigests: [orders.closureDigest], contractArtifacts: [orders.manifest, orders.document, voidClosure.manifest, VOID_SCHEMA] };
+  const f4 = await viaProvider("a", register(rid(), withVoid));
+  c.check("F4 a registration that submits the void schema closure its commands reference is admitted", f4.state === "approval-required", f4);
+  const schemaNoRoot = { ...withVoid, contractArtifacts: [orders.manifest, orders.document, voidClosure.manifest] };
+  const otherSchema = singleDocumentClosure({ type: "string" });
+  const schemaUnreferenced = { ...withVoid, contractArtifacts: [orders.manifest, orders.document, otherSchema.manifest, { type: "string" }] };
+  const forgedManifest = { ...voidClosure.manifest, members: [contractDigest({ type: "string" })] };
+  const schemaForged = { ...withVoid, contractArtifacts: [orders.manifest, orders.document, forgedManifest, VOID_SCHEMA, { type: "string" }] };
+  const schemaRefusals = [];
+  for (const reg of [schemaNoRoot, schemaUnreferenced, schemaForged]) schemaRefusals.push(await viaProvider("a", register(rid(), reg)));
+  c.check("F5 a schema closure without its root, one no command references, and one whose manifest does not recompile all refuse closure-invalid",
+    schemaRefusals.every((r) => denied(r, "closure-invalid")), schemaRefusals);
+  // The two refusals a referenced schema closure can reach only once a command names it: a member the
+  // manifest lists but the body does not carry, and a submitted bundle that recompiles to another digest.
+  const stringSchema = { type: "string" };
+  const widened = { v: 1, root: contractDigest(VOID_SCHEMA), members: [contractDigest(stringSchema)].sort() };
+  const widenedDigest = contractDigest(widened);
+  const refersWidened = cluster("org.example.widened", [{ ...cmd("lookup"), inputDigest: widenedDigest }]);
+  const memberMissing = { clusterDigests: [refersWidened.closureDigest], contractArtifacts: [refersWidened.manifest, refersWidened.document, widened, VOID_SCHEMA] };
+  const recompilesElsewhere = { clusterDigests: [refersWidened.closureDigest], contractArtifacts: [refersWidened.manifest, refersWidened.document, widened, VOID_SCHEMA, stringSchema] };
+  const f6a = await viaProvider("a", register(rid(), memberMissing)), f6b = await viaProvider("a", register(rid(), recompilesElsewhere));
+  c.check("F6 a referenced schema closure whose manifest names a member the body does not carry refuses closure-invalid", denied(f6a, "closure-invalid"), f6a);
+  c.check("F6 a referenced schema closure whose submitted bundle recompiles to another digest refuses closure-invalid", denied(f6b, "closure-invalid"), f6b);
 
   // ---- G: create-only name binding through the host ----
   const bindReq = { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-bind", granter: operator,
@@ -295,6 +326,66 @@ try {
     && k6.state === "approval-required" && kLive.state === "approval-required" && k6.proposalId === kLive.proposalId, { k5, k6 });
   const k7 = await viaProvider("a", status(i1, r1.requestId));
   c.check("K6 the approved and revoked history keeps its answer", k7.state === "status" && k7.status.state === "revoking", k7);
+
+  // ---- L: the authenticated host route ----
+  const hostRoute = async (base: string, body: unknown, init: { method?: string; headers?: Record<string, string> } = {}) => {
+    const r = await fetch(`${base}/service-endpoint-host`, { method: init.method ?? "POST", headers: { "content-type": "application/json", ...init.headers },
+      ...(init.method === "GET" ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) });
+    const text = await r.text();
+    let json: unknown; try { json = JSON.parse(text); } catch { json = text; }
+    return { status: r.status, body: json as Record<string, any>, cacheControl: r.headers.get("cache-control") };
+  };
+  const capHeader = { authorization: `Bearer ${on.cap}` };
+  const tokenA = await fetchIdpJwt(idpUrl, "session-a"), tokenB = await fetchIdpJwt(idpUrl, "session-b");
+  const hostReq = (operation: string, input: object, requestId = rid()) => ({ v: 1, kind: "service-endpoint-host", requestId, operation, input });
+  const routeBind = hostReq("name-bind", { endpoint: "org.example.route", owner: ownerA, expectedRevision: 0, claimReference: "route-claim" });
+  const l1 = await hostRoute(on.url, { idpToken: tokenA, request: routeBind }, { headers: capHeader });
+  c.check("L1 the loopback face binds a name under the exchange capability and a signed-in operator", l1.status === 200 && l1.body.state === "bound" && l1.body.binding?.owner === ownerA && l1.cacheControl === "no-store", l1);
+  const l2 = await hostRoute(pub, { idpToken: tokenA, request: { ...routeBind, requestId: rid(), input: { ...routeBind.input, endpoint: "org.example.route2" } } });
+  const l3 = await hostRoute(on.url, { idpToken: tokenA, request: { ...routeBind, requestId: rid(), input: { ...routeBind.input, endpoint: "org.example.route3" } } });
+  const l3read = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-read", input: { endpoint: "org.example.route3" }, granter: operator });
+  c.check("L2 the public face refuses name-bind 403: it is the operator's", l2.status === 403 && /operator/.test(String(l2.body.error)), l2);
+  c.check("L3 the loopback face without the capability refuses 401 and binds nothing", l3.status === 401 && l3read.state === "absent", { l3, l3read });
+  const lReg = await viaProvider("a", register(rid()));
+  const lPid = lReg.state === "approval-required" ? lReg.proposalId : "";
+  const lRead = await hostRoute(pub, { idpToken: tokenA, request: hostReq("proposal-read", { proposalId: lPid }) });
+  const lRev = lRead.body.state === "present" ? (lRead.body.record.revision as number) : -1;
+  c.check("L4 the owner reads its proposal over the public face with its IdP token alone", lReg.state === "approval-required" && lRead.status === 200 && lRev > 0, { lReg, lRead });
+  const lDecide = hostReq("decide", { proposalId: lPid, expectedProposalRevision: lRev, expectedNameRevision: nameRevision, decision: "approve", callerCeiling: [] });
+  const lB = await hostRoute(pub, { idpToken: tokenB, request: lDecide });
+  c.check("L5 another signed-in owner's decision is the engine's denial, not an approval", lB.status === 200 && lB.body.state === "denied", lB);
+  const lA = await hostRoute(pub, { idpToken: tokenA, request: lDecide }), lA2 = await hostRoute(pub, { idpToken: tokenA, request: lDecide });
+  c.check("L6 the owner approves over the route, and the identical request replays the same approval", lA.status === 200 && lA.body.state === "approved" && lA.body.approval?.proposalId === lPid
+    && lA2.status === 200 && lA.body.outcome === "applied" && lA2.body.outcome === "recorded" && JSON.stringify(lA2.body.approval) === JSON.stringify(lA.body.approval), { lA, lA2 });
+  const lGranter = await hostRoute(pub, { idpToken: tokenA, request: { ...hostReq("proposal-read", { proposalId: lPid }), granter: operator } });
+  // The bad token goes to the loopback face: the public face's failure bucket is already full from the earlier sections.
+  const lToken = await hostRoute(on.url, { idpToken: "not-a-jwt", request: hostReq("proposal-read", { proposalId: lPid }) }, { headers: capHeader });
+  const lGet = await hostRoute(pub, null, { method: "GET" }), lMedia = await hostRoute(pub, "{}", { headers: { "content-type": "text/plain" } });
+  const lOrigin = await hostRoute(pub, { idpToken: tokenA, request: hostReq("proposal-read", { proposalId: lPid }) }, { headers: { origin: "https://evil.example" } });
+  c.check("L7 a granter in the body 400, a bad token 403, GET 405, media 415, browser origin 403",
+    lGranter.status === 400 && lToken.status === 403 && lGet.status === 405 && lMedia.status === 415 && lOrigin.status === 403,
+    { granter: lGranter.status, token: lToken.status, get: lGet.status, media: lMedia.status, origin: lOrigin.status });
+  const lRevoke = hostReq("revoke", { endpoint, instanceId: i1, expectedAssignmentDigest: "sha256:" + "0".repeat(64), cause: "restore-quarantine" });
+  const lRevokePub = await hostRoute(pub, { idpToken: tokenA, request: lRevoke });
+  c.check("L8 a revoke whose cause is not owner-request is the operator's: the public face refuses it 403", lRevokePub.status === 403, lRevokePub);
+  const proved = { owner: ownerA, subject: "user-a" };
+  const gOwner = serviceHostGranterFor({ operation: "decide", input: {} }, proved, false), gRevokeOwner = serviceHostGranterFor({ operation: "revoke", input: { cause: "owner-request" } }, proved, false);
+  const gBindPub = serviceHostGranterFor({ operation: "name-bind", input: {} }, proved, false), gBindLoop = serviceHostGranterFor({ operation: "name-bind", input: {} }, proved, true);
+  c.check("L9 the granter mapping: decide and an owner-request revoke are the proved owner; name-bind is operator on the capability face only, with the subject as audit id",
+    gOwner?.kind === "owner" && gOwner.owner === ownerA && gRevokeOwner?.kind === "owner" && gBindPub === undefined && gBindLoop?.kind === "operator" && gBindLoop.auditId === "loopback-capability:user-a",
+    { gOwner, gRevokeOwner, gBindPub, gBindLoop });
+  const lNameA = await hostRoute(pub, { idpToken: tokenA, request: hostReq("name-read", { endpoint: "org.example.route" }) });
+  const lNameB = await hostRoute(pub, { idpToken: tokenB, request: hostReq("name-read", { endpoint: "org.example.route" }) });
+  c.check("L11 name-read over the route: the bound owner reads its binding at its revision; another owner reads absent",
+    lNameA.status === 200 && lNameA.body.state === "present" && lNameA.body.record?.value?.owner === ownerA && lNameA.body.record?.revision === l1.body.binding?.revision
+    && lNameB.status === 200 && lNameB.body.state === "absent", { lNameA, lNameB });
+  const lOtherB = await hostRoute(pub, { idpToken: tokenB, request: hostReq("proposal-read", { proposalId: otherProposal }) });
+  const lOtherOp = await propRead(otherProposal);
+  c.check("L12 a proposal read over the route names its endpoint's binding only when that binding is the reader's: B's proposal under A's name reads nameBinding null; the operator reads it",
+    lOtherB.status === 200 && lOtherB.body.state === "present" && lOtherB.body.record?.value?.owner === ownerB && lOtherB.body.record?.value?.nameBinding === null
+    && lOtherOp.state === "present" && (lOtherOp.record.value as { nameBinding: { owner: string } | null }).nameBinding?.owner === ownerA, { b: lOtherB.body.record?.value?.nameBinding, op: (lOtherOp as { record?: { value: unknown } }).record?.value });
+  const parsed = (values: Record<string, string | boolean | undefined>) => authServiceConfiguration({ values: { space, server: "nats://127.0.0.1:1", ...values }, positionals: [], raw: [], positionalIndices: [] } as unknown as ParsedArgs);
+  c.check("L10 --service-endpoints turns the engine on; its absence leaves it off", parsed({ "service-endpoints": true }).serviceEndpoints === true && parsed({}).serviceEndpoints === false);
 } finally {
   await harness?.close().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prevHome;

@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, resolveOnPath, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopResult, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, resolveOnPath, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -73,6 +73,55 @@ function publishedNativeStop(value: ServiceInstance): NativeStopEvidence | undef
 export function retainedStopRequest(value: ServiceInstance): NativeStopEvidence | undefined {
   if (!value.nativeStopRequired || !value.process || value.state !== "stopping" && !UNSETTLED_RUN.includes(value.state)) return undefined;
   return publishedNativeStop(value);
+}
+
+/** Settle the native stop this record retains from its adapter's own evidence. The caller holds the
+ *  definition's writer lock. When the adapter confirms that request's `completed` receipt and the
+ *  exact process exit, it has released its reservation, and the record is recorded `stopped` with
+ *  that result, as a stop confirmed within its call would be. When it reports the child's refusal,
+ *  it has removed the request and released the reservation, and the record returns to what its
+ *  process shows, as after a refusal within the call. Any other record, including one whose adapter
+ *  confirms less, is returned unchanged. */
+export async function settleRetainedNativeStop(definition: ServiceDefinitionSnapshot, row: ServiceInstanceSnapshot): Promise<ServiceInstanceSnapshot> {
+  const value = row.record.value, launch = definition.record.value.launch, retained = retainedStopRequest(value);
+  if (!retained || retained.publication !== "published" || launch.type !== "adapter" || !value.process) return row;
+  const declared = resolveServiceAdapter(launch.adapter, launch.options);
+  if (declared.declaration.stop !== "native" || !sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision) return row;
+  const provider = await loadServiceAdapter(declared, launch.options);
+  const raw = provider.settleStop?.({ ...adapterContext(definition, value), process: { ...value.process }, requestId: retained.requestId });
+  if (raw === undefined) return row;
+  if ((raw as { nativeStop?: unknown }).nativeStop === "refused") {
+    const refusal = serviceAdapterStopRefusal(raw);
+    if (refusal.requestId !== retained.requestId || publishedNativeStop(value) !== undefined)
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter's settled refusal did not retire the retained request; the record was kept", { target: instanceProjection(row) });
+    return transition(row, { state: observeServiceProcess(value) === "running" ? "running" : "unknown", readiness: "not-checked" });
+  }
+  const result = serviceAdapterStopResult(raw);
+  if (result.nativeStop !== "returned" || result.requestId !== retained.requestId || result.process.pid !== value.process.pid || result.process.token !== value.process.token || !gone(observeServiceProcess(value)))
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter's settlement did not answer the retained request and its exact process exit; the record was kept", { target: instanceProjection(row) });
+  return transition(row, { state: "stopped", requestId: retained.requestId, readiness: "not-checked", nativeStop: result });
+}
+
+/** Abandon the native stop `requestId` this record retains, on an operator's explicit request. The
+ *  caller holds the definition's writer lock. The adapter refuses unless no receipt settles the
+ *  request and its exact process and the stopper that published it have both exited; it then removes
+ *  the request and releases its reservation. The record is recorded `failed`, as a process that exited
+ *  without a confirmed stop, because what it stopped before it exited is not confirmed. */
+export async function abandonRetainedNativeStop(definition: ServiceDefinitionSnapshot, row: ServiceInstanceSnapshot, requestId: string): Promise<{ row: ServiceInstanceSnapshot; abandonment: ServiceAdapterStopAbandonment }> {
+  const value = row.record.value, launch = definition.record.value.launch, retained = retainedStopRequest(value);
+  const target = { ...instanceProjection(row), requestId };
+  if (!retained || retained.requestId !== requestId || !value.process) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this instance retains no stop request with that ID; nothing was abandoned", { target });
+  if (retained.publication !== "published") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this launch's stop request file does not read as its own; nothing was abandoned", { target });
+  if (launch.type !== "adapter") throw new CommandFailure("refused", "UNSUPPORTED", "only an adapter's native stop can be abandoned; nothing was abandoned", { target });
+  const declared = resolveServiceAdapter(launch.adapter, launch.options);
+  if (declared.declaration.stop !== "native" || !sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision)
+    throw new CommandFailure("refused", "CONFLICT", "the instance's adapter or definition changed since its launch; nothing was abandoned", { target });
+  const provider = await loadServiceAdapter(declared, launch.options);
+  if (!provider.abandonStop) throw new CommandFailure("refused", "UNSUPPORTED", "this service adapter cannot abandon a stop; nothing was abandoned", { target });
+  const abandonment = serviceAdapterStopAbandonment(provider.abandonStop({ ...adapterContext(definition, value), process: { ...value.process }, requestId }));
+  if (abandonment.requestId !== requestId || publishedNativeStop(value) !== undefined || !gone(observeServiceProcess(value)))
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter's abandonment did not retire the request of an exited process; the record was kept", { target });
+  return { row: transition(row, { state: "failed", readiness: "not-checked" }), abandonment };
 }
 
 /** The refusal for a retained native stop, made before any readiness probe, stop request or record

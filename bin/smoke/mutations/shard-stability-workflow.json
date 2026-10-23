@@ -17,8 +17,8 @@
     {
       "name": "topology reader again refuses the fixed manual exclusion",
       "file": "bin/smoke/shard-stability.ts",
-      "find": "  const allowedJobKeys = new Set([\"if\", \"name\", \"timeout-minutes\", \"runs-on\", \"strategy\", \"steps\"]);",
-      "replace": "  const allowedJobKeys = new Set([\"name\", \"timeout-minutes\", \"runs-on\", \"strategy\", \"steps\"]);",
+      "find": "  const allowedJobKeys = new Set([\"if\", \"needs\", \"name\", \"timeout-minutes\", \"runs-on\", \"strategy\", \"steps\"]);",
+      "replace": "  const allowedJobKeys = new Set([\"needs\", \"name\", \"timeout-minutes\", \"runs-on\", \"strategy\", \"steps\"]);",
       "expectRed": "the shipped detector accepts only the fixed manual exclusion on an unchanged ordinary topology",
       "cell": "the shipped detector accepts only the fixed manual exclusion on an unchanged ordinary topology",
       "afterRestore": "pnpm smoke:shard-stability"

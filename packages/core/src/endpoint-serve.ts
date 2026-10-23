@@ -621,7 +621,11 @@ function encodeReply(reply: EndpointReply): Uint8Array {
 
   return {
     async stop() {
-      await Promise.all(subs.map((s) => s.drain())); // no new deliveries
+      // No new deliveries. A drain settles on the server's PONG, and nats-core rejects no pending
+      // flush when the connection closes, so a close mid-drain would strand stop() forever: each
+      // drain is bounded by the connection's own closed() instead.
+      const gone = nc.closed().then(() => undefined);
+      await Promise.all(subs.map((s) => Promise.race([s.drain().catch(() => undefined), gone])));
       await Promise.allSettled([...pending]); // in-flight handlers finish before "stopped"
     },
   };

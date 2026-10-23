@@ -185,8 +185,10 @@
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
  * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
  * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
- * The bundle adds one outside-smoke call: a clean checkout has 311/236 and a built checkout has
- * 312/236. Its own one-site pin is required whenever that artifact exists. An EXACT count otherwise
+ * The bundle adds one outside-smoke call: a clean checkout has 312/237 and a built checkout has
+ * 313/237. Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
+ * `bin/seeded-connectors/hermes/`, which is gitignored too and adds one more. Each copy has its own
+ * one-site pin, required whenever that artifact exists. An EXACT count otherwise
  * turns this divergence into a red that
  * depends on whether someone ran `pnpm bundle`, which is a property of a disk rather than of a
  * revision. Reading it is deliberate rather than an oversight, since that bundle SHIPS in the
@@ -465,12 +467,16 @@ const SEAMS: Seam[] = [
   // three. Host vitals (#4253) adds two in manager-service-invoke.smoke.ts. Every call states `tls`.
   // Workflow cancellation adds one run-admitter store connection in auth/src/service.ts and
   // three smoke-side calls: bin/smoke/run-cancel-live two and auth/smoke/run-cancel-live one.
-  // Each states `tls`; the source population is now 311/236.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 311, untypecheckedSites: 236 },
+  // Each states `tls`. The native conversation run suite adds one smoke-side writer connection in
+  // manager/smoke/native-conversation-run, which states `tls`; the source population is now 312/237.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 312, untypecheckedSites: 237 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
-const SIDECAR = "extensions/connector-hermes/plugin/cotal/_sidecar/standalone.cjs";
+const SIDECARS = [
+  "extensions/connector-hermes/plugin/cotal/_sidecar/standalone.cjs",
+  "bin/seeded-connectors/hermes/plugin/cotal/_sidecar/standalone.cjs",
+];
 const countsByFile = (sites: Site[]): Record<string, number> => {
   const counts: Record<string, number> = {};
   for (const site of sites) counts[site.file] = (counts[site.file] ?? 0) + 1;
@@ -2624,8 +2630,8 @@ console.log("\nB. the seam, across every source the compiler may or may not read
 }
 check("the literal per-file census accounts for the source and smoke totals",
   Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0)
-  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 311
-  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 236);
+  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 312
+  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 237);
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 
@@ -2655,12 +2661,13 @@ for (const seam of SEAMS) {
   const all = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
   const { sites, aliased, bad, untypechecked } = summarize(all);
   if (process.argv.includes("--census")) console.log(`REQUIRED_ARG_CENSUS ${JSON.stringify({ seam: seam.fn, sites })}`);
-  const sidecarPresent = files.some((file) => relative(ROOT, file).split(sep).join("/") === SIDECAR);
-  const expectedByFile = { ...SITE_COUNTS, ...(sidecarPresent ? { [SIDECAR]: 1 } : {}) };
+  const walked = new Set(files.map((file) => relative(ROOT, file).split(sep).join("/")));
+  const sidecars = SIDECARS.filter((sidecar) => walked.has(sidecar));
+  const expectedByFile = { ...SITE_COUNTS, ...Object.fromEntries(sidecars.map((sidecar) => [sidecar, 1])) };
   const normalized = sites.map((site) => ({ ...site, file: site.file.split(sep).join("/") }));
   const drift = censusDrift(expectedByFile, countsByFile(normalized));
   check(`\`${seam.fn}\`: every file matches its reviewed exact call count`, drift.length === 0, drift);
-  const expectedSites = seam.sites + (sidecarPresent ? 1 : 0);
+  const expectedSites = seam.sites + sidecars.length;
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
   console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);

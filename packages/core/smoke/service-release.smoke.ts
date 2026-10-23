@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,13 +8,16 @@ import { createAccount, createServer, createUser } from "@nats-io/nkeys";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   authorizeServeGrant, contractDigest, createEndpointStreams, epAuthBucket, epcredRowKey, epgateKey,
   endpointRegistrationBarrier, finalizeServeIssuance, isReachable, mintLifecycleUid, mintServiceCalloutJwt, openRecordsBucket, principalKey,
   parseEndpointGate, parseLedgerRow, reconcileEndpointGate, registerServiceInstance, recordSpecKey, RECORD_KINDS,
   serveIssuanceGateKv, type EndpointGateRow, type EpIssuanceGate, type ServiceGateAuthority,
 } from "../src/index.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const space = "service-release", endpoint = "org.example.release", owner = `u_${"a".repeat(26)}`, actor = "fixture";
 const port = await freePort(), servers = `nats://127.0.0.1:${port}`;
@@ -169,6 +172,7 @@ try {
     { ...issued, credentialId: mintLifecycleUid() }), /ordinary serving issuance/);
   assert.deepEqual(failures, [], "native service evidence and final release checks");
   console.log("service release: contradictory evidence, recovery, connection binding and fixed-expiry delays refused on native KV");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await nc?.close();
   await killAndAwaitExit(broker);

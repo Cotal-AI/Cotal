@@ -718,7 +718,11 @@ try {
     if (!answeredWhileExpired) {
       const res = await runRecoveredCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
       console.log(`    evidence: answer exit=${res.code} err=${res.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
-      assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
+      // 4b's answer can time out with its outcome unknown and still land. Its step is then
+      // settled, this second answer is refused, and the run must still complete on that one answer.
+      const earlierLanded = res.code !== 0 && /that step has already settled/.test(res.stderr);
+      if (earlierLanded) console.log("    evidence: 4b's timed-out answer had landed; the resumed drive consumes it");
+      else assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
     } else console.log("    evidence: answer was recorded while expired; resumed drive consumes it");
     const completed = await until(async () => {
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);

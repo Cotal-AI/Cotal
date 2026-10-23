@@ -257,10 +257,10 @@ lane can show it owns.
 
 ## Git and public messages
 
-- **No tool or AI attribution, anywhere.** Commit messages and PRs use plain Conventional
-Commits: no `Co-Authored-By: Claude`, no "Generated with Claude Code", no agent or tool
-footer or trailer.
-- **Never self-advertise in a public message.** Commits, PRs, issues, and mesh channel posts
+- **Our contribution style.** Maintainer-prepared commits and PRs use plain Conventional
+Commits without AI/tool credits, generator footers or trailers. Other contributors may acknowledge
+their agents; this is not a repository-wide ban or merge requirement.
+- **Maintainer messages must not self-advertise.** Our commits, PRs, issues and mesh channel posts
 should read as a human contributor wrote them. Do not name or promote the agent or tool that
 produced them.
 

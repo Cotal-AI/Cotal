@@ -14,22 +14,23 @@ registerHooks({
     if (!new URL(url).pathname.endsWith("/packages/core/dist/endpoint.js")) return loaded;
     if (loaded.format !== "module" || loaded.source == null) throw new Error("unexpected core probe module format");
     const source = typeof loaded.source === "string" ? loaded.source : Buffer.from(loaded.source).toString("utf8");
-    const anchor = "function classifyProbeFailure(e, opts) {";
+    const anchor = "function classifyProbeFailure(e, opts, authRequired = false) {";
     if (source.split(anchor).length !== 2) throw new Error("native probe classifier anchor is not unique");
     write({ kind: "module-matched", sourceSha256: createHash("sha256").update(source).digest("hex") });
-    const replacement = `function classifyProbeFailure(e, opts) {
-      const result = __cotalOriginalProbeFailure(e, opts);
+    const replacement = `function classifyProbeFailure(e, opts, authRequired = false) {
+      const result = __cotalOriginalProbeFailure(e, opts, authRequired);
       const tag = value => typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : "other";
       __cotalProbeAppend(process.env.SMOKE_WHO_PROBE_TRACE, JSON.stringify({
         kind: "classification", reason: result.ok ? "ok" : result.reason,
         gateMiss: e === undefined, constructor: e === undefined ? null : tag(e?.constructor?.name),
         name: e === undefined ? null : tag(e?.name), code: e === undefined ? null : tag(e?.code),
         authorization: e instanceof AuthorizationError, expired: e instanceof UserAuthenticationExpiredError,
-        timeout: e instanceof TimeoutError, credentialPresented: Boolean(opts.creds || opts.token || opts.user || opts.pass)
+        timeout: e instanceof TimeoutError, credentialPresented: Boolean(opts.creds || opts.token || opts.user || opts.pass),
+        greetingAuthRequired: authRequired === true
       }) + "\\n");
       return result;
     }
-    function __cotalOriginalProbeFailure(e, opts) {`;
+    function __cotalOriginalProbeFailure(e, opts, authRequired) {`;
     return { ...loaded, source: 'import { appendFileSync as __cotalProbeAppend } from "node:fs";\n' + source.replace(anchor, replacement), shortCircuit: true };
   },
 });

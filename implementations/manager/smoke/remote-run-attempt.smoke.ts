@@ -88,8 +88,14 @@ try {
   await admit(revokedRun);
   await revokeRunAdmission(admissions, "manager", { version: 1, runId: revokedRun, by: "suite", reason: "revoked", revokedAt: Date.now() });
   const revoked = await outcome(authorize(attempt(revokedRun)));
+  const revokedAnswer = await outcome(authorize({ operator: { id: newIdentity().id, takeoverId: "o".repeat(16), answers: { runId: revokedRun, stepKey: "/checkpoint:absent#0" } } }));
   const revokedRead = await outcome(authorize({ operator: { id: newIdentity().id, takeoverId: "o".repeat(16), runId: revokedRun } }));
-  c("a revoked run is issued no attempt and no read operator", String(revoked).includes("revoked") && String(revokedRead).includes("revoked"), { revoked, revokedRead });
+  // SPEC 14.8: revocation ends drive and answering authority, and a run-scoped read-only operator
+  // stays issuable so the revoked run's status can still be inspected.
+  c("a revoked run is issued no attempt and no answering operator, and still a read-only operator",
+    String(revoked).includes("revoked") && String(revokedAnswer).includes("revoked") &&
+      typeof revokedRead === "object" && JSON.stringify((revokedRead as { operator: { runOperator: unknown } }).operator.runOperator) === JSON.stringify({ endpoint: "manager", takeoverId: "o".repeat(16), runId: revokedRun }),
+    { revoked, revokedAnswer, revokedRead });
   const foreignRun = newRun();
   await admit(foreignRun, mintLifecycleUid());
   const foreign = await outcome(authorize(attempt(foreignRun)));

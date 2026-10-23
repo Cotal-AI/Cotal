@@ -90,6 +90,11 @@ const started = new Set();
 const RUN_MARKER = process.env.COTAL_RUN ?? `smoke-shard-${shard}-${count}-${process.pid}`;
 process.env.COTAL_RUN = RUN_MARKER;
 
+// A suite's CLI runs in a fresh home, where usage telemetry would arm at its default level and
+// count the run as a new install. DO_NOT_TRACK is not a COTAL_ variable, so it also reaches the
+// children of suites that drop every COTAL_ variable.
+process.env.DO_NOT_TRACK = "1";
+
 if (mutationExcluded.length > 0) {
   console.log(`Mutation execution disabled: ${mutationExcluded.length} infrastructure suite(s) skipped by policy:`);
   for (const cmd of mutationExcluded) console.log(`  skipped ${cmd} (mutation execution disabled)`);

@@ -24,6 +24,7 @@ import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog,
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
+import { serviceEndpointRenewal } from "./service-endpoint-renewal.js";
 import {
   AUTH_PROVIDER_NAME,
   authCalloutKey,
@@ -283,6 +284,10 @@ export const cotalAuthProvider: AuthProvider = {
     return readRemoteServiceAuthorityInfo(target.base, space);
   },
 
+  serviceEndpointRenewal(opts) {
+    return serviceEndpointRenewal(cotalAuthProvider, opts);
+  },
+
   async serviceEndpointAuthority({ store, dir, request: raw, proof, timeoutMs, signal }) {
     const startedAt = performance.now(), request = parseServiceAuthorityRequest(raw);
     return withServiceAuthorityBudget(request.operation, { timeoutMs, signal }, async (budget) => {
@@ -430,7 +435,9 @@ export const cotalAuthProvider: AuthProvider = {
     const body: unknown = await res.json().catch(() => ({}));
     if (!res.ok) {
       const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
-      // 401 is the one refusal with a local remedy; everything else is the mesh's own word.
+      // 401 is the one refusal with a local remedy; everything else is the mesh's own word. The
+      // endpoint is the deployment's, and nothing pins what its refusal left behind, so no answer
+      // carries a code.
       throw new Error(
         res.status === 401
           ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``
@@ -438,6 +445,32 @@ export const cotalAuthProvider: AuthProvider = {
       );
     }
     return body;
+  },
+
+  async requestConversationIdentity({ url, idpUrl, method, body }) {
+    const endpoint = new URL(url);
+    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
+      throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method,
+        redirect: "manual",
+        credentials: "omit",
+        headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error("conversation identity request outcome is unknown; retain its saved request and retry that same lifecycle");
+    }
+    if (response.status >= 300 && response.status < 400)
+      throw new Error("conversation identity authority returned a redirect; no redirect was followed");
+    const parsed: unknown = await response.json().catch(() => undefined);
+    if (parsed === undefined)
+      throw new Error("conversation identity authority returned no JSON; retain its saved request for recovery");
+    return { status: response.status, body: parsed };
   },
 
   /** Redeem one pre-minted remote enrollment. The URL itself carries the one-time secret, so this

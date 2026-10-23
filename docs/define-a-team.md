@@ -143,15 +143,15 @@ create-only intent and returned receipt are separate. Only a complete matched
 static agent-only removal receipt releases that deployment's known additive blocker;
 its original history remains. Channel and mixed removal remain unavailable.
 
-The rule: **`up -f` owns the whole space; `spawn -f` owns only what it created.** Cotal only ever
-tears down what it owns; foreign actors on a shared mesh are never touched.
+The rule: **`up -f` owns the whole space; an additive deploy owns only what it created.** Cotal
+only ever tears down what it owns; foreign actors on a shared mesh are never touched.
 
 - A fresh mesh from `up -f` → `cotal down` stops all of it.
-- An additive deploy from `spawn -f` records a creation-only **ledger**
+- An additive deploy from the older `spawn -f` path recorded a creation-only **ledger**
   (`.cotal/manifests/<runId>.json`) of the channels and agents it added; `cotal down -f`
-  removes only those. The **run id** is printed by `spawn -f` and is the filename under
-  `.cotal/manifests/`; pass it to `down -f --run <id>` when the file has changed since the deploy
-  (an edited file no longer matches its ledger) or to finish a teardown that was retained.
+  removes only those. The **run id** is the filename under `.cotal/manifests/`; pass it to
+  `down -f --run <id>` when the file has changed since the deploy (an edited file no longer
+  matches its ledger) or to finish a teardown that was retained.
 
 `down -f` is deliberately conservative; it treats the ledger as untrusted and validates before
 deleting: an owned agent is stopped only when the live agent's recorded name *and* id match; an
@@ -162,31 +162,24 @@ anything is uncertain, nothing remote is removed and the ledger is **retained** 
 (`.cotal/` holds creds, the ledger, and runtime artifacts: add it to your `.gitignore`; commit
 your `cotal.yaml` and persona files, not what's under it.)
 
-## Deploying onto a shared mesh (`spawn -f`)
+## Deploying onto a shared mesh (`team deploy`)
 
-`spawn -f` is additive and never adopts or mutates anything it didn't create. It classifies each
-declared item against the live mesh:
+`team deploy` is additive and never adopts or mutates anything it didn't create. `--dry-run`
+makes native reads of presence and the channel registry and classifies each declared item against
+them. A channel card that already exists is left untouched; the preview names only the explicitly
+declared fields that differ from the live card. Apply accepts only all-new items: live
+channel-only manifests, or bounded agent and mixed manifests on static-auth or open meshes
+through one native manager. It does not launch user-auth agents.
 
-| Item | Classification | Behaviour |
-|---|---|---|
-| Channel, brand-new | created + owned | Seeded and recorded in the ledger. |
-| Channel, already present | `exists-unmanaged` | Left untouched: card not mutated; the desired card is shown against the live one. |
-| Agent, not yet created | will-create | Booted and recorded. A launch that settles uncertain (neither joined nor exited within the readiness window) is recorded too and listed as pending, because the manager keeps managing it and `down -f` must stop it. A launch that fails is not recorded: the summary opens with `! partial deploy` naming the failed agents and the command exits 1, while the ledger still owns what this run did create. |
-| Agent, already created, unchanged | already-owned | No-op. |
-| Agent, already created, policy changed | `stale` | Exits non-zero unless `--allow-stale <names>` (then it restarts). |
+An identical, settled deployment is a no-op once its original cards and agent incarnations check
+out; nothing is relaunched or adopted. A changed persona refuses unless `--allow-stale <names>`
+names those agents. They keep their old policy and are not restarted.
 
-> **Security.** If an **unmanaged** actor already has read access to a channel you declare,
-> `spawn -f` prints a warning: an isolation conflict on a shared mesh. It is an explicit *lower
-> bound* (presence plus the broker membership feed), not a guarantee that no other access exists.
+> **Security.** When the broker membership feed is readable, the preview shows other readers of a
+> declared channel. That is a *lower bound*, not a guarantee that no other access exists.
 
-**Deploying to a remote manager.** The mesh's manager may live on another machine (or another
-checkout): `spawn -f` detects that from the manager lease and pushes the resolved launch spec
-inline over the control plane. The manager validates it as untrusted input and persists it under
-its own `.cotal/run/` before launching, so nothing changes downstream. Run the deploy from the
-checkout the mesh is **registered** to on your machine (that's where the ledger lands), and run
-`down -f` from that same checkout; it stops remote agents over the control plane and treats a
-locally-absent cred file as proven-absent. One residual: the agents' cred files minted on the
-manager's host stay there until the mesh's own cleanup, the same way it would after a crash.
+The full rules, receipts and removal limits are in
+[Recorded team views](cli.md#recorded-team-views).
 
 ## Operating a manifest mesh
 

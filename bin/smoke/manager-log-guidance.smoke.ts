@@ -1,10 +1,9 @@
 /**
  * Operator-facing manager log guidance must resolve from the same writer-owned path template.
  *
- * This is a source contract because the two failure branches are expensive/live control paths and the
- * up success branch cannot be run safely in this review environment. The value assertion calls the
- * exact helper used by output; source cells require each shipped message to call that helper rather
- * than restating a filename. The writer cell requires the detached-manager writer to use the helper
+ * This is a source contract because the up success branch cannot be run safely in this review
+ * environment. The value assertion calls the exact helper used by output; the source cell requires the
+ * shipped message to call that helper rather than restating a filename. The writer cell requires the detached-manager writer to use the helper
  * that the display path wraps, so a future template change cannot move one side alone.
  *
  * Run: pnpm smoke:manager-log-guidance
@@ -44,23 +43,14 @@ check(
   /const fd = openPrivateAppend\(logPath\);/.test(managerProc),
 );
 
-const spawn = readFileSync(join(REPO, "implementations/cli/src/commands/spawn-manifest.ts"), "utf8");
 const up = readFileSync(join(REPO, "implementations/cli/src/commands/up.ts"), "utf8");
-check(
-  "the held-lease refusal derives its logfile guidance",
-  /after its TTL - stop it or check \$\{managerLogDisplayPath\(space\)\}/.test(spawn),
-);
-check(
-  "the manager-readiness refusal derives its logfile guidance",
-  /did not become ready for control - see \$\{managerLogDisplayPath\(space\)\}/.test(spawn),
-);
 check(
   "the up success line derives its logfile guidance",
   /via manager .* - see \$\{managerLogDisplayPath\(m\.space\)\}/.test(up),
 );
 check(
   "no shipped operator message names the pre-segmentation manager logfile",
-  !spawn.includes(".cotal/manager.log") && !up.includes(".cotal/manager.log"),
+  !up.includes(".cotal/manager.log"),
 );
 
 console.log(`MANAGER LOG GUIDANCE: ${pass}/${pass + fail}`);

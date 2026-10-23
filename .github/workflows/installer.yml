@@ -35,6 +35,11 @@ concurrency:
   # Tracks the line above: `queue: max` with `cancel-in-progress: true` is a validation error.
   queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
+# The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+# DO_NOT_TRACK also reaches the suites that drop every COTAL_ variable from a child's env.
+env:
+  DO_NOT_TRACK: 1
+
 jobs:
   lint:
     timeout-minutes: 5
@@ -121,8 +126,7 @@ jobs:
           "$HOME/.local/bin/cotal" --version
 
   installer-ok:
-    # One status that fans the lanes in, the same shape ci.yml uses. Like ci-ok it is advisory on
-    # main, where `attribution` is the only required context.
+    # One advisory status that fans the lanes in, the same shape ci.yml uses.
     if: always()
     needs: [lint, matrix, macos]
     runs-on: ubuntu-latest

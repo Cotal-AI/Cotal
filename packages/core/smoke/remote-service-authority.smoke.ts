@@ -1,13 +1,19 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { assertBoundedOwner, epRequestSubject } from "../src/endpoint-subjects.js";
 import { createAccount } from "@nats-io/nkeys";
 import { contractDigest } from "../src/canonical.js";
 import { spacePrefix } from "../src/subjects.js";
 import {
-  parseServiceAuthorityEnvelope, parseServiceAuthorityInfo, parseServiceAuthorityRequest, parseServiceAuthorityResult,
+  isCanonicalEd25519PublicCoordinate, parseServiceAuthorityEnvelope, parseServiceAuthorityInfo, parseServiceAuthorityRequest, parseServiceAuthorityResult,
   parseServiceRegistrationWitness, serviceAuthorityRequestDigest, serviceEndpointActor, serviceWitnessDigest,
   type ServiceAuthorityRequest, type ServiceRegistrationWitness,
 } from "../src/remote-service-authority.js";
+import { EpEnvelopeError } from "../src/endpoint-envelope.js";
+import { serveAuthenticityOf } from "../src/endpoint-service.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const identity = {
@@ -59,11 +65,45 @@ const credential = {
   accessBearer: "fixture-access", accessExpiresAt: 60, renewalProof: "fixture-renewal", renewalExpiresAt: 3600,
 };
 
-const info = { v: 1, kind: "service-endpoint-authority-info", space: identity.space, accountPublicKey: identity.accountPublicKey };
+// The base point's own encoding: a full-order key with no private half anywhere in this suite.
+const coordinate = (hex: string) => Buffer.from(hex, "hex").toString("base64url");
+const issuerKey = { kty: "OKP", crv: "Ed25519", kid: "kid-1", x: coordinate("58" + "66".repeat(31)) };
+const info = { v: 1, kind: "service-endpoint-authority-info", space: identity.space, accountPublicKey: identity.accountPublicKey, issuer: "https://auth.example/exchange", keys: [issuerKey] };
 assert.deepEqual(parseServiceAuthorityInfo(info, identity.space), info);
 assert.throws(() => parseServiceAuthorityInfo(info, "other-space"), /does not match/);
 assert.throws(() => parseServiceAuthorityInfo({ ...info, token: "fixture" }, identity.space), /unsupported fields/);
 assert.throws(() => parseServiceAuthorityInfo({ ...info, accountPublicKey: "invalid" }, identity.space), /DATA-account/);
+// A door that predates the issuer identity answers the four account fields: still read, and the
+// guest refuses at serveAuthenticityOf. Half an identity is refused outright.
+const { keys: _keys, issuer: _issuer, ...account } = info;
+assert.deepEqual(parseServiceAuthorityInfo(account, identity.space), account);
+assert.throws(() => serveAuthenticityOf(parseServiceAuthorityInfo(account, identity.space)), (e: unknown) => e instanceof EpEnvelopeError && e.code === "failed-precondition");
+assert.deepEqual(serveAuthenticityOf(parseServiceAuthorityInfo(info, identity.space)), { issuer: info.issuer, keys: info.keys });
+assert.throws(() => parseServiceAuthorityInfo({ ...account, issuer: info.issuer }, identity.space), /together/);
+assert.throws(() => parseServiceAuthorityInfo({ ...account, keys: info.keys }, identity.space), /together/);
+// An answered identity is closed: a private member, another curve, a duplicate kid, a malformed
+// coordinate, or a key of small order or non-canonical encoding is refused, never defaulted.
+assert.throws(() => parseServiceAuthorityInfo({ ...info, issuer: "" }, identity.space), /issuer/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [] }, identity.space), /bounded nonempty/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [{ ...issuerKey, d: "B".repeat(43) }] }, identity.space), /unsupported fields/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [{ ...issuerKey, crv: "X25519" }] }, identity.space), /Ed25519/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [issuerKey, issuerKey] }, identity.space), /duplicate/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [{ ...issuerKey, x: "not base64url!" }] }, identity.space), /coordinate/);
+for (const [what, hex] of [
+  ["the identity", "01" + "00".repeat(31)], ["the identity with the sign bit", "01" + "00".repeat(30) + "80"],
+  ["y = -1", "ec" + "ff".repeat(30) + "7f"], ["y = -1 with the sign bit", "ec" + "ff".repeat(31)], ["y = 0", "00".repeat(32)], ["y = 0 with the sign bit", "00".repeat(31) + "80"],
+  ["an order-8 point", "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"],
+  ["its sign twin", "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa"],
+  ["the other order-8 point", "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"],
+  ["its sign twin", "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85"],
+  ["y = p, a non-canonical zero", "ed" + "ff".repeat(30) + "7f"], ["y = p + 1, a non-canonical identity", "ee" + "ff".repeat(30) + "7f"],
+  ["y above p", "ff".repeat(31) + "7f"],
+] as const) {
+  assert.equal(isCanonicalEd25519PublicCoordinate(coordinate(hex)), false, what);
+  assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [{ ...issuerKey, x: coordinate(hex) }] }, identity.space), /coordinate/, what);
+}
+assert.equal(isCanonicalEd25519PublicCoordinate(issuerKey.x), true);
+assert.equal(isCanonicalEd25519PublicCoordinate(issuerKey.x.slice(0, 42) + "B"), false, "a base64url tail with set padding bits is not canonical");
 
 assert.equal(actor.length, 54);
 assert.match(actor, /^svc_[a-z0-9]{50}$/);
@@ -144,3 +184,4 @@ for (const operation of ["status", "describe-view", "unknown"])
   assert.throws(() => parseServiceAuthorityRequest(opStatus({ kind: "operation", operation, requestId: "d".repeat(32) })), /unsupported status operation/, operation);
 assert.throws(() => parseServiceAuthorityRequest(opStatus({ kind: "operation", operation: "register", requestId: "d".repeat(32), extra: 1 })), /unsupported fields/);
 console.log("remote service authority: closed proof matrix, request/response binding and bounded identity passed");
+emitSentinel({ passed: counted.cells(), failed: 0 });

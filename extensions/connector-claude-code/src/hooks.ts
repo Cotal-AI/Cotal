@@ -110,6 +110,8 @@ export interface ClaudeHandleDeps {
   events?: () => AguiEmitterHolder<ClaudeEntry, unknown> | undefined;
   /** Told which inbox items a frame surfaced; pass {@link WakePolicy.surfaced}. */
   surfaced?: (items: readonly InboxItem[]) => void;
+  /** False when native ingress owns delivery and these hooks observe lifecycle only. */
+  delivery?: boolean;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -121,6 +123,9 @@ const REPEAT_LABEL_CAP = 512;
  *  injected. Both must be wired into {@link startControlServer} — the handler surfaces, the
  *  callback is the only place a peer message is ever acked. */
 export interface ClaudeHooks {
+  /** Adopt a native transcript when a personal connection starts mid-session. No synthetic
+   * lifecycle event is needed, and the source decides the pre-connection privacy boundary. */
+  adoptTranscript(path: string, source: unknown): void;
   handle: HookHandle;
   /** Pass as {@link ControlServerOpts.onReply}. */
   onReply: (ev: HookEvent, delivered: boolean) => void;
@@ -272,6 +277,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
 
   /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. */
   const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent): string | undefined => {
+    if (deps.delivery === false) return undefined;
     const items = agent.peekInbox("automatic");
     if (!items.length) return undefined;
     const body = formatInjection(items);
@@ -295,6 +301,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  goal ids commit as surfaced (arming the automatic `done`) only when the reply reached the
    *  runtime — a lost frame re-surfaces them instead of yielding for work the model never saw. */
   const surfaceTurns = (agent: MeshAgent, ev: HookEvent): string | undefined => {
+    if (deps.delivery === false) return undefined;
     const peek = agent.peekPendingTurns();
     if (!peek) return undefined;
     const rec = inFlight.get(ev);
@@ -486,7 +493,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
-  return { handle, onReply };
+  return { handle, onReply, adoptTranscript: adoptEvents };
 }
 
 /** One `claude/channel` push. A rejection is surfaced to the caller. */

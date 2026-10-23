@@ -111,7 +111,7 @@ function run(
   });
 }
 
-const skillRow = (out: string, name: "Claude skills" | "Skills (.agents)") => {
+const skillRow = (out: string, name: "Claude skills" | "Agent skills") => {
   const line = out.split("\n").find((l) => l.startsWith(`  ${name}`));
   assert.ok(line, `status printed a ${name} row`);
   return line!;
@@ -125,10 +125,10 @@ try {
   const first = freshEnv();
   const status = await run(["status"], first.env, first.cwd);
   assert.equal(status.code, 0, `status exits 0: ${status.stderr}`);
-  assert.match(status.stdout, /^Machine$/m, "status report/control was reached");
+  assert.match(status.stdout, /^This machine$/m, "status report/control was reached");
 
   const claudeRow = skillRow(status.stdout, "Claude skills");
-  const agentsRow = skillRow(status.stdout, "Skills (.agents)");
+  const agentsRow = skillRow(status.stdout, "Agent skills");
   assert.match(claudeRow, /stale · cotal setup --skills/, "stale Claude skills recommend setup --skills");
   assert.doesNotMatch(claudeRow, /stale · cotal setup$/, "Claude skills row is not unscoped setup");
   assert.match(agentsRow, /1\/1 out of date · cotal setup --skills/, "stale .agents skills recommend setup --skills");

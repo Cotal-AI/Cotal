@@ -1,7 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
-import type { ServiceAuthorityInfo, ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult } from "./remote-service-authority.js";
+import type { ServiceAuthorityInfo, ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult, ServiceRegistrationWitness } from "./remote-service-authority.js";
 import type {
   RemoteManagerAdminAuthorizationRequest,
   RemoteManagerAdminAuthorizationResult,
@@ -24,6 +24,7 @@ import type {
   RemoteRunAttemptRequest,
   RemoteRunAttemptResult,
 } from "./remote-manager-authority.js";
+import type { ConversationSelection } from "./conversation-selection.js";
 import { assertLifecycleToken } from "./subjects.js";
 
 /** Who holds one managed lifecycle, recorded on its managed-agent grant row by the writer that
@@ -200,6 +201,14 @@ export interface AuthProvider extends Extension {
     signal?: AbortSignal;
   }): Promise<{ result: ServiceAuthorityResult; sentinelCreds: string }>;
   /**
+   * A renewal source for one registered service witness: the bearer function a long-lived service
+   * endpoint passes as `EndpointOptions.bearer`. Its first pull activates and later pulls renew, each
+   * replaying one requestId per operation that is persisted in `store` before its first send. The
+   * source holds the material; it owns no timers, and the endpoint's own schedule drives it. Optional,
+   * so a provider without service endpoints refuses at the caller.
+   */
+  serviceEndpointRenewal?(opts: { store: SecretStore; dir: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal;
+  /**
    * Request the closed remote manager-service authority material from the host's loopback/operator
    * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
    * provider must authenticate the signed-in human, fresh-check `supervise`, bind the returned
@@ -318,12 +327,26 @@ export interface AuthProvider extends Extension {
    * the session cache. The transport discipline is the provider's too: redirects are refused
    * (a 302 could walk the proof onto another host), and every failure MUST throw one sentence
    * with the exact operator action — not signed in names the `cotal login --idp …` line, an
-   * endpoint refusal surfaces the endpoint's own reason. The caller owns validating the returned
+   * endpoint refusal surfaces the endpoint's own reason. No sign-in throws with `code`
+   * `"signed-out"`, before any request. A failure after the request carries no such code, an
+   * endpoint 401 or 403 included: the endpoint is the deployment's, and nothing pins what its
+   * refusal left behind. The caller owns validating the returned
    * material's shape; this method proves and carries, it does not interpret. Optional: a
    * provider without a remote-provisioning story simply lacks it, and the caller refuses with
    * its own named message.
    */
   postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
+  /** Present the signed-in human's proof to a discovered conversation-identity authority. The
+   * caller validates the selected registration and endpoint before this call. The provider keeps
+   * the proof private, refuses non-HTTPS destinations and redirects, and performs one request only.
+   * A transport failure is an unknown outcome; callers retain their original request and secret.
+   * The status is returned with the body because pending retirement is not completed cleanup. */
+  requestConversationIdentity?(opts: {
+    url: string;
+    idpUrl: string;
+    method: "POST" | "DELETE";
+    body?: { v: 1; requestId: string; tokenHash: string; label?: string; selection?: ConversationSelection };
+  }): Promise<{ status: number; body: unknown }>;
   /**
    * CLIENT side of a REMOTE mesh's one-time enrollment redeem: GET the secret-bearing enrollment
    * URL exactly once and return the parsed JSON answer verbatim. The URL itself is the credential,
@@ -540,6 +563,37 @@ export function resolveAuthProvider(): AuthProvider {
   if (providers.length > 1)
     throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) - cannot choose between them`);
   return providers[0];
+}
+
+/** Where a {@link ServiceEndpointRenewal} stands. `unavailable` is an outage the next pull retries with
+ *  the same request; `ended` is terminal, and every later pull refuses without sending anything. No
+ *  state carries a token. */
+export type ServiceEndpointRenewalState =
+  | { readonly state: "idle" }
+  | { readonly state: "current"; readonly accessExpiresAt: number; readonly renewalExpiresAt: number }
+  | { readonly state: "unavailable" }
+  | { readonly state: "ended"; readonly reason: string }
+  | { readonly state: "closed" };
+
+/** A validated `credential` result without its renewal material: what a guest's serve grant reads. */
+export type ServiceEndpointCredential = Omit<Extract<ServiceAuthorityResult, { state: "credential" }>, "renewalProof" | "renewalExpiresAt">;
+
+/** A service endpoint's renewal source (see {@link AuthProvider.serviceEndpointRenewal}). */
+export interface ServiceEndpointRenewal {
+  /** The bearer function: a fresh, unexpired service access bearer. Concurrent calls share one request. */
+  bearer(): Promise<string>;
+  /** The same pull as `bearer()`, answering the validated `credential` result a guest hands to
+   *  `authorizeGuestServeGrant`: the witness, the host-authorized snapshot and the access bearer,
+   *  without the renewal proof, which never leaves the source. Each caller gets its own copy.
+   *  Concurrent `bearer()` and `credential()` calls share one request; the persisted request ids
+   *  and the terminal behaviour are the same. */
+  credential(): Promise<ServiceEndpointCredential>;
+  /** The current state, with expiries only. */
+  state(): ServiceEndpointRenewalState;
+  /** The space's deny-all sentinel creds the endpoint presents with the bearer, known after the first success. */
+  readonly sentinelCreds: string | undefined;
+  /** Refuse new pulls, abort the request in flight and wait for it. Idempotent. */
+  close(): Promise<void>;
 }
 
 /** What {@link AuthProvider.userCredentials} takes: `store` and `dir` locate this machine's state,

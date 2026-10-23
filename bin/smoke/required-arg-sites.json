@@ -75,6 +75,7 @@
   "implementations/manager/smoke/manager-service-invoke.smoke.ts": 4,
   "implementations/manager/smoke/manager-service-ops.smoke.ts": 3,
   "implementations/manager/smoke/manager-service.smoke.ts": 3,
+  "implementations/manager/smoke/native-conversation-run.smoke.ts": 1,
   "implementations/manager/smoke/native-issuance-session.smoke.ts": 2,
   "implementations/manager/smoke/no-execution-participant.smoke.ts": 2,
   "implementations/manager/smoke/no-execution.smoke.ts": 4,

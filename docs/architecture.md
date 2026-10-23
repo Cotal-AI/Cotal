@@ -131,7 +131,8 @@ Dotted endpoint classes retain their native grammar; encoding is validation, not
 
 The manager child exclusively claims its real creation-pinned native PID slot before endpoint
 initialization; that starting record is not serving evidence. Existing custody is not adopted or
-reclaimed. It settles that same process only after native start, and release remains owner-bound.
+reclaimed by the child. A record whose pid is dead, as a killed child leaves it, is removed by the
+manager adapter before the next launch, under the controller's definition lock. It settles that same process only after native start, and release remains owner-bound.
 The manager adapter correlates that binding with an attributed current instance/epoch response
 and its process lifecycle UID. It preserves the invoking caller, selected root/broker and required
 TLS. The native status policy uses the same fresh owner/admin visibility and process-bound seat
@@ -144,7 +145,11 @@ The confirmed full scope is rechecked under the native stop reservation and agai
 Native stop hooks bind service, launch and stop IDs plus both process creation identities. Phase
 files are create-only, and accepted/returned evidence plus the original process exit is required
 for a stopped record. A missing terminal remains unknown; generic signal escalation is not a
-native stop substitute. Reservations are not reclaimed. Lease, registration and family cleanup
+native stop substitute. Reservations are not reclaimed. The adapter releases one only after its own
+completed receipt with the original process exit, or a refused receipt as the only one, settles the
+request, and only once the process that took it has exited. A request with neither is cleared only
+when an operator abandons it by its ID, after the original process and the process that took the
+reservation have both exited, and the record is then recorded failed. Lease, registration and family cleanup
 still remain not checked in the receipt. The service layer stays workstation-local and adds no
 wire authority. See [CLI services](cli.md#owned-process-services).
 

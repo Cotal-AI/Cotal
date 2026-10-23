@@ -3,6 +3,7 @@ import {
   endpointToken, isAccountNkey, isContractDigest, isEpAuthzMode, parseEndpointCapabilities,
   type EpCapability, type EpCommandAuthority, type ServicePrincipal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
+import { parseServiceCallerGrant } from "./service-caller-policy.js";
 
 export interface ServiceEndpointOptions {
   /** An optional nonsecret approval page under publicFace.url's HTTPS origin. */
@@ -117,7 +118,8 @@ export type ServiceHostOutcome = "applied" | "recorded";
 
 /** The immutable subject an operation was admitted for; owner-scoped reads authorize against it. */
 export interface ServiceOperationProjection { subjectOwner: string; endpoint: string; instanceId: string; proposalId: string | null }
-export type ServiceOperationKind = "register" | "decide" | "revoke";
+/** `grant` is a caller grant; a caller revoke records under `revoke` with a caller target. */
+export type ServiceOperationKind = "register" | "decide" | "revoke" | "grant";
 
 export interface ServiceOperationView {
   operationId: string;
@@ -419,15 +421,22 @@ export function parseServiceProposalTombstoneView(raw: unknown): ServiceProposal
   return structuredClone(o) as unknown as ServiceProposalTombstoneView;
 }
 
+function principalView(raw: unknown): void {
+  const o = closed(raw, ["owner", "actor", "lifecycleUid"]);
+  ownerTok(o.owner); if (typeof o.actor !== "string") badResult("invalid actor"); grammar(() => assertBoundedOwner(o.actor as string, "actor"), "actor");
+  lifecycleTok(o.lifecycleUid, "lifecycleUid");
+}
+function selectorView(raw: unknown): void { const o = closed(raw, ["endpoint", "instanceId"]); endpointName(o.endpoint); lifecycleTok(o.instanceId, "instanceId"); }
 function operationTarget(raw: unknown): void {
   const o = raw as Rec;
+  if (o?.kind === "caller") { closed(raw, ["kind", "grantee"]); principalView(o.grantee); return; }
   if (o?.kind !== "service") badResult("unsupported operation target");
   closed(raw, ["kind", "endpoint", "instanceId", "assignmentDigest"]); endpointName(o.endpoint); lifecycleTok(o.instanceId, "instanceId");
   nullable(o.assignmentDigest, (v) => dig(v, "assignmentDigest"));
 }
 export function parseServiceOperationView(raw: unknown): ServiceOperationView {
   const o = closed(raw, ["operationId", "requestDigest", "operation", "target", "projection", "progress", "debt"]);
-  hex(o.operationId, 32, "operationId"); dig(o.requestDigest, "requestDigest"); oneOf(o.operation, ["register", "decide", "revoke"], "operation");
+  hex(o.operationId, 32, "operationId"); dig(o.requestDigest, "requestDigest"); oneOf(o.operation, ["register", "decide", "revoke", "grant"], "operation");
   operationTarget(o.target); projection(o.projection); debtList(o.debt);
   const p = o.progress as Rec;
   if (p?.state === "pending") { closed(p, ["state", "phase"], ["notBefore"]); text(p.phase, "phase", 64); if (Object.hasOwn(p, "notBefore")) nat(p.notBefore, "notBefore"); }
@@ -437,7 +446,7 @@ export function parseServiceOperationView(raw: unknown): ServiceOperationView {
 }
 export function parseServiceOperationTerminalView(raw: unknown): ServiceOperationTerminalView {
   const o = closed(raw, ["operationId", "requestDigest", "operation", "projection", "outcome"]);
-  hex(o.operationId, 32, "operationId"); dig(o.requestDigest, "requestDigest"); oneOf(o.operation, ["register", "decide", "revoke"], "operation");
+  hex(o.operationId, 32, "operationId"); dig(o.requestDigest, "requestDigest"); oneOf(o.operation, ["register", "decide", "revoke", "grant"], "operation");
   projection(o.projection); finalOutcome(o.outcome);
   return structuredClone(o) as unknown as ServiceOperationTerminalView;
 }
@@ -454,9 +463,29 @@ export function parseServiceApprovalResult(raw: unknown): ServiceApprovalResult 
   return structuredClone(o) as unknown as ServiceApprovalResult;
 }
 
-const SUPPORTED_RESULTS = new Set(["decide", "revoke", "name-bind", "operation-read", "proposal-read"]);
+/** One stored caller grant as a result carries it. */
+function grantView(raw: unknown): void { grammar(() => parseServiceCallerGrant(raw), "caller grant"); }
+/** A caller policy view: the grantee, the service filter (null for the full row) and its grants,
+ *  each unique and, under a filter, on that service. */
+export function parseServiceCallerPolicyView(raw: unknown): ServiceCallerPolicyView {
+  const o = closed(raw, ["grantee", "service", "grants"]);
+  principalView(o.grantee); nullable(o.service, selectorView);
+  if (!Array.isArray(o.grants)) badResult("invalid grants");
+  const ids = new Set<string>(), service = o.service as ServiceSelector | null;
+  for (const g of o.grants) {
+    grantView(g);
+    const grant = g as Rec;
+    if (ids.has(grant.grantId as string)) badResult("grant ids must be unique"); ids.add(grant.grantId as string);
+    if (service !== null && (grant.endpoint !== service.endpoint || grant.instanceId !== service.instanceId)) badResult("a filtered view carries only its service's grants");
+  }
+  return structuredClone(o) as unknown as ServiceCallerPolicyView;
+}
+
+const SUPPORTED_RESULTS = new Set(["decide", "revoke", "name-bind", "operation-read", "proposal-read", "caller-grant", "caller-policy-read", "caller-policy-list"]);
 /** Closed parser for the results of the operations this slice serves (decide, revoke, name-bind,
- *  operation-read, proposal-read) and for the shared arms of every operation. */
+ *  operation-read, proposal-read, caller-grant and the two caller-policy reads) and for the shared
+ *  arms of every operation. A caller revoke's `revoked` arm is refused: no host emits it, because a
+ *  terminal caller revocation needs a proof this slice does not build. */
 export function parseServiceHostResult(raw: unknown): ServiceHostResult {
   const env = ["v", "kind", "operation", "requestId", "space", "accountPublicKey", "state"];
   const o = raw as Rec, state = o?.state;
@@ -481,6 +510,16 @@ export function parseServiceHostResult(raw: unknown): ServiceHostResult {
     else if (o.operation === "decide" && state === "refused") { keys = closed(raw, [...env, "outcome", "proposal", "revision"], ["debt"]); oneOf(o.outcome, OUTCOMES, "outcome"); parseServiceProposalTombstoneView(o.proposal); nat(o.revision, "revision"); if (Object.hasOwn(o, "debt")) debtList(o.debt); }
     else if (o.operation === "name-bind" && state === "bound") { keys = closed(raw, [...env, "binding"]); nameView(o.binding); }
     else if (o.operation === "revoke" && state === "retired") { keys = closed(raw, [...env, "assignmentDigest", "operationId"]); dig(o.assignmentDigest, "assignmentDigest"); hex(o.operationId, 32, "operationId"); }
+    else if (o.operation === "caller-grant" && state === "granted") { keys = closed(raw, [...env, "grant", "revision"]); grantView(o.grant); nat(o.revision, "revision"); }
+    else if (o.operation === "caller-policy-read" && state === "absent") keys = closed(raw, env);
+    else if (o.operation === "caller-policy-read" && state === "present") {
+      keys = closed(raw, [...env, "record"]); const r = closed(o.record, ["value", "revision"]); nat(r.revision, "revision"); parseServiceCallerPolicyView(r.value);
+    } else if (o.operation === "caller-policy-list" && state === "page") {
+      keys = closed(raw, [...env, "records", "nextCursor"]);
+      if (!Array.isArray(o.records) || o.records.length > 50) badResult("a page carries at most 50 records");
+      for (const rec of o.records) { const r = closed(rec, ["value", "revision"]); nat(r.revision, "revision"); parseServiceCallerPolicyView(r.value); }
+      nullable(o.nextCursor, (v) => text(v, "nextCursor", 1024));
+    }
     else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "absent") keys = closed(raw, env);
     else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "present") {
       keys = closed(raw, [...env, "record"]); const r = closed(o.record, ["value", "revision"]); nat(r.revision, "revision");

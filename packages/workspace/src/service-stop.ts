@@ -117,6 +117,40 @@ export function clearRefusedServiceStopRequest(context: StopContext, expected: N
   rmSync(serviceStopRequestPath(context));
 }
 
+/** Remove a retained request whose only receipt is the child's refusal, once the stopper that
+ *  published it is gone. Its phase receipts stay. Returns whether the request was removed. */
+export function clearRetainedRefusedServiceStopRequest(context: StopContext, expected: NativeServiceStopRequest): boolean {
+  const checked = request(expected, context), current = readServiceStopRequest(context);
+  const phases = readServiceStopReceipts(context, checked), holder = assertRecordIdentity(checked.stopper).kind;
+  if (!current || !sameRequest(current, checked) || phases.length !== 1 || phases[0]?.phase !== "refused" || holder !== "gone" && holder !== "mismatch") return false;
+  rmSync(serviceStopRequestPath(context));
+  return true;
+}
+
+/** Remove a retained request that no receipt settles, for an operator's explicit abandon: it has
+ *  neither a `completed` nor a `refused` receipt, and both its target and the stopper that published
+ *  it are gone. Its phase receipts stay. Returns whether the request was removed. */
+export function clearAbandonedServiceStopRequest(context: StopContext, expected: NativeServiceStopRequest): boolean {
+  const checked = request(expected, context), current = readServiceStopRequest(context);
+  const phases = readServiceStopReceipts(context, checked);
+  const gone = (record: ProcessIdentityRecord) => ["gone", "mismatch"].includes(assertRecordIdentity(record).kind);
+  if (!current || !sameRequest(current, checked) || phases.some((row) => row.phase === "completed" || row.phase === "refused") || !gone(checked.target) || !gone(checked.stopper)) return false;
+  rmSync(serviceStopRequestPath(context));
+  return true;
+}
+
+/** Remove a retained request's reservation once the stopper that took it is gone. A marker that names
+ *  another PID, is not a plain file, or whose stopper still runs or cannot be read, is kept. Returns
+ *  whether no reservation remains. */
+export function releaseRetainedServiceStop(marker: string, stopper: ProcessIdentityRecord): boolean {
+  let current;
+  try { current = lstatSync(marker); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+  const holder = assertRecordIdentity(stopper).kind;
+  if (!current.isFile() || readLocalRecordSource(marker, 128, true)?.toString("utf8") !== String(stopper.pid) || holder !== "gone" && holder !== "mismatch") return false;
+  rmSync(marker);
+  return true;
+}
+
 /** The new controller refuses every existing native reservation, including stale or malformed
  *  ones. It does not reuse the legacy PID-only reclaim path or silently steal another attempt. */
 export function reserveNativeServiceStop(marker: string): { stopper: ProcessIdentityRecord; release(): void } {

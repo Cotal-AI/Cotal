@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -10,7 +10,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { createSpaceAuth, createEndpointStreams, endpointRegistrationBarrier, mintLifecycleUid, registerServiceInstance,
   serverConfig, isReachable, contractDigest, serviceEndpointActor, type ServiceRegistrationWitness } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, countedAssert, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createCalloutAuth, startAuthCallout, type StartAuthCalloutOpts } from "../src/callout.js";
 import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
 import { validateUserToken } from "../src/token.js";
@@ -23,6 +23,9 @@ import { approveNativeServiceGate, createPendingServiceGate, markNativeServiceAc
 import { createNativeServiceCalloutAuthority } from "../src/native-service-callout.js";
 import { readNativeIssuance } from "../src/native-issuance.js";
 import { credRowKey, markLedgerRowRevoked } from "../src/credential-ledger.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const port = await pickFreePort(), servers = `nats://127.0.0.1:${port}`, space = `service-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -174,6 +177,7 @@ try {
   assert.equal(mints.length, 3, "fenced or revoked native authority never releases another mint");
   assert.deepEqual(hooks, []);
   console.log("service access callout: default refusal and ordinary control preserved; native registered service connected, disconnected/reconnected and expired through encrypted auth with exact broker receipts, then deny-new checked; public approval and terminal retirement not exercised");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await setup?.close();
   for (const nc of conns.reverse()) await nc.close().catch(() => {});

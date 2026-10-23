@@ -746,11 +746,21 @@ const REVIEWED: Record<string, string> = {
     "spawns herdr-e2e-manager-child.mjs, which builds its OWN stub identity from HE2E_* and sets the COTAL_ vars itself rather than reading the inherited ones",
   "packages/workspace/smoke/win32-creation-native.smoke.ts":
     "the spread only saves process.env for restoration in finally; coldOsEnvironment(before) replaces process.env before any child is spawned, and the snapshot is never passed to a child",
+  "implementations/auth/smoke/personal-native-auth.smoke.ts":
+    "strips COTAL_ from process.env first in its parent branch, then sets only the COTAL_ keys its children need; the strip cannot move to module scope because the same file's agent-bearer, auth-service and app-identity child modes read the COTAL_ keys their parent passes",
+  "implementations/auth/smoke/personal-native-recovery.smoke.ts":
+    "strips COTAL_ from process.env first in its parent branch, then sets only the COTAL_ keys its children need; the strip cannot move to module scope because the same file's agent-bearer, auth-service, app-identity and gateway child modes read the COTAL_ keys their parent passes",
+  "implementations/manager/smoke/native-conversation-capabilities.smoke.ts":
+    "strips COTAL_ from process.env first in its parent branch, then sets only the COTAL_ keys its children need; the strip cannot move to module scope because the same file's agent-bearer, auth-service, app-identity and seat child modes read the COTAL_ keys their parent passes",
+  "implementations/manager/smoke/native-conversation-run.smoke.ts":
+    "strips COTAL_ from process.env first in its parent branch, then sets only the COTAL_ keys its children need; the strip cannot move to module scope because the same file's agent-bearer, auth-service and app-identity child modes read the COTAL_ keys their parent passes",
 };
 
 const REGISTRY_HOME_REVIEWED: Record<string, string> = {
   "bin/smoke/suite-ambient-env.smoke.ts":
     "this census itself: recordMesh and COTAL_HOME occur only in fixture strings it feeds to a parser",
+  "implementations/auth/smoke/_approval-authority.ts":
+    "a fixture module, not a suite: startApprovalAuthority throws unless process.env.COTAL_HOME already equals the home its importer passes",
 };
 
 /**
@@ -800,7 +810,6 @@ const FROZEN: readonly string[] = [
   "implementations/cli/smoke/ext-seed-help.smoke.ts",
   "implementations/cli/smoke/join-creds-pairing.smoke.ts",
   "implementations/cli/smoke/manager-singleton-live.smoke.ts",
-  "implementations/cli/smoke/spawn-manifest-live.smoke.ts",
   "implementations/cli/smoke/sys-rotation-e2e.smoke.ts",
   "implementations/cli/smoke/up-manifest-live.smoke.ts",
   "implementations/delivery/smoke/adoption-doctor-e2e.smoke.ts",

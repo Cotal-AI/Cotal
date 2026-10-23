@@ -93,6 +93,7 @@ const groups = [
       'docs/manifest.md',
       'docs/channels-and-permissions.md',
       'docs/config.md',
+      'docs/telemetry.md',
       'docs/mesh-view.md',
       'docs/lang-card.md',
       'docs/glossary.md',
