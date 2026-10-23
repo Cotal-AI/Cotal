@@ -632,6 +632,57 @@ await race({
     `${scopeOf(j, "conclave")?.status}:${String(scopeOf(j, "conclave")?.closed)}`);
 }
 
+{
+  // A conclave REACHED on a branch that is already cancelled is admitted as an effect is: its open is
+  // a new effect, so the cancellation is raised before the entry begins and the room is never opened.
+  // `slow` is declared first, so its equal clock keeps it running its pure tail after `fast` settles,
+  // and the log shows it reached the boundary. The `sleep` in the same position is the control.
+  // Measured before the rule: the conclave's entry was begun and settled `cancelled`.
+  const late = (tail: string) => `
+const a = await spawn("a", { name: "a" });
+const r = await race({
+  slow: async () => { let n = 0; for (let i = 0; i < 50; i++) { n = n + i } log("reached"); return await ${tail}; },
+  fast: () => 1,
+}, { name: "r" });
+log(r.index);
+`;
+  const LATE_CONCLAVE = late('conclave([a], async (ch) => n, { name: "late" })');
+  for (const [what, src] of [["a conclave", LATE_CONCLAVE], ["a sleep", late('sleep("1s", { name: "late" })')]] as const) {
+    logged.length = 0;
+    const { handler, calls } = watching(new SimHandler({}));
+    const j = new Journal({ run: "c-late" });
+    await run(src, { runId: "c-late", journal: j, handler, onLog: sink });
+    ok(`the losing branch reaches ${what} after the race is decided`,
+      JSON.stringify(logged) === '[["reached"],["fast"]]', logged);
+    ok(`${what} reached on a cancelled branch begins no entry and opens nothing`,
+      !j.entries().some((e) => e.name === "late") && !calls.includes("open"),
+      { entries: j.entries().map((e) => `${e.kind}:${e.name}:${e.status}`), calls });
+  }
+
+  // AND ON RE-ENTRY. A crash after the conclave's begin leaves it pending inside a pending race, and
+  // the resume decides the race again, so the loser re-enters a PENDING conclave on a cancelled
+  // branch. Measured before the rule: the cancelled branch opened and closed the room, settled it
+  // `ok`, and that `ok` won the race the live run gave to `fast`. The pending pair is recorded where
+  // `slow` wins and the conclave really begins.
+  const won = new Journal({ run: "c-late-pending" });
+  const recorded = await run(
+    LATE_CONCLAVE.replace("fast: () => 1", 'fast: async () => { await sleep("1h", { name: "f" }); return 1; }'),
+    { runId: "c-late-pending", journal: won, handler: new SimHandler({}) },
+  );
+  const crashed = won.entries().filter((e) => e.name !== "f").map((e) => e.kind === "spawn" ? e : {
+    ...e, state: "pending" as const, status: undefined, endedAt: undefined, result: undefined, cancel: undefined,
+    closed: undefined, branchDigest: undefined, branches: undefined,
+  });
+  ok("the seed holds the race and the loser's conclave pending",
+    crashed.map((e) => `${e.kind}:${e.state}`).join() === "spawn:settled,race:pending,conclave:pending", crashed);
+  logged.length = 0;
+  const { handler, calls } = watching(new SimHandler({}));
+  const j = new Journal({ run: "c-late-pending", entries: crashed });
+  await resume(LATE_CONCLAVE, j, { runId: "c-late-pending", pins: recorded.pins, handler, onLog: sink });
+  ok("a pending conclave re-entered on a cancelled branch opens and closes nothing", calls.length === 0, calls);
+  ok("and the race resolves as the live run did", JSON.stringify(logged) === '[["reached"],["fast"]]', logged);
+}
+
 // ---- 7) a race arm that FAILS is still a settle ------------------------------------------------
 
 {

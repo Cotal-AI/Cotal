@@ -31,6 +31,7 @@ import {
   spawnEnvAllow,
   deprovisionAgent,
   DeprovisionError,
+  addDeprovisionAccounting,
   type DeprovisionResourceAccounting,
   isConcreteChannel,
   deprovisionTargetPrincipal,
@@ -316,9 +317,16 @@ const STATIC_RECONCILE_MAX_ATTEMPTS = STATIC_RECONCILE_RETRY_DELAYS_MS.length + 
 type StaticReconcileItem = ManagerStaticReconciliationFailure & {
   owner: string;
   timer?: ReturnType<typeof setTimeout>;
-  flight?: Promise<boolean>;
+  flight?: Promise<StaticReconcileAttempt>;
   retryFlight?: Promise<void>;
 };
+
+/** One exact-terminal attempt's outcome, with the accounting of the broker teardown that attempt
+ *  ran, whether it succeeded or failed. Absent when the attempt reached no broker teardown. */
+interface StaticReconcileAttempt {
+  succeeded: boolean;
+  deprovision?: DeprovisionResourceAccounting;
+}
 
 /** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
  *  despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME
@@ -1480,7 +1488,6 @@ export class Manager {
     };
     deprovision?: DeprovisionResourceAccounting;
   };
-  public lastDeprovisionResources?: DeprovisionResourceAccounting;
   private staticReconcileSweepsInFlight = 0;
   private staticReconcileDrainWaiters: Array<() => void> = [];
   private staticReconcileStopping = false;
@@ -5061,7 +5068,8 @@ export class Manager {
    *  is NOT freed while any teardown phase is still in flight — the hold clears only after the
    *  standing-authority revoke AND the lifecycle retirement both confirm (see {@link driveRetirement}) —
    *  but the deletes here are still lifecycle-uid-pinned so even a replayed/stale teardown can never
-   *  reach a same-name successor's footprint (its names embed a different uid). */
+   *  reach a same-name successor's footprint (its names embed a different uid). Each call reports its
+   *  own accounting: the return value, or the {@link DeprovisionError} it throws once the deletes ran. */
   private async deprovisionBroker(a: { id: string; name: string; lifecycleUid: string; launch?: { allowSubscribe: readonly string[] } }): Promise<DeprovisionResourceAccounting> {
     // LIFECYCLE-PINNED (SPEC 13.1): both the credential's exact-name grants and the delete names
     // carry a.lifecycleUid, so a stale/replayed teardown for this retired incarnation is broker-denied
@@ -5082,29 +5090,20 @@ export class Manager {
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
-    let accounting: DeprovisionResourceAccounting | undefined;
-    try {
-      accounting = await withTimeout(
-        deprovisionAgent({
-          servers: this.servers ?? DEFAULT_SERVER,
-          space: this.space,
-          targetId: a.id,
-          lifecycleUid: a.lifecycleUid,
-          memberChannels: [...memberChannels],
-          creds,
-        }),
-        DEPROVISION_TIMEOUT_MS,
-        `deprovision ${a.name} (${a.id}): broker teardown timed out`,
-      );
-      this.lastDeprovisionResources = accounting;
-    } catch (e) {
-      if (e instanceof DeprovisionError) {
-        this.lastDeprovisionResources = e.accounting;
-      }
-      throw e;
-    }
+    const accounting = await withTimeout(
+      deprovisionAgent({
+        servers: this.servers ?? DEFAULT_SERVER,
+        space: this.space,
+        targetId: a.id,
+        lifecycleUid: a.lifecycleUid,
+        memberChannels: [...memberChannels],
+        creds,
+      }),
+      DEPROVISION_TIMEOUT_MS,
+      `deprovision ${a.name} (${a.id}): broker teardown timed out`,
+    );
     if (!inventory.complete)
-      throw new Error(`membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`);
+      throw new DeprovisionError(`membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`, accounting);
     return accounting;
   }
 
@@ -9980,8 +9979,9 @@ export class Manager {
    *  wire principal joins {@link retiredPrincipals} (the F5 refusal index) and the name hold
    *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
-   *  and the hold clears, the honest upgrade path. */
-  private async driveStaticRetirement(a: TeardownTarget, surfaceFailure = false): Promise<void> {
+   *  and the hold clears, the honest upgrade path. `onDeprovision` receives the accounting of the
+   *  broker teardown this call ran, on success or on a {@link DeprovisionError}. */
+  private async driveStaticRetirement(a: TeardownTarget, surfaceFailure = false, onDeprovision?: (accounting: DeprovisionResourceAccounting) => void): Promise<void> {
     // A renewal that published its flight before the synchronous terminal latch is accepted work.
     // Drain it before the durable terminal enumerates credential ids and before cleanup deletes its
     // material; a failed renewal must not block retirement because it may still have staged an id.
@@ -10011,7 +10011,15 @@ export class Manager {
         await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
         await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));
       }
-      await attemptCleanup(failed, "broker teardown", () => this.deprovisionBroker(a));
+      await attemptCleanup(failed, "broker teardown", async () => {
+        try {
+          const accounting = await this.deprovisionBroker(a);
+          onDeprovision?.(accounting);
+        } catch (e) {
+          if (e instanceof DeprovisionError) onDeprovision?.(e.accounting);
+          throw e;
+        }
+      });
       if (failed.length) throw new Error(`cleanup failed: ${failed.join("; ")}`);
     };
     // The process goes before its footprint: reap the orphan seat by reference, then tear down.
@@ -10459,22 +10467,23 @@ export class Manager {
   /** Enter one exact terminal at most once per coordinate. Sweep and timer triggers join the same
    *  promise. A settled failed item keeps its original per-process budget; a restart builds a fresh
    *  map from the still-authoritative durable row. */
-  private attemptStaticReconcile(key: string, item: StaticReconcileItem, row: StaticManagedSlotRow, countAttempt = true): Promise<boolean> {
+  private attemptStaticReconcile(key: string, item: StaticReconcileItem, row: StaticManagedSlotRow, countAttempt = true): Promise<StaticReconcileAttempt> {
     if (item.flight) return item.flight;
-    if (item.timer) return Promise.resolve(false);
+    if (item.timer) return Promise.resolve({ succeeded: false });
     // A timer/retry driver increments before its mandatory durable re-read, then calls with
     // countAttempt=false. Let that already-consumed budget entry enter the terminal. Only a fresh
     // sweep entry (countAttempt=true) is refused once the per-process budget is exhausted.
-    if (countAttempt && item.attempts >= item.maxAttempts) return Promise.resolve(false);
-    const flight = (async (): Promise<boolean> => {
+    if (countAttempt && item.attempts >= item.maxAttempts) return Promise.resolve({ succeeded: false });
+    const flight = (async (): Promise<StaticReconcileAttempt> => {
       if (countAttempt) item.attempts++;
       item.phase = row.phase;
       item.disposition = "retrying";
       item.nextRetryAt = undefined;
       this.reconcilingAliases.add(row.alias);
       console.error(`static reconcile terminal alias=${row.alias} phase=${row.phase} uid=${row.lifecycleUid} attempt=${item.attempts}/${item.maxAttempts}`);
+      let deprovision: DeprovisionResourceAccounting | undefined;
       try {
-        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid, runtime: row.runtime }, true);
+        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid, runtime: row.runtime }, true, (accounting) => { deprovision = accounting; });
         if (item.attempts === 1) {
           this.staticReconcileItems.delete(key);
         } else {
@@ -10484,7 +10493,7 @@ export class Manager {
           item.lastError = undefined;
           console.error(`✓ static reconcile recovered alias=${item.alias} phase=retired uid=${item.lifecycleUid} attempts=${item.attempts}/${item.maxAttempts}`);
         }
-        return true;
+        return { succeeded: true, deprovision };
       } catch (error) {
         item.lastError = rejectionText(error);
         try {
@@ -10508,7 +10517,7 @@ export class Manager {
           if (this.staticReconcileSweepsInFlight > 0) item.disposition = "retry-scheduled";
           else this.scheduleStaticReconcileRetry(key, item);
         }
-        return false;
+        return { succeeded: false, deprovision };
       } finally {
         this.reconcilingAliases.delete(row.alias);
       }
@@ -10535,7 +10544,7 @@ export class Manager {
     while (true) {
       if (this.staticReconcileSweepsInFlight > 0)
         await new Promise<void>((resolve) => this.staticReconcileDrainWaiters.push(resolve));
-      const flights: Array<Promise<boolean> | Promise<void>> = [];
+      const flights: Array<Promise<StaticReconcileAttempt> | Promise<void>> = [];
       for (const item of this.staticReconcileItems.values()) {
         if (item.flight) flights.push(item.flight);
         if (item.retryFlight) flights.push(item.retryFlight);
@@ -10696,34 +10705,9 @@ export class Manager {
             };
             this.staticReconcileItems.set(key, item);
           }
-          this.lastDeprovisionResources = undefined;
-          const succeeded = await this.attemptStaticReconcile(key, item, row);
-          const acc = (this as { lastDeprovisionResources?: DeprovisionResourceAccounting }).lastDeprovisionResources;
-          if (acc) {
-            sweepDeprovision.examined += acc.examined;
-            sweepDeprovision.deleted = sweepDeprovision.deleted === null || acc.deleted === null ? null : sweepDeprovision.deleted + acc.deleted;
-            sweepDeprovision.absent += acc.absent;
-            sweepDeprovision.refused += acc.refused;
-            sweepDeprovision.acknowledged += acc.acknowledged;
-            sweepDeprovision.disappeared += acc.disappeared;
-            sweepDeprovision.consumers.examined += acc.consumers.examined;
-            sweepDeprovision.consumers.deleted = sweepDeprovision.consumers.deleted === null || acc.consumers.deleted === null ? null : sweepDeprovision.consumers.deleted + acc.consumers.deleted;
-            sweepDeprovision.consumers.absent += acc.consumers.absent;
-            sweepDeprovision.consumers.refused += acc.consumers.refused;
-            sweepDeprovision.consumers.acknowledged += acc.consumers.acknowledged;
-            sweepDeprovision.consumers.disappeared += acc.consumers.disappeared;
-            sweepDeprovision.acls.examined += acc.acls.examined;
-            sweepDeprovision.acls.deleted += acc.acls.deleted;
-            sweepDeprovision.acls.absent += acc.acls.absent;
-            sweepDeprovision.acls.refused += acc.acls.refused;
-            sweepDeprovision.acls.disappeared += acc.acls.disappeared;
-            sweepDeprovision.members.examined += acc.members.examined;
-            sweepDeprovision.members.deleted += acc.members.deleted;
-            sweepDeprovision.members.absent += acc.members.absent;
-            sweepDeprovision.members.refused += acc.members.refused;
-            sweepDeprovision.members.disappeared += acc.members.disappeared;
-          }
-          if (succeeded) sweep.succeeded++;
+          const attempt = await this.attemptStaticReconcile(key, item, row);
+          if (attempt.deprovision) addDeprovisionAccounting(sweepDeprovision, attempt.deprovision);
+          if (attempt.succeeded) sweep.succeeded++;
           else sweep.failed++;
           this.reconcilingAliases.delete(row.alias);
         }
@@ -10847,9 +10831,9 @@ export class Manager {
    *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
    *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
    *  frontmatter block; a malformed block is refused by name rather than wrapped. A fresh name is
-   *  created with owner = caller. Redefining an EXISTING file is allowed on the privileged tier
-   *  only if `file.owner == caller`, else admin is required. Fail-closed: an ownerless file
-   *  (legacy / operator-written) is admin-only. */
+   *  created with the owner {@link personaOwner} records. Redefining an EXISTING file is allowed on
+   *  the privileged tier only if `file.owner == caller`, else admin is required. Fail-closed: an
+   *  ownerless file (legacy / operator-written) is admin-only. */
   private opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const name = String(args.name ?? "").trim();
@@ -10881,7 +10865,7 @@ export class Manager {
       def = composeWirePersona(
         {
           name,
-          owner: caller,
+          owner: this.personaOwner(caller),
           prompt: persona,
           model,
           role: args.role !== undefined && args.role !== null && String(args.role) !== "" ? String(args.role) : undefined,
@@ -10901,6 +10885,17 @@ export class Manager {
       return { ok: false, error: rejectionText(e) };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** The owner a fresh wire-defined persona records. A user-auth caller's principal is stable, and
+   *  so is one of this manager's own seats for its life. Any other static caller, such as the CLI's
+   *  operator instrument minted for one call, would leave an owner no later call matches, so it
+   *  records none and the file is operator-owned, as a local `persona create` writes it. A peer
+   *  joined with its own credential is such a caller too. */
+  private personaOwner(caller: string): string | undefined {
+    if (this.userMode) return caller;
+    for (const a of this.agents.values()) if (this.managedPrincipal(a) === caller) return caller;
+    return undefined;
   }
 
   /** Whether this caller may READ a catalog card's details (role/model/description/body). Same

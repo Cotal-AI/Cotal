@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, closeSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, readFileSync, rmSync } from "node:fs";
 import { relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
@@ -350,7 +350,7 @@ export async function stopManager(
   let spared: SpareSeatRow[] | undefined;
   let spareSeats: ManagerSpareSeats | undefined;
   let legacyManagerSpareUnverified = false;
-  if (!withAgents && existsSync(PID_PATH(space))) {
+  if (!withAgents) {
     const pin = verifyIdentityPin(PID_PATH(space));
     if (pin.kind === "legacy") legacyManagerSpareUnverified = true;
     else if (pin.kind === "match") spared = await listManagerSeatsForSpare(context);

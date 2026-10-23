@@ -56,7 +56,7 @@ type Target = (typeof TARGETS)[number];
 export async function clean(args: ParsedArgs): Promise<void> {
   const target = args.positionals[0] as Target | undefined;
   const values = args.values as {
-    server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string;
+    server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string; "discard-history"?: boolean;
   };
   if (!target || !TARGETS.includes(target))
     throw new CommandFailure("refused", "USAGE_INVALID", target ? `clean has no target "${target}"; it takes ${TARGETS.join(", ")}` : `clean needs a target: ${TARGETS.join(", ")}`);
@@ -94,7 +94,12 @@ export async function clean(args: ParsedArgs): Promise<void> {
     if (!values.attempt) throw new Error("clean restore-fallback requires --attempt <id>");
     const lock = acquireMaintenanceLock(root);
     try {
-      const record = cleanupRestoreFallback(lock, values.attempt);
+      // A registry restore's old store holds the only copy of the history it left out.
+      const journal = readMaintenanceJournal(root);
+      const onlyCopy = journal?.state === "active" && journal.restore.attemptId === values.attempt && journal.restore.selection === "registry" && !journal.restore.cleanup ? journal.restore.previousSource?.identity.path : undefined;
+      if (onlyCopy && !values["discard-history"])
+        throw new CommandFailure("refused", "USAGE_INVALID", `${values.attempt} was a registry-only restore, so the previous store at ${onlyCopy} holds the only copy of the chat and DM history it left out; nothing was deleted`, { remedy: `keep that store, or delete it and that history with cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history` });
+      const record = cleanupRestoreFallback(lock, values.attempt, { discardHistory: values["discard-history"] === true });
       console.log(c.green(record.restore.method === "disaster" ? `✓ retired restore ${record.restore.attemptId}; it replaced a missing source, so no old store was removed` : `✓ removed retained source for restore ${record.restore.attemptId}`));
     } finally {
       releaseMaintenanceLock(lock);

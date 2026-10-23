@@ -100,7 +100,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `spawn -f` teardown, which the redesign moves to `team remove <deployment-id>`. `--abandon-stop`
   // (2026-10) names the one member stop request a controller stack's down abandons.
   down: { flags: ["abandon-stop:string", "dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
-  backup: { flags: ["accept-missing-source:boolean", "dry-run:boolean", "json:boolean:j", "only:string", "plain:boolean", "store-dir:string", "yes:boolean:y"], positionals: true },
+  backup: { flags: ["accept-missing-source:boolean", "discard-history:boolean", "dry-run:boolean", "json:boolean:j", "only:string", "plain:boolean", "store-dir:string", "yes:boolean:y"], positionals: true },
   reset: { flags: ["dry-run:boolean", "json:boolean:j", "plain:boolean", "yes:boolean:y"], positionals: true },
   // `space` (2026-10): the registered spaces and one in full, on the structured output contract.
   // `space add` (2026-10) registers a space that runs elsewhere, from `--server` or a user-auth bundle;
@@ -455,7 +455,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   topology: { flags: ["file:string:f"], positionals: true },
-  clean: { flags: [...TARGET, "attempt:string", "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
+  clean: { flags: [...TARGET, "attempt:string", "discard-history:boolean", "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Per-user auth (D4c): the actor-ledger operator surface.
   actor: {
     flags: [

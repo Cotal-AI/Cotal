@@ -152,7 +152,9 @@ value is visible.
 
 `harness` is checked against the official connectors and the ones installed extensions provide.
 `persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
-with no control characters; whether that persona exists is checked when a launch uses it. A
+with no control characters. When the catalog of the space a command here uses (`--space`, else the
+selected space) does not hold it, the value is still saved, since the file may be created later,
+with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A
 value is checked when it is written, and an unknown key or an invalid value is refused with the valid
 ones. Preferences hold no credentials. They change future commands, not agents already running.
 

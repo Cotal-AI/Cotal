@@ -183,7 +183,18 @@ export function selectServiceInstance(rows: ServiceInstanceSnapshot[], id: strin
     return found;
   }
   if (!rows.length) { if (allowMissing) return undefined; throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition"); }
-  if (rows.length !== 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", `this definition has several instance records; choose --instance with one full ID: ${rows.map((row) => row.name).join(", ")}`, { target: { candidates: rows.map((row) => row.name) } });
+  if (rows.length !== 1) {
+    // Each record is named with its state, and one whose process is gone with the command that
+    // clears it. A record still marked running after its process exited reads as exited.
+    const { definition, space } = rows[0]!.record.value;
+    const ended = (row: ServiceInstanceSnapshot) => gone(observeServiceProcess(row.record.value));
+    const state = (row: ServiceInstanceSnapshot) => ended(row) && UNSETTLED_RUN.includes(row.record.value.state) ? "exited" : row.record.value.state;
+    const clear = rows.filter(ended).map((row) => `cotal service remove ${definition} --instance ${row.name} --space ${space} --yes`);
+    throw new CommandFailure("refused", "TARGET_AMBIGUOUS", `this definition has several instance records; choose --instance with one full ID: ${rows.map((row) => row.name).join(", ")}`, {
+      target: { candidates: rows.map((row) => row.name) },
+      remedy: `pass --instance with one of ${rows.map((row) => `${row.name} (${state(row)})`).join(", ")}${clear.length ? `; clear a stopped record you no longer need with ${clear.join("; ")}` : ""}`,
+    });
+  }
   return rows[0];
 }
 
@@ -672,16 +683,18 @@ export function assertNoServiceUnitAttempts(space: string, name: string): void {
   if (pending.length || actions.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a retained native installation, removal or unit action names this definition; no direct process effect was substituted", { target: { space, name, attempts: [...pending, ...actions].map((row) => ({ instanceId: row.name, attemptId: row.record.value.attemptId })) } });
 }
 
-export function removableServiceInstances(space: string, name: string): ServiceInstanceSnapshot[] {
-  const pending = [...serviceInstallIntents(space), ...serviceUninstallIntents(space)].filter((row) => row.record.value.definition === name);
+export function removableServiceInstances(space: string, name: string, instanceId?: string): ServiceInstanceSnapshot[] {
+  const named = (row: { name: string }) => instanceId === undefined || row.name === instanceId;
+  const pending = [...serviceInstallIntents(space), ...serviceUninstallIntents(space)].filter((row) => row.record.value.definition === name && named(row));
   if (pending.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service remove cannot discard a definition while an installation or removal attempt may still own a unit, private store or enable link", { target: { space, name, attempts: pending.map((row) => ({ instanceId: row.name, attemptId: row.record.value.attemptId, step: row.record.value.step, position: row.record.value.position })) }, remedy: "inspect and reconcile every retained native unit attempt before removing this definition" });
   const nativeActions = serviceUnitActionStore(space).list();
   if (nativeActions.some((row) => row.name !== row.record.value.instanceId)) throw new CommandFailure("refused", "SCHEMA_INVALID", "a native action filename differs from its full instance ID; no definition was removed");
-  const actions = nativeActions.filter((row) => row.record.value.definition === name);
+  const actions = nativeActions.filter((row) => row.record.value.definition === name && named(row));
   if (actions.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service remove cannot discard a definition while an exact native action is retained", { target: { space, name, attempts: actions.map((row) => ({ instanceId: row.name, attemptId: row.record.value.attemptId, operation: row.record.value.operation, position: row.record.value.position })) } });
-  const rows = serviceInstances(space, name);
+  const rows = serviceInstances(space, name).filter(named);
+  if (instanceId !== undefined && !rows.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space", { target: { space, name, instanceId } });
   for (const row of rows) refuseRecordedSupervisor(row.record.value, "remove");
-  for (const row of rows) if (!gone(observeServiceProcess(row.record.value))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service remove requires every recorded owned instance stopped and its supervisor uninstalled", { target: instanceProjection(row), remedy: `use cotal service stop ${name} --instance ${row.name} before removing its definition` });
+  for (const row of rows) if (!gone(observeServiceProcess(row.record.value))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service remove requires every recorded owned instance stopped and its supervisor uninstalled", { target: instanceProjection(row), remedy: `use cotal service stop ${name} --instance ${row.name} before removing ${instanceId === undefined ? "its definition" : "its record"}` });
   // A settled exit is a record of evidence, not an unknown request. An unsettled one is settled by
   // the named stop, which signals nothing when the process is already gone.
   const settle = (row: ServiceInstanceSnapshot) => row.record.value.state === "stopping" || retainedStopRequest(row.record.value) ? { remedy: `inspect the original request with cotal service status ${name} --instance ${row.name} --space ${space}` }
@@ -689,6 +702,17 @@ export function removableServiceInstances(space: string, name: string): ServiceI
   for (const row of rows) if (row.record.value.nativeStopRequired && row.record.value.process && !row.record.value.nativeStop && !exitedWithoutStop(row.record.value)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native service has no confirmed terminal stop; its launch and unknown request cannot be forgotten merely because the process disappeared", { target: instanceProjection(row), ...settle(row) });
   for (const row of rows) if (row.record.value.kernelStopRequired && row.record.value.process && !row.record.value.kernelStop && !exitedWithoutStop(row.record.value)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker has no recorded exact-exit stop from this controller; its launch cannot be forgotten merely because the process disappeared", { target: instanceProjection(row), ...settle(row) });
   return rows;
+}
+
+/** Forget one stopped instance record of a kept definition, under the definition writer lock and
+ *  after the checks `service remove` makes for each record. Its logs stay. */
+export function removeStoppedInstanceRecord(definition: ServiceDefinitionSnapshot, instanceId: string): void {
+  const space = definition.record.value.space;
+  const hold = serviceDefinitionStore(space).pin(definition);
+  try {
+    const [row] = removableServiceInstances(space, definition.name, instanceId);
+    serviceInstanceStore(space).commit(row!.name, row!, undefined);
+  } finally { hold.release(); }
 }
 
 /** Called under the definition writer lock, after stopped/host/supervisor checks for every row. */

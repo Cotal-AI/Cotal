@@ -1,5 +1,26 @@
 # @cotal-ai/core
 
+## 0.100.2
+
+### Patch Changes
+
+- 8d81c12: `cotal persona create --on <manager>` on a static space no longer records the CLI's one-call caller as the persona's owner, which no later call could match, so the receipt's own `persona show --on` Next was refused. On a static space the manager now records an owner only for one of its own seats, and any other caller defines an operator-owned file, as a local `persona create` writes it. A peer joined with its own credentials is such a caller too. When the manager writes the file into this root's catalog, the receipt's `Local files` line names it instead of saying `unchanged`, and JSON `localFilesChanged` is true. For a one-call caller the Next offers `cotal p show <name>`, and a `persona show --on` that is answered not-found names that command when this root holds the file.
+
+## 0.100.1
+
+### Patch Changes
+
+- 8bb8900: Concurrent `cotal channel set` writes on different fields of one channel no longer drop one of them. A channel registry write now lands on the revision it read, and a write that loses the race to another writer reads the entry again and merges again, so each confirmed field stays saved. A write that keeps losing refuses with `CONFLICT` and saves nothing, where before each writer printed `Channel saved` even when another writer overwrote its field. `channel defaults` and the runtime's channel writes use the same path.
+- 546b661: A `resolveService` or `describeEndpoint` call whose signal aborts while the describe waits for its
+  reply now rejects with the signal's reason, as an abort before the describe or between store reads
+  already did. It used to reject with an `unavailable` envelope error, the code a real transport
+  failure carries, so a caller could not tell a cancellation from an outage. A signal that aborts
+  with a `TimeoutError` still reports the unanswered describe deadline.
+- b1d2cb5: A resumed endpoint registration now clears only the repair cursor its own freeze saved. Before, once its
+  reopen committed it deleted whatever cursor was stored, so a second registration of the same instance
+  that had frozen the reopened gate in between lost its cursor, refused with "the repair cursor ... lost
+  its CAS", and left the gate frozen for reconciliation.
+
 ## 0.100.0
 
 ### Patch Changes

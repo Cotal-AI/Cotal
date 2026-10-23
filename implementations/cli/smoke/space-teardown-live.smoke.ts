@@ -11,9 +11,12 @@
  *     stack still stops cleanly.
  *  3. Reset verdicts. On the live stack `reset store --dry-run` exits 0 with a refused verdict and
  *     a remedy naming `cotal down`, and `reset space --dry-run` refuses with that remedy.
- *  4. Reset after a normal down. `reset store` is offered and removes the store, and `up` starts
- *     again. `reset space` is offered and removes the identity, keeping the prepared record and
- *     the stack journal, and `up` starts again with a new account.
+ *  4. Reset after a normal down. `reset store` is offered and removes the store, naming the
+ *     workflow runs that go with it in its preview and receipt and saying why the down listed
+ *     none, and `up` starts again. `reset space` is offered and removes the identity, keeping the
+ *     prepared record and the stack journal, and `up` starts again with a new account. It clears
+ *     the credentialRef of a saved service whose credential the removed account issued, names it,
+ *     and keeps any other.
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
  *     definitions saved for the root, and another folder starts a stack under the same name.
  *  6. Space delete under a stopped stack. With only the broker running the delete applies, and its
@@ -27,7 +30,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -147,19 +150,41 @@ try {
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
-    check("reset store --dry-run after down offers the apply", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true, shown(storeStopped));
+    // This stack runs with --no-manager, so its down recorded why it could not read the runs.
+    const contents = storeStopped.env?.result?.storeContents as { removed?: string[]; listed?: boolean; runsAtLastDown?: { read?: boolean; reason?: string } | null } | undefined;
+    check("reset store --dry-run after down offers the apply, names the workflow runs it removes and says why the down listed none", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true && contents?.removed?.includes("workflow runs and their journals") === true && contents.listed === false && contents.runsAtLastDown?.read === false && contents.runsAtLastDown.reason === "the stack's manager was not running", shown(storeStopped));
     const storeApplied = cli(root, "reset", "store", space, "--yes", "--json");
-    check("reset store --yes removes the stopped store", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0, shown(storeApplied));
+    check("reset store --yes removes the stopped store and names the workflow runs that went with it", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0 && (storeApplied.env.result.removedContents as string[] | undefined)?.includes("workflow runs and their journals") === true, shown(storeApplied));
     const restarted = cli(root, "up", "--json");
     check("bare up starts the stack again on an empty store", restarted.status === 0, shown(restarted));
+    // A saved service naming a credential this account issued would hand its child a credential the
+    // next identity rejects; one naming any other file is not attributed to it.
+    const keys = folder("keys");
+    const minted = join(keys, "svc.creds"), foreign = join(keys, "foreign.creds");
+    const mint = cli(root, "auth", "mint", "svc", "--out", minted, "--space", space, "--json");
+    check("auth mint writes a credential this space's account issued", mint.status === 0 && existsSync(minted), shown(mint));
+    writeFileSync(foreign, "not a credential\n", { mode: 0o600 });
+    const saveService = (name: string, creds: string) => {
+      const file = join(keys, `${name}.json`);
+      writeFileSync(file, JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 }, credentialRef: { kind: "file", path: creds } }));
+      return cli(root, "service", "add", name, "--file", file, "--space", space, "--json");
+    };
+    const saved = [saveService("minted", minted), saveService("foreign", foreign)];
+    check("service add saves a definition naming each file", saved.every((run) => run.status === 0), saved.map(shown));
     const before = accountDigest(root);
     const stoppedAgain = cli(root, "down", "--yes", "--json");
     check("down --yes stops it again", stoppedAgain.status === 0, shown(stoppedAgain));
 
     const spacePreview = cli(root, "reset", "space", space, "--dry-run", "--json");
     check("reset space --dry-run after down offers the apply", spacePreview.status === 0 && spacePreview.env?.result?.applyVerdict?.offered === true, shown(spacePreview));
+    const issuedRefs = JSON.stringify([{ definition: "minted", path: minted }]);
+    check("the preview names the one credentialRef this identity issued", JSON.stringify(spacePreview.env?.result?.clearsCredentialRefs) === issuedRefs, spacePreview.env?.result?.clearsCredentialRefs);
     const spaceApplied = cli(root, "reset", "space", space, "--yes", "--json");
     check("reset space --yes removes the identity and keeps the stack's records", spaceApplied.status === 0 && spaceApplied.env?.result?.localIdentityRemoved === true && spaceApplied.env.result.registrationRemoved === false, shown(spaceApplied));
+    const shownMinted = cli(root, "service", "show", "minted", "--space", space, "--json"), shownForeign = cli(root, "service", "show", "foreign", "--space", space, "--json");
+    check("it clears that credentialRef and says so, and keeps the other",
+      JSON.stringify(spaceApplied.env?.result?.clearedCredentialRefs) === issuedRefs && shownMinted.status === 0 && !shownMinted.stdout.includes('"credentialRef"') && shownForeign.stdout.includes(JSON.stringify(foreign)),
+      { cleared: spaceApplied.env?.result?.clearedCredentialRefs, minted: shown(shownMinted), foreign: shown(shownForeign) });
     check("the prepared record and the stack journal stay", findPreparedSpace(space) !== undefined && existsSync(journalOf(root)));
     const fresh = cli(root, "up", "--json");
     check("bare up starts it again", fresh.status === 0, shown(fresh));

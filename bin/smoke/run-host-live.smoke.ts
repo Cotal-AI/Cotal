@@ -389,11 +389,14 @@ try {
               COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
             },
           }).then(({ stdout }) => {
-            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown } } };
+            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown }; answer?: { step?: unknown; value?: { estimate?: unknown }; valueGiven?: unknown } } };
             const reply = out.result?.result;
-            // The manager's answer does not repeat the run id, so the receipt names the run the command did.
+            const echoed = out.result?.answer;
+            // The manager's answer does not repeat the run id, so the receipt names the run the command
+            // did, and echoes the step and the value it filed.
             return out.command === "run" && out.outcome === "ok" && out.target?.run === runId && out.result?.kind === "run-receipt" && out.result.action === "answer"
               && typeof reply?.token === "string" && typeof reply.answerId === "string"
+              && echoed?.step === "/ask:size#0" && echoed.valueGiven === true && echoed.value?.estimate === 4
               ? { ok: true as const, token: reply.token, answerId: reply.answerId }
               : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
           }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));

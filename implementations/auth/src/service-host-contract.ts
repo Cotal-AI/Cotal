@@ -481,9 +481,9 @@ export function parseServiceCallerPolicyView(raw: unknown): ServiceCallerPolicyV
   return structuredClone(o) as unknown as ServiceCallerPolicyView;
 }
 
-const SUPPORTED_RESULTS = new Set(["decide", "revoke", "name-bind", "operation-read", "proposal-read", "caller-grant", "caller-policy-read", "caller-policy-list"]);
+const SUPPORTED_RESULTS = new Set(["decide", "revoke", "name-bind", "name-read", "operation-read", "proposal-read", "caller-grant", "caller-policy-read", "caller-policy-list"]);
 /** Closed parser for the results of the operations this slice serves (decide, revoke, name-bind,
- *  operation-read, proposal-read, caller-grant and the two caller-policy reads) and for the shared
+ *  name-read, operation-read, proposal-read, caller-grant and the two caller-policy reads) and for the shared
  *  arms of every operation. A caller revoke's `revoked` arm is refused: no host emits it, because a
  *  terminal caller revocation needs a proof this slice does not build. */
 export function parseServiceHostResult(raw: unknown): ServiceHostResult {
@@ -520,6 +520,8 @@ export function parseServiceHostResult(raw: unknown): ServiceHostResult {
       for (const rec of o.records) { const r = closed(rec, ["value", "revision"]); nat(r.revision, "revision"); parseServiceCallerPolicyView(r.value); }
       nullable(o.nextCursor, (v) => text(v, "nextCursor", 1024));
     }
+    else if (o.operation === "name-read" && state === "absent") keys = closed(raw, env);
+    else if (o.operation === "name-read" && state === "present") { keys = closed(raw, [...env, "record"]); const r = closed(o.record, ["value", "revision"]); nat(r.revision, "revision"); nameView(r.value); }
     else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "absent") keys = closed(raw, env);
     else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "present") {
       keys = closed(raw, [...env, "record"]); const r = closed(o.record, ["value", "revision"]); nat(r.revision, "revision");

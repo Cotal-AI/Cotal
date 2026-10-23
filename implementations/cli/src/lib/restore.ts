@@ -82,7 +82,7 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
@@ -387,12 +387,18 @@ async function validateManifest(
       // on a 30-day cadence, "you rotated after taking this backup" is the common case, not an exotic
       // one. Without this the operator sees an opaque fingerprint mismatch on the artifact they were
       // counting on during a disaster.
+      // Checked before any transition, as the space is above: a refusal, not an unknown outcome.
       const sameAccount = manifest.authority?.account !== undefined && manifest.authority.account === currentAuthority.account;
-      throw new Error(
+      throw new CommandFailure("refused", "CONFLICT",
         sameAccount
-          ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain. Restore it into a root holding that chain, or use a backup taken after the rotation."
-          : "backup authority fingerprint does not match current trust state",
-      );
+          ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain; the preserved cut was not changed"
+          : "backup authority fingerprint does not match current trust state: this full artifact was taken under another trust state, such as another machine's or a reset root's; the preserved cut was not changed",
+        {
+          target: { space: ready.space },
+          remedy: sameAccount
+            ? "restore it into a root holding that chain, or use a backup taken after the rotation"
+            : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root",
+        });
     }
   }
 }
@@ -694,6 +700,24 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: ${kind} attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
+/** The store a same-path restore set aside, as its maintenance journal records it. */
+export function retainedPreviousStore(root: string, attemptId: string): string | undefined {
+  try {
+    const journal = readMaintenanceJournal(root);
+    return journal && "restore" in journal && journal.restore.attemptId === attemptId ? journal.restore.previousSource?.identity.path : undefined;
+  } catch { return undefined; }
+}
+
+/** What a registry-only restore says about history: it brings back channel settings only, and every
+ *  other stream, chat and DM history included, starts empty. The store it set aside holds the only
+ *  copy of that history, which cleanup-fallback deletes only with `--discard-history`. */
+export function registryRestoreNotes(attemptId: string, previousStore: string | undefined): [string, string] {
+  return [
+    "A registry-only restore brings back channel settings only, so chat and DM history start empty.",
+    previousStore ? `The previous store at ${previousStore} holds the only copy of that history. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : "No previous store was retained.",
+  ];
+}
+
 /** The restore attempt the root's journal holds, with the step that moves it on, so a failure can
  *  name the full attempt a recovery command needs. An unreadable journal names none. */
 export function heldRestoreAttempt(root: string): { attemptId: string; journalState: string; remedy: string } | undefined {
@@ -789,7 +813,17 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // The journal is ready with no live claim, and the artifact/target are proven disjoint from
     // the attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
-    const artifact = stageArtifact(artifactPath, stageParent);
+    // Staging checks each artifact file before any transition, so a file fault leaves the preserved
+    // cut unchanged: the same refusal `backup verify` gives for that file.
+    let artifact: StagedArtifact;
+    try { artifact = stageArtifact(artifactPath, stageParent); }
+    catch (error) {
+      if (!(error instanceof ArtifactFileFault)) throw error;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored and the preserved cut was not changed`, {
+        target: { directory: artifactPath, file: error.file, fault: error.fault },
+        remedy: "this copy cannot be restored as it is: check another copy of the same artifact with cotal backup verify and restore that one, or restore a newer backup",
+      });
+    }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
     const checkpoints = readStagedCheckpoints(artifact);
@@ -802,6 +836,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // The partial selection is a property of the artifact, not only of the flag: a registry-only
     // artifact restored without --restore-only registry must still create omitted infrastructure.
     const onlyRegistry = flags["restore-only"] === "registry" || artifact.manifest.selection === "registry";
+    // Journaled, so cleanup-fallback knows the previous store holds the only copy of what was left out.
+    const selection = onlyRegistry ? "registry" as const : "full" as const;
     // Retained agents relaunch under their preserved runtime; a contradicting override must fail
     // in preflight, before any mutation or listener exposure.
     if (!onlyRegistry && flags.runtime && inventoryRuntimes[0] && flags.runtime !== inventoryRuntimes[0])
@@ -843,13 +879,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (!sourceExists) {
       if (!flags["accept-missing-source"])
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved source ${journal.source.path} is missing; nothing was changed`, { target: { root, space: journal.space, source: journal.source.path }, remedy: "put the preserved store back at that path, or, once you have verified it is lost, repeat the restore with --accept-missing-source to rebuild it from this backup" });
-      prepareMissingSourceRestore(lock, { attemptId, targetPath, claim });
+      prepareMissingSourceRestore(lock, { attemptId, targetPath, claim, selection });
     } else if (targetPath === journal.source.path) {
       const fallbackPath = join(dirname(targetPath), `.cotal-restore-fallback-${attemptId}`);
-      prepareSamePathRestore(lock, { attemptId, targetPath, fallbackPath, claim });
+      prepareSamePathRestore(lock, { attemptId, targetPath, fallbackPath, claim, selection });
       moveSamePathRestoreSource(lock);
     } else {
-      prepareAlternateRestore(lock, { attemptId, targetPath, claim });
+      prepareAlternateRestore(lock, { attemptId, targetPath, claim, selection });
     }
     transitioned = true;
     createOwnedDirectory(targetPath);

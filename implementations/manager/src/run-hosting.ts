@@ -749,7 +749,7 @@ export class RunHosting {
       // The resolver's own refusal is a fact about the run, worded for the caller: no open
       // checkpoint at that key is `not-found`; the plane's own envelope errors pass through.
       if (e instanceof EpEnvelopeError) throw e;
-      if ((e as { name?: string }).name === "CheckpointNotOpen") throw new EpEnvelopeError("not-found", (e as Error).message);
+      if (e instanceof Error && e.name === "CheckpointNotOpen") throw new EpEnvelopeError("not-found", e.message);
       throw e;
     }
     await authorize?.(open);
@@ -783,7 +783,7 @@ export class RunHosting {
         host.locateAccepted(planes, { endpoint, runId: args.runId, takeoverId, stepKey: args.stepKey }));
     } catch (e) {
       if (e instanceof EpEnvelopeError) throw e;
-      if ((e as { name?: string }).name === "CheckpointNotAmendable") throw new EpEnvelopeError("not-found", (e as Error).message);
+      if (e instanceof Error && e.name === "CheckpointNotAmendable") throw new EpEnvelopeError("not-found", e.message);
       throw e;
     }
     await authorize?.(accepted);

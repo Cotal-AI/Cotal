@@ -22,6 +22,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, resumableSignalStop, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
+import { readStackRuns } from "../lib/stack-runs.js";
 import { RESUME_REMEDY, abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
@@ -277,10 +278,13 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       return;
     }
   }
+  // A store reset lists the runs it removes from this record, read while the manager still answers:
+  // the broker is the store's only reader and is stopped by then. A failed read never blocks the stop.
+  const runs = manager ? await readStackRuns(journal0.space) : { observedAt: new Date().toISOString(), read: false as const, reason: "the stack's manager was not running" };
   // An earlier operation with no outcome is recorded as failed from its members' evidence first.
   const { snapshot: settledSnapshot, settled } = settleStackOperation(lock, previous);
   // A replacement an earlier `up` journaled is resolved from its own record, as the stop planned it.
-  let journal: StackJournal = { ...settledSnapshot.journal, operation: newStackOperation("down", withAgents), members: withSettledMembers(settledSnapshot.journal, undefined).members.map((row) => ({ ...row, state: row.instanceId === null ? "not-attempted" : "planned", code: undefined })), updatedAt: new Date().toISOString() };
+  let journal: StackJournal = { ...settledSnapshot.journal, operation: { ...newStackOperation("down", withAgents), runs }, members: withSettledMembers(settledSnapshot.journal, undefined).members.map((row) => ({ ...row, state: row.instanceId === null ? "not-attempted" : "planned", code: undefined })), updatedAt: new Date().toISOString() };
   let snapshot: StackJournalSnapshot = writeStackJournal(root, settledSnapshot, journal);
   const mark = (role: StackRole, change: Partial<StackMember>) => {
     journal = { ...journal, members: journal.members.map((row) => row.role === role ? { ...row, ...change } : row), updatedAt: new Date().toISOString() };
