@@ -296,9 +296,10 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
         if (journal.members.find((row) => row.role === "delivery")?.state === "already-stopped") deliveryCredentialKept = await store.get(key) !== undefined;
         else await store.delete(key);
       }
-      removeMeshesByRoot(root);
       // The stopped stack stays a prepared local space at its own root, so the next bare up
-      // restarts the same recorded members instead of needing a new registration.
+      // restarts the same recorded members instead of needing a new registration, and a selection
+      // naming it stays.
+      removeMeshesByRoot(root, journal.space);
       recordPreparedSpace({ space: journal.space, root, ts: new Date().toISOString() });
     } catch {
       failure = new CommandFailure("partial", "OPERATION_PARTIAL", journal.mode === "open" ? "every member stopped, but the mesh registration cleanup did not confirm" : "every member stopped, but the delivery credential or mesh registration cleanup did not confirm", { target, changed, remedy: journal.mode === "open" ? "inspect the root's registry entry; nothing was retried" : "inspect the root's delivery credential and registry entry; nothing was retried" });

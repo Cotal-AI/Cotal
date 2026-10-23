@@ -232,9 +232,10 @@ try {
     check("the delivery-aware marker is 0600 under umask 0002", (statSync(marker).mode & 0o777) === 0o600, (statSync(marker).mode & 0o777).toString(8));
     check("the marker is a regular file, not a link", lstatSync(marker).isFile(), lstatSync(marker).isSymbolicLink());
 
-    const legacyName = cli(root, "down", "manager", "--yes", "--json");
+    // A named stop resolves the selected space, and an earlier section's stopped space stays selected.
+    const legacyName = cli(root, "down", "manager", "--space", space, "--yes", "--json");
     check("down manager on a controller stack names stack-manager", legacyName.status === 2 && legacyName.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(legacyName.env.error.remedy?.includes("stack-manager")), shown(legacyName));
-    const brokerFirst = cli(root, "down", "stack-broker", "--yes", "--json");
+    const brokerFirst = cli(root, "down", "stack-broker", "--space", space, "--yes", "--json");
     check("the broker stop refusal names its stack dependants", brokerFirst.status === 2 && brokerFirst.env?.error?.code === "LIFECYCLE_BLOCKED" && brokerFirst.env.error.message.includes("stack-manager") && !brokerFirst.env.error.message.includes("legacy"), shown(brokerFirst));
 
     const broker = pidOf(space, "stack-broker");

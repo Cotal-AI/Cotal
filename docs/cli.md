@@ -669,7 +669,9 @@ Before it launches a broker, the controller binds the recorded broker address on
 process holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches
 nothing; the stack keeps its recorded address. A text `up` prints one `Starting <definition>` line
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's
-Next offers `cotal spawn`, or `cotal up` to add the manager after `--no-manager`, and `cotal down`.
+Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager after `--no-manager`,
+and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, so a bare
+`cotal spawn` can target another space.
 
 On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
 every stack mode. It refuses while validating its arguments, before the confirmation and before any
@@ -874,7 +876,10 @@ Only a complete confirmed stop removes the delivery credential and local registr
 delivery daemon was already gone, its credential stays: that daemon never released its lease, and
 the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
 The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
-definitions and the journal remain for the next `up`. No descendant, lease or authority cleanup is
+definitions and the journal remain for the next `up`, and the space stays prepared at its root. A
+selection that names it stays, so the next command run without `--space` refuses with
+`TARGET_UNAVAILABLE`, exit 2, and names the root to start it in, rather than reach another space.
+No descendant, lease or authority cleanup is
 implied. A dry run reads records only, takes no lock, does not establish native impact and exits 0;
 its JSON marks `completeness` as `partial`. It lists members in stop order, says when the stop would
 first settle an earlier operation, and names a scope check the real stop would refuse as a warning.
@@ -886,6 +891,11 @@ manager keeps running, then run `cotal down`. Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help.
+
+A bare `down` stops only the stack of the folder it runs in. In a folder whose root holds no
+stack, when the space named by `--space`, or else the selected space, is a controller stack rooted
+in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. The refusal
+names that space and its root, and its next step runs the same `down` from that root.
 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
@@ -2003,12 +2013,13 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `extensions` | `root` and `items`, each `{package, label, version}` |
 | `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`) and `storedState` |
 | `meshes` | `current`, `unreadable` (the registry directory, a record or the current-mesh pointer that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
-| `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`), `snapshot`, `channels` and `membershipFeed` |
+| `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels` and `membershipFeed` |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `hints` | The hints, in the order the report prints them |
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
-`status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
+`status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
+delivery responder row says the responder is not used and suggests no command. A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
 connectors, the skills bundle, the web records, a persona catalog, the mesh
 registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
@@ -5308,7 +5319,9 @@ or unknown outcome and never repeats effects. A failed summary write also keeps 
 
 `team boot --foreground` holds the stack's lifetime in the terminal. Ctrl-C or SIGTERM invokes the
 same guarded whole-stack stop as bare `cotal down`, without force killing members. Terminal loss
-or an external kill is not a confirmed stop. Foreground apply takes neither JSON nor plain output;
+or an external kill is not a confirmed stop. When a `cotal down` from another terminal completes,
+it prints `Foreground stack released` and exits 0, as a foreground `up` does, although its start
+receipt was partial. Foreground apply takes neither JSON nor plain output;
 a dry-run remains a finite preview. It does not establish native apply readiness or platform support.
 `up -f --foreground` still refuses on its retained launcher path.
 

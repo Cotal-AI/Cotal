@@ -263,7 +263,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
   const responder = await readResponderAxis(selected);
-  const folder = await readFolder(root, selected, values, responder, gaps, hints);
+  const folder = await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(selected, Boolean(values.all), gaps);
   const target = await readSelected(selected, responder, gaps, hints);
   const services = readOwnedServices(selected, gaps);
@@ -480,14 +480,18 @@ async function expectedDeliveryHolder(target: MeshTarget): Promise<string | unde
  *  USER MODE IS DELIBERATELY `unknown` RATHER THAN CONNECTED. The flip forbids status from
  *  static-minting on a user-auth mesh, and borrowing the operator's bearer for a health probe is a
  *  bigger decision than this fix should make silently. Those operators get the axis from
- *  `--components`, and the row says so instead of guessing. */
-async function readResponderAxis(selected: Selected): Promise<DeliveryResponderState> {
-  if (!selected.ok) return "unknown";
+ *  `--components`, and the row says so instead of guessing.
+ *
+ *  `leased` says whether the read found a delivery lease record. An open mesh runs no delivery
+ *  daemon, so there a missing lease is the normal state rather than an unbound responder. */
+async function readResponderAxis(selected: Selected): Promise<{ state: DeliveryResponderState; leased: boolean }> {
+  let leased = false;
+  if (!selected.ok) return { state: "unknown", leased };
   const target = selected.target;
-  if (target.mode === "user") return "unknown";
+  if (target.mode === "user") return { state: "unknown", leased };
   try {
     const preflight = await preflightTarget(target);
-    if (!preflight.ok) return "unknown";
+    if (!preflight.ok) return { state: "unknown", leased };
     const id = newIdentity();
     const creds = target.auth ? await mintCreds(target.auth, id, "observer") : undefined;
     const ep = new CotalEndpoint({
@@ -521,15 +525,16 @@ async function readResponderAxis(selected: Selected): Promise<DeliveryResponderS
       // `--components` surface deliberately does NOT use it: that surface must tell a missing lease
       // stream apart from a refused read, and flattening both to `unknown` would erase a
       // distinction it reports.
-      return await deliveryResponderState(
-        () => ep.readDeliveryLease(0),
+      const state = await deliveryResponderState(
+        async () => { const lease = await ep.readDeliveryLease(0); leased = lease !== undefined; return lease; },
         await expectedDeliveryHolder(target),
       );
+      return { state, leased };
     } finally {
       await ep.stop().catch(() => {});
     }
   } catch {
-    return "unknown";
+    return { state: "unknown", leased };
   }
 }
 
@@ -802,7 +807,7 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
   };
 }
 
-async function readSelected(selected: Selected, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<SelectedResult> {
+async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, gaps: Gaps, hints: string[]): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -879,7 +884,7 @@ async function readSelected(selected: Selected, responder: DeliveryResponderStat
   // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is
   // the question "can I spawn into this mesh right now" actually reduces to. An operator reading a
   // reachable broker and a running daemon had, before this, no row that said otherwise.
-  return { ...base, connection: "ok", deliveryResponder: responder, ...(await readSnapshot(() => snapshotEndpoint(target), target.space, gaps)) };
+  return { ...base, connection: "ok", deliveryResponder: target.mode === "open" && !responder.leased ? null : responder.state, ...(await readSnapshot(() => snapshotEndpoint(target), target.space, gaps)) };
 }
 
 async function snapshotEndpoint(target: MeshTarget): Promise<CotalEndpoint> {
@@ -1100,8 +1105,11 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
 }
 
 /** The selected space's delivery responder (#1576). Bare status and the verbose mesh section both
- *  state it, so an operator on a manager host away from the broker's folder still sees it. */
-function responderText(state: DeliveryResponderState | null): { text: string; tone: Tone } | undefined {
+ *  state it, so an operator on a manager host away from the broker's folder still sees it. An open
+ *  mesh runs no delivery daemon, so with no lease recorded its row says the responder is not used
+ *  rather than unbound. */
+function responderText(state: DeliveryResponderState | null, mode: MeshTarget["mode"]): { text: string; tone: Tone } | undefined {
+  if (state === null && mode === "open") return { text: "not used - an open mesh runs no delivery daemon", tone: "hint" };
   if (state === "unbound")
     return { text: `NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · start it with \`${displayCmd()} up\` (or \`${displayCmd()} deliver --space <space>\`)`, tone: "failed" };
   // A stale record is NOT BOUND with a different next move: the slot is occupied by a corpse, so
@@ -1141,7 +1149,7 @@ function selectedSection(s: SelectedResult): Section {
     }
   } else {
     rows.push(["connection", s.connection === "ok" ? cell("ok", "ok") : cell(`${s.connection}${s.staleRecord ? " (stale registry entry)" : ""}`, "failed")]);
-    const responder = responderText(s.deliveryResponder);
+    const responder = responderText(s.deliveryResponder, s.mode);
     if (responder) rows.push(["delivery responder", cell(responder.text, responder.tone)]);
   }
   if (s.snapshot.state === "unavailable" || (s.mode === "user" && s.snapshot.state === "skipped")) rows.push(["live snapshot", cell(`${s.snapshot.state === "unavailable" ? "unavailable" : "not read"} (${s.snapshot.reason})`, s.snapshot.state === "unavailable" ? "failed" : "hint")]);
@@ -1233,7 +1241,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
   if (!s.resolved) return { title: "Selected space", blocks: [{ kind: "lines", lines: [stateCell(s.message, "failed")] }] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
   if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
-  const responder = responderText(s.deliveryResponder);
+  const responder = responderText(s.deliveryResponder, s.mode);
   const rows: [string, Cell][] = [
     ["Broker", s.server ?? stateCell("address unavailable", "failed")],
     ["Connection", connectionCell(s)],

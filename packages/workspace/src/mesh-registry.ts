@@ -374,15 +374,15 @@ export function meshesForRoot(root: string): MeshEntry[] {
   return loadMeshes().filter((m) => canonicalRoot(m.root) === rootKey);
 }
 
-/** {@link removeMeshes}, clearing the `current` pointer once the entry it names is removed. An empty
- *  batch touches nothing. */
-function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
+/** {@link removeMeshes}, clearing the `current` pointer once the entry it names is removed, unless
+ *  it names `keep`. An empty batch touches nothing. */
+function removeMeshesReleasingCurrent(spaces: readonly string[], keep?: string): void {
   // Cleared right after its own entry, so a pointer that cannot be cleared stops the batch before the next
   // removal. Read per entry: a concurrent `cotal use` can move the pointer while the batch runs.
   function* releasing(): Generator<string> {
     for (const space of spaces) {
       yield space;
-      if (getCurrent() === space) clearCurrent();
+      if (space !== keep && getCurrent() === space) clearCurrent();
     }
   }
   removeMeshes(releasing());
@@ -391,7 +391,9 @@ function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
 /**
  * Drop the entries recorded for THIS project root because the mesh they describe was just stopped
  * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer if it names one.
- * Returns the removed space names.
+ * `keep` names a space the caller records again as prepared, as a controller stack's `down` does:
+ * a selection naming it stays, so the next bare command refuses that stopped space rather than
+ * falling through to another one. Returns the removed space names.
  *
  * OPERATOR-REGISTERED entries are skipped. The root is shared, not owned: `cotal meshes add`
  * defaults `--root` to the project you run it in, so registering a mesh that runs elsewhere from
@@ -400,9 +402,9 @@ function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
  * rewrite what `up` wrote; nothing rewrites a hand-registered record). `cotal meshes rm` is how one
  * of those leaves.
  */
-export function removeMeshesByRoot(root: string): string[] {
+export function removeMeshesByRoot(root: string, keep?: string): string[] {
   const removed = localMeshesForRoot(root).map((m) => m.space);
-  removeMeshesReleasingCurrent(removed);
+  removeMeshesReleasingCurrent(removed, keep);
   return removed;
 }
 

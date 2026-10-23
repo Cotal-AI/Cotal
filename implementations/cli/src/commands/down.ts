@@ -21,6 +21,7 @@ import {
   canonicalRoot,
   brokerAddressForDisplay,
   findMesh,
+  getCurrent,
   localMeshesForRoot,
   preparedSpaceAt,
   soleSpaceOf,
@@ -140,11 +141,30 @@ export function validateDownArguments(args: ParsedArgs): void {
   }
   if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
   if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(cotalRoot(), args.values);
+  refuseStackElsewhere(args.values);
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
   if (args.values.yes !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--yes applies only to a controller stack, and this root has none; a bare stop here needs no --yes, and nothing was stopped", { remedy: "run `cotal down` from this root without --yes" });
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && stoppedLegacyStack())) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview or a stack that is already stopped; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
+}
+
+/** A bare `down` stops only the stack of the folder it runs in. When this folder's root holds no
+ *  stack and the space named by `--space`, or else the selected one, is a controller stack rooted at
+ *  another folder, refuse with that space and its root, so the remedy is a `down` that stops it. */
+function refuseStackElsewhere(values: ParsedArgs["values"]): void {
+  if (values.file !== undefined || values.run !== undefined) return;
+  const here = canonicalRoot(cotalRoot());
+  let space: string | undefined, root: string | undefined;
+  try {
+    if (localMeshesForRoot(here).length || existsSync(join(here, ".cotal")) && here !== canonicalRoot(homedir())) return;
+    space = typeof values.space === "string" ? values.space : getCurrent();
+    const mesh = space === undefined ? undefined : findMesh(space);
+    if (!mesh || mesh.origin !== "up" || canonicalRoot(mesh.root) === here || !controllerStackRecorded(mesh.root)) return;
+    root = mesh.root;
+  } catch { return; }
+  const again = ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a controller stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${again}\` from ${root}` });
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */
