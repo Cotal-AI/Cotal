@@ -120,12 +120,15 @@ export class CommandFailure extends Error {
   readonly native?: NativeCause;
   readonly target: unknown;
   readonly changed?: readonly unknown[];
+  /** The message and remedy are the whole fix, as for a missing `--yes`, so a usage refusal prints
+   *  them without the command's help. */
+  readonly selfContained?: true;
 
   constructor(
     outcome: Exclude<Outcome, "ok" | "no-op">,
     code: ErrorCode,
     message: string,
-    opts: { remedy?: string; native?: NativeCause; target?: unknown; changed?: readonly unknown[]; cause?: unknown } = {},
+    opts: { remedy?: string; native?: NativeCause; target?: unknown; changed?: readonly unknown[]; cause?: unknown; selfContained?: true } = {},
   ) {
     super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
     const problem = outcomeCodeProblem(outcome, code);
@@ -137,6 +140,7 @@ export class CommandFailure extends Error {
     this.native = opts.native;
     this.target = opts.target ?? null;
     this.changed = opts.changed;
+    this.selfContained = opts.selfContained;
   }
 
   /** The error detail an envelope carries. */
@@ -147,6 +151,14 @@ export class CommandFailure extends Error {
       ...(this.remedy === undefined ? {} : { remedy: this.remedy }),
       ...(this.native === undefined ? {} : { cause: this.native }),
     };
+  }
+}
+
+/** A usage refusal for a missing `--yes` outside an interactive terminal. Its remedy names the
+ *  confirmed or previewed command, so it prints without the command's help. */
+export class ConfirmationRequired extends CommandFailure {
+  constructor(message: string, opts: { remedy: string; target?: unknown }) {
+    super("refused", "USAGE_INVALID", message, { ...opts, selfContained: true });
   }
 }
 
@@ -196,7 +208,7 @@ export function inOperationSpace(failure: CommandFailure, space: string | undefi
   const target = failure.target;
   if (space === undefined || target !== null && (typeof target !== "object" || Array.isArray(target) || Object.hasOwn(target, "space"))) return failure;
   const fields = target === null ? {} : target as Record<string, unknown>;
-  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields }, cause: failure.cause });
+  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields }, cause: failure.cause, selfContained: failure.selfContained });
   placed.stack = failure.stack;
   return placed;
 }

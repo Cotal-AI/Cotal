@@ -3,7 +3,8 @@
  * command's help, all on stderr, nothing on stdout, exit 1. A command's own input checks used to
  * print a framed "Request refused … Code: USAGE_INVALID" block with no help; `clean` printed a bare
  * `usage:` line or a lowercase "refusing to clean store without --force"; and `help service nosuch`
- * refused without listing the subcommands.
+ * refused without listing the subcommands. A missing `--yes` is the exception: its refusal and remedy
+ * are the whole fix, so it prints without the help.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
@@ -11,7 +12,7 @@
  * Run: pnpm smoke:usage-format
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -30,8 +31,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], cwd = neutral) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
@@ -58,6 +59,24 @@ check("help with an unknown subcommand names it and lists the command's subcomma
 
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
+
+// A missing --yes outside a terminal is not a grammar mistake: the refusal and a remedy that names
+// --yes are the whole fix, so the command's help is left out, as `down` already did.
+const project = join(home, "proj");
+mkdirSync(join(project, ".cotal", "agents"), { recursive: true });
+writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nhello\n");
+const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>
+  r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr);
+for (const [args, message, remedy] of [
+  [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with cotal persona remove p1 --yes"],
+  [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with cotal history clear --dms --yes"],
+  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run cotal space delete nosuch --yes"],
+  [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run cotal reset store nosuch --yes"],
+  [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run cotal reset space nosuch --yes"],
+] as const) {
+  const r = run([...args], project);
+  check(`${args.join(" ")} without --yes prints its refusal and remedy without the help`, confirmShape(r, message, remedy), shown(r));
+}
 
 const json = run(["clean", "--json"]);
 check("control: a command without JSON output still refuses --json as an unknown option", json.status === 1 && /Unknown option '--json'/.test(json.stderr), shown(json));

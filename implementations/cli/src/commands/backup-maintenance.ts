@@ -2,6 +2,7 @@ import { lstatSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
+  ConfirmationRequired,
   CommandFailure, acquireMaintenanceLock, assertSingleSpaceBroker, assessMaintenanceClaim, assessRestoreClaim, authDir,
   cleanupRestoreFallback, isCommandFailure, isMaintenanceError, oneLine, presentationOf,
   readMaintenanceJournal, recoverStaleMaintenanceClaim, releaseMaintenanceLock, writeResult, type Report,
@@ -47,7 +48,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   if (onlyCopy && !args.values["discard-history"])
     throw new MissingFlags(`this restore was registry-only, so the previous store at ${onlyCopy} holds the only copy of the chat and DM history it left out, and cleanup deletes it only with --discard-history; nothing was deleted`, `keep that store, or delete it and that history with cotal backup cleanup-fallback ${attemptId} --yes --discard-history`, target);
   if (!args.values.yes) {
-    if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with cotal backup ${mode} ${attemptId} --dry-run, then run cotal backup ${mode} ${attemptId} --yes${onlyCopy ? " --discard-history" : ""}` });
+    if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with cotal backup ${mode} ${attemptId} --dry-run, then run cotal backup ${mode} ${attemptId} --yes${onlyCopy ? " --discard-history" : ""}` });
     const confirmed = await prompts.confirm({ message: `${mode === "recover" ? "Recover the stale pre-commit attempt" : restore.method === "disaster" ? "Retire the completed restore journal for" : onlyCopy ? "Remove the unchanged retained old source, the only copy of the history the registry-only restore left out, for" : "Remove only the unchanged retained old source for"} ${oneLine(attemptId)} in ${oneLine(snapshot.space)}? Root ${oneLine(root)}; source ${oneLine(mode === "recover" ? snapshot.source.path : restore.previousSource?.identity.path ?? "not recorded")}. No live-owner, identity or journal guard is bypassed.`, initialValue: false });
     if (prompts.isCancel(confirmed) || !confirmed) {
       writeResult(presentation, { command: `backup ${mode}`, target, result: { kind: "backup-maintenance-cancelled", operation: mode, changed: false }, noOp: true }, () => ({ sections: [{ title: "Maintenance state kept", blocks: [{ kind: "lines", lines: ["No recovery, cleanup or process signal was requested."] }] }] }));
@@ -113,7 +114,7 @@ async function recoverBackupAttempt(args: ParsedArgs, root: string, recorded: Re
     return;
   }
   if (!args.values.yes) {
-    if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with cotal backup recover ${attemptId} --dry-run, then run cotal backup recover ${attemptId} --yes` });
+    if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with cotal backup recover ${attemptId} --dry-run, then run cotal backup recover ${attemptId} --yes` });
     const confirmed = await prompts.confirm({ message: `Release the interrupted backup ${oneLine(attemptId)} in ${oneLine(recorded.space)}? Root ${oneLine(root)}; removes ${paths.map(oneLine).join(", ") || "nothing"}. No live-owner, identity or journal guard is bypassed.`, initialValue: false });
     if (prompts.isCancel(confirmed) || !confirmed) {
       writeResult(presentation, { command: "backup recover", target, result: { kind: "backup-maintenance-cancelled", operation: "recover", changed: false }, noOp: true }, () => ({ sections: [{ title: "Maintenance state kept", blocks: [{ kind: "lines", lines: ["No recovery, cleanup or process signal was requested."] }] }] }));

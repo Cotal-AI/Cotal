@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report, PermissionViolationError } from "@nats-io/transport-node"; import { ConfirmationRequired } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { deniedWrite } from "../lib/denied-write.js";
 
@@ -19,7 +19,7 @@ export async function historyClear(values: Values): Promise<void> {
     writeResult(presentation, { command: "history", target: { space: selected.space, broker: brokerLabel(selected.server) }, result: { kind: "history-clear-preview", dryRun: true, streams, includeDms: values.dms === true, authorization: "not-checked", retainedCounts: "not-checked", purged: false } }, (result): Report => ({ sections: [{ title: "History clear preview", blocks: [{ kind: "fields", rows: [["Space", selected.space], ["Broker", brokerLabel(selected.server)], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"], ["Streams", result.streams.join(", ")], ["Authorization and counts", "not checked"]] }, { kind: "lines", lines: ["Offline target preview only. No connection, purge, agent stop, identity reset or caller issuance was attempted."] }] }] }));
     return;
   }
-  if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", "history clear requires --yes outside an interactive terminal", { remedy: "preview the space-wide scope with cotal history clear --dry-run before confirming it" });
+  if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired("history clear requires --yes outside an interactive terminal", { remedy: `preview the space-wide scope with cotal history clear${values.dms ? " --dms" : ""} --dry-run, then confirm it with cotal history clear${values.dms ? " --dms" : ""} --yes` });
   const conn = await connectOrThrow(values, "purger");
   const target = { space: conn.space, broker: brokerLabel(conn.server), includeDms: values.dms === true };
   recordOperationSpace(conn.space);

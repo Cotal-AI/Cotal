@@ -77,7 +77,9 @@ repeatable, as `--opt` and `down --session-store` are. So is an unknown command,
 that is not one of the command's subcommands when it declares them. So is input a command checks
 before it acts, such as a missing argument, an invalid flag value or two flags that conflict, and
 `cotal help` with a subcommand that does not exist. The command prints the error, then any remedy,
-then its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
+then its help on stderr, writes nothing on stdout, exits 1, and does not run. A refusal for a missing
+`--yes` outside an interactive terminal prints its error and a remedy that names `--yes`, without the
+help. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and

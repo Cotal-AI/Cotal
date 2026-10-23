@@ -46,9 +46,6 @@ import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.
 import { servicePresetCommand } from "./lib/service-presets.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
-import { ConfirmationRequired } from "./lib/confirmation-required.js";
-import { MissingFlags } from "./lib/missing-flags.js";
-import { UnusableFile } from "./lib/unusable-file.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
@@ -126,7 +123,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile)) {
     stderrLine("✗ ", failure.message, c.red);
     if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
-    if (!(failure instanceof ConfirmationRequired) && !(failure instanceof MissingFlags)) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+    if (!failure.selfContained) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
     debugStacks(failure);
     process.exit(1);
   }
