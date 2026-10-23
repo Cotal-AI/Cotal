@@ -3,7 +3,8 @@
  * agents post to channels and DM each other; the CLI child reads with its own one-shot credential.
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
  * `--grep`, `--dms`, the usage refusals, a credential that may not read history, one another space's
- * account issued, `--follow` as NDJSON
+ * account issued (also with `--server`, when that space is registered here at another address),
+ * `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
  * same broker, `cotal channel remove` says whether it removed a saved entry, and on the open broker
@@ -34,7 +35,7 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
+import { authDir, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
 
@@ -243,6 +244,30 @@ try {
     crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && crossed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", not "${space}"`) && (crossed.envelope.target as { credentialSpace?: string } | null)?.credentialSpace === "elsewhere" && (crossed.envelope.error.remedy ?? "").includes(`cotal auth mint <label> --space ${space}`), shown(crossed));
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
   check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
+  // With that space registered here at another address, a `--server` at this broker is the mismatch:
+  // the next step drops it, and following the first step with `--server` kept says so again.
+  const inHome = (f: () => void) => {
+    const prior = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
+    try { f(); } finally { if (prior === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prior; }
+  };
+  const elsewhereServer = `nats://127.0.0.1:${await pickFreePort()}`;
+  const elsewhereRoot = join(home, "elsewhere-root");
+  mkdirSync(elsewhereRoot);
+  inHome(() => recordMesh({ space: "elsewhere", server: elsewhereServer, root: elsewhereRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() }));
+  try {
+    const byServer = await run(["history", "general", "--json", "--creds", elsewhere, "--server", servers]);
+    check("with --server, the next step for a credential whose space is registered elsewhere drops --server",
+      byServer.status === 2 && byServer.envelope?.error?.code === "PERMISSION_DENIED" && byServer.envelope.error.remedy === `use it with --space elsewhere and without --server, which dials elsewhere's broker at ${elsewhereServer}`, shown(byServer));
+    const followed = await run(["history", "general", "--json", "--creds", elsewhere, "--space", "elsewhere", "--server", servers]);
+    check("following it with --server kept names the address the space is registered at, not the plain rejection",
+      followed.status === 2 && followed.envelope?.error?.code === "PERMISSION_DENIED" &&
+        followed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", which is registered here at ${elsewhereServer}, not ${servers}`) &&
+        followed.envelope.error.remedy === `drop --server to use elsewhere's broker at ${elsewhereServer}, or point --server at it` &&
+        (followed.envelope.target as { server?: string } | null)?.server === servers, shown(followed));
+  } finally {
+    inHome(() => removeMesh("elsewhere"));
+  }
 
   // ── --follow ────────────────────────────────────────────────────────────────────────────────────
   const f = follow(["history", "general", "--follow", "--json"]);

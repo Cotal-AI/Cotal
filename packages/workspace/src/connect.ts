@@ -531,9 +531,21 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     } catch (e) {
       // A rejected credential whose own permissions name another space is reported with that space.
       const owner = isConnectRefusal(e) && e.code === "PERMISSION_DENIED" ? spaceInCreds(creds) : undefined;
-      if (owner === undefined || owner === space) throw e;
-      const message = `credentials rejected at ${brokerAddressForDisplay(server) ?? "an invalid broker address"}: ${flags.creds} is a credential for space "${owner}"${flags.space === undefined ? "" : `, not "${space}"`}`;
-      const remedy = `${findMesh(owner) ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`}${flags.space === undefined ? "" : `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space} --out <file>\``}`;
+      if (owner === undefined) throw e;
+      const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
+      // A `--server` other than the one the credential's space is registered at sends it to another
+      // broker, so the step back drops `--server` rather than keeping it.
+      const ownerMesh = findMesh(owner);
+      const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
+      if (owner === space) {
+        if (elsewhere === undefined) throw e;
+        const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
+        const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
+        throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path: flags.creds, server: at } });
+      }
+      const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}"${flags.space === undefined ? "" : `, not "${space}"`}`;
+      const use = elsewhere !== undefined ? `use it with --space ${owner} and without --server, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
+      const remedy = `${use}${flags.space === undefined ? "" : `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space} --out <file>\``}`;
       throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(flags.space === undefined ? {} : { space }), credentialSpace: owner, path: flags.creds } });
     }
     return { server, space, tls, creds };

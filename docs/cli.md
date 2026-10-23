@@ -2057,7 +2057,10 @@ is still used, with a warning on stderr that gives the `chmod 600` command. `joi
 file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
 credential's own permissions name one other space, the refusal names that space, such as
 `credentials rejected at <server>: <file> is a credential for space "<owner>", not "<space>"`, and
-its Next is `--space <owner>`.
+its Next is `--space <owner>`. When `--server` named another broker than the one that space is
+registered at here, the Next says to use `--space <owner>` without `--server`, naming that broker.
+Keeping `--server` with `--space <owner>` refuses again, saying the space is registered at another
+address, and the Next is to drop `--server` or point it at that broker.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
