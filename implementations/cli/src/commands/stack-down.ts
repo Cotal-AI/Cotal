@@ -9,11 +9,12 @@
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, isConnectRefusal, oneLine, presentationOf,
-  releaseMaintenanceLock, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
-  type MaintenanceLock, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
+  CommandFailure, canonicalRoot, deliveryCredsKey, findMesh, isCommandFailure, isConnectRefusal, oneLine, presentationOf, readBrokerPolicy, recordMesh,
+  releaseMaintenanceLock, removeMesh, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
+  type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
+import { brokerLaunchAt } from "../lib/broker-service.js";
 import { ConfirmationRequired } from "../lib/confirmation-required.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
@@ -129,6 +130,39 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
   ] }));
 }
 
+/** The registration `cotal up` wrote for this stack is how its members' stops reach it. An older
+ *  `meshes rm --force` dropped it, and an older `meshes add --force` replaced it with one added by
+ *  hand. When it is missing, or a hand-added one names this same root and broker, the stop rebuilds
+ *  it from the journal, but only while the stack's broker is the exact launch the journal records
+ *  there. A hand-added registration of another address or folder is not replaced: removing it takes
+ *  an act that names it. One another stack started, or a catalog lists, resolves as before. */
+function strandedRegistration(journal: StackJournal, members: readonly Member[]): { entry: MeshEntry; previous: MeshEntry | undefined } | undefined {
+  const registered = findMesh(journal.space);
+  if (registered && registered.origin !== "manual" || !members.some((member) => member.live)) return undefined;
+  const target = { root: journal.root, space: journal.space, server: journal.server };
+  if (registered && (registered.server !== journal.server || canonicalRoot(registered.root) !== journal.root))
+    throw new CommandFailure("refused", "CONFLICT", `"${journal.space}" is registered by hand at ${registered.server} for ${registered.root}, and this stack's broker is ${journal.server} in ${journal.root}; a registration added by hand is not replaced, so nothing was stopped`, { target, remedy: `if that registration names no other mesh you use, forget it with \`cotal space forget ${journal.space}\`, then run \`cotal down --yes\` here` });
+  const what = registered ? "is registered by hand" : "has no registration";
+  if (journal.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", `"${journal.space}" ${what}, and a user-auth stack's registration holds sign-in settings its journal does not, so it was not rebuilt; nothing was stopped`, { target, remedy: `inspect the recorded members with \`cotal service --space ${journal.space}\`` });
+  const broker = members.find((member) => member.role === "broker");
+  if (!broker?.live || !brokerLaunchAt(journal.space, broker.instance.name, broker.instance.record.value.launchRequestId, journal.root, journal.server))
+    throw new CommandFailure("refused", "CONFLICT", `"${journal.space}" ${what}, and the stack's broker is not the launch its journal records at ${journal.server}, so its registration was not rebuilt; nothing was stopped`, { target, remedy: `inspect the recorded members with \`cotal service --space ${journal.space}\`` });
+  const tlsRequired = readBrokerPolicy(journal.root)?.transport.kind === "tls-required";
+  return { previous: registered, entry: {
+    space: journal.space, server: journal.server, root: journal.root, mode: journal.mode, origin: "up", ts: new Date().toISOString(),
+    ...(tlsRequired ? { tlsRequired: true } : {}),
+    ...(journal.broker ? { storeDir: journal.broker.storeDir, ...(journal.broker.maxFileStore !== undefined ? { maxFileStore: journal.broker.maxFileStore } : {}), ...(journal.broker.host !== undefined ? { attachHost: journal.broker.host } : {}) } : {}),
+  } };
+}
+
+/** What a stop that rebuilt the registration says it did, or for a preview, what it would do. */
+function strandedNotice(journal: StackJournal, previous: MeshEntry | undefined, preview = false): OutputWarning {
+  const used = preview ? "the stop would use" : "the stop used";
+  return { code: "REGISTRATION_REBUILT", target: { root: journal.root, space: journal.space, server: journal.server }, message: previous
+    ? `"${journal.space}" ${preview ? "is" : "was"} registered by hand at this stack's own root and broker; ${used} the registration \`cotal up\` writes for this stack, rebuilt from its journal, in its place`
+    : `"${journal.space}" ${preview ? "has" : "had"} no registration; ${used} the one \`cotal up\` writes for this stack, rebuilt from its journal` };
+}
+
 /** What an abandoned member stop leaves unconfirmed. */
 function abandonNotice(role: StackRole, abandonment: ServiceAdapterStopAbandonment): string {
   const receipts = abandonment.receipts.length ? `only ${abandonment.receipts.join(" and ")} receipts` : "no receipt";
@@ -193,10 +227,10 @@ function previewStackStop(root: string, values: ParsedArgs["values"], presentati
   const { journal0, settlement, members, target } = stopTarget(root, values);
   if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, false);
   // A preview reports what would refuse the real stop instead of refusing itself.
-  let blocked: CommandFailure | undefined, restore: string | undefined;
-  try { restore = scopeRefusals(journal0); }
+  let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
+  try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); }
   catch (error) { if (!isCommandFailure(error)) throw error; blocked = error; }
-  const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }] : [];
+  const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }] : stranded ? [strandedNotice(journal0, stranded.previous, true)] : [];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
   // no manager impact, which the real stop reads and confirms before any signal.
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop-preview", ...target, withAgents, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, process: member.live ? "running" : "gone" })), settlesOperation: settlement ?? null, blockedBy: blocked?.detail() ?? null, nativeImpactChecked: false, dryRun: true, signalled: false, admittedRestore: restore ?? null }, completeness: "partial", warnings }, () => {
@@ -220,23 +254,38 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
   if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
+  // A missing or hand-added registration is rebuilt from the journal before anything resolves the
+  // members, and put back as it was when the stop ends before any member stops.
+  const stranded = strandedRegistration(journal0, members);
+  if (stranded) recordMesh(stranded.entry);
+  const putBack = () => {
+    if (!stranded) return;
+    if (stranded.previous) recordMesh(stranded.previous);
+    else removeMesh(journal0.space);
+  };
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared
   // while its dependants run; it is recomputed after they stop and refuses on any change then.
   const manager = members.find((member) => member.role === "manager" && member.live);
-  if (manager) {
-    manager.native = await managerImpact(journal0, members, manager, withAgents);
-    if (!manager.native) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the manager's native agent impact could not be established; no member was stopped", { target: instanceProjection(manager.instance) });
-  } else if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
-  if (presentation !== "json") {
-    console.log(renderReport(planView(journal0, members, withAgents, settlement), presentation, terminalWidth(process.stdout)));
-    if (manager?.native) console.log(renderReport(nativeImpactView(manager.native), presentation, terminalWidth(process.stdout)));
-  }
-  if (!values.yes) {
-    const answer = await prompts.confirm({ message: `Stop every displayed member of ${oneLine(journal0.space)}'s controller stack with only the displayed native impact?`, initialValue: false });
-    if (prompts.isCancel(answer) || !answer) {
-      writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, cancelled: true, members: journal0.members }, noOp: true, warnings: [{ code: "USER_CANCELLED", target, message: "no member was stopped" }] }, () => planView(journal0, members, withAgents, settlement));
-      return;
+  try {
+    if (manager) {
+      manager.native = await managerImpact(journal0, members, manager, withAgents);
+      if (!manager.native) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the manager's native agent impact could not be established; no member was stopped", { target: instanceProjection(manager.instance) });
+    } else if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
+    if (presentation !== "json") {
+      console.log(renderReport(planView(journal0, members, withAgents, settlement), presentation, terminalWidth(process.stdout)));
+      if (manager?.native) console.log(renderReport(nativeImpactView(manager.native), presentation, terminalWidth(process.stdout)));
     }
+    if (!values.yes) {
+      const answer = await prompts.confirm({ message: `Stop every displayed member of ${oneLine(journal0.space)}'s controller stack with only the displayed native impact?`, initialValue: false });
+      if (prompts.isCancel(answer) || !answer) {
+        putBack();
+        writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, cancelled: true, members: journal0.members }, noOp: true, warnings: [{ code: "USER_CANCELLED", target, message: "no member was stopped" }] }, () => planView(journal0, members, withAgents, settlement));
+        return;
+      }
+    }
+  } catch (error) {
+    putBack();
+    throw error;
   }
   // An earlier operation with no outcome is recorded as failed from its members' evidence first.
   const { snapshot: settledSnapshot, settled } = settleStackOperation(lock, previous);
@@ -290,6 +339,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       try { holds.release(); } catch { /* The reservation release is not confirmed; outcomes above stand. */ }
     }
   }
+  if (failure && !changed.length) putBack();
   if (!failure) {
     // Shared cleanup only after the whole recorded set is confirmed stopped. An open stack never
     // had a delivery credential, so none is removed or claimed removed. Each step is idempotent.
@@ -312,7 +362,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     }
   }
   settle(failure ? (failure.outcome === "unknown" ? "unknown" : failure.outcome === "partial" ? "partial" : failure.outcome === "failed" ? "failed" : "refused") : "completed");
-  writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(settled || abandoned ? { warnings: [...abandonWarnings, ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [])] } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
+  writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(settled || abandoned || stranded ? { warnings: [...abandonWarnings, ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : []), ...(stranded ? [strandedNotice(journal0, stranded.previous)] : [])] } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
     { kind: "lines", lines: ["A returned native manager stop and an observed broker exit are not proof of authority, lease, store or descendant cleanup. A member already gone was recorded without a signal. The stack journal and the saved definitions remain; the next bare cotal up reuses them."] },
   ] }] }));

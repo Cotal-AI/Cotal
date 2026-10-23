@@ -946,6 +946,17 @@ preservation and manifest flags rather than switching to the legacy launcher. Ou
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help.
 
+A controller stack's members are stopped through the registration `cotal up` wrote for it. When an
+older `meshes rm --force` dropped it, or an older `meshes add --force` replaced it with one added by
+hand at the stack's own root and broker, `down` rebuilds it from the stack journal for the stop and
+says so with a `REGISTRATION_REBUILT` warning, as `--dry-run` does. It does that only while the
+stack's broker is the launch the journal records at that root and address, and otherwise refuses
+`CONFLICT`, exit 2, before any member stops. A registration added by hand at another address or
+folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget <space>`, after
+which `down` stops the stack through its journal. A user-auth stack's registration is not rebuilt,
+so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any member stops puts the
+registration back as it was.
+
 A bare `down` stops only the stack of the folder it runs in. In a folder whose root holds no
 stack, when the space named by `--space`, or else the selected space, is a controller stack rooted
 in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. The refusal
