@@ -121,8 +121,8 @@ try {
   assert.throws(verify, verifyFault(null, "invalid-name", /^backup manifest declares a file name that is not a plain name in the artifact folder.*; the name was not printed/), "verify names a traversing file name as its fault");
   writeFileSync(join(destination, "manifest.json"), `${"[".repeat(100_000)}${"]".repeat(100_000)}`);
   assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /^backup artifact manifest\.json is not a valid cotal-space-backup\/v1 manifest: it is not a JSON object/), "verify names a deeply nested manifest as invalid");
-  const inventory = (edit: (manifest: { files: { path: string }[]; streams: { stream: string }[] }) => void) => {
-    const manifest = JSON.parse(originalManifest) as { files: { path: string }[]; streams: { stream: string }[] };
+  const inventory = (edit: (manifest: { space: string; files: { path: string }[]; streams: { stream: string }[] }) => void) => {
+    const manifest = JSON.parse(originalManifest) as { space: string; files: { path: string }[]; streams: { stream: string }[] };
     edit(manifest);
     writeFileSync(join(destination, "manifest.json"), `${JSON.stringify(manifest)}\n`);
   };
@@ -131,6 +131,9 @@ try {
   assert.throws(() => stageArtifact(destination, stagingParent), stageFault("manifest.json", "manifest-invalid"));
   inventory((manifest) => { manifest.streams[0]!.stream = "CHAT_other"; });
   assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /: its stream records do not match its snapshot files;/), "verify names a stream record that matches no snapshot");
+  inventory((manifest) => { manifest.space = "s".repeat(300); });
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /: it names an invalid space;/), "verify names an invalid space");
+  assert.throws(() => stageArtifact(destination, stagingParent), stageFault("manifest.json", "manifest-invalid"));
   writeFileSync(join(destination, "manifest.json"), " ".repeat(1024 * 1024 + 1));
   assert.throws(verify, verifyFault("manifest.json", "manifest-too-large", /larger than its 1 MiB limit/), "verify names an oversized manifest and its limit");
   writeFileSync(join(destination, "manifest.json"), originalManifest);

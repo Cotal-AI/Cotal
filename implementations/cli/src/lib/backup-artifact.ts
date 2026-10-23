@@ -247,6 +247,7 @@ function validManifest(value: BackupManifest): BackupManifest {
   if (value.format !== BACKUP_MANIFEST_FORMAT) throw new Error("backup manifest names an unsupported format");
   if (!value.space || !["full", "registry"].includes(value.selection) || !["auth", "open", "user"].includes(value.mode))
     throw new Error("backup manifest has invalid space, selection, or mode");
+  if (typeof value.space !== "string" || value.space.length > 200) throw new Error("backup manifest names an invalid space");
   if (!Array.isArray(value.files) || !Array.isArray(value.streams) || typeof value.checkpoints !== "string")
     throw new Error("backup manifest has invalid inventory");
   safeFileName(value.checkpoints);
@@ -364,7 +365,6 @@ export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
   const bytes = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
   if (!bytes) throw new Error("backup manifest is absent");
   const manifest = parseManifest(path, bytes);
-  if (typeof manifest.space !== "string" || manifest.space.length > 200) throw invalidManifest("it names an invalid space");
   validateArtifactInventory(artifact, manifest);
   if (verify) for (const file of manifest.files) copyPinnedFile(join(artifact, file.path), undefined, file);
   const after = lstatSync(artifact, { bigint: true });

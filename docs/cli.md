@@ -1620,8 +1620,10 @@ artifact's own selection, and `--only registry` narrows a full artifact to the r
 come from the preserved cut, so no selector can rebind them. An artifact of another space refuses
 `CONFLICT` (exit 2) and names both spaces, and a full artifact taken under another trust state
 refuses `CONFLICT` the same way. An artifact file that is missing, undeclared or not its declared
-size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backup verify` does. In
-each case the preserved cut is not changed. A receipt means the
+size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backup verify` does. A
+manifest whose space is longer than 200 characters is invalid, so restore refuses it with the fault
+`manifest-invalid` and does not print that space. In each case the preserved cut is not changed. A
+receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
 confirm that any seat joined. A registry restore brings back channel settings only, so chat and DM
