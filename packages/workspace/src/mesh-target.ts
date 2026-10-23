@@ -492,14 +492,16 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       );
     const recorded = rootMatches[0];
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded", flags.readOnly);
+    // A root whose own stack recorded a broker is not given the default address: with no
+    // registration that stack is not running here, and the default port may hold another mesh. The
+    // space is left out, so no caller reads this root offline as a prepared space. A stack running
+    // under another Cotal home is named before any space this home prepared here, which cannot start.
+    const stack = stackRecord(root);
+    if (stack?.home !== undefined) throw new MeshTargetError("not-started", `the stack in ${root} runs under another Cotal home`, { root, ...stack });
     // A space prepared here and not started has no broker: the default address may be another's.
     const prepared = preparedSpaceAt(root);
     if (prepared) notStarted(prepared.space);
-    // A root whose own stack recorded a broker is not given the default address either: with no
-    // registration that stack is not running here, and the default port may hold another mesh. The
-    // space is left out, so no caller reads this root offline as a prepared space.
-    const stack = stackRecord(root);
-    if (stack) throw new MeshTargetError("not-started", stack.home === undefined ? `the stack in ${root} recorded a broker, and no space is registered for it here` : `the stack in ${root} runs under another Cotal home`, { root, ...stack });
+    if (stack) throw new MeshTargetError("not-started", `the stack in ${root} recorded a broker, and no space is registered for it here`, { root, ...stack });
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the

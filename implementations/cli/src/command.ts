@@ -4,6 +4,7 @@ import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  cotalHomeProblem,
   disableColor,
   disableInput,
   envelopeLine,
@@ -25,6 +26,7 @@ import {
   spaceRootTarget,
   targetErrorCode,
   terminalWidth,
+  userCotalDir,
   type OperationScope,
   type OutputWarning,
 } from "@cotal-ai/workspace";
@@ -508,6 +510,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // as a broken config file does, so nothing runs on a default the person did not mean. `--help` on a
   // command has already returned above.
   if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
+    // A COTAL_HOME that cannot be a directory stops them the same way, before any command reads it.
+    const homeProblem = cotalHomeProblem();
+    if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     try {
       cachedPreferences();
     } catch (e) {

@@ -3,10 +3,10 @@
  * the effective values with their sources and shadowed values, `get`, `set` and `unset` for the user
  * and for one space, the refusals (a read, set or unset for a space this machine does not know among
  * them), a value left for a removed space, the named environment tiers, the selected space, an invalid
- * file stopping every command but help and completion
- * without being reset, a linked file stopping them the same way, a stale write refused, a persona the
- * space's catalog does not hold saved with a warning that names the catalog, two concurrent writers
- * both landing, and the consumers outside `spawn`: color, the `personas edit`
+ * file stopping every command but help and completion without being reset, a linked file stopping
+ * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a stale write
+ * refused, a persona the space's catalog does not hold saved with a warning that names the catalog,
+ * two concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
  * editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
@@ -372,6 +372,23 @@ if (process.platform !== "win32") {
   }
   rmSync(file);
   check("removing the file restores the defaults", run(["config", "--json"]).status === 0);
+}
+
+// ── a COTAL_HOME that is not a directory stops every command but help and completion ─────────────
+{
+  const notHome = join(home, "not-a-home");
+  writeFileSync(notHome, "a file\n");
+  for (const [name, value] of [["a file", notHome], ["a path under a file", join(notHome, "sub")]] as const) {
+    const r = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: value });
+    check(`a COTAL_HOME that is ${name} is refused with SCHEMA_INVALID, naming it, and the command does not run`,
+      r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "SCHEMA_INVALID" && r.envelope.error.message.includes(`COTAL_HOME ${value} is not a directory`) &&
+        /point COTAL_HOME at a directory, or unset it/.test(r.envelope.error.remedy ?? ""), shown(r));
+  }
+  const status = run(["status"], { COTAL_HOME: notHome });
+  check("status there gives the same refusal, not the raw read error", status.status === 1 && /COTAL_HOME .* is not a directory/.test(status.stderr) && !/ENOTDIR/.test(status.stdout + status.stderr), shown(status));
+  const help = run(["help"], { COTAL_HOME: notHome });
+  check("help still works", help.status === 0 && help.stdout !== "", shown(help));
+  check("and the file is left as it was", readFileSync(notHome, "utf8") === "a file\n");
 }
 
 finish();

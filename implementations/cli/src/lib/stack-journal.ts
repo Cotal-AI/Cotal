@@ -11,7 +11,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -261,7 +261,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : inspect(row.name) });
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : resumableSignalStop(value) ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -280,6 +280,9 @@ export async function settleRetainedStackStops(journal: StackJournal): Promise<v
     finally { hold.release(); }
   }
 }
+
+/** The step for a member stop whose process still runs after the command that sent it exited. */
+export const RESUME_REMEDY = "once the command that sent the stop has exited, `cotal down --yes` signals the process again";
 
 /** The remedy a refusal over a retained, published member stop names. */
 export const abandonRemedy = (requestId: string): string => `once its process and the down that sent the request have exited, \`cotal down --abandon-stop ${requestId} --yes\` abandons it`;
@@ -486,12 +489,13 @@ export function recordedProcessesUnder(root: string, spaces: readonly string[]):
   return found;
 }
 
-/** No member of this stack ever launched: no member row names an instance or a replacement, and no
- *  stack definition in its space has an instance record. No process of it runs and no broker of it
- *  wrote a store, so its journal pins nothing for the next up and a down has nothing to stop. */
+/** No member of this stack ever launched: no member row names an instance or a replacement, and every
+ *  instance record of a stack definition in its space failed before its child was spawned, as a
+ *  broker start refused at an address another program holds does. No process of it runs and no
+ *  broker of it wrote a store, so its journal pins nothing for the next up and a down has nothing to stop. */
 export function stackNeverStarted(journal: StackJournal): boolean {
   return journal.members.every((row) => row.instanceId === null && row.replacement === undefined)
-    && STACK_ROLES.every((role) => serviceInstances(journal.space, STACK_DEFINITION[role]).length === 0);
+    && STACK_ROLES.every((role) => serviceInstances(journal.space, STACK_DEFINITION[role]).every((row) => row.record.value.state === "failed" && row.record.value.process === undefined));
 }
 
 /** An observed process state that counts as stopped for a whole-stack stop. */

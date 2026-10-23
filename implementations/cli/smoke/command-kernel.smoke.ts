@@ -489,6 +489,35 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// --- up refuses a --server with no port, an IPv6 address, a --host that is no bind host or names
+// another address than --server, and a --server that the default bind host does not serve, before
+// project lookup ---
+{
+  const cmd = registry.resolve<Command>("command", "up")!;
+  const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
+  const refused: [string[], RegExp, string?][] = [
+    [["--server", "nats://127.0.0.1"], /^--server names no port/],
+    [["--server", "nats://[::1]:4222"], /^--server names an IPv6 address/],
+    [["--host", "::1"], /^--host names an IPv6 address/],
+    [["--host", "[::1]"], /^--host names an IPv6 address/],
+    [["--host", "nats://127.0.0.1"], /^--host nats:\/\/127\.0\.0\.1 looks like a URL/],
+    [["--host", "127.0.0.1:4222"], /^--host 127\.0\.0\.1:4222 is not a valid bind host/],
+    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/],
+    [["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.2"], /^--host 127\.0\.0\.2 and --server nats:\/\/127\.0\.0\.1:4222 name different addresses/],
+    [["--server", "nats://127.0.0.2:4222"], /^--server nats:\/\/127\.0\.0\.2:4222 names 127\.0\.0\.2, and with no --host the broker binds 127\.0\.0\.1/, "pass --host 127.0.0.2 to bind the broker there"],
+  ];
+  for (const [flags, said, remedy] of refused) {
+    assert.throws(() => cmd.validate!(parseCommandArgs(cmd, [...flags, "--root", missingRoot])), (error: unknown) =>
+      isCommandFailure(error) && error.code === "USAGE_INVALID" && said.test(error.message) && Boolean(error.remedy) && (remedy === undefined || error.remedy === remedy),
+    `${flags.join(" ")} is refused as usage before project lookup`);
+  }
+  for (const flags of [["--server", "nats://127.0.0.1:4222"], ["--host", "::"], ["--host", "0.0.0.0"], ["--host", "127.0.0.2"], ["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.1"], ["--server", "nats://127.0.0.1:4222", "--host", "0.0.0.0"], ["--server", "nats://127.0.0.2:4222", "--host", "127.0.0.2"]]) {
+    assert.throws(() => cmd.validate!(parseCommandArgs(cmd, [...flags, "--root", missingRoot])), (error: unknown) =>
+      isCommandFailure(error) && !/names no port|IPv6|--host/.test(error.message),
+    `${flags.join(" ")} passes the address checks and stops only at the missing root`);
+  }
+}
+
 // --- __complete offers declared flag names on a `-` prefix --------------------------------------
 {
   const spawnCmd = registry.all<Command>("command").find((c) => c.name === "spawn");

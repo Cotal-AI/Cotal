@@ -10,6 +10,10 @@
  * process is launched. The named `down <service>` form runs the same stop path as `service stop`
  * and is not driven here.
  *
+ * A process definition whose envRefs read a variable the environment does not set refuses its start
+ * before anything launches, naming that variable and the child variable it feeds, and `service show`
+ * lists the references by name.
+ *
  * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
  * before a child in two isolated homes: with the account only in the child's home and only in the
  * controller's. Its space is registered in both homes as `up` records a started one, with static
@@ -108,6 +112,21 @@ const listed = run(["service", "--space", "b1"]);
 const instances = listed.envelope?.result?.instances;
 const definitions = listed.envelope?.result?.definitions;
 check("no definition or instance record remains", Array.isArray(instances) && instances.length === 0 && Array.isArray(definitions) && definitions.length === 0, listed.envelope?.result);
+
+// A process service whose envRefs read a variable this environment does not set.
+const envDefinition = join(home, "env.json");
+writeFileSync(envDefinition, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exit 0"], cwd: root }, readiness: { type: "process", timeoutMs: 3000 }, envRefs: { REVIEWS_TOKEN: "SMOKE_UNSET_REVIEWS_TOKEN" } }));
+delete (env as NodeJS.ProcessEnv).SMOKE_UNSET_REVIEWS_TOKEN;
+const envAdded = run(["service", "add", "envsvc", "--file", envDefinition, "--space", "b1"]);
+check("rig: a process definition with an envRefs entry is saved", envAdded.status === 0 && envAdded.envelope?.outcome === "ok", shown(envAdded));
+const unset = run(["service", "start", "envsvc", "--space", "b1"]);
+check("a start without the referenced variable refuses DEPENDENCY_UNAVAILABLE, exit 2, naming it and the child variable, with a remedy that sets it",
+  unset.status === 2 && unset.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && /does not set SMOKE_UNSET_REVIEWS_TOKEN \(passed to the service as REVIEWS_TOKEN\)/.test(unset.envelope.error.message) &&
+    (unset.envelope.error.remedy ?? "").includes("set SMOKE_UNSET_REVIEWS_TOKEN"), shown(unset));
+const shownText = spawnSync(process.execPath, [BIN, "service", "show", "envsvc", "--space", "b1"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+check("service show lists the reference by name", shownText.status === 0 && /Environment references:\s+REVIEWS_TOKEN from SMOKE_UNSET_REVIEWS_TOKEN/.test(shownText.stdout), { status: shownText.status, stdout: shownText.stdout.slice(0, 900) });
+const envRemoved = run(["service", "remove", "envsvc", "--space", "b1", "--yes"]);
+check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemoved));
 
 // A Linear service whose envRefs give the child HOME from SERVICE_HOME. With COTAL_HOME unset, each
 // process reads the Cotal home under its own HOME: the controller's is `a`, the child's `b`.
