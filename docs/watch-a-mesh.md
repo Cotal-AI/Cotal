@@ -116,6 +116,11 @@ dashboard cannot read is answered with a `500` that names the failed read.
 
 ![The web dashboard: roster, all-activity feed, golden-signal tiles, and the NEEDS-YOU lane](../assets/dashboard.png)
 
+The dashboard at `/` uses Astro, React and shadcn/ui. Its sidebar, activity feed,
+agent details and attention panel use the existing authenticated APIs and live feed.
+The graph remains at `/graph`. On narrow screens, use the sidebar toggle to navigate
+and Needs you to open the attention panel.
+
 ```bash
 cotal service add web --preset web --space main --root /absolute/registered/root --creds /absolute/private/dashboard.creds --read-only
 cotal service start web --space main
@@ -146,14 +151,20 @@ The broker enforces what the selected file may observe, so a restricted read is 
 or proof that a hidden DM does not exist. `channel remove` remains a separate authorized CLI action.
 An old cached web command requires the matching extension update, not an implicit reinstall.
 
-**The views.** Every view keeps the same skeleton: navigation on the left (roster, channels,
-DMs), the selected content in the centre, the NEEDS-YOU lane always on the right.
+The roster, agent details, attention panel and graph detail show reported conditions
+and separate ages for the condition, unchanged status, current activity and last work
+progress. Ages use core's whole-unit flooring. Missing timestamps omit the age;
+heartbeat age dates liveness and does not measure how long an agent has been blocked.
 
-- **Monitor**: the all-activity feed (two-line messages with a delivery-mode badge, per-mode
-  filter chips, and pause), the roster (status as shape *and* colour, role, a one-line activity,
-  and the agent's harness: claude / opencode / hermes), and the golden-signal tiles
-  (working / waiting / idle / offline / oldest-unattended). The roster groups live peers by the
-  machine each one reports as its host, with a count per machine, so placement across machines
+**The views.** Every view keeps the same skeleton: navigation on the left (roster, channels,
+DMs), the selected content in the centre, and the attention panel on the right.
+Needs you toggles that panel; it opens as a sheet on narrow screens.
+
+- **Monitor**: the all-activity feed (expandable messages with a delivery-mode badge, per-mode
+  filters, and pause), the roster (status as shape *and* colour, role, a one-line activity,
+  and the agent's harness: claude / opencode / hermes), and the status summary
+  (working / waiting / idle / offline / stalest live heartbeat). The roster groups live peers by the
+  machine each one reports as its host, so placement across machines
   reads at a glance. A peer that reports no host, such as a manager, is listed last under *host
   not reported*. Seats do not report which manager runs them, so the roster has no manager grouping.
 - **Channel view**: one channel's message list, members shown in the header.
@@ -253,11 +264,6 @@ as plain text, including inside an attribute such as the activity's hover title.
 clamp to a few lines
 with a per-message *show more*; a channel-wide **expand / collapse all** in the header opens or
 closes every message at once.
-
-Append `?demo` (`http://127.0.0.1:7799/?demo`) to render the design reference as a static
-showcase with no mesh, including forward-looking elements that have no protocol backing yet
-(intent badges, approval requests, task-failed alerts). Live mode renders only what the god-view
-can actually read.
 
 ## What each surface can see
 

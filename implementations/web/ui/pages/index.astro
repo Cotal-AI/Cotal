@@ -1,0 +1,29 @@
+---
+import "../styles/global.css";
+import Dashboard from "../components/Dashboard";
+---
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Cotal dashboard</title>
+  </head>
+  <body>
+    <script is:inline src="/vendor/marked.umd.js"></script>
+    <script is:inline src="/vendor/purify.min.js"></script>
+    <script is:inline src="/snapshot.js"></script>
+    <script is:inline src="/harness.js"></script>
+    <script is:inline src="/parts.js"></script>
+    <script is:inline src="/agui-frame.js"></script>
+    <script is:inline src="/event-order.js"></script>
+    <script is:inline src="/md.js"></script>
+    <script is:inline src="/presence.js"></script>
+    <script is:inline src="/app.js"></script>
+    <Dashboard client:only="react">
+      <p slot="fallback" class="p-6 text-sm text-muted-foreground">Connecting to your workspace…</p>
+    </Dashboard>
+    <noscript>Enable JavaScript to use the Cotal dashboard.</noscript>
+  </body>
+</html>

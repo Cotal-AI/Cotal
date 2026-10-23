@@ -36,6 +36,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
+import { loadDashboardPages } from "../src/dashboard-assets.js";
 import { PAGE } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -193,13 +194,13 @@ const res = (status: number, body: unknown) => ({
 const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
 {
-  const indexHtml = readFileSync(PAGE["/"].path, "utf8");
+  const indexHtml = readFileSync(loadDashboardPages()["/"].path, "utf8");
   const graphHtml = readFileSync(PAGE["/graph"].path, "utf8");
   const appJs = codeOnly(readFileSync(join(webSrc, "app.js"), "utf8"));
   const graphJs = codeOnly(readFileSync(join(webSrc, "graph.js"), "utf8"));
   ok("3.3 the console page loads it", indexHtml.includes('<script src="/snapshot.js"></script>'));
   ok("3.4 the graph page loads it", graphHtml.includes('<script src="/snapshot.js"></script>'));
-  ok("3.5 both pages carry the stale marker element it drives", indexHtml.includes('id="stale"') && graphHtml.includes('id="stale"'));
+  ok("3.5 both pages carry the stale marker element it drives", readFileSync(join(webSrc, "../../ui/components/Dashboard.tsx"), "utf8").includes("state.stale.map") && graphHtml.includes('id="stale"'));
   ok("3.6 the console page reads every source through it", appJs.includes("SNAP.refreshAll(") && appJs.includes("SNAP.readJson("));
   ok("3.7 the graph page reads every source through it", graphJs.includes("SNAP.refreshAll(") && graphJs.includes("SNAP.readJson("));
   // The shape that caused the wipe, in the files that had it: a response body consumed with no
@@ -284,14 +285,14 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   const page = (): { ctx: Page; c: ReturnType<typeof createContext> } => {
     label = { textContent: "" };
     const ctx: Record<string, unknown> = {
-      console,
+      console, publish() { label.textContent = runInContext("window.COTAL_SNAPSHOT.staleLabel(staleNow)", c) as string; },
       fetch: async () => ({ ok: true, status: 200, json: async () => [] }),
       renderCenter() {}, renderSidebarNav() {}, refreshDerived() {}, renderRoster() {},
       renderChannels() {}, renderDMs() {}, renderRail() {}, rosterRows: () => [],
       // The real marker element, so the shipped `renderStale` runs rather than being stubbed: what a
       // reader is TOLD is half of this rule and a stub would assert only the half that is kept.
       $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => label } : null),
-      isDemo: false, orderNotes: [], channelMsgs: [], channelOrder: undefined, selected: "*",
+      orderNotes: [], channelMsgs: [], channelOrder: undefined, selected: "*",
       unread: new Map(), agentSel: null, dmSel: null, roster: [], channels: new Map(), dms: [],
       window: {}, __p: undefined,
     };
@@ -403,7 +404,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     // The lifted entry reads `SNAP`, a local of the shipped `refresh()`, so the harness has to bind
     // the same name to the same object. Cells 5.7 and 5.8 are what caught this being absent: without
     // them a ReferenceError inside `read` looks exactly like the refusal the section is about.
-    runInContext("var SNAP = window.COTAL_SNAPSHOT;", c, { filename: "app.js (refresh scope)" });
+    runInContext("var SNAP = window.COTAL_SNAPSHOT; var spaceName = 'cotal-main';", c, { filename: "app.js (refresh scope)" });
     runInContext(`__src = ${found[0]};`, c, { filename: "app.js (space source)" });
     return { ctx, c };
   };
@@ -412,7 +413,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     const { ctx, c } = mk(async () => ({ ok: false, status: 500, json: async () => ({ error: "the space could not be read: timeout" }) }));
     runInContext("__p = window.COTAL_SNAPSHOT.refreshAll([__src]);", c);
     const stale = await (ctx.__p as Promise<{ name: string; reason: string }[]>);
-    ok("5.4 a 500 whose body is JSON does NOT become the space name", header.textContent === "· cotal-main", header.textContent);
+    ok("5.4 a 500 whose body is JSON does NOT become the space name", runInContext("spaceName", c) === "cotal-main", runInContext("spaceName", c));
     ok("5.5 nor the document title", doc.title === "Cotal · cotal-main", doc.title);
     ok("5.6 and the refusal is REPORTED, by source name", stale.length === 1 && stale[0].name === "space", stale);
     ok("5.7 carrying the server's own reason", stale[0]?.reason?.includes("the space could not be read"), stale[0]?.reason);
@@ -424,7 +425,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     runInContext("__p = window.COTAL_SNAPSHOT.refreshAll([__src]);", c);
     const stale = await (ctx.__p as Promise<unknown[]>);
     ok("5.8 CONTROL: a read that LANDS replaces the name, so 5.4 is retention and not a stub",
-      header.textContent === "· cotal-next · read-only" && doc.title === "Cotal · cotal-next" && stale.length === 0,
+      runInContext("spaceName", c) === "cotal-next" && doc.title === "Cotal · cotal-next" && stale.length === 0,
       { header: header.textContent, title: doc.title, stale });
   }
 }

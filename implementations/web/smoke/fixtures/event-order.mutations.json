@@ -121,24 +121,17 @@
       "expectRed": "17.9 a hole between two BUFFERED frames is a gap"
     },
     {
-      "name": "O18 the all-activity view stops drawing the notice, so the machine detects a missing frame and the surface the reader is actually looking at says nothing",
-      "file": "implementations/web/src/web/app.js",
-      "find": "    ${orderNoticeHtml()}\n    <div class=\"feed\">",
-      "replace": "    <div class=\"feed\">",
+      "name": "O18 the shared activity/channel transcript stops drawing ordering notices",
+      "file": "implementations/web/ui/components/dashboard/transcript.tsx",
+      "find": "!dm && <OrderingNotice notes={state.orderNotes}",
+      "replace": "false && <OrderingNotice notes={state.orderNotes}",
       "expectRed": "15.8 the all-activity view draws it"
     },
     {
-      "name": "O19 the channel view stops drawing it, so a reader who opened one channel to look at its frames is the one reader who cannot be told a frame is missing from it",
-      "file": "implementations/web/src/web/app.js",
-      "find": "    ${orderNoticeHtml()}\n    <div class=\"clist\">",
-      "replace": "    <div class=\"clist\">",
-      "expectRed": "15.9 the channel view draws it"
-    },
-    {
       "name": "O20 the unattributable start-up hole stops being drawn, so the page reports the one thing it could not find out as though it had found nothing wrong",
-      "file": "implementations/web/src/web/app.js",
-      "find": "  if (races.length) parts.push(`${races.length} possible ordering race${races.length === 1 ? \"\" : \"s\"} at start-up, unconfirmed`);\n",
-      "replace": "",
+      "file": "implementations/web/ui/lib/ordering.ts",
+      "find": "  const races = notes.filter(note => note.type === \"boundary-hole\").length;",
+      "replace": "  const races = 0;",
       "expectRed": "15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss"
     }
   ],

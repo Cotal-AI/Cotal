@@ -1,0 +1,2 @@
+# Browser presence wording agrees with core.
+smoke:web-presence-wording

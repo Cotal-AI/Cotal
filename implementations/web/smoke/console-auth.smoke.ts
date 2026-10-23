@@ -734,6 +734,28 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     check("LOG-LEAK FIXTURE: the real token minted a real session", exchanged.status === 302 && cookie.startsWith("cotal_web_session="),
       { status: exchanged.status, cookie: cookie.slice(0, 24) });
 
+    const dashboard = await fetch(`http://127.0.0.1:${webPort}/`, { headers: { cookie } });
+    const dashboardHtml = await dashboard.text();
+    check("the authenticated root dashboard serves the built Astro page",
+      dashboard.status === 200 && dashboardHtml.includes("Cotal dashboard"), { status: dashboard.status });
+    const assets = [...new Set([...dashboardHtml.matchAll(/(?:src|href|component-url|renderer-url)="(\/dashboard-assets\/[^"]+)"/g)].map((m) => m[1]!))];
+    check("the dashboard references its bundled JavaScript and stylesheet",
+      assets.some((p) => p.endsWith(".js")) && assets.some((p) => p.endsWith(".css")), assets);
+    for (const asset of assets) {
+      const bare = await fetch(`http://127.0.0.1:${webPort}${asset}`);
+      check("built dashboard assets require the existing session cookie", bare.status === 401, { asset, status: bare.status });
+      const authed = await fetch(`http://127.0.0.1:${webPort}${asset}`, { headers: { cookie } });
+      check("the existing server serves the complete built dashboard asset with its MIME type",
+        authed.status === 200 && (authed.headers.get("content-type") ?? "").includes(asset.endsWith(".css") ? "text/css" : "text/javascript")
+          && (await authed.arrayBuffer()).byteLength > 0, { asset, status: authed.status });
+    }
+    const bareDashboard = await fetch(`http://127.0.0.1:${webPort}/`);
+    check("the dashboard page requires the existing session cookie", bareDashboard.status === 401);
+    for (const path of ["/dashboard-assets/missing.js", "/dashboard-assets/package.json", "/dashboard-assets/%2e%2e%2fpackage.json", "/preview", "/preview/unknown"]) {
+      const unknown = await fetch(`http://127.0.0.1:${webPort}${path}`, { headers: { cookie } });
+      check("unknown and traversal-shaped asset paths never serve a filesystem file", unknown.status === 404, { path, status: unknown.status });
+    }
+
     output = "";
     const encodedToken = [...token].map((ch) => `%${ch.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
     const refused = await fetch(`http://127.0.0.1:${webPort}/api/activity?%6b=${encodedToken}&limit=bad`, {
