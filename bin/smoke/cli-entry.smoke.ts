@@ -295,6 +295,28 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }
 }
 
+// ── team check names each located manifest problem, without quoting a persona file ───────────────
+{
+  const head = "apiVersion: cotal/v1\nkind: Mesh\nspace: entry\nagent: claude\n";
+  const files = (manifest: string) => (home: string) => {
+    mkdirSync(join(home, "..", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", "agents", "sec.md"), "---\nname: sec\nmodel: [SECRETPERSONA42\n---\nSec.\n");
+    writeFileSync(join(home, "..", "m.yaml"), manifest);
+  };
+  const cases: [string, string, string[]][] = [
+    ["a tab indent", `${head}channels:\n\tops: {}\n`, ["m.yaml:6:1: Tabs are not allowed as indentation at line 6, column 1"]],
+    ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'Unrecognized key: "chanels"']],
+    ["an alias bomb", `${head}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, ["m.yaml: Excessive alias count indicates a resource exhaustion attack"]],
+    ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ['m.yaml:7:16: "ghost" is not declared in agents: (at channels.ops.subscribe)']],
+    ["a persona with invalid frontmatter", `${head}agents:\n  sec: agents/sec.md\nchannels:\n  ops:\n    subscribe: [sec]\n`, ["m.yaml: agent file ", "sec.md: invalid YAML frontmatter; Flow sequence in block collection must be sufficiently indented and end with a ] at line 2, column 24 (at agents.sec)"]],
+  ];
+  for (const [label, manifest, located] of cases) {
+    const r = cotal(["team", "check", "m.yaml"], files(manifest), noSeed);
+    check(`team check names ${label} by file, line and reason`,
+      r.status === 1 && located.every((part) => r.stderr.includes(part)) && r.stderr.includes("fix each named problem and run team check again") && !r.stderr.includes("SECRETPERSONA42"), shown(r));
+  }
+}
+
 // ── Unknown words, prefixes, uninstalled seeded commands ──────────────────────────────────────────
 {
   refused("an unknown command is a usage error", cotal(["nope"]), /unknown command: nope - run `cotal help`/);

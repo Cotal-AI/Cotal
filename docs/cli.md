@@ -5527,6 +5527,10 @@ capabilities came from the manifest, a persona or neither. Terminal tables show 
 rows of each kind. The JSON result includes all resolved sources, merged policies,
 inherited scopes and, when requested, the channel graph, without persona bodies,
 kickoff prompts or opaque launch-option values.
+A manifest it cannot resolve is refused with `SCHEMA_INVALID` (exit 1). The refusal names each
+problem by file, line and column where the parser has them, the key path, and the reason, and
+`--json` lists every problem under `target.issues`. A problem in a referenced persona
+names that file and the parser's reason without quoting its contents.
 This file check does not prove live authorization, installed applications or launch readiness.
 These read views do not apply a boot, an additive deployment or a removal.
 

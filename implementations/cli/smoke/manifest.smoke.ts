@@ -36,6 +36,8 @@ agent: claude
 `;
 
 assert.equal(ok(`${HEAD}runtime: orca\nchannels: {}\n`).runtime, "orca");
+// An alias bomb is a located manifest problem, not an unclassified exception.
+fails(`${HEAD}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, "Excessive alias count");
 
 // --- happy path: inversion + allowSubscribe defaulting -----------------------------------------
 {

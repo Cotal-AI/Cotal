@@ -2,7 +2,7 @@ import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
-import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
+import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds } from "../lib/team-additive-attempt.js";
@@ -439,9 +439,22 @@ function readTeamFile(file: string, values: TeamValues): { path: string; prepare
   const path = resolve(file);
   let prepared: PreparedManifest;
   try { prepared = loadManifest(path); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" }); }
+  catch (e) {
+    if (e instanceof ManifestError) throw manifestRefusal(e, path);
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
+  }
   if (values.space !== undefined && values.space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
   return { path, prepared };
+}
+
+/** Name each located problem: its file, line, key and reason. Only a reason's first line is kept,
+ *  because a persona file's YAML diagnostic goes on to quote that file's own lines. */
+function manifestRefusal(e: ManifestError, path: string): CommandFailure {
+  const issues = e.issues.map((issue) => ({ ...issue, message: issue.message.split("\n")[0]!.replace(/(at line \d+, column \d+):$/, "$1") }));
+  const shown = issues.slice(0, 5).map((issue) => formatIssue(e.file, issue));
+  if (issues.length > 5) shown.push(`${issues.length - 5} more with --json`);
+  return new CommandFailure("refused", "SCHEMA_INVALID", `${issues.length === 1 ? "the team manifest has a problem" : `the team manifest has ${issues.length} problems`}, so no broker was contacted: ${shown.join("; ")}`,
+    { target: { path, issues }, remedy: "fix each named problem and run team check again" });
 }
 
 async function bootTeam(file: string, values: TeamValues): Promise<void> {
