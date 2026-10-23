@@ -3554,7 +3554,9 @@ A direct target resolves by its full identity or an unambiguous name. A name col
 no fuzzy match selects an agent for you.
 
 For a channel post, repeat `--mention <agent>` to add explicit wake hints without changing the
-destination. Direct and role sends have no native mention field and refuse that option.
+destination. Each one resolves like a direct target and is sent as that agent's name, which is what
+a receiving session compares. An instance id is refused when its name also resolves to another
+participant. Direct and role sends have no native mention field and refuse that option.
 A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
 still has no inbox and does not promise thread continuity.
 
