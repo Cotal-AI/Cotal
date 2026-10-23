@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSyn
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
@@ -285,7 +285,11 @@ async function controllerHangupCell(): Promise<void> {
   // The stack's records are read in this suite's process from the cell's own Cotal home.
   const previousHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = join(home, "machine");
-  const broker = () => serviceInstances(space, "stack-broker")[0]?.record.value;
+  // A read that meets the CLI's own write of the record refuses CONFLICT; a poll takes that as not yet.
+  const broker = () => {
+    try { return serviceInstances(space, "stack-broker")[0]?.record.value; }
+    catch (error) { if (isCommandFailure(error) && error.code === "CONFLICT") return undefined; throw error; }
+  };
   const envelope = (r: { out: string }) => { try { return JSON.parse(r.out) as { outcome?: string; error?: { code?: string; remedy?: string }; warnings?: { code: string; target?: { requestId?: string } }[] }; } catch { return undefined; } };
   try {
     await until(() => {
@@ -294,11 +298,13 @@ async function controllerHangupCell(): Promise<void> {
       return out.includes("Controller stack started");
     }, 120_000, () => err.slice(-3000));
     assert.ok(child.pid); process.kill(child.pid, "SIGTERM");
+    let stopping: ReturnType<typeof broker>;
     await until(() => {
       if (state.exited) throw new Error(`the foreground stop finished before the broker was stopping: ${err}`);
-      return broker()?.state === "stopping";
+      stopping = broker();
+      return stopping?.state === "stopping";
     }, 120_000, () => err.slice(-3000), 2);
-    const request = broker()!.requestId;
+    const request = stopping!.requestId;
     process.kill(child.pid, "SIGKILL");
     await until(() => state.exited, 10_000, () => "the killed foreground up did not exit");
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
