@@ -75,7 +75,7 @@ export async function console_(args: ParsedArgs): Promise<void> {
   // stream can't host the picker, so it falls back to the RESOLVED mesh's space (not the cwd's).
   if (values.plain || process.stdout.isTTY !== true) {
     const s = space ?? resolvedSpace;
-    await runLog(makeObserver(s, server, observerAuth, operator), s, creds || user ? chatWildcard(s) : undefined);
+    await runLog(makeObserver(s, server, observerAuth, operator), s, creds || user ? chatWildcard(s) : undefined, values.plain === true);
     return;
   }
 

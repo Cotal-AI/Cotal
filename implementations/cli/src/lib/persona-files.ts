@@ -3,12 +3,12 @@ import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readFileSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  acquireLock, agentFilePath, assertValidName, hardenPrivate, mkSecretDir,
+  acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
   parseAgentFileSource, saveAgentFile, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
 import {
-  cachedPreferences, CommandFailure, inputDisabledByFlag, isWorkspaceTargetError,
+  cachedPreferences, CommandFailure, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes,
   resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 
@@ -19,6 +19,12 @@ export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeM
 export function personaCatalog(values: { space?: string; server?: string }): PersonaCatalog {
   try {
     const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
+    // A `--server` that no registration names resolves to this folder's project, as launch does.
+    // Outside a project there is no catalog there, and the folder is not made into one.
+    if (values.server !== undefined && values.space === undefined && !loadMeshes().some((m) => m.server === values.server) && !isGenuineSpace(target.root))
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space registered here is at ${values.server}, and this folder is not a space's project`, {
+        remedy: "name a prepared or registered space with `--space <name>`, or run this in its project folder", target: { server: values.server },
+      });
     return catalogAt(target.root, target.space);
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
@@ -27,8 +33,10 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
     const { message, remedy } = workspaceErrorParts({ kind: "target", error });
     // Every caller selects with --space, and some take no --server, so the shared remedy's
     // `--server` would name a flag the command refuses. A prepared space is selectable by name.
-    const next = error.code === "no-meshes" ? "run `cotal up` in a project, or name a prepared or registered space with `--space <name>`" : remedy;
-    throw new CommandFailure("refused", targetErrorCode(error.code), message, next ? { remedy: next } : {});
+    // The catalog is read offline, so no running mesh is not the reason: nothing selects a space.
+    const none = error.code === "no-meshes";
+    const next = none ? "run `cotal up` in a project, or name a prepared or registered space with `--space <name>`" : remedy;
+    throw new CommandFailure("refused", targetErrorCode(error.code), none ? "no space is selected, and this folder is not a space's project" : message, next ? { remedy: next } : {});
   }
 }
 
@@ -43,8 +51,9 @@ function catalogAt(root: string, space: string): PersonaCatalog {
 
 /** Why `name` cannot name a persona, or undefined when it can. */
 export function personaNameProblem(name: string): string | undefined {
-  if (!/^[A-Za-z0-9_-]+$/.test(name)) return "persona names use letters, digits, '_' or '-'";
-  try { assertValidName(name); } catch { return "invalid persona name"; }
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return `persona names use letters, digits, '_' or '-', up to ${MAX_NAME_LENGTH} characters`;
+  if (name.length > MAX_NAME_LENGTH) return `persona names are at most ${MAX_NAME_LENGTH} characters; this one has ${name.length}`;
+  try { assertValidName(name); } catch (error) { return (error as Error).message; }
   return undefined;
 }
 
@@ -105,22 +114,30 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
   try {
     const current = readPersonaSource(path);
     if (!sameSource(expected, current))
-      throw new CommandFailure("refused", "CONFLICT", `persona changed while the operation was open: ${path}`, { remedy: "read the current definition and retry" });
+      throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
     if (bytes === undefined) unlinkSync(path);
     else writeSecretFileAtomic(path, bytes);
   } finally { lock.release(); }
 }
 
-/** Own a private draft and remove only that draft. A cleanup failure is not a successful operation. */
-function withDraft<T>(name: string, action: (path: string) => T): T {
+/** Own a private draft and remove only that draft. A cleanup failure is not a successful operation.
+ *  A failure that `keep` accepts leaves the draft in place, because it holds work that was not saved. */
+function withDraft<T>(name: string, action: (path: string) => T, keep?: (error: unknown) => boolean): T {
   const dir = mkdtempSync(join(tmpdir(), "cotal-persona-"));
+  let kept = false;
   try {
     hardenPrivate(dir, "dir");
     return action(join(dir, `${name}.md`));
   }
+  catch (error) {
+    kept = keep?.(error) === true;
+    throw error;
+  }
   finally {
-    try { rmSync(dir, { recursive: true }); }
-    catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", `cannot remove private persona draft: ${dir}`, { changed: [{ kind: "private-draft", path: dir }], remedy: "remove the private draft after reviewing the operation outcome" }); }
+    if (!kept) {
+      try { rmSync(dir, { recursive: true }); }
+      catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", `cannot remove private persona draft: ${dir}`, { changed: [{ kind: "private-draft", path: dir }], remedy: "remove the private draft after reviewing the operation outcome" }); }
+    }
   }
 }
 
@@ -147,7 +164,7 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
-  const edited = withDraft(name, draft => {
+  withDraft(name, draft => {
     writeSecretFile(draft, source.bytes);
     const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
     const result = spawnSync(`${editor} ${quoted}`, { shell: true, stdio: "inherit" });
@@ -161,7 +178,14 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
       throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`);
     const edited = requirePersonaSource(draft).bytes;
     validatePersona(edited, path);
-    return edited;
-  });
-  commitPersona(path, source, edited);
+    try { commitPersona(path, source, edited); }
+    catch (error) {
+      if (!isCommandFailure(error) || error.code !== "CONFLICT") throw error;
+      // The edit was not saved, so the draft stays and the refusal says where it is.
+      const removed = readPersonaSource(path) === undefined;
+      throw new CommandFailure("refused", "CONFLICT", error.message, {
+        remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
+      });
+    }
+  }, (error) => isCommandFailure(error) && error.code === "CONFLICT");
 }

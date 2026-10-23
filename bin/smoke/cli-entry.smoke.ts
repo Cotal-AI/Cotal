@@ -17,7 +17,7 @@
  * Run: pnpm smoke:cli-entry
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -265,6 +265,17 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("control: personas edit runs the editor", edited.status === 0 && edited.stdout.includes('saved "x"'), shown(edited));
   const forbidden = cotal(["personas", "edit", "x", "--no-input"], persona, editor);
   check("personas edit --no-input refuses to open an editor", forbidden.status === 1 && /--no-input forbids one/.test(forbidden.stderr) && !forbidden.stdout.includes("saved"), shown(forbidden));
+  // An edit refused because the persona changed or was removed while the editor was open keeps the
+  // draft and names it. The editors write to the draft, then change the catalog file behind it.
+  for (const [what, behind, next] of [["changed", "printf B >> .cotal/agents/x.md", /compare it with `cotal persona show x`/], ["was removed", "rm .cotal/agents/x.md", /restore it with `cotal persona create x --file /]] as const) {
+    const racing = `sh -c 'printf "edit-A\\n" >> "$1"; ${behind}' sh`;
+    const r = cotal(["persona", "edit", "x"], persona, { ...noSeed, VISUAL: racing, EDITOR: racing });
+    const draft = /your edit is kept in (\S+\.md);/.exec(r.stderr)?.[1];
+    const kept = draft !== undefined && existsSync(draft) && readFileSync(draft, "utf8").includes("edit-A");
+    if (draft) rmSync(dirname(draft), { recursive: true, force: true });
+    check(`persona edit refused because the persona ${what} keeps the edited draft and says how to use it`,
+      r.status === 2 && r.stderr.includes("CONFLICT") && r.stderr.includes(`persona ${what} while the operation was open`) && next.test(r.stderr) && kept, shown(r));
+  }
   // The seeded default is `default` in the catalog and launches as `default_agent`.
   const seeded = (home: string) => {
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
@@ -307,6 +318,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("r\\u001b]0;PWN\\u0007R") && r.stdout.includes("d\\u001b[2JD") &&
         (argv.length === 2 || r.stdout.includes("    body \\u001b]0;PWN\\u0007\\u001b[2JB")), shown(r));
   }
+  // A parser diagnostic spans lines, and each is printed on its own rather than as escaped breaks.
+  const unparseable = cotal(["personas", "list"], (home) => {
+    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", ".cotal", "agents", "broken.md"), "---\nname: broken\nmodel: [unclosed\n---\nbody\n");
+  }, noSeed);
+  check("personas list prints a YAML diagnostic as lines, with no escaped line breaks",
+    unparseable.status === 0 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
   const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
   const piped = cotal(["personas", "show", "h"], hostile, noSeed);
   check("personas show piped writes the file byte for byte", piped.status === 0 && piped.stdout.endsWith(`\n${card}`), shown(piped));
@@ -315,6 +333,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
   }
+  // A name refusal says which rule it broke.
+  for (const [name, reason] of [["a".repeat(200), "persona names are at most 128 characters; this one has 200"], ["a.b", "persona names use letters, digits, '_' or '-', up to 128 characters"]]) {
+    const r = cotal(["persona", "create", name, "--prompt", "x", "--subscribe", ""], persona, noSeed);
+    check(`persona create refuses a ${name.length > 3 ? "200-character" : "dotted"} name with its reason`, r.status === 1 && [`✗ ${reason}`, `! ${reason}`].some((line) => r.stderr.startsWith(line)), shown(r));
+  }
+  // A --server that no registration names reads the project in this folder, as launch does.
+  const inProject = cotal(["persona", "--json", "--server", "nats://127.0.0.1:1"], persona, noSeed);
+  check("control: in a project, persona --server <unregistered> lists that project's catalog",
+    inProject.status === 0 && /"kind":"personas","items":\[\{"name":"x"/.test(inProject.stdout), shown(inProject));
 }
 
 // ── team check names each located manifest problem, without quoting a persona file ───────────────

@@ -96,6 +96,20 @@ if (mode === "plain" || mode === "stdio") {
     }
   }
 
+  console.log("1b. --plain writes the rows' punctuation in ASCII");
+  {
+    const { session } = standIn({ retirement: "retired", connectionClosed: "confirmed", message: "" }, true);
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let printed = "";
+    output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    await new Promise((r) => setTimeout(r, 50));
+    input.end();
+    await run;
+    check("--plain prints the header and messages with no non-ASCII punctuation", !/[^\x00-\x7F]/.test(printed) && /^me - local\.k3j2 - session \.\.\.[A-Z0-9]+ - /m.test(printed) && /hello 1/.test(printed), printed.slice(0, 600));
+  }
+
   console.log("2. a reader that closes the output still closes the session");
   /** Run one front end as a child and close its stdout pipe at once. Its stdin stays open. */
   const run = (frontEnd: "plain" | "stdio"): Promise<{ code: number | null; stderr: string }> =>

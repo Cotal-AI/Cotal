@@ -8,6 +8,7 @@
 import { EventEmitter } from "node:events";
 import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../src/view/mesh-view.js";
+import { runLog } from "../src/render.js";
 import { watchReport } from "../src/watch-data.js";
 import {
   chatSubject,
@@ -174,5 +175,41 @@ check(
 );
 
 await view.stop();
+
+// ---- the line stream (console --plain and pipes): ASCII on --plain and under a non-UTF-8 locale ----
+/** The lines one runLog prints for a join and two feed entries, under `LC_ALL=locale`. */
+async function streamLines(plain: boolean, locale: string): Promise<string[]> {
+  const lines: string[] = [];
+  const log = console.log;
+  const prior = process.env.LC_ALL;
+  const ep = new MockEndpoint();
+  process.env.LC_ALL = locale;
+  console.log = (...args: unknown[]) => { lines.push(args.join(" ").replace(/\x1b\[[0-9;]*m/g, "")); };
+  try {
+    void runLog(ep as unknown as CotalEndpoint, space, undefined, plain);
+    await wait(20);
+    ep.emit("presence", { type: "join", presence: roster[0] });
+    ep.tapHandler!(chatSubject(space, DEV_OWNER, ids.alice, "general"), msg(ids.alice, "alice", { channel: "general" }, "a → b", "p1"));
+    for (const [to, id] of [[ids.bob, "p2"], [ids.carol, "p3"], [ids.bob, "p4"]] as const)
+      ep.tapHandler!(unicastSubject(space, DEV_OWNER, to, DEV_OWNER, ids.alice), msg(ids.alice, "alice", { to }, "ping", id));
+    await wait(550);
+  } finally {
+    console.log = log;
+    if (prior === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = prior;
+  }
+  return lines;
+}
+for (const [what, plain, locale] of [["--plain under a UTF-8 locale", true, "C.UTF-8"], ["a pipe under LC_ALL=C", false, "C"]] as const) {
+  const text = (await streamLines(plain, locale)).join("\n");
+  check(`line stream on ${what} is ASCII: no status marks, -> for the arrow, x for a count`,
+    !/[^\x00-\x7F]/.test(text) && /alice\/alice working - progress unknown/.test(text) && /alice\/alice -> #general: a -> b/.test(text) && /\(3x\)/.test(text));
+}
+{
+  const text = (await streamLines(false, "C.UTF-8")).join("\n");
+  check("control: a pipe under a UTF-8 locale draws the status mark, the arrow and the count sign",
+    /● working · progress unknown/.test(text) && /alice\/alice → #general: a → b/.test(text) && /\(3×\)/.test(text));
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

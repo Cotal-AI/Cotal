@@ -3096,8 +3096,13 @@ cotal persona remove <name> --yes
 selected space's local `.cotal/agents` catalog without connecting, refreshing a remote catalog
 or seeding connectors. `--space` and `--server` select the same root used by launch. A prepared
 space has an offline catalog before it is started. Failed target resolution never falls back
-to the current directory. Remote `--on` operations refuse as unsupported here.
+to the current directory: a `--server` that no registration names reads the project in this
+folder, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing. With
+no space selected and no project here, the refusal says so. Remote `--on` operations refuse as
+unsupported here.
 
+A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
+which rule it broke.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
 must name the requested persona and keep their original bytes. A file that names another persona is
@@ -3116,7 +3121,9 @@ preferences). The value runs as a shell command, so quote a path that holds spac
 set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
 and names the setting to fix. A successful editor exit and valid definition are required before
 saving. A changed
-or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
+or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
+refusal says which one happened and keeps your edited draft in its private folder, naming it, so
+the edit is not lost. Local
 CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
@@ -3829,7 +3836,8 @@ is registered, unregistered, or could not be read. The space's native policy dec
 is allowed, and nothing creates registry metadata.
 
 The terminal view needs a terminal for input and output; without one, `chat` refuses and names
-`--plain` and `--stdio`. `--plain` is the line flow, with a separate confirmation for each send.
+`--plain` and `--stdio`. `--plain` is the line flow, with a separate confirmation for each send,
+and it writes its punctuation in ASCII as every plain report does.
 `--stdio` runs the NDJSON participant protocol for programs: requests on stdin, records on stdout,
 diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
@@ -4106,7 +4114,9 @@ cotal console [--plain] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to watch |
 | `--plain` | off | Line stream instead of the TUI |
 
-A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. On a
+A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. The
+line stream is also what a pipe gets. On `--plain`, and under a locale that is not UTF-8, it writes
+no status marks and its punctuation in ASCII. On a
 user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
 `admin`. Inside the TUI, operator control (`D` kill, `:spawn`, `:status`, `:purge`) rides the
 same per-action instrument path as `cotal stop` and `cotal ps`, never the observer; a raw
@@ -4940,7 +4950,9 @@ is never sent. The bare form prints the level in force, what set it (the setting
 `COTAL_TELEMETRY`, `DO_NOT_TRACK` or `COTAL_TELEMETRY_DISABLED`), the install id, the intake URL and
 the settings file. A level argument writes the file; `on` is an alias of `regular`, and writing the
 level the file already holds is a `no-op`. A level the environment forces still wins, and the
-report says so. `cotal telemetry` itself sends nothing.
+report says so. Under `DO_NOT_TRACK`, `COTAL_TELEMETRY_DISABLED` or `COTAL_TELEMETRY=off` the file
+is neither read nor created, so a level argument saves nothing and is a `no-op` with an
+`ENVIRONMENT_OPT_OUT` warning. `cotal telemetry` itself sends nothing.
 
 The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEMETRY` set to
 anything but a level refuses `USAGE_INVALID`, and a settings file that does not validate refuses

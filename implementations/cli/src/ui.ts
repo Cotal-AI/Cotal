@@ -20,16 +20,18 @@ export function stderrLine(prefix: string, text: string, paint: (s: string) => s
   for (const line of hang(lead, ascii ? plainPunctuation(text) : text, terminalWidth(process.stderr))) console.error(paint(line));
 }
 
-export function statusBadge(status: PresenceStatus): string {
+/** A presence status in words, after its mark unless `marks` is false. */
+export function statusBadge(status: PresenceStatus, marks = true): string {
+  const mark = (glyph: string): string => (marks ? `${glyph} ` : "");
   switch (status) {
     case "working":
-      return c.green("● working · progress unknown");
+      return c.green(`${mark("●")}working · progress unknown`);
     case "waiting":
-      return c.yellow("◐ waiting");
+      return c.yellow(`${mark("◐")}waiting`);
     case "idle":
-      return c.gray("○ idle");
+      return c.gray(`${mark("○")}idle`);
     case "offline":
-      return c.dim("⨯ offline");
+      return c.dim(`${mark("⨯")}offline`);
   }
 }
 

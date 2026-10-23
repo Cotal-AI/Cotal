@@ -144,7 +144,11 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   for (const e of entries) {
     const name = oneLine(e.name).padEnd(pad);
     if (e.error) {
-      console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(e.error))}`);
+      // A parser diagnostic spans lines, the reason and then an excerpt with a caret under the
+      // fault, so each line is escaped and printed on its own.
+      const [reason = "", ...excerpt] = e.error.trimEnd().split(/\r?\n/).filter((line) => line.trim());
+      console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(reason))}`);
+      for (const line of excerpt) console.log(c.dim(`    ${oneLine(line)}`));
       continue;
     }
     const d = e.def!;
