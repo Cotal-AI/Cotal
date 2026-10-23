@@ -67,8 +67,10 @@ for (const mode of ["default", "cluster", "stream-limit", "observer-denied", "ac
       continue;
     }
     const foreign = mode === "observer-foreign" ? await createBrokerAuth("owned-foreign-observer") : undefined;
+    // The bootstrap's deadline starts after service setup, so the timeout cell times from the callback.
+    let observerCalledAt = 0;
     const observationCreds = async () => {
-      if (mode === "observer-timeout") await new Promise(r => setTimeout(r, 11_000));
+      if (mode === "observer-timeout") { observerCalledAt = Date.now(); await new Promise(r => setTimeout(r, 11_000)); }
       if (mode === "observer-denied") return creds;
       if (mode === "observer-broad" || mode === "observer-expired" || mode === "observer-long") {
         const identity = newIdentity();
@@ -80,7 +82,6 @@ for (const mode of ["default", "cluster", "stream-limit", "observer-denied", "ac
       const sys = foreign?.sys ?? a.auth.sys;
       return mintServiceCallerPayloadObserverCreds({ pub: sys.pub, signingSeed: sys.signingSeed! });
     };
-    const started = Date.now();
     let error = "";
     try {
       service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "p-bootstrap" }, space: a.space,
@@ -92,7 +93,7 @@ for (const mode of ["default", "cluster", "stream-limit", "observer-denied", "ac
       c.check("actual standalone broker at floor starts and records real bound assertion", !!service && row?.operation === "PUT" && JSON.parse(new TextDecoder().decode(row.value)).broker?.serverId === nc.info?.server_id, error);
     } else {
       c.check(`${mode}: actual bootstrap refuses and creates no assertion`, !service && !!error && row === null, error);
-      if (mode === "observer-timeout") c.check("observer callback cannot outlive original ten-second bootstrap deadline", Date.now() - started < 11_000 && error.includes("deadline"), error);
+      if (mode === "observer-timeout") c.check("observer callback cannot outlive original ten-second bootstrap deadline", Date.now() - observerCalledAt < 11_000 && error.includes("deadline"), error);
       if (mode === "cluster") c.check("configured real JetStream cluster refuses specifically unsupported topology", error.includes("standalone"), error);
       if (mode === "default") c.check("default1MiB refusal names exact required2098176-byte configuration", error.includes("1048576") && error.includes("2098176"), error);
       const claim = await kv.get("plane");
