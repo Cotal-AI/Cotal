@@ -19,6 +19,7 @@ import { connectCheck } from "./connect.js";
 import { registerDaemon } from "./register.js";
 import { createServiceConnections } from "./service.js";
 import { homeCotalDir } from "@cotal-ai/workspace";
+import { acquireLock, type HeldLock } from "@cotal-ai/core";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 export const MAX_REQUESTS_PER_CONNECTION = 64;
@@ -52,8 +53,9 @@ export interface ServeOptions {
   readonly peerUid: PeerUid;
   readonly uid?: number;
   readonly log?: (line: string) => void;
-  /** Where a sign-in persists its session. Defaults to the machine-home Cotal directory, where
-   *  `cotal login` keeps it. */
+  /** Where the daemon keeps its sign-in session and its own per-space state. Defaults to the
+   *  machine-home Cotal directory, where `cotal login` keeps the session. An explicit `--daemon-home`
+   *  passes its directory here together with {@link DaemonPaths.lock}. */
   readonly sessionDir?: string;
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
@@ -78,8 +80,32 @@ function listen(server: Server, path: string): Promise<void> {
 export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   assertLinux();
   const uid = opts.uid ?? process.geteuid!();
+  const { paths } = opts;
+  // An explicit daemon home holds its lifetime lock before touching any endpoint path, so a second
+  // serve for the same home refuses here and never reaches the socket. The stock lock reclaims a dead
+  // owner's record; a stale socket is still refused below and never removed.
+  let lock: HeldLock | undefined;
+  if (paths.lock !== undefined) {
+    const path = paths.lock;
+    lock = acquireLock(path, {
+      waitMs: 0,
+      label: "cotal daemon",
+      onTimeout: (owner) => new EndpointRefusal("LOCK_HELD", `${path} is held by a live process (pid ${owner.pid}): a daemon already serves this daemon home. Nothing was changed`),
+    });
+  }
+  try {
+    return await serveLocked(opts, uid, lock);
+  } catch (e) {
+    // Every failed start releases the lock it took. A started daemon releases it only in close().
+    lock?.release();
+    throw e;
+  }
+}
+
+async function serveLocked(opts: ServeOptions, uid: number, lock: HeldLock | undefined): Promise<RunningDaemon> {
   const log = opts.log ?? (() => {});
   const { paths } = opts;
+  if (paths.parent !== undefined) ensureDir(paths.parent, uid);
   const dirOutcome = ensureDir(paths.dir, uid);
   refuseExisting(paths.socket);
 
@@ -291,6 +317,10 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }
+      // The lock is released only once this daemon's own endpoint is gone. If its socket is still
+      // published (the removal above threw), the lock stays held until this process exits, so no
+      // other serve can start beside a live endpoint.
+      lock?.release();
     })();
     return closed;
   };

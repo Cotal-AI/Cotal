@@ -8,11 +8,12 @@
  */
 import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerUid } from "./endpoint.js";
+import { inspectLock, processStartToken } from "@cotal-ai/core";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
 import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
-export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"> & { readonly space: string }): Promise<
+export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string }): Promise<
   { readonly ok: true; readonly result: ConnectCheckResult } | { readonly ok: false; readonly code: string; readonly message: string }> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
@@ -28,7 +29,7 @@ export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "
 }
 
 /** Ask the daemon to submit its own service registration for `space` and report the space's answer. */
-export async function registerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"> & { readonly space: string }): Promise<
+export async function registerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string }): Promise<
   { readonly ok: true; readonly result: RegisterResult } | { readonly ok: false; readonly code: string; readonly message: string }> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
@@ -48,7 +49,7 @@ export interface ClientCounters {
 }
 
 /** Ask the daemon to connect, disconnect or report its own service connection to `space`. */
-export async function serviceViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"> & { readonly space: string; readonly op: "service-connect" | "service-disconnect" | "service-status" }): Promise<
+export async function serviceViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string; readonly op: "service-connect" | "service-disconnect" | "service-status" }): Promise<
   { readonly ok: true; readonly result: ServiceConnectionResult } | { readonly ok: false; readonly code: string; readonly message: string }> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
@@ -67,6 +68,9 @@ export async function serviceViaDaemon(opts: Pick<QueryOptions, "paths" | "peerU
 export interface QueryOptions {
   readonly paths: DaemonPaths;
   readonly peerUid: PeerUid;
+  /** Required with an explicit daemon home ({@link DaemonPaths.lock}): the peer's kernel pid, which
+   *  must be the live owner of that home's lifetime lock. */
+  readonly peerPid?: PeerPid;
   readonly uid?: number;
   readonly timeoutMs?: number;
   /** Test hook: observe what the client wrote, including that it wrote nothing. */
@@ -138,11 +142,13 @@ export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
 
 /** Connect only after the directory and socket checks pass, and keep the connection only when the
  *  kernel reports the listener as this same uid. Nothing is written before both. */
-async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid" | "timeoutMs">): Promise<Socket> {
+async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid" | "timeoutMs">): Promise<Socket> {
   assertLinux();
   const uid = opts.uid ?? process.geteuid!();
   const { paths } = opts;
+  if (paths.lock !== undefined && opts.peerPid === undefined) throw new Error("an explicit daemon home needs the peer pid check");
   try {
+    if (paths.parent !== undefined) checkDir(paths.parent, uid);
     checkDir(paths.dir, uid);
     checkSocket(paths.socket, uid);
   } catch (e) {
@@ -161,10 +167,22 @@ async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"
     sock.destroy();
     throw new EndpointRefusal("PEER_UID_MISMATCH", `the process answering at ${paths.socket} runs as uid ${peer}, not ${uid}; nothing was sent`);
   }
+  if (paths.lock !== undefined) {
+    // Same uid is not enough for an explicit daemon home: the answering process must be the one
+    // holding that home's lifetime lock, the same process (pid and start token) the lock recorded.
+    let pid: number | undefined;
+    try { pid = opts.peerPid!(sock); } catch { pid = undefined; }
+    const held = inspectLock(paths.lock);
+    const owner = held.state === "active" ? held.owner : undefined;
+    if (pid === undefined || owner === undefined || owner.pid !== pid || owner.start === undefined || processStartToken(pid) !== owner.start) {
+      sock.destroy();
+      throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);
+    }
+  }
   return sock;
 }
 
-export interface LoginOptions extends Pick<QueryOptions, "paths" | "peerUid" | "uid"> {
+export interface LoginOptions extends Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> {
   readonly idp: string;
   readonly clientId?: string;
   readonly onPrompt: (prompt: LoginPrompt) => void;

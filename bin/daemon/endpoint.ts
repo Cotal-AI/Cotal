@@ -11,6 +11,7 @@
  * this uid, or not exactly 0700 is refused, never chmod-ed. Any pre-existing entry at the socket
  * path is refused, never removed, so this code never unlinks a socket it did not create.
  */
+import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
@@ -32,6 +33,8 @@ export type EndpointProblemCode =
   | "SOCKET_WRONG_MODE"
   | "ALREADY_RUNNING"
   | "PEER_UID_MISMATCH"
+  | "PEER_NOT_LOCK_OWNER"
+  | "LOCK_HELD"
   | "NOT_RUNNING";
 
 /** A refusal at the local endpoint, typed so callers and tests can count it. */
@@ -47,6 +50,11 @@ export class EndpointRefusal extends Error {
 export interface DaemonPaths {
   readonly dir: string;
   readonly socket: string;
+  /** Explicit daemon home only: the shared runtime directory `dir` lives in, created and checked first. */
+  readonly parent?: string;
+  /** Explicit daemon home only: its lifetime lock. `serve` holds it while it runs; a client sends
+   *  nothing unless the process answering at `socket` is this lock's live owner. */
+  readonly lock?: string;
 }
 
 /** The fixed endpoint location for this user: `$XDG_RUNTIME_DIR/cotal/daemon.sock`. */
@@ -60,6 +68,18 @@ export function daemonPaths(env: NodeJS.ProcessEnv = process.env): DaemonPaths {
   }
   const dir = join(runtime, "cotal");
   return { dir, socket: join(dir, "daemon.sock") };
+}
+
+/**
+ * The endpoint of the daemon whose home is `daemonHome` (an absolute, canonical path):
+ * `$XDG_RUNTIME_DIR/cotal/home-<16 hex of sha256(daemonHome)>/daemon.sock`, with its lifetime lock
+ * at `<daemonHome>/daemon.lock`. Derived, so client and server agree with no extra record, and
+ * disjoint from the legacy socket.
+ */
+export function daemonPathsFor(daemonHome: string, env: NodeJS.ProcessEnv = process.env): DaemonPaths {
+  const base = daemonPaths(env);
+  const dir = join(base.dir, `home-${createHash("sha256").update(daemonHome).digest("hex").slice(0, 16)}`);
+  return { parent: base.dir, dir, socket: join(dir, "daemon.sock"), lock: join(daemonHome, "daemon.lock") };
 }
 
 export function assertLinux(platform: NodeJS.Platform = process.platform): void {
@@ -133,3 +153,5 @@ export function refuseExisting(path: string): void {
 
 /** The peer's uid on a connected unix socket, read by the kernel via the stock seat helper. */
 export type PeerUid = (sock: Socket) => number;
+/** The peer's pid on a connected unix socket, read the same way. */
+export type PeerPid = (sock: Socket) => number;
