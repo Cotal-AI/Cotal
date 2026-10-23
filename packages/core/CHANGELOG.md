@@ -1,5 +1,20 @@
 # @cotal-ai/core
 
+## 0.100.1
+
+### Patch Changes
+
+- 8bb8900: Concurrent `cotal channel set` writes on different fields of one channel no longer drop one of them. A channel registry write now lands on the revision it read, and a write that loses the race to another writer reads the entry again and merges again, so each confirmed field stays saved. A write that keeps losing refuses with `CONFLICT` and saves nothing, where before each writer printed `Channel saved` even when another writer overwrote its field. `channel defaults` and the runtime's channel writes use the same path.
+- 546b661: A `resolveService` or `describeEndpoint` call whose signal aborts while the describe waits for its
+  reply now rejects with the signal's reason, as an abort before the describe or between store reads
+  already did. It used to reject with an `unavailable` envelope error, the code a real transport
+  failure carries, so a caller could not tell a cancellation from an outage. A signal that aborts
+  with a `TimeoutError` still reports the unanswered describe deadline.
+- b1d2cb5: A resumed endpoint registration now clears only the repair cursor its own freeze saved. Before, once its
+  reopen committed it deleted whatever cursor was stored, so a second registration of the same instance
+  that had frozen the reopened gate in between lost its cursor, refused with "the repair cursor ... lost
+  its CAS", and left the gate frozen for reconciliation.
+
 ## 0.100.0
 
 ### Patch Changes

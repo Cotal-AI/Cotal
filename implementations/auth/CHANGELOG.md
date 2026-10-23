@@ -1,5 +1,23 @@
 # @cotal-ai/auth
 
+## 0.100.1
+
+### Patch Changes
+
+- ced5b4e: `cotal auth retire` said only that this CLI "has no supported retirement instrument", with a Next
+  that named no command, while help described it as a working route. Help now says it is not available
+  here, and the refusal says that one minted credential cannot be revoked on its own and names the
+  lever that works: rotating the space identity with `cotal reset space <space>` (or `cotal clean all
+  --force`), which stops every credential the space issued.
+- 7082ed8: `cotal service-endpoint approve --caller-ceiling <capabilities>` now works. Each named capability becomes a ceiling entry, pinned to the proposed instance, for every proposed command that declares it. Before, the names were sent as bare strings and the host refused every approval that carried a ceiling with "endpoint caller policy: expected an object". A capability no proposed command declares, or one a targeted command declares, is refused before anything is sent.
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [86b2cd5]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/lang@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
 ## 0.100.0
 
 ### Patch Changes

@@ -1,5 +1,20 @@
 # @cotal-ai/cli
 
+## 0.100.1
+
+### Patch Changes
+
+- 8bb8900: Concurrent `cotal channel set` writes on different fields of one channel no longer drop one of them. A channel registry write now lands on the revision it read, and a write that loses the race to another writer reads the entry again and merges again, so each confirmed field stays saved. A write that keeps losing refuses with `CONFLICT` and saves nothing, where before each writer printed `Channel saved` even when another writer overwrote its field. `channel defaults` and the runtime's channel writes use the same path.
+- 4bce73e: `cotal up` in a project whose `.cotal` this account cannot write, and `cotal persona edit` with a
+  `TMPDIR` that is missing, not a folder or not writable, now refuse with exit 2 and name the folder
+  and a next step, before anything is started or written. They used to end `OPERATION_UNKNOWN` (exit 3)
+  with a raw `EACCES` or `ENOENT` and the name of an internal file.
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
 ## 0.100.0
 
 ### Patch Changes
