@@ -25,8 +25,9 @@ import {
   createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
+import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { canonicalJson, contractDigest } from "./canonical.js";
-import type { ServiceAuthorityResult, ServiceRegistration } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
+import type { ServiceAuthorityResult, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
@@ -1722,20 +1723,84 @@ async function verifiedServeSurface(
   return { surface, commands, clusters, journalClass };
 }
 
-/** The payload of a compact JWS, decoded and not verified: the guest seam binds the bearer it
- *  will present to the witness it serves under; the signature is the broker callout's check. */
-function jwsPayload(token: string): Record<string, unknown> {
-  const parts = token.split(".");
-  let payload: unknown;
-  try {
-    if (parts.length !== 3) throw new Error();
-    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-  } catch {
-    throw new EpEnvelopeError("permission-denied", "the access bearer is not a compact JWS with a JSON payload; nothing unreadable binds a serve grant (SPEC 13.9)");
-  }
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload))
-    throw new EpEnvelopeError("permission-denied", "the access bearer payload is not an object; nothing unreadable binds a serve grant (SPEC 13.9)");
-  return payload as Record<string, unknown>;
+/** One published Ed25519 verification key of the service authority's issuer, as its JWKS lists
+ *  it. Only the public coordinate is read; any other member is ignored. */
+export interface ServiceIssuerKey {
+  kty: "OKP";
+  crv: "Ed25519";
+  kid: string;
+  x: string;
+}
+
+/** What makes a guest's access bearer a signed credential rather than bytes it was handed: the
+ *  exact `iss` the pinned authority mints and the keys that origin publishes at its JWKS. The
+ *  guest reads both from the origin it already pins for registration; the bearer never names
+ *  where its key comes from. */
+export interface GuestServeAuthenticity {
+  issuer: string;
+  keys: readonly ServiceIssuerKey[];
+  /** The validator's clock in Unix seconds; defaults to now. */
+  nowSec?: number;
+}
+
+/** The user-token `ver` a service access bearer carries (the host validator's constant). */
+const SERVICE_ACCESS_BEARER_VER = 1;
+/** Clock tolerance on `iat` and `nbf` only; expiry is refused at the original second (SPEC 13.9). */
+const SERVICE_ACCESS_CLOCK_TOLERANCE_SEC = 5;
+
+// A declared `never` return narrows the control flow after each call; an inferred arrow does not.
+function refuseBearer(why: string): never {
+  throw new EpEnvelopeError("permission-denied", `the access bearer ${why}; an unverified bearer binds no serve grant (SPEC 13.9)`);
+}
+const closedRecord = (value: unknown, fields: readonly string[]): Record<string, unknown> | undefined =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    && fields.every((k) => Object.hasOwn(value, k)) && Object.keys(value).every((k) => fields.includes(k))
+    ? (value as Record<string, unknown>) : undefined;
+const jsonPart = (part: string): unknown => {
+  try { return JSON.parse(Buffer.from(part, "base64url").toString("utf8")); } catch { return undefined; }
+};
+
+/**
+ * Verify a service access bearer the way the host's callout does, with the issuer's published
+ * key: EdDSA over the compact JWS with the key the header's `kid` names, no embedded key
+ * material, the closed service-access claim set (SPEC 13.9), the exact issuer, the space as the
+ * only audience, the registered owner as subject, the fixed at-most-60-second lifetime, and the
+ * serve duty on exactly `witness`. Returns nothing: a bearer that does not verify refuses.
+ */
+function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationWitness, auth: GuestServeAuthenticity): void {
+  const parts = bearer.split(".");
+  if (parts.length !== 3 || parts.some((p) => !/^[A-Za-z0-9_-]+$/.test(p))) refuseBearer("is not a compact JWS");
+  const header = closedRecord(jsonPart(parts[0]), ["alg", "kid"]);
+  if (!header || header.alg !== "EdDSA" || typeof header.kid !== "string" || !header.kid || header.kid.length > 256)
+    refuseBearer("header is not {alg: EdDSA, kid}");
+  const key = auth.keys.find((k) => k.kid === header!.kid);
+  if (!key || key.kty !== "OKP" || key.crv !== "Ed25519" || typeof key.x !== "string") refuseBearer(`names a kid the issuer does not publish`);
+  let publicKey;
+  try { publicKey = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: key.x }, format: "jwk" }); } catch { refuseBearer("names a published key that does not import"); }
+  if (!verifySignature(null, Buffer.from(`${parts[0]}.${parts[1]}`), publicKey!, Buffer.from(parts[2], "base64url")))
+    refuseBearer("signature does not verify under the issuer's published key");
+
+  const payload = closedRecord(jsonPart(parts[1]), ["iss", "aud", "sub", "iat", "nbf", "exp", "scope", "ver", "act"]);
+  if (!payload) refuseBearer("payload is not the closed service access claim set");
+  const act = closedRecord(payload!.act, ["owner", "actor", "scope", "lifecycleUid", "credentialId", "view", "service"]);
+  const service = act && closedRecord(act.service, ["duty", "witness"]);
+  const { iat, nbf, exp } = payload! as { iat: unknown; nbf: unknown; exp: unknown };
+  const now = auth.nowSec ?? Math.floor(Date.now() / 1000);
+  if (payload!.iss !== auth.issuer) refuseBearer("was not minted by the pinned issuer");
+  if (payload!.aud !== witness.space) refuseBearer("is not scoped to exactly this space");
+  if (payload!.sub !== witness.principal.owner) refuseBearer("subject is not the registered owner");
+  if (payload!.ver !== SERVICE_ACCESS_BEARER_VER || !Array.isArray(payload!.scope) || payload!.scope.length !== 0)
+    refuseBearer("version or scope is not the service access shape");
+  if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(nbf) || !Number.isSafeInteger(exp) || (iat as number) < 0
+    || nbf !== iat || (exp as number) <= (iat as number) || (exp as number) - (iat as number) > SERVICE_ACCESS_TTL_SECONDS)
+    refuseBearer("lifetime is not the fixed service access lifetime");
+  if ((iat as number) > now + SERVICE_ACCESS_CLOCK_TOLERANCE_SEC) refuseBearer("is issued in the future");
+  if ((exp as number) <= now) refuseBearer("has expired");
+  if (!act || !service || act.view !== "service-endpoint" || service.duty !== "serve" || act.owner !== payload!.sub
+    || act.actor !== witness.principal.actor || act.lifecycleUid !== witness.principal.lifecycleUid
+    || act.credentialId !== witness.rootCredentialId || !Array.isArray(act.scope) || act.scope.length !== 0)
+    refuseBearer("actor claim is not the serve duty for this registered principal");
+  if (canonicalJson(service.witness) !== canonicalJson(witness)) refuseBearer("names another registration witness");
 }
 
 /**
@@ -1745,15 +1810,20 @@ function jwsPayload(token: string): Record<string, unknown> {
  * A service that registered through the service door holds a parsed `credential` result and its
  * own embedded contract closure, and no store access, so {@link authorizeServeGrant} is out of
  * its reach and {@link authorizeTrustedServeSnapshot} is the host's. This seam takes only those
- * two inputs, never a caller-selected surface, and proves the binding before it brands:
+ * inputs plus the pinned issuer's published keys, never a caller-selected surface, and proves
+ * the binding before it brands:
  *   - the result is a `credential` for the serve duty whose witness names the pinned account
  *     (the parser already bound the snapshot's owner, revisions and epoch to the witness);
- *   - the access bearer the guest will present names the same witness and the serve duty;
+ *   - the access bearer the guest will present is a signed credential: its EdDSA signature
+ *     verifies under the key the pinned issuer publishes, and its closed claims name the pinned
+ *     issuer, this space, the registered owner, the serve duty and exactly this witness
+ *     ({@link verifyServiceAccessBearer}, the host callout's checks);
  *   - the snapshot's closure set is the guest's embedded closure, digest for digest, and every
  *     artifact the host answered is byte-identical to the guest's own copy;
  *   - every closure verifies as manifest and root, the same §13.7 read the registry runs.
- * Bearer authenticity is the broker callout's check at connect, not this seam's. Pools are
- * provisioning truth a guest cannot assert, so the grant carries none.
+ * A fabricated result, witness or bearer cannot pass: the bearer must be signed by the issuer's
+ * private key for exactly this witness. Pools are provisioning truth a guest cannot assert, so
+ * the grant carries none.
  */
 export async function authorizeGuestServeGrant(args: {
   /** The pinned DATA-account public key of the authority the result came from. */
@@ -1762,6 +1832,8 @@ export async function authorizeGuestServeGrant(args: {
   result: Extract<ServiceAuthorityResult, { state: "credential" }>;
   /** The guest's embedded closure: the registration it submitted. */
   registration: ServiceRegistration;
+  /** The pinned issuer and its published keys, read from the origin the guest already pins. */
+  authenticity: GuestServeAuthenticity;
 }): Promise<EpServeGrant> {
   const { result } = args;
   if (result.state !== "credential" || result.duty !== "serve")
@@ -1774,10 +1846,7 @@ export async function authorizeGuestServeGrant(args: {
     || snapshot.spec.revision !== witness.registrationRevision || snapshot.name.authorized !== true
     || snapshot.name.revision !== witness.nameAuthorityRevision || snapshot.processEpoch !== witness.processEpoch)
     throw new EpEnvelopeError("permission-denied", "the snapshot disagrees with the registration witness (SPEC 13.9)");
-  const act = jwsPayload(result.accessBearer).act as Record<string, unknown> | undefined;
-  const service = act?.service as Record<string, unknown> | undefined;
-  if (act?.view !== "service-endpoint" || service?.duty !== "serve" || canonicalJson(service.witness) !== canonicalJson(witness))
-    throw new EpEnvelopeError("permission-denied", "the access bearer does not name this witness and the serve duty (SPEC 13.9)");
+  verifyServiceAccessBearer(result.accessBearer, witness, args.authenticity);
   const sorted = (digests: readonly string[]) => canonicalJson([...digests].sort());
   if (sorted(spec.clusterDigests) !== sorted(args.registration.clusterDigests))
     throw new EpEnvelopeError("permission-denied", `the host registered a closure set for "${spec.endpoint}" that is not the guest's embedded closure (SPEC 13.7)`);

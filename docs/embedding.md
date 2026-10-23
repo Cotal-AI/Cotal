@@ -1420,11 +1420,13 @@ as well as the signed-in login.
 
 The `credential` answer carries no store access and no serve grant, so a service turns it into the
 process-local grant `serveEndpoint` consumes with `authorizeGuestServeGrant({ accountPublicKey,
-result, registration })`: the parsed result and the service's own embedded closure, nothing
-caller-selected. It refuses another account, a bearer that names another witness or no serve
-duty, a closure set or artifact that is not the embedded one, and a closure that does not verify
-at its digest. The bearer's signature is the broker callout's check at connect.
-`authorizeTrustedServeSnapshot` stays the host's.
+result, registration, authenticity })`: the parsed result, the service's own embedded closure, and
+the pinned issuer's `iss` and published keys from that origin's `/jwks`, nothing caller-selected.
+It verifies the access bearer's EdDSA signature under the published key its `kid` names and the
+same closed claims the callout checks, so a fabricated result or bearer brands nothing. It refuses
+another account, a bearer from another issuer, space, subject or key, one that names another
+witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
+that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.
 
 For a serving connection, `serviceEndpointRenewal({ store, dir, witness })` returns that loop as a
 bearer function: pass its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
