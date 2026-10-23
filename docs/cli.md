@@ -5214,13 +5214,16 @@ order the store committed them, so the last is the current position.
 Expired pauses and ordinary steps print no answer line.
 A step whose last journal row recorded an error prints its outcome and the recorded message under
 `Step errors`, a caught failure included, with each control character shown as its `\uXXXX`
-escape. A failure raised by program code outside any step is recorded in no journal row, so the
-view shows only the `failed` state, and a hosted run's cause is in the manager's log.
+escape. A run that failed records its cause on its status. Its recorded state reads
+`failed (<code>)` in `ps` and the run view when the error carries a language code, and the run
+view prints the message under `Failure`. When a step's error is the run's failure, `Failure` names
+that step and the message stays under `Step errors`. A run that failed before its status recorded a
+cause shows only `failed`.
 `--json` on `ps` or `journal` prints each row the manager answers with (or `--local` reads) as one
 JSON object per line. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
 `journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
-reports; `programHash` is absent for a run with no recorded program), and `revoked` or
-`revocationUnreadable` when the marker says so. A `journal` row is an `activation` or a `step`. A
+reports; `programHash` is absent for a run with no recorded program), `failure` on a failed run
+with its `code` and `message`, and `revoked` or `revocationUnreadable` when the marker says so. A `journal` row is an `activation` or a `step`. A
 step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
 `status` and `errorCode` once settled, the recorded `errorMessage` of a failed or refused step,
 and `startedAt` and `endedAt` in epoch milliseconds. An open

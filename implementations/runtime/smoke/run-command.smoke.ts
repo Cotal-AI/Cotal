@@ -363,8 +363,8 @@ let P = "";
   const aid = startedId() ?? "";
   c("the asking run starts and is named", aid !== "", captured());
   const rec = await record(aid);
-  c("a program asking an agent it never spawned fails the run rather than relaying to a forged seat",
-    rec?.status?.value.state === "failed", rec?.status?.value.state);
+  c("a program asking an agent it never spawned fails the run rather than relaying to a forged seat, and the status records why",
+    rec?.status?.value.state === "failed" && rec.status.value.failure?.message.includes("is not in this run's roster") === true, rec?.status?.value);
   c("and the reason names the handle and the rule, so an operator knows what to write instead",
     refused !== undefined && refused.message.includes("is not in this run's roster") && refused.message.includes("dev#u"),
     refused?.message?.slice(0, 200));

@@ -276,6 +276,11 @@ try {
     const settled = failed?.journal.findLast((row) => row.kind === "step" && row.state === "settled");
     c("the failed wait's step row carries the recorded refusal message beside its code",
       settled?.kind === "step" && settled.errorCode === "L4000" && settled.errorMessage?.includes('is not admitted to read channel "build"') === true, failed?.journal);
+    // The run's own status records the same cause, and its run-ps row carries it through the
+    // manager's closed row schema.
+    const listed = ((await call("run-ps", undefined)).data as RunListRowT[] | undefined)?.find((row) => row.runId === waitId);
+    c("the failed run's status and its ps row record the cause",
+      failed?.status?.failure?.code === "L4000" && failed.status.failure.message.includes('is not admitted to read channel "build"') && listed?.failure?.code === "L4000", { status: failed?.status, listed });
   }
 
   console.log("A3. a checkpoint parks the hosted run; run-answer resolves it from the outside");
@@ -742,7 +747,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 72;
+const EXPECTED_CELLS = 73;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

@@ -156,6 +156,8 @@ export interface RunListRow {
   readonly holder?: string;
   readonly epoch?: number;
   readonly journalHigh?: number;
+  /** A failed run's cause, as its status records it. */
+  readonly failure?: RunStatusValue["failure"];
   readonly forkedFrom?: { readonly run: string; readonly step: string };
   /** The run's pinned `startedAt`: the logical epoch its program's `run()` reports. */
   readonly startedAt: number;
