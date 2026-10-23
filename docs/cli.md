@@ -3189,7 +3189,10 @@ refused with `SCHEMA_INVALID`, naming the file's own name and the `persona creat
 They cannot be combined with
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
 including `--subscribe ""` for no channels, and accepts `--role` and `--model`. Both refuse control
-characters with `USAGE_INVALID`. `--harness` must name a harness this machine knows, as
+characters with `USAGE_INVALID`. Each entry of `--subscribe`, `--allow-subscribe` and
+`--allow-publish` must be a valid channel name, written without `#`, and each `--subscribe` channel
+must be within `--allow-subscribe` when it is given, or creation refuses with `USAGE_INVALID`,
+naming the flag and the entry. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
