@@ -4774,7 +4774,9 @@ run is recorded; a program that does not validate is refused with every problem 
 asks the manager to take an existing run back and continue it from its step journal; the source is
 the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
-`journal` renders one run's durable records; both only inspect. An open pause prints its question.
+`journal` renders one run's durable records; both only inspect. An open pause prints its question
+under `Needs an answer`, and only then does Next offer `answer`. A pause counts as open while its
+last journal row is pending, so a settled or expired one is not listed there.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
 order the store committed them, so the last is the current position.

@@ -308,11 +308,20 @@ let P = "";
   // carries the disposition the settle named — the other half of #1439, read back the way an
   // operator reads it. Read AFTER completion: the driver appends the settle asynchronously, and a
   // journal read taken straight off the answer command can still show the pause pending.
+  reset();
   await wf(["journal", cid]);
   c("the answered checkpoint renders resolved, not the settled status ok",
     rendered("/checkpoint:approve#0", "resolved"),
     lines().filter((l) => l.includes("checkpoint")).join(" | "));
-  // The rendered journal is a summary table; the accepted answer's facts are in its JSON result.
+  // The pause's earlier pending rows stay in the journal, so only its last row may decide whether
+  // it still needs an answer.
+  c("a settled pause is no longer listed as needing an answer, and Next offers no answer",
+    !captured().includes("Needs an answer") && !captured().includes("cotal r answer"),
+    lines().filter((l) => l.includes("Needs an answer") || l.includes("r answer")).join(" | "));
+  c("the text render shows the accepted value, answerer and artifact on the pause's answered line",
+    lines().some((l) => l.includes("/checkpoint:approve#0") && l.includes("answered") && l.includes('"yes"') && l.includes("smoke") && l.includes("artifact://run-command")),
+    lines().filter((l) => l.includes("answered")).join(" | "));
+  // The JSON result carries the same facts on the settled row.
   const shown = await envelopeOf(["journal", cid]);
   const settled = (shown?.result as { view?: { journal?: JournalRowJson[] } } | undefined)?.view?.journal
     ?.find((r) => r.step === "/checkpoint:approve#0" && r.answer !== undefined);
@@ -620,7 +629,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 59;
+const DECLARED = 61;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
