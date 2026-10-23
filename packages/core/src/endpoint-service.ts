@@ -1733,9 +1733,10 @@ export interface ServiceIssuerKey {
 }
 
 /** What makes a guest's access bearer a signed credential rather than bytes it was handed: the
- *  exact `iss` the pinned authority mints and the keys that origin publishes at its JWKS. The
- *  guest reads both from the origin it already pins for registration; the bearer never names
- *  where its key comes from. */
+ *  exact `iss` the pinned authority mints and the keys that authority publishes at its JWKS. Both
+ *  must come from the registered space's authority URL the guest already pins, tenant path
+ *  included, through the auth provider; a key set chosen by the caller or read from a bare
+ *  shared origin proves nothing. The bearer never names where its key comes from. */
 export interface GuestServeAuthenticity {
   issuer: string;
   keys: readonly ServiceIssuerKey[];
