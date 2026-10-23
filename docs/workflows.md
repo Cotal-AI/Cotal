@@ -393,8 +393,11 @@ request can read the same marker and a current holder, then report its own obser
 from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
 admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
-takeover or manager restart continues the run. Revoking twice is not an error, and the first
-reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
+takeover or manager restart continues the run. An open checkpoint or `ask` stays listed under
+`Needs an answer`, but `run answer`, hosted or `--local`, refuses it with `LIFECYCLE_BLOCKED`
+naming the revoker and the reason, and files nothing, so the run stays parked at that pause. A
+marker that cannot be read refuses the answer the same way. Revoking twice is not an error, and
+the first reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
 
 `run ps`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a

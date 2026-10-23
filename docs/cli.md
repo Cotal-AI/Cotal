@@ -5247,6 +5247,8 @@ Follow-up commands printed by the CLI retain the same explicit pin and fill
 in the run ID the command named or the manager returned, only when it matches the native
 run-token shape. Keep the pin on later status, answer and resume calls.
 
+A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
+on every verb that takes one, before anything is contacted.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
 denied credential, a step in the wrong state or a program that does not validate, is refused, exit
@@ -5271,17 +5273,21 @@ under `Needs an answer`, and only then does Next offer `answer`. A pause counts 
 last journal row is pending, so a settled or expired one is not listed there.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
-order the store committed them, so the last is the current position.
+order the store committed them, so the last is the current position. A value longer than 120
+characters is cut there, with a line that says so; `--json` carries it whole.
 Expired pauses and ordinary steps print no answer line.
 A step whose last journal row recorded an error prints its outcome and the recorded message under
 `Step errors`, a caught failure included, with each control character shown as its `\uXXXX`
-escape. A failure raised by program code outside any step is recorded in no journal row, so the
-view shows only the `failed` state, and a hosted run's cause is in the manager's log.
+escape. A run that failed records its cause on its status. Its recorded state reads
+`failed (<code>)` in `ps` and the run view when the error carries a language code, and the run
+view prints the message under `Failure`. When a step's error is the run's failure, `Failure` names
+that step and the message stays under `Step errors`. A run that failed before its status recorded a
+cause shows only `failed`.
 `--json` on `ps` or `journal` prints each row the manager answers with (or `--local` reads) as one
 JSON object per line. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
 `journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
-reports; `programHash` is absent for a run with no recorded program), and `revoked` or
-`revocationUnreadable` when the marker says so. A `journal` row is an `activation` or a `step`. A
+reports; `programHash` is absent for a run with no recorded program), `failure` on a failed run
+with its `code` and `message`, and `revoked` or `revocationUnreadable` when the marker says so. A `journal` row is an `activation` or a `step`. A
 step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
 `status` and `errorCode` once settled, the recorded `errorMessage` of a failed or refused step,
 and `startedAt` and `endedAt` in epoch milliseconds. An open
@@ -5301,8 +5307,12 @@ required ([workflows](workflows.md)).
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
-`answer`. An answer without `--value` carries no value: the step settles as answered, and the
-program's checkpoint result has no `value`. The receipt of `answer` and `amend` names the step, the
+`answer`, and a revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. An
+answer without `--value` carries no value: the step settles as answered, and the
+program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
+anything is sent when the record would not hold what you typed: an object that names a key twice,
+a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
+deep. The receipt of `answer` and `amend` names the step, the
 value it filed or that none was given, any artifact and the answer id. With `--json` they are in
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
