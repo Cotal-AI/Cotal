@@ -82,7 +82,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -954,6 +954,13 @@ interface ProvisionedUserAgent {
   enrolled?: { material: ManagedEnrollment; actorToken: string };
 }
 
+/** A user-mode provisioning refusal. `refused` is the host's code when the host refused the
+ *  enrollment and the attempt removed every secret it had staged, so it left nothing behind. */
+interface UserAgentRefusal {
+  error: string;
+  refused?: EpErrorCode;
+}
+
 interface ManagedAgent {
   name: string;
   role?: string;
@@ -1101,6 +1108,10 @@ export interface SpawnHooks {
    *  teardown, or a launch file written to disk. A refusal before it changed nothing, so the
    *  action path answers it `not-executed` (SPEC 13.3); one after it keeps an unknown outcome. */
   onEffect?: () => void;
+  /** Fires when a refusal after the first effect left nothing behind: the host refused the agent's
+   *  enrollment with `code`, and the spawn removed every secret it had staged. The action path
+   *  answers it `not-executed` with that code, as it answers a refusal before the first effect. */
+  onUndone?: (code: EpErrorCode) => void;
 }
 
 /** The spawn-as-action acceptance floor: the ALLOCATED agent identity (name + the
@@ -4360,7 +4371,7 @@ export class Manager {
    *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
    *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
    *  rolled back. */
-  private async provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | { error: string }> {
+  private async provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | UserAgentRefusal> {
     if (opts.delegatedIntent) {
       // startAgentActive refused a delegated launch on a manager without this callback.
       const execute = this.remoteAuthority!.executeDelegatedUserIntent!;
@@ -4495,7 +4506,7 @@ export class Manager {
     name: string,
     opts: Omit<ProvisionUserAgentOpts, "delegatedIntent">,
     enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
-  ): Promise<ProvisionedUserAgent | { error: string }> {
+  ): Promise<ProvisionedUserAgent | UserAgentRefusal> {
     let provider;
     try {
       provider = resolveAuthProvider();
@@ -4578,7 +4589,14 @@ export class Manager {
       for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files])
         await this.shredUserSecrets(unshredded, family);
       const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
-      return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
+      // A host that refused the enrollment enrolled nothing, so once every staged secret is gone
+      // this attempt left nothing behind. A failure after the host answered, or a host that did not
+      // answer, may have left a grant there.
+      const refusal = material === undefined && !unshredded.length ? caughtEnvelope(e) : undefined;
+      return {
+        error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}`,
+        ...(refusal?.outcome === "not-executed" ? { refused: refusal.code } : {}),
+      };
     }
   }
 
@@ -6445,7 +6463,10 @@ export class Manager {
               }
             : undefined,
         });
-        if ("error" in prep) return { ok: false, error: prep.error };
+        if ("error" in prep) {
+          if (prep.refused !== undefined) hooks?.onUndone?.(prep.refused);
+          return { ok: false, error: prep.error };
+        }
         // THE HOST'S UID WINS (#1972). On the local arm this is the value passed in, unchanged. On
         // the hosted enrollment arm the host selected it, and from here every lifecycle-keyed thing
         // this spawn records — the slot, the launch, the managed row, the teardown credential — must
@@ -8980,6 +9001,8 @@ export class Manager {
     let ownsGoal = false;
     // Set by onEffect. A refusal that arrives with it still false changed nothing.
     let effectStarted = false;
+    // Set by onUndone: the host's code for a later refusal that left nothing behind.
+    let undone: EpErrorCode | undefined;
 
     // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
     // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): (a) reads THIS
@@ -9097,14 +9120,16 @@ export class Manager {
       // `failed` that would race that `cancel` (first-terminal-fact-wins).
       onTerminalDeferred: () => { terminalEntered = true; },
       onEffect: () => { effectStarted = true; },
+      onUndone: (code) => { undone = code; },
     });
     bg.then((reply) => {
       // Refused BEFORE onAccepted (hard-pin collision, capacity, persona-not-found) — no goal bound.
-      // Only a refusal before the first effect states `not-executed`; a later one, such as the
-      // alias gate that re-drives a teardown, leaves the outcome unknown.
+      // Only a refusal before the first effect, or one whose effects were all removed, states
+      // `not-executed`; a later one, such as the alias gate that re-drives a teardown, leaves the
+      // outcome unknown.
       if (acceptance === undefined) {
         const details = reply.details;
-        rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept", details, effectStarted ? undefined : "not-executed"));
+        rejectAccept(new EpEnvelopeError(undone ?? "failed-precondition", reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
         return;
       }
       // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`

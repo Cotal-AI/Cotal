@@ -2432,7 +2432,11 @@ refusal left behind. A foreground `--share-tools` selection that names a server 
 refused before anything is provisioned. A managed spawn is an
 **action**: the manager accepts it and allocates the identity, and the CLI waits for a real outcome
 (the agent joins, exits, or about 30 seconds pass) before it reports or attaches (see
-[the control surface](control-surface.md)). See [Connect Claude Code](connect-claude.md) and
+[the control surface](control-surface.md)). On a user-auth mesh the manager enrolls the agent with
+the host first. When the host refuses that enrollment, for example for a role or a channel your grant
+does not carry, and the manager removes the secrets it staged for the agent, the spawn is refused
+with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or does not answer leaves
+`OPERATION_UNKNOWN`. See [Connect Claude Code](connect-claude.md) and
 [Agent files](agent-files.md). (`cotal start` was merged into `cotal spawn --detach`.)
 A managed spawn onto a manager from another Cotal release is refused before any request is sent
 when the manager's contract does not declare a field this CLI sends. The refusal names the field,

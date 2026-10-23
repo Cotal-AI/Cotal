@@ -26,17 +26,20 @@
  *   J: with two of the owner's managers up, one started with `--name`, an unpinned `ps` lists each
  *      one by name with its host and gives the command again with `--on` for each, by name where
  *      the name picks it; `ps --on <name>` is answered and `who --all` shows the name.
+ *   K: a managed spawn the host refuses at enrollment, for a role outside the caller's grant, is
+ *      refused as PERMISSION_DENIED with the host's reason, and no secret staged for the agent
+ *      remains under the manager's root.
  *
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/supervise-remote-dial.json
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (child: ChildProcess, ms = 5_000): Promise<void> =>
@@ -473,7 +476,7 @@ try {
   // does, with the sentinel under its own user-auth state dir. `ps` needs the admin scope. The
   // earlier cells leave registrations the exchange still counts as live, so the cell finds its own
   // two managers among the rows by their instance ids.
-  grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  const jGrant = grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
   const scratch = (label: string): string => {
     const path = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}supervise-${label}-${fixtureId}-`));
     releaseRoots.push(path);
@@ -481,8 +484,10 @@ try {
   };
   const twoManagers: ChildProcess[] = [];
   const twoIds: string[] = [];
+  let j1Root = "", j1Home = "";
   for (const label of ["J1", "J2"]) {
     const cellRoot = scratch("two-root"), cellHome = scratch("two-home");
+    if (label === "J1") [j1Root, j1Home] = [cellRoot, cellHome];
     mkdirSync(join(cellRoot, ".cotal"), { recursive: true });
     recordMesh({ space, server: trustServer, root: cellRoot, mode: "user", userAuth: trustUserAuth, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
     cpSync(trustHome, cellHome, { recursive: true });
@@ -524,6 +529,26 @@ try {
   ok("J: ps --on <name> is answered by the manager started with that name", pinned.code === 0, pinned);
   const who = await caller("who", "--all", "--space", space);
   ok("J: who --all shows that manager by its name", who.code === 0 && who.out.includes("manager j-one"), who.out.slice(-900));
+
+  // K: a managed spawn the host refuses at enrollment is refused, not unknown. The caller's grant no
+  // longer carries admin, so the envelope walk applies, and the persona's role is not in its scope.
+  // The narrowed grant keeps the row's lifecycle, which the live managers and the caller run under.
+  // The fixture connector is installed into J1's own extension prefix, as `cotal ext add` would;
+  // the manager imports it at the spawn, and it is never launched.
+  grantActor(hostDir, { owner, actor: "cli", lifecycleUid: jGrant.lifecycleUid, scope: ["spawn", "supervise"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  const probeExt = join(j1Home, "xdg", "cotal", "extensions");
+  const probePkg = join(probeExt, "node_modules", "@fixture", "probe-connector");
+  mkdirSync(probePkg, { recursive: true });
+  writeFileSync(join(probePkg, "package.json"), JSON.stringify({ name: "@fixture/probe-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
+  writeFileSync(join(probePkg, "index.js"), 'import { eventChannel, registry } from "@cotal-ai/core";\nregistry.register({ kind: "connector", name: "probe", requires: ["node"], eventChannel, buildLaunch: () => { throw new Error("the probe connector is never launched"); } });\n');
+  writeFileSync(join(probeExt, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@fixture/probe-connector", version: "1.0.0", spec: ".", provides: [{ kind: "connector", name: "probe" }], commands: [], connectors: [{ name: "probe", requires: ["node"] }] }] }));
+  mkdirSync(join(j1Root, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(j1Root, ".cotal", "agents", "roled.md"), "---\nname: roled\nagent: probe\nrole: secretrole\n---\nNever launched: its role is outside the grant.\n");
+  const refused = await caller("spawn", "roled", "--detach", "--space", space, "--on", "j-one");
+  ok("K: a spawn whose enrollment the host refuses is refused as PERMISSION_DENIED, exit 2, with the host's reason",
+    refused.code === 2 && /Outcome:\s+refused/.test(refused.err) && /Code:\s+PERMISSION_DENIED/.test(refused.err) && /would exceed its spawner's grant/.test(refused.err), refused.err.slice(-900));
+  const staged = readdirSync(join(j1Root, ".cotal"), { recursive: true }).map(String).filter((path) => basename(path).startsWith("roled.") && path !== join("agents", "roled.md"));
+  ok("K: and no secret staged for that agent remains under the manager's root", staged.length === 0, staged);
   for (const child of twoManagers) child.kill("SIGTERM");
   await Promise.all(twoManagers.map((child) => awaitExit(child, 15_000)));
 
