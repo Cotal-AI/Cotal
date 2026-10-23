@@ -3985,8 +3985,11 @@ poll, not proof of current activity or access. With `--follow --json`, it emits 
 records. A missing feed remains unknown rather than an empty confirmed census.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
-space and history scope. Scripts pass `--yes`. Neither removal nor replay settings revoke grants
-or stop participants; future posts can create retained history again.
+space and history scope. Scripts pass `--yes`. Removing a channel that has no saved entry is a
+`no-op`, and its Metadata row says `no saved entry`; `--purge` still deletes that channel's
+retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
+removal nor replay settings revoke grants or stop participants; future posts can create retained
+history again.
 
 
 | Flag | Default | Meaning |

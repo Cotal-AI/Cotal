@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream } from "@nats-io/jetstream";
 import {
-  CotalEndpoint, seedChannelRegistry, readChannelRegistry, effectiveReplay, effectiveDeliveryClass,
+  CotalEndpoint, seedChannelRegistry, readChannelRegistry, deleteChannels, clearChannel, effectiveReplay, effectiveDeliveryClass,
   ensureDefaultDeliveryClass, validateChannelConfig, mintLifecycleUid,
   isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
@@ -299,6 +299,14 @@ try {
   await A.stop();
   await B3.ep.stop();
   await W.ep.stop();
+
+  // ---- removal reports only the entries it removed ----
+  await seedChannelRegistry({ servers, space, file: { channels: { gone: { description: "to remove" }, purgeme: { description: "to purge" } } } });
+  check("deleteChannels returns only the channels that had an entry", JSON.stringify(await deleteChannels({ servers, space, channels: ["gone", "never"] })) === JSON.stringify(["gone"]));
+  check("deleting it again removes nothing", (await deleteChannels({ servers, space, channels: ["gone"] })).length === 0 && !Object.hasOwn((await readChannelRegistry({ servers, space })).channels ?? {}, "gone"));
+  const cleared = await clearChannel({ servers, space, channel: "purgeme" });
+  const clearedAgain = await clearChannel({ servers, space, channel: "purgeme" });
+  check("clearChannel says it removed the entry, and a repeat says it did not", cleared.removed === true && clearedAgain.removed === false, { cleared, clearedAgain });
   console.log(`\nCHANNEL REGISTRY TESTS PASSED ✅  (${pass} checks)`);
 } finally {
   // Await the broker's ACTUAL exit before cleanup — SIGKILL signals the child but does not free the

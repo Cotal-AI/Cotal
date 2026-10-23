@@ -4,7 +4,8 @@
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
  * `--grep`, `--dms`, the usage refusals, a credential that may not read history, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
- * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint.
+ * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
+ * same broker, `cotal channel remove` says whether it removed a saved entry.
  * smoke:ps-user-mode and smoke:user-spawn:live exercise the native user-auth history path.
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
@@ -333,6 +334,17 @@ try {
     const bare = await run(["history", "general", "--space", bareSpace, "--json"]);
     const r = bare.envelope?.result;
     check("a space with no channel registry has the built-in replay policy, and the read is complete", bare.status === 0 && bare.envelope?.completeness === "complete" && JSON.stringify(r?.replay) === JSON.stringify([{ channel: "general", replay: true, window: null }]) && r?.items.length === 0, shown(bare));
+  }
+
+  // ── channel remove says whether it removed a saved entry ──────────────────────────────────────
+  {
+    const removedOf = (r: { envelope?: Envelope }) => (r.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
+    const removed = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
+    check("removing a saved channel is ok and says it removed the entry", removed.status === 0 && removed.envelope?.outcome === "ok" && removedOf(removed) === true, shown(removed));
+    const again = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
+    check("removing it again is a no-op that removed nothing", again.status === 0 && again.envelope?.outcome === "no-op" && removedOf(again) === false, shown(again));
+    const typo = await run(["channel", "remove", "opz", "--yes", "--space", space]);
+    check("a name with no saved entry says nothing was removed", typo.status === 0 && typo.stdout.includes("Nothing removed · #opz") && typo.stdout.includes("no saved entry"), shown(typo));
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
