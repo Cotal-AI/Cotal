@@ -1,5 +1,6 @@
 import { hostname, userInfo } from "node:os";
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, read } from "node:fs";
+import { promisify } from "node:util";
 import {
   resolvePeer,
   assertValidName,
@@ -119,20 +120,80 @@ export function sendArguments(args: ParsedArgs): SendInput {
   return { ...destination, source: values.file !== undefined ? (values.file === "-" ? "stdin" : "file") : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
 }
 
-function bodyOf(input: SendInput, values: Values): string {
-  if (input.source === "argument") return input.text!;
+/** NATS's default max_payload. A file or stdin body is read up to it, plus one byte, before
+ *  connecting, so a usual message is checked with no dial. A longer one is read on only once the
+ *  connected broker names its own limit, and never past one byte over that. */
+const PREREAD_BYTES = 1024 * 1024;
+
+/** An explicit body: the whole text, or an open input past the pre-read whose rest waits for the
+ *  broker's limit. `size` is a regular file's length, known without reading it. */
+type Body = { text: string } | { fd: number; file?: string; head: Buffer; size: number | null };
+
+async function bodyOf(input: SendInput, values: Values): Promise<Body> {
+  if (input.source === "argument") return { text: input.text! };
   if (input.source === "stdin" && process.stdin.isTTY)
     throw new CommandFailure("refused", "USAGE_INVALID", "pipe the message to --stdin, or use a quoted body or --file");
   const file = input.source === "file" ? values.file! : undefined;
-  let bytes: Buffer;
-  try { bytes = readFileSync(file ?? 0); }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (file === undefined) throw new CommandFailure("refused", "USAGE_INVALID", "the message on stdin could not be read");
-    if (code === "EACCES" || code === "EPERM" || code === "ENOENT")
-      throw new CommandFailure("refused", code === "ENOENT" ? "TARGET_NOT_FOUND" : "PERMISSION_DENIED", `the message file ${JSON.stringify(file)} could not be read`, { target: { file } });
-    throw new UnusableFile(`the message file ${JSON.stringify(file)} ${code === "EISDIR" ? "is a directory; --file reads one file" : `could not be read (${code ?? "no error code"})`}`, file);
+  let fd: number | undefined;
+  const head = Buffer.allocUnsafe(PREREAD_BYTES + 1);
+  let held: number;
+  let size: number | null;
+  try {
+    fd = file === undefined ? 0 : openSync(file, "r");
+    const stat = fstatSync(fd);
+    size = stat.isFile() ? stat.size : null;
+    held = await fill(fd, head, 0);
+  } catch (error) {
+    if (file !== undefined && fd !== undefined) closeSync(fd);
+    throw readFailure(error, file);
   }
+  if (held > PREREAD_BYTES) return { fd, file, head, size };
+  if (file !== undefined) closeSync(fd);
+  return { text: decoded(head.subarray(0, held), file) };
+}
+
+/** Read the rest of a body past the pre-read, up to one byte over the broker's `limit` and no
+ *  further. `over` refuses it: the regular file's size, or null when only the limit is known. */
+async function bodyRest(body: Body, limit: number): Promise<{ text: string } | { over: number | null }> {
+  if ("text" in body) return body;
+  try {
+    if (body.size !== null && body.size > limit) return { over: body.size };
+    let bytes = body.head;
+    let held = bytes.length;
+    if (held <= limit) {
+      bytes = Buffer.allocUnsafe(limit + 1);
+      body.head.copy(bytes);
+      try { held = await fill(body.fd, bytes, held); }
+      catch (error) { throw readFailure(error, body.file); }
+    }
+    return held > limit ? { over: null } : { text: decoded(bytes.subarray(0, held), body.file) };
+  } finally {
+    if (body.file !== undefined) closeSync(body.fd);
+  }
+}
+
+const readInto = promisify(read);
+
+/** Read `fd` into `bytes` from `at` until it is full or the input ends; returns how many it holds.
+ *  The reads are asynchronous, so a slow writer never stalls a connection that is already open. */
+async function fill(fd: number, bytes: Buffer, at: number): Promise<number> {
+  while (at < bytes.length) {
+    const { bytesRead } = await readInto(fd, bytes, at, bytes.length - at, null);
+    if (bytesRead === 0) break;
+    at += bytesRead;
+  }
+  return at;
+}
+
+function readFailure(error: unknown, file: string | undefined): Error {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (file === undefined) return new CommandFailure("refused", "USAGE_INVALID", "the message on stdin could not be read");
+  if (code === "EACCES" || code === "EPERM" || code === "ENOENT")
+    return new CommandFailure("refused", code === "ENOENT" ? "TARGET_NOT_FOUND" : "PERMISSION_DENIED", `the message file ${JSON.stringify(file)} could not be read`, { target: { file } });
+  return new UnusableFile(`the message file ${JSON.stringify(file)} ${code === "EISDIR" ? "is a directory; --file reads one file" : `could not be read (${code ?? "no error code"})`}`, file);
+}
+
+function decoded(bytes: Buffer, file: string | undefined): string {
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch {
@@ -238,7 +299,7 @@ export async function send(args: ParsedArgs): Promise<void> {
   const input = sendArguments(args);
   const values = args.values as Values;
   const presentation = presentationOf(values);
-  const text = bodyOf(input, values);
+  const body = await bodyOf(input, values);
   const warnings: OutputWarning[] = [];
   const opened = await openTransient(values, senderName(), { throwOnRefusal: true, report: (level) => {
     warnings.push({ code: level === "error" ? "SENDER_CONNECTION_WARNING" : "SENDER_WARNING", target: { destination: input.target }, message: "The transient sender reported a connection or delivery warning; its receipt confirms only the stated storage outcome." });
@@ -253,7 +314,17 @@ export async function send(args: ParsedArgs): Promise<void> {
     channelPolicy: { registered: boolean; replay: boolean; window: string | null; delivery: string } | null;
   } | undefined;
   let failure: unknown;
+  // The envelope only adds to the body. A body under the limit can still make a frame over it,
+  // which the client refuses before writing any of it.
+  const tooLarge = (bytes: number | null) => new CommandFailure("refused", "UNSUPPORTED", bytes === null
+    ? `the message is longer than this broker's ${ep.maxPayload}-byte message limit; nothing was sent`
+    : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
   try {
+    const rest = await bodyRest(body, ep.maxPayload);
+    if ("over" in rest) throw tooLarge(rest.over);
+    const { text } = rest;
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (bytes > ep.maxPayload) throw tooLarge(bytes);
     let policy: NonNullable<typeof receipt>["channelPolicy"] = null;
     let registered: string[] = [];
     if (input.mode === "msg") {
@@ -282,11 +353,6 @@ export async function send(args: ParsedArgs): Promise<void> {
       mentions.push(peer.card.name);
     }
     const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to") : undefined;
-    // The envelope only adds to the body. A body under the limit can still make a frame over it,
-    // which the client refuses before writing any of it.
-    const bytes = Buffer.byteLength(text, "utf8");
-    const tooLarge = () => new CommandFailure("refused", "UNSUPPORTED", `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
-    if (bytes > ep.maxPayload) throw tooLarge();
     let messageId: string;
     let sequence: number | null = null;
     try {
@@ -299,7 +365,7 @@ export async function send(args: ParsedArgs): Promise<void> {
         messageId = msg.id; sequence = ack.seq;
       } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
     } catch (error) {
-      if (payloadRefused(error)) throw tooLarge();
+      if (payloadRefused(error)) throw tooLarge(bytes);
       if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered);
       // A broker sends nothing back for a stream it cannot write, so its own log here may name why.
       const store = connection.root ? brokerStoreWrite(connection.root, space) : undefined;

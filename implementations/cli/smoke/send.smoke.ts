@@ -19,7 +19,7 @@
  * Run: pnpm smoke:send
  */
 import { execFile, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,7 +51,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 63;
+const EXPECTED = 64;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -440,6 +440,14 @@ try {
   const big = await run(["send", "-c", "general", "--file", bigFile, "--json"]);
   check("an oversized `cotal send -c` is refused UNSUPPORTED, exit 2, naming the limit and that nothing was sent",
     big.code === 2 && big.stdout.includes('"code":"UNSUPPORTED"') && big.stdout.includes("1048576-byte message limit; nothing was sent"), big);
+  // A body used to be read whole before the limit was checked, so a 3 GiB file failed to read and a
+  // stream such as /dev/zero grew until the kernel killed it. A sparse file costs no disk.
+  const hugeFile = join(storeDir, "huge.txt");
+  writeFileSync(hugeFile, "");
+  truncateSync(hugeFile, 3 * 2 ** 30);
+  const huge = await run(["send", "-c", "general", "--file", hugeFile, "--json"]);
+  check("a 3 GiB `--file` is refused UNSUPPORTED, exit 2, with its size, without reading it whole",
+    huge.code === 2 && huge.stdout.includes('"code":"UNSUPPORTED"') && huge.stdout.includes(`the message is ${3 * 2 ** 30} bytes`) && huge.stdout.includes("1048576-byte message limit; nothing was sent"), huge);
 
   // The admin credential for the `deliver pending` reads below is minted before bob stops, so no
   // setup sits inside the retained-card window that the by-name read depends on.

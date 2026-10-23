@@ -4114,7 +4114,9 @@ or completion. A direct send to an agent the roster shows offline also warns on 
 and lists the space's registered channels, so a mistyped name stands out. It reads that count as
 `cotal history` lists channels. Its native space policy still controls publication and no registry
 metadata is created. Metadata or a count it cannot read stays not checked. A message over the broker's message limit, envelope included, refuses
-`UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A channel post the broker
+`UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
+only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
+its refusal names the limit alone. A channel post the broker
 refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
 the space or this identity may not post to it. The remedy lists the channels this identity may post
 to, read from the grant ledger as `cotal whoami` reads it. When the ledger is on another machine it
