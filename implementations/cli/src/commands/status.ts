@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, assessMaintenanceClaim, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MaintenanceClaim, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -48,8 +48,7 @@ import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/serv
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
-import { preservedSourceState, restoreNextStep } from "../lib/restore.js";
-import { attemptProcessesGone } from "../lib/isolated-broker.js";
+import { maintenanceNextStep } from "../lib/restore.js";
 import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 
@@ -302,38 +301,16 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (values.components) await printComponentHealth(cwd, values);
 }
 
-/** A ready journal's next step. Resume and backup use the store at its recorded path, so a folder
- *  moved after the cut is told to move back, and a missing store is named. */
-function readyNextStep(root: string, source: Parameters<typeof preservedSourceState>[1]): string {
-  const where = preservedSourceState(root, source);
-  if (where.state === "moved") return `this folder was moved from ${where.recordedRoot} after its state was preserved: move it back there, then create a backup or resume with bare ${displayCmd()} up`;
-  if (where.state === "missing") return `the preserved store recorded at ${source.path} is missing: if this folder was moved, move it back; if the store is lost, restore a backup with ${displayCmd()} backup restore <dir> --accept-missing-source`;
-  return `create a backup with ${displayCmd()} backup create <dir>, or resume with bare ${displayCmd()} up`;
-}
-
 /** The folder's maintenance journal, read only. An unreadable one is reported, never taken for none. */
 function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["maintenance"]> | null {
   try {
     const journal = readMaintenanceJournal(root);
     if (!journal) return null;
-    const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
-    const next = "restore" in journal ? restoreNextStep(journal.state, attemptId)
-      : journal.state === "ready" ? readyNextStep(root, journal.source)
-      : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
-    return { root, space: journal.space, state: journal.state, attemptId, next };
+    return { root, space: journal.space, state: journal.state, ...maintenanceNextStep(root, journal) };
   } catch {
     gaps.add("MAINTENANCE_JOURNAL_UNREADABLE", "this folder's maintenance journal could not be read; no absent or settled state was inferred", { root });
     return { root, space: null, state: "unreadable", attemptId: null, next: null };
   }
-}
-
-/** The next step for a cut a backup create still claims: wait while it runs, or release it once it
- *  stopped before it finished. */
-function claimedNextStep(root: string, claim: MaintenanceClaim): string {
-  const recover = `${displayCmd()} backup recover ${claim.attemptId} --yes`;
-  if (assessMaintenanceClaim(claim, { unrecordedOwnersDead: attemptProcessesGone(root) }) === "stale")
-    return `backup attempt ${claim.attemptId} stopped before it finished: release it with ${recover}`;
-  return `backup attempt ${claim.attemptId} holds this root until ${claim.deadline} (process ${claim.coordinator.pid}); if it was stopped, run ${recover} once it has exited`;
 }
 
 /** Local boot and additive intents are recovery coordinates, not evidence of native state. */

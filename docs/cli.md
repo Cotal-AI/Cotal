@@ -1366,7 +1366,10 @@ not read the record. Custom cleanup targets must contain either the Cotal store-
 real `jetstream/` store directory; filesystem roots, project roots, and Cotal auth/maintenance trees
 are always refused.
 
-`store` and `all` also refuse every maintenance journal state. After a healthy committed restore,
+`store` and `all` also refuse every maintenance journal state, with `LIFECYCLE_BLOCKED`, exit 2. The
+refusal names the attempt and, as Next, the step `cotal status` shows for it, such as bare
+`cotal up` to resume a preserved cut; once the root holds no maintenance state and its mesh is
+stopped, the clean runs. After a healthy committed restore,
 `restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
 completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a

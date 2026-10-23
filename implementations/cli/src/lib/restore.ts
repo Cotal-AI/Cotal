@@ -46,6 +46,7 @@ import {
 import {
   CommandFailure,
   acquireMaintenanceLock,
+  assessMaintenanceClaim,
   assessRestoreClaim,
   bindRestoreListener,
   bindRestoreTarget,
@@ -72,6 +73,7 @@ import {
   type JsonValue,
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
+  type MaintenanceClaim,
   type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
@@ -86,6 +88,7 @@ import { ArtifactFileFault, readStagedCheckpoints, stageArtifact, type BackupMan
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
+import { displayCmd } from "./self-exec.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
@@ -681,6 +684,34 @@ export function restoreNextStep(state: string, attemptId: string): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with cotal backup recover ${attemptId} --yes; preview it first with --dry-run`;
   if (state === "active") return `the restore completed: retire its journal with cotal backup cleanup-fallback ${attemptId} --yes; preview it first with --dry-run`;
   return `recover forward with bare cotal up from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
+}
+
+/** A ready journal's next step. Resume and backup use the store at its recorded path, so a folder
+ *  moved after the cut is told to move back, and a missing store is named. */
+function readyNextStep(root: string, source: Parameters<typeof preservedSourceState>[1]): string {
+  const where = preservedSourceState(root, source);
+  if (where.state === "moved") return `this folder was moved from ${where.recordedRoot} after its state was preserved: move it back there, then create a backup or resume with bare ${displayCmd()} up`;
+  if (where.state === "missing") return `the preserved store recorded at ${source.path} is missing: if this folder was moved, move it back; if the store is lost, restore a backup with ${displayCmd()} backup restore <dir> --accept-missing-source`;
+  return `create a backup with ${displayCmd()} backup create <dir>, or resume with bare ${displayCmd()} up`;
+}
+
+/** The next step for a cut a backup create still claims: wait while it runs, or release it once it
+ *  stopped before it finished. */
+function claimedNextStep(root: string, claim: MaintenanceClaim): string {
+  const recover = `${displayCmd()} backup recover ${claim.attemptId} --yes`;
+  if (assessMaintenanceClaim(claim, { unrecordedOwnersDead: attemptProcessesGone(root) }) === "stale")
+    return `backup attempt ${claim.attemptId} stopped before it finished: release it with ${recover}`;
+  return `backup attempt ${claim.attemptId} holds this root until ${claim.deadline} (process ${claim.coordinator.pid}); if it was stopped, run ${recover} once it has exited`;
+}
+
+/** The attempt a root's maintenance journal holds and the step that moves it on, as `cotal status`
+ *  shows it and a command that refuses over that journal names it. */
+export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null } {
+  const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
+  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId)
+    : journal.state === "ready" ? readyNextStep(root, journal.source)
+    : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
+  return { attemptId, next };
 }
 
 /** The refusal while a restore's or backup's claim is not provably stale: what holds it, until

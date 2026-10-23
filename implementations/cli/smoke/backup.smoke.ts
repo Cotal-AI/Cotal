@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { ArtifactFileFault, createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.js";
 import { backupRead } from "../src/commands/backup-read.js";
 import { down } from "../src/commands/down.js";
+import { clean } from "../src/commands/clean.js";
 import { backup, backupComplete, chunkQueue, isStoppedKvWatcher } from "../src/commands/backup.js";
 import { upComplete } from "../src/commands/up.js";
 import { createAttemptClone, ensurePrivateAttemptsDir } from "../src/lib/isolated-broker.js";
@@ -16,7 +17,7 @@ import { isManagerCommitResult, isManagerFinalizeResult, movedFolderRefusal, pre
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, rotateSystemAccount, taskStream } from "@cotal-ai/core";
-import { acquireMaintenanceLock, authDir, beginMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, beginMaintenanceCut, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -373,6 +374,30 @@ try {
     process.chdir(previousCwd);
     if (previousHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = previousHome;
+  }
+
+  // `clean store` and `clean all` refuse a root that holds a preserved cut. `backup recover` and
+  // `cleanup-fallback` take no preserve- id, so the refusal names the step status shows for the cut.
+  {
+    const cleanRoot = join(root, "clean-root"), cleanStore = join(cleanRoot, ".cotal", "nats"), server = "nats://127.0.0.1:43247";
+    mkdirSync(cleanStore, { recursive: true });
+    const lock = acquireMaintenanceLock(cleanRoot);
+    try {
+      const resume = writeMaintenanceResumeDocument(lock, { version: 1, inventory: { agents: [] }, launch: { runtime: "pty" } });
+      beginMaintenanceCut(lock, { attemptId: "preserve-clean", space: "clean", mode: "open", sourcePath: cleanStore, resume, launch: { server } });
+      const managerCommit = { operation: "commitPreservation" as const, attemptId: "preserve-clean", state: "preserved" as const };
+      recordPreservationManagerCommit(lock, managerCommit);
+      completeMaintenanceCut(lock, { attemptId: "preserve-clean", observedAt: new Date().toISOString(), managerCommit, stopped: { manager: true, broker: true, localProcesses: true }, listener: { endpoint: server, unreachable: true } });
+    } finally { releaseMaintenanceLock(lock); }
+    process.chdir(cleanRoot);
+    try {
+      for (const target of ["store", "all"])
+        await assert.rejects(clean({ positionals: [target], values: { force: true }, raw: [] }), (error: unknown) =>
+          isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message === `clean ${target} is refused while this root holds maintenance attempt preserve-clean (state ready); nothing was removed`
+            && / or resume with bare .*up; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force again$/.test(error.remedy ?? ""),
+        `clean ${target} on a preserved cut names the step status shows for it`);
+      assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
+    } finally { process.chdir(previousCwd); }
   }
 
   // A preserved store is found where its journal recorded it, moved with its folder, or missing.

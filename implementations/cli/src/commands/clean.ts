@@ -36,6 +36,8 @@ import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
+import { maintenanceNextStep } from "../lib/restore.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 
@@ -113,8 +115,12 @@ export async function clean(args: ParsedArgs): Promise<void> {
   let removed: string[];
   try {
     const maintenance = readMaintenanceJournal(root);
-    if (maintenance)
-      throw new Error(`clean ${target} is refused while maintenance state is ${maintenance.state}; use the recorded restore recovery or fallback-cleanup command`);
+    if (maintenance) {
+      // The store holds the attempt's preserved or restored data, so the step that moves the attempt
+      // on is the one `cotal status` shows for it.
+      const { attemptId, next } = maintenanceNextStep(root, maintenance);
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `clean ${target} is refused while this root holds maintenance attempt ${attemptId} (state ${maintenance.state}); nothing was removed`, { target: { root, attemptId, state: maintenance.state }, remedy: `${next ?? "cotal status shows this root's maintenance state"}; once the root holds no maintenance state and its mesh is stopped, run ${displayCmd()} clean ${target} --force again` });
+    }
     const running = liveMeshProcess(root, undefined, true);
     if (running) {
       console.error(c.red(`✗ the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``));
