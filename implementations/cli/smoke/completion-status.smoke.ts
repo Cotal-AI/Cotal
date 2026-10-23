@@ -228,8 +228,13 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 {
   const s = sandbox("/bin/zsh");
   const stub = join(s.xdg, "cotal", "completion.zsh");
-  const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: join(s.home, "nowhere") });
-  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /the shell startup directory must exist/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
+  const nowhere = join(s.home, "nowhere");
+  const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: nowhere });
+  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /TARGET_NOT_FOUND/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
+  check("the refusal names the folder and ZDOTDIR, with the mkdir that creates it", missingDir.stderr.includes(`the shell startup folder ${nowhere}, which ZDOTDIR names, does not exist; nothing was changed`) && missingDir.stderr.includes(`create it with (umask 077 && mkdir -p ${nowhere}), or unset ZDOTDIR to use ~/.zshrc`), shown(missingDir));
+  const missingJson = s.run(["completion", "install", "zsh", "--json"], { ZDOTDIR: nowhere });
+  const missingEnv = JSON.parse(missingJson.stdout) as { target: { path?: string }; error: { remedy?: string } };
+  check("its JSON names the folder as the target and carries the remedy", missingEnv.target.path === nowhere && missingEnv.error.remedy?.includes(`mkdir -p ${nowhere}`) === true, missingEnv);
   const relative = s.run(["completion", "install", "zsh"], { ZDOTDIR: "zdot" });
   check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /relative ZDOTDIR/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
@@ -277,6 +282,18 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   // Compared by realpath: the working directory a child reports can be the resolved form of tmpdir().
   const wiredIn = typeof zsh?.wiredIn === "string" ? zsh.wiredIn : "";
   check("the status reads a relative ZDOTDIR from its working directory and names the absolute file", isAbsolute(wiredIn) && existsSync(wiredIn) && realpathSync(wiredIn) === join(realpathSync(zdot), ".zshrc"), zsh);
+
+  // Without that ZDOTDIR, the record names the startup file it was wired into and the ZDOTDIR to use.
+  const record = join(s.xdg, "cotal", "completion.zsh.ownership.json");
+  const without = s.run(["completion", "--json"]);
+  const warning = (JSON.parse(without.stdout) as { warnings: { code: string; message: string }[] }).warnings.find((w) => w.code === "COMPLETION_OWNERSHIP_UNREADABLE");
+  check(
+    "without the ZDOTDIR it was installed under, the warning names the record, its startup file and that ZDOTDIR",
+    without.status === 4 && warning?.message === `${record} records zsh completion wired into ${join(zdot, ".zshrc")}, and this environment's startup file is ${join(s.home, ".zshrc")}; read or change it with the ZDOTDIR it was installed under: ZDOTDIR=${zdot} cotal completion`,
+    { status: without.status, warning },
+  );
+  const text = s.run(["completion"]);
+  check("the text report gives the same warning", text.status === 4 && text.stderr.includes(`${record} records zsh completion wired into ${join(zdot, ".zshrc")}`), shown(text));
 }
 
 // ── script, and the form it replaced ───────────────────────────────────────────────────────────────

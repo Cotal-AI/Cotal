@@ -175,6 +175,12 @@ function ownership(paths: Paths, shell: string): { record?: Ownership; snapshot?
   try { value = JSON.parse(text(snapshot)!); } catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record is invalid; it was not reset"); }
   const record = value as Ownership;
   if (!record || typeof record !== "object" || Object.keys(record).some((key) => !["schemaVersion", "shell", "stub", "stubHash", "wiring"].includes(key)) || record.schemaVersion !== 1 || record.shell !== shell || record.stub !== paths.stub || typeof record.stubHash !== "string" || !/^[0-9a-f]{64}$/.test(record.stubHash)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record does not match this shell and path");
+  // A record wired into another startup file, as one installed under another ZDOTDIR is, is named as such.
+  if (record.wiring && typeof record.wiring === "object" && typeof record.wiring.path === "string" && record.wiring.path !== paths.rc)
+    throw new CommandFailure("refused", "CONFLICT", `${recordPath(paths)} records ${shell} completion wired into ${record.wiring.path}, and this environment's startup file is ${paths.rc ?? "none"}`, {
+      target: { shell, path: recordPath(paths) },
+      remedy: shell === "zsh" ? `read or change it with the ZDOTDIR it was installed under: ZDOTDIR=${dirname(record.wiring.path)} cotal completion` : "read or change it from the environment it was installed in",
+    });
   if (record.wiring !== null && (!record.wiring || typeof record.wiring !== "object" || Object.keys(record.wiring).some((key) => !["path", "block", "created"].includes(key)) || (record.wiring.created !== undefined && record.wiring.created !== true) || record.wiring.path !== paths.rc || typeof record.wiring.block !== "string" || ![blockFor(paths.stub, shell), "\n" + blockFor(paths.stub, shell)].includes(record.wiring.block))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record contains unknown startup wiring; it was not used to rewrite a shell file");
   return { record, snapshot };
 }
@@ -207,7 +213,13 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
   if (paths.rc) {
     safeParents(dirname(paths.rc));
     try { lstatSync(dirname(paths.rc)); }
-    catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the shell startup directory must exist before completion installation"); }
+    catch {
+      const dir = dirname(paths.rc), fromZdotdir = shell === "zsh" && Boolean(process.env.ZDOTDIR);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the shell startup folder ${dir}${fromZdotdir ? ", which ZDOTDIR names," : ""} does not exist; nothing was changed`, {
+        target: { shell, path: dir },
+        remedy: `create it with (umask 077 && mkdir -p ${dir})${fromZdotdir ? ", or unset ZDOTDIR to use ~/.zshrc" : ""}, then run the command again`,
+      });
+    }
     // A startup file linked from elsewhere, as a dotfile manager such as stow links it, is never
     // written through. The load line needs no stub, so it works from the file the link points to.
     if (lstatSync(paths.rc, { throwIfNoEntry: false })?.isSymbolicLink())

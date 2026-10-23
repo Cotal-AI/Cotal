@@ -236,7 +236,8 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
     const state: StubState = content === null ? "unreadable" : content === undefined ? "missing" : content === SCRIPTS[shell] ? "current" : "differs";
     let ownership: ShellCompletion["ownership"];
     try { ownership = completionOwnership(shell, paths); }
-    catch { ownership = "unreadable"; unread.push({ code: "COMPLETION_OWNERSHIP_UNREADABLE", target: { shell }, message: "the completion ownership record or its file scope could not be read safely" }); }
+    // The refusal names the record or folder and why, so it is passed on rather than a generic sentence.
+    catch (error) { ownership = "unreadable"; unread.push({ code: "COMPLETION_OWNERSHIP_UNREADABLE", target: { shell }, message: isCommandFailure(error) ? `${error.message}${error.remedy ? `; ${error.remedy}` : ""}` : `the completion ownership record beside ${paths.stub} could not be read safely` }); }
     if (!paths.rc) return { shell, stub: paths.stub, state, wiredIn: content === undefined || content === null ? null : dirname(paths.stub), ownership, legacyWiring: false };
     const rc = read(shell, paths.rc);
     const legacyWiring = typeof rc === "string" && new RegExp(`cotal[ \t]+completion[ \t]+${shell}(?:[ \t;|)]|$)`, "m").test(rc);

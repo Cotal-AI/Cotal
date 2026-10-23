@@ -5263,7 +5263,9 @@ cotal completion uninstall [shell] [--json|--plain]
 
 Bare `completion` reads local integration files. It reports the script version, startup reference
 and recorded ownership separately. It does not inspect or load the running shell. An unreadable
-file or ownership record produces a warning and a partial result, exit 4. A relative `ZDOTDIR`
+file or ownership record produces a warning and a partial result, exit 4. The warning names the
+file and why. A record wired into another startup file, as an install under another `ZDOTDIR` leaves
+one, names that file and the `ZDOTDIR` to read it with. A relative `ZDOTDIR`
 is resolved from the current directory for this report, as zsh resolves it.
 
 In zsh, initialize its completion system with `autoload -Uz compinit && compinit` before
@@ -5303,7 +5305,8 @@ completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access before it creates anything. One refusal names every refused startup
+owner or unsafe file access before it creates anything. A missing startup directory is named, with
+`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every refused startup
 file, stub, record and directory on the way to them with its reason, and a group- or other-writable
 one with its mode and one `chmod go-w <paths>` that fixes them all. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
