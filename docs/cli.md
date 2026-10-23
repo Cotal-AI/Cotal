@@ -578,7 +578,13 @@ stop or preserve, prints `Foreground stack released` and exits 0. On a controlle
 `SIGTERM` in that terminal runs the same guarded stop as bare `cotal down` and exits 130 or 143. A
 signal while the stack is still starting lets the start settle, then runs that stop. When the start
 fails, the stop still runs before the start failure is printed. A hangup, such as a closed terminal,
-runs no stop: the command exits 129 and the stack keeps running until `cotal down` stops it. A
+runs no stop: the command exits 129 and the stack keeps running until `cotal down` stops it. While
+a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`, and a
+second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and starts
+nothing. A foreground `up` on a stack that is already running without such a holder, because a
+background `up` started it or the holding terminal closed, takes over its lifetime. Before it
+blocks it says that the stack is already running and that Ctrl-C or `SIGTERM` there stops the
+whole stack. A
 systemd unit that runs `up --foreground` should set `KillMode=mixed`, so the stop signal reaches
 only `cotal up`, which runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop.
 The default `control-group` mode signals every member at the same time, and a manager signalled

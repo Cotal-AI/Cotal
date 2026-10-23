@@ -706,7 +706,12 @@ export function stackMembersView(journal: StackJournal, title: string): Report {
   return membersView(journal, title);
 }
 
-export function stackUpForegroundNotice(presentation: ReturnType<typeof presentationOf>, space: string): void {
+/** The notice a foreground `up` prints before it blocks. With `takeover`, the stack already runs, started
+ *  by a background `up` or a foreground one that has exited, and this terminal takes its lifetime over. */
+export function stackUpForegroundNotice(presentation: ReturnType<typeof presentationOf>, space: string, takeover = false): void {
   if (presentation === "json") return;
-  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: ["This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare cotal down, including its manager impact review. Terminal loss or an external kill is not a confirmed stop."] }] }] }, presentation, terminalWidth(process.stdout)));
+  const holds = takeover
+    ? "This stack is already running, and this terminal now takes over its lifetime. Ctrl-C or SIGTERM here stops the whole stack, though another command started it, with the same guarded whole-stack stop as bare cotal down, including its manager impact review."
+    : "This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare cotal down, including its manager impact review.";
+  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: [`${holds} Terminal loss or an external kill is not a confirmed stop.`] }] }] }, presentation, terminalWidth(process.stdout)));
 }

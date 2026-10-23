@@ -16,6 +16,7 @@ import {
   lstatSync,
   realpathSync,
   readdirSync,
+  unlinkSync,
   type Stats,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -55,6 +56,7 @@ import {
   openPrivateAppend,
   realDirNoSymlink,
   writeSecretFile,
+  writeSecretFileAtomic,
   type AuthPrepared,
   type SpaceAuth,
   type ChannelConfig,
@@ -71,6 +73,10 @@ import {
   assertManagerName,
   readManagerName,
   recordManagerName,
+  assertRecordIdentity,
+  formatRecord,
+  identityRecord,
+  parseRecord,
   CommandFailure,
   commandFailureReport,
   isCommandFailure,
@@ -200,8 +206,8 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut } from "../lib/stack-journal.js";
-import { serviceInstances } from "../lib/service-instances.js";
+import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
+import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
@@ -545,6 +551,12 @@ function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promis
  *  sets the exit code: 0 when another command completed the stop or preserve, 130 or 143 after a
  *  signal, whatever the start receipt set. */
 export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
+  claimForegroundHold(root);
+  try { await holdStack(root, start); }
+  finally { releaseForegroundHold(root); }
+}
+
+async function holdStack(root: string, start?: () => Promise<void>): Promise<void> {
   if (start) {
     let requested: "SIGINT" | "SIGTERM" | undefined;
     const request = (signal: "SIGINT" | "SIGTERM") => {
@@ -590,6 +602,33 @@ export async function holdForegroundStack(root: string, start?: () => Promise<vo
     const terminate = () => stop("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
   });
+}
+
+/** Where a foreground `up` records the process that holds its stack's lifetime. */
+const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
+
+/** The process of another foreground `up` that holds `root`'s stack, while that exact process runs. */
+export function foregroundHolder(root: string): number | undefined {
+  let raw: string;
+  try { raw = readFileSync(foregroundHoldPath(root), "utf8"); } catch { return undefined; }
+  const read = parseRecord(raw);
+  if (read.kind !== "record" || read.record.pid === process.pid) return undefined;
+  return assertRecordIdentity(read.record).kind === "match" ? read.record.pid : undefined;
+}
+
+/** Record this process as the foreground holder of `root`'s stack. A host that cannot pin a process
+ *  start records nothing, so no later `up` refuses on a pid that may have been reused. */
+function claimForegroundHold(root: string): void {
+  const record = identityRecord(process.pid);
+  if ("token" in record) writeSecretFileAtomic(foregroundHoldPath(root), `${formatRecord(record)}\n`);
+}
+
+/** Remove this process's foreground hold record, and leave one another process wrote. */
+function releaseForegroundHold(root: string): void {
+  try {
+    const read = parseRecord(readFileSync(foregroundHoldPath(root), "utf8"));
+    if (read.kind === "record" && read.record.pid === process.pid) unlinkSync(foregroundHoldPath(root));
+  } catch { /* nothing recorded */ }
 }
 
 /** The registered `up` command. When a background run is the main process of a systemd unit, it
@@ -1133,12 +1172,18 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
+    // A foreground up holds a stack only one terminal holds. Over a stack that already runs without
+    // one, it takes that stack's lifetime over and says so before it blocks.
+    const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
+    if (holder !== undefined)
+      throw new CommandFailure("refused", "CONFLICT", `a foreground cotal up in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with cotal down --yes from ${meshRoot} and run cotal up --foreground again` });
+    const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
     const stackLock = acquireStackOperationLock(meshRoot);
     const native = controllerStackNative();
     // A foreground terminal holds the start as well, so a signal during it stops what it started.
     const start = async () => {
       try {
-        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
+        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
         await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
       } finally { releaseMaintenanceLock(stackLock); }
     };
