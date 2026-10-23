@@ -41,6 +41,7 @@ import {
   requireBrokerFloor,
   parseServerVersion,
   presenceBucket,
+  MEMBERSHIP_MAX_BYTES,
   spaceDeletionStreams,
   isJetStreamMissing,
   seedChannelRegistry,
@@ -364,7 +365,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
-  parsePositiveIntegerFlag("--max-file-store", args.values["max-file-store"] as string | undefined);
+  parseMaxFileStore(args.values["max-file-store"] as string | undefined);
   if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot());
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
@@ -829,7 +830,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // The cap is part of the preserved launch, like the store: a resume re-renders it, and a
         // different --max-file-store is refused rather than silently resizing the preserved broker.
         const resumeMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
-        const requestedMaxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+        const requestedMaxFileStore = parseMaxFileStore(values["max-file-store"]);
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore)
           throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${resumeMaxFileStore ?? "unset"}); ordinary up resumes exactly the preserved cap - omit --max-file-store`);
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
@@ -883,7 +884,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         };
         const attemptId = journal.ordinaryResume.attemptId;
         const recoveredMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
-        const requestedMaxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+        const requestedMaxFileStore = parseMaxFileStore(values["max-file-store"]);
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== recoveredMaxFileStore)
           throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${recoveredMaxFileStore ?? "unset"}); resume attempt ${attemptId} re-renders exactly the preserved cap - omit --max-file-store`);
         // Recovery re-asserts the source identity rather than trusting the journaled spelling.
@@ -1017,7 +1018,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const noManager = Boolean(values["no-manager"]);
   const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
-  const maxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+  const maxFileStore = parseMaxFileStore(values["max-file-store"]);
   // The manifest path renders its broker from the manifest, which has no store fields, so the flag
   // would be accepted and never rendered. Refuse it rather than drop it.
   if (maxFileStore !== undefined && values.file)
@@ -4159,6 +4160,15 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
   if (held) return false;
   await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.channels));
   return true;
+}
+
+/** `--max-file-store`, refused below the bytes the space's membership bucket reserves from the
+ *  broker's file store: a smaller cap cannot create the space's streams. */
+function parseMaxFileStore(raw: string | undefined): number | undefined {
+  const cap = parsePositiveIntegerFlag("--max-file-store", raw);
+  if (cap !== undefined && cap < MEMBERSHIP_MAX_BYTES)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB), which the space's membership bucket reserves from the broker's file store; nothing was started`, { remedy: `pass --max-file-store ${MEMBERSHIP_MAX_BYTES} or more, leaving room for messages, or omit it` });
+  return cap;
 }
 
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`

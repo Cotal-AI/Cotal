@@ -1,7 +1,8 @@
 /**
  * `cotal up` refuses an invalid flag value or combination as usage, exit 1, before anything runs.
  * `--max-sessions 0`, `--max-sessions abc` and an unknown `--restore-only` value used to exit 3,
- * "Outcome unconfirmed", which tells a script the run may have had an effect.
+ * "Outcome unconfirmed", which tells a script the run may have had an effect. A `--max-file-store`
+ * below the 64 MiB the space's membership bucket reserves is refused the same way.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from an empty
  * folder outside them. Nothing is started; each refusal comes from validation.
@@ -41,6 +42,8 @@ const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--max-sessions", "0"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-sessions", "abc"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-file-store", "0"], message: /--max-file-store must be a positive integer/ },
+  { args: ["--max-file-store", "1"], message: /--max-file-store 1 is below 67108864 bytes \(64 MiB\), which the space's membership bucket reserves/ },
+  { args: ["--max-file-store", "50000000"], message: /--max-file-store 50000000 is below 67108864 bytes/ },
   { args: ["--restore", join(folder, "nonexistent"), "--restore-only", "full"], message: /--restore-only takes registry/ },
   { args: ["--restore-only", "registry"], message: /require --restore/ },
 ];
