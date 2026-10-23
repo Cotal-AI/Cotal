@@ -285,7 +285,7 @@ const baseCommands: Command[] = [
     outputs: ["json", "plain"],
     prepareMeshTarget: false,
     subcommands: [
-      { name: "recover", flagNames: ["yes", "dry-run", "json", "plain"], summary: "roll back only the exact stale pre-commit restore under native guards", outputs: ["json", "plain"], prepareMeshTarget: false },
+      { name: "recover", flagNames: ["yes", "dry-run", "json", "plain"], summary: "roll back a stale pre-commit restore, or release an interrupted backup create, under native guards", outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "cleanup-fallback", flagNames: ["yes", "dry-run", "json", "plain"], summary: "clean only the unchanged old source of a healthy active restore", outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "create", flagNames: ["only", "store-dir", "json", "plain"], summary: "create a private artifact from the native stopped preservation cut", outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "inspect", flagNames: ["json", "plain"], summary: "read manifest and exact file inventory; integrity is not checked", reads: true, outputs: ["json", "plain"], prepareMeshTarget: false },

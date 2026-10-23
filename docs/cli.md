@@ -1415,6 +1415,16 @@ refuses and names that state and its space. A destination that already exists is
 refusal, because create writes only a new directory. Any other refusal or failure shows the check's
 own sentence as its native detail, such as a broker still listening at the cut's recorded endpoint.
 
+A `backup create` interrupted by SIGINT, SIGTERM or SIGHUP after it claims the cut exits 130, 143
+or 129 and names its attempt, the partial artifact it left and `cotal backup recover <attempt> --yes`.
+That claim follows the restore claim's rule below: it holds the cut until its backup process and
+brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`, another create and
+`backup recover` refuse `LIFECYCLE_BLOCKED` and name the backup process and the deadline, and
+`cotal status` names the attempt and its next step. Once it is stale, `backup recover` removes the
+partial artifact, the clone and the broker files, each matched by inode, and a create to another
+directory does the same before it starts. A create naming the partial artifact refuses `CONFLICT`
+and names that recovery.
+
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
 hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
 and compares its size and SHA-256. Both are read-only: no staging directory, broker, restore or
@@ -1422,14 +1432,17 @@ secret upload. Reports omit snapshot bytes, configuration bodies and trust mater
 the declared metadata; terminal file lists are bounded and state their omissions. When a declared
 file is missing, an undeclared file is present, or a file does not match its declared size and
 SHA-256, the refusal names that file and the fault, and its JSON target carries `file` and `fault`.
+A directory with no `manifest.json` is refused as an incomplete artifact, the kind an interrupted
+`backup create` leaves, with the fault `manifest-missing`.
 
 File integrity is not a signature or a restore proof. Matching a manifest does not authenticate
 its author, verify snapshot semantics or prove existing trust will accept a restore. The guarded
 read path refuses unsupported file-protection environments rather than using a weaker reader.
 
 `backup recover <full-attempt-id>` uses the original root's pre-commit restore journal, not a
-manifest path or selected-space guess. It requires the native deadline and every recorded owner
-to prove the attempt stale, then performs the native rollback. Commit intent forbids rollback.
+manifest path or selected-space guess. It rolls the attempt back once it is stale: its restore
+process and every recorded watchdog and broker are proven dead, and either every broker this root
+started is proven gone or the claim's deadline has passed. Commit intent forbids rollback.
 `backup cleanup-fallback <full-attempt-id>` requires the matching healthy active restore and
 removes only its unchanged retained old-store identity; it never removes the restored target.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
@@ -1439,8 +1452,9 @@ Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` 
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
 or process kill is supplied.
-The full attempt id has the form `restore-<uuid>`. `cotal status` shows the attempt a root holds
-under Maintenance, with its state and next step. A refusal for the wrong state names the next step
+A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
+interrupted create's `backup-<uuid>`, as described above. `cotal status` shows the attempt a root
+holds under Maintenance, with its state and next step. A refusal for the wrong state names the next step
 for the recorded one. A completed `cleanup-fallback` retires the journal, so a repeated cleanup
 refuses with `TARGET_NOT_FOUND` and says the root holds no restore attempt.
 
@@ -1488,11 +1502,17 @@ directory is trusted operator input: hashes detect corruption, not malicious rew
 
 Restore validates and stages the exact allowlisted artifact bytes before moving or creating a store.
 It requires the same space and existing trust state. The whole pre-commit window holds a journaled
-liveness claim (coordinator, watchdogs, brokers, absolute deadline): ordinary `up` and a repeated
-`up --restore` refuse while the claim is live, and a stale attempt is recovered only after the
-deadline has elapsed and every recorded owner is proven dead. A retried `up --restore` handles this
-automatically; an operator can also recover it explicitly with `cotal backup recover <full-attempt-id> --yes`. Nothing
-ever rolls back a live attempt. A registry-only artifact restores as registry-only whether or not
+liveness claim (coordinator, watchdogs, brokers, and a deadline 30 minutes after the restore
+began). While the claim is live, ordinary `up`, a repeated restore and `backup recover` refuse
+`LIFECYCLE_BLOCKED` (exit 2) and name the restore process and the deadline. A command that finds
+the root's maintenance lock held refuses the same way and names the pid that holds it. The attempt
+is stale once the restore process and every recorded owner are proven dead on this host, and
+either the deadline has passed or every broker the root started is proven gone. A broker's
+watchdog stops it when the restore process exits, so a restore stopped by Ctrl-C is stale within
+seconds. A retried restore rolls a stale attempt back and continues; an operator can also roll it
+back with `cotal backup recover <full-attempt-id> --yes`. Nothing ever rolls back a live attempt.
+A restore interrupted by SIGINT, SIGTERM or SIGHUP before it commits exits 130, 143 or 129 and
+prints its attempt id and that recovery command. A registry-only artifact restores as registry-only whether or not
 `--restore-only registry` is passed; omitted infrastructure is always created and the exact
 post-restore stream inventory is asserted before commit intent. Ordinary `up` from a preserved cut
 resumes only the exact recorded source store and runtime; a contradicting `--store-dir` or

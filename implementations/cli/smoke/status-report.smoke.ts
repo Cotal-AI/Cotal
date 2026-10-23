@@ -163,7 +163,7 @@ if (!brokerDisplayOnly) {
   const attempt = "restore-00000000-0000-4000-8000-000000000000";
   const restoring = { ...json.envelope!.result!, maintenance: { root: home, space: "held", state: "restore-ready", attemptId: attempt, next: restoreNextStep("restore-ready", attempt) } };
   const report = renderReport(statusView(restoring as unknown as Parameters<typeof statusView>[0]), "plain");
-  check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --dry-run`), report);
+  check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --yes`), report);
 }
 
 // ── a part it cannot read is named on its row, and the read is partial ───────────────────────────

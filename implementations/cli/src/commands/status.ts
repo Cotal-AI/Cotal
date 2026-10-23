@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, assessMaintenanceClaim, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MaintenanceClaim, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -48,6 +48,7 @@ import { instanceProjection, serviceInstances } from "../lib/service-instances.j
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { restoreNextStep } from "../lib/restore.js";
+import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
@@ -295,14 +296,24 @@ function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["ma
   try {
     const journal = readMaintenanceJournal(root);
     if (!journal) return null;
-    const attemptId = "restore" in journal ? journal.restore.attemptId : journal.cut.attemptId;
+    const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
     const next = "restore" in journal ? restoreNextStep(journal.state, attemptId)
-      : journal.state === "ready" ? `create a backup with ${displayCmd()} backup create <dir>, or resume with bare ${displayCmd()} up` : null;
+      : journal.state === "ready" ? `create a backup with ${displayCmd()} backup create <dir>, or resume with bare ${displayCmd()} up`
+      : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
     return { root, space: journal.space, state: journal.state, attemptId, next };
   } catch {
     gaps.add("MAINTENANCE_JOURNAL_UNREADABLE", "this folder's maintenance journal could not be read; no absent or settled state was inferred", { root });
     return { root, space: null, state: "unreadable", attemptId: null, next: null };
   }
+}
+
+/** The next step for a cut a backup create still claims: wait while it runs, or release it once it
+ *  stopped before it finished. */
+function claimedNextStep(root: string, claim: MaintenanceClaim): string {
+  const recover = `${displayCmd()} backup recover ${claim.attemptId} --yes`;
+  if (assessMaintenanceClaim(claim, { unrecordedOwnersDead: attemptProcessesGone(root) }) === "stale")
+    return `backup attempt ${claim.attemptId} stopped before it finished: release it with ${recover}`;
+  return `backup attempt ${claim.attemptId} holds this root until ${claim.deadline} (process ${claim.coordinator.pid}); if it was stopped, run ${recover} once it has exited`;
 }
 
 /** Local boot and additive intents are recovery coordinates, not evidence of native state. */
@@ -644,7 +655,10 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   let controllerStack = false;
   try { controllerStack = readStackJournal(root)?.journal.space === space; } catch { controllerStack = false; }
   const storedState = !controllerStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
-  if (storedState) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+  // While a maintenance journal holds the store, clean store refuses, so it is not offered.
+  let maintained = false;
+  try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
+  if (storedState && !maintained) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
   return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack);
 }
 

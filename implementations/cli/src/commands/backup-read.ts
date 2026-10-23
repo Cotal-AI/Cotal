@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { lstatSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { ArtifactFileFault, inspectBackupArtifact } from "../lib/backup-artifact.js";
@@ -10,6 +11,7 @@ export function backupRead(args: ParsedArgs): void {
   try { result = inspectBackupArtifact(directory!, mode === "verify"); }
   catch (error) {
     if (isCommandFailure(error)) throw error;
+    if (manifestMissing(resolve(directory!))) throw new CommandFailure("refused", "SCHEMA_INVALID", `${resolve(directory!)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`, { target: { directory: resolve(directory!), fault: "manifest-missing" }, remedy: "it cannot be verified or restored. In the folder it was created from, cotal status names the interrupted backup attempt, and cotal backup recover <attempt> --yes removes this directory; then create a new backup" });
     if (error instanceof ArtifactFileFault) throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; no file content or other manifest value was printed`, { target: { directory: resolve(directory!), file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: verify another copy of the same artifact, or create a new backup from a stopped preserved cut; this command did not restore, start a broker or write a staging directory" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the artifact is missing, unreadable, changed, or does not match its declared format/inventory/integrity; raw manifest values were not printed", { remedy: "inspect the original private artifact without editing it; this command did not restore, start a broker or write a staging directory" });
   }
@@ -24,4 +26,11 @@ export function backupRead(args: ParsedArgs): void {
       { kind: "lines", lines: ["No broker was contacted or started, no snapshot was restored, and no staging directory was written. The artifact is not modified. Private snapshot bytes, stream configuration bodies and trust material are not printed or uploaded."] },
     ] },
   ] }));
+}
+
+/** A real directory with no `manifest.json`: create writes the manifest last, so this is a backup that
+ *  never published. */
+function manifestMissing(directory: string): boolean {
+  try { return lstatSync(directory).isDirectory() && !lstatSync(join(directory, "manifest.json"), { throwIfNoEntry: false }); }
+  catch { return false; }
 }

@@ -1,10 +1,12 @@
 /** Live fault injection at every backup stage, and whole-attempt restore replay after an exact-ID
  *  chunk-handoff timeout. Both halves assert the same contract from opposite ends: a failed attempt
- *  publishes nothing, keeps nothing, and leaves the cut retryable at the SAME destination. */
+ *  publishes nothing, keeps nothing, and leaves the cut retryable at the SAME destination. A restore
+ *  or create interrupted by Ctrl-C inside its claim names its recovery, which works once its
+ *  processes are gone, before the claim deadline. */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -20,6 +22,8 @@ const worktree = resolve(import.meta.dirname, "..", "..");
 const cliPath = join(worktree, "bin", "cotal.ts");
 const taskSeedPath = join(worktree, "implementations", "cli", "smoke", "seed-task-durable.ts");
 const tsx = join(worktree, "node_modules", ".bin", "tsx");
+const tsxImport = import.meta.resolve("tsx");
+const sleep = (ms: number) => new Promise((resolveWait) => setTimeout(resolveWait, ms));
 
 /** Every `cotal backup create` stage the product can be told to throw at, with the message each
  *  injection reports. The list IS the assertion that no stage is silently unhooked. */
@@ -35,6 +39,32 @@ const journalState = (root: string): string | undefined => {
   if (!existsSync(path)) return undefined;
   return (JSON.parse(readFileSync(path, "utf8")) as { state: string }).state;
 };
+
+interface ClaimedJournal {
+  state: string;
+  restore?: { attemptId: string };
+  claim?: { attemptId?: string; deadline: string; owners: unknown[] };
+}
+
+const readJournal = (root: string): ClaimedJournal | undefined => {
+  try { return JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as ClaimedJournal; }
+  catch { return undefined; }
+};
+
+/** Freeze `pid` with SIGSTOP once `claimed(journal)` holds while it holds no maintenance lock. A
+ *  freeze that lands inside a locked step is thawed and tried again, so the commands run against
+ *  the frozen attempt meet its claim rather than its lock. */
+async function freezeUnlocked(root: string, pid: number, claimed: (journal: ClaimedJournal) => boolean): Promise<ClaimedJournal> {
+  const lock = join(root, ".cotal", "maintenance", "lock.json");
+  for (const until = Date.now() + 120_000; Date.now() < until; await sleep(10)) {
+    const journal = readJournal(root);
+    if (!journal || !claimed(journal) || existsSync(lock)) continue;
+    process.kill(pid, "SIGSTOP");
+    if (!existsSync(lock)) return readJournal(root)!;
+    process.kill(pid, "SIGCONT");
+  }
+  throw new Error("the attempt never reached an unlocked claimed moment");
+}
 
 const attemptResidue = (root: string): string[] => {
   const attempts = join(root, ".cotal", "maintenance", "attempts");
@@ -248,6 +278,156 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
   }
 }
 
+/** Ctrl-C inside a restore's claimed window. While the restore process lives, `backup restore`,
+ *  `up` and `backup recover` refuse naming it and the claim deadline. Interrupted, it exits 130 and
+ *  names its recovery, which works as soon as its brokers are gone, not after the deadline. */
+async function interruptedRestoreScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-faults-int-restore-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-faults-int-restore-home-")));
+  // Its own .cotal, so the CLI resolves this root and never a stray .cotal in a parent folder.
+  mkdirSync(join(root, ".cotal"), { mode: 0o700 });
+  const configDir = join(home, "xdg");
+  const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+  const artifact = join(root, "full-backup");
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "backup_faults_int_restore";
+  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const run = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(tsx, [cliPath, ...args], options);
+  };
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `interrupted restore ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  };
+  try {
+    must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
+    assert.ok(existsSync(join(root, ".cotal", "nats")), "up resolved this root");
+    must("preserve cut", run("down", "--preserve-state"));
+    must("full backup", run("backup", "create", artifact));
+
+    // Its own process group, as a terminal runs it, so the SIGINT below is the one Ctrl-C sends.
+    const child = spawn(process.execPath, ["--import", tsxImport, cliPath, "backup", "restore", artifact], { cwd: root, env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exited = new Promise<number | null>((resolveExit) => child.once("exit", (code) => resolveExit(code)));
+    const held = await freezeUnlocked(root, child.pid!, (journal) => journal.state === "restore-ready" && (journal.claim?.owners.length ?? 0) > 0);
+    const attemptId = held.restore!.attemptId, deadline = held.claim!.deadline;
+    const recover = `cotal backup recover ${attemptId} --yes`;
+    for (const [label, args] of [
+      ["backup restore", ["backup", "restore", artifact]],
+      ["up", ["up", "--detach", "--open", "--server", server, "--space", space]],
+      ["backup recover", ["backup", "recover", attemptId, "--yes"]],
+    ] as const) {
+      const refused = run(...args);
+      assert.equal(refused.status, 2, `${label} refuses while the restore process lives\n${refused.stderr}`);
+      assert.match(refused.stderr, /LIFECYCLE_BLOCKED/, `${label} is a known refusal`);
+      assert.ok(refused.stderr.includes(`holds this root until ${deadline}, and its restore process ${child.pid} is still running`), `${label} names the restore process and the deadline\n${refused.stderr}`);
+      assert.ok(refused.stderr.includes(recover), `${label} names the recovery\n${refused.stderr}`);
+    }
+
+    process.kill(-child.pid!, "SIGINT");
+    process.kill(child.pid!, "SIGCONT");
+    assert.equal(await exited, 130, `the interrupted restore exits 130\n${stderr}`);
+    assert.ok(stderr.includes(`Interrupted: restore attempt ${attemptId} stopped before it committed`) && stderr.includes(recover), `the interrupt names what it left and its recovery\n${stderr}`);
+    assert.equal(journalState(root), "restore-ready", "the interrupted restore leaves its pre-commit claim");
+    // The brokers' watchdog stops them once the restore process is gone; recovery waits for that only.
+    let recovered = run("backup", "recover", attemptId, "--yes");
+    for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
+    must("recover the interrupted restore", recovered);
+    assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
+    assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
+    must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
+    must("down", run("down"));
+  } finally {
+    run("down");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+/** Ctrl-C inside a backup create's claimed window. While the backup process lives, another create,
+ *  `up` and `backup recover` refuse naming it and the claim deadline. Interrupted, it exits 130 and
+ *  names its partial artifact and recovery; `backup verify` calls that artifact incomplete, and
+ *  `backup recover` removes it before the deadline so the same destination works again. */
+async function interruptedCreateScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-faults-int-create-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-faults-int-create-home-")));
+  // Its own .cotal, so the CLI resolves this root and never a stray .cotal in a parent folder.
+  mkdirSync(join(root, ".cotal"), { mode: 0o700 });
+  const configDir = join(home, "xdg");
+  const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+  const destination = join(root, "interrupted-backup");
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "backup_faults_int_create";
+  const env: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const run = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(tsx, [cliPath, ...args], options);
+  };
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `interrupted create ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  };
+  try {
+    must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
+    assert.ok(existsSync(join(root, ".cotal", "nats")), "up resolved this root");
+    must("preserve cut", run("down", "--preserve-state"));
+
+    // Its own process group, as a terminal runs it, so the SIGINT below is the one Ctrl-C sends.
+    const child = spawn(process.execPath, ["--import", tsxImport, cliPath, "backup", "create", destination], { cwd: root, env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exited = new Promise<number | null>((resolveExit) => child.once("exit", (code) => resolveExit(code)));
+    const held = await freezeUnlocked(root, child.pid!, (journal) => journal.state === "claimed" && (journal.claim?.owners.length ?? 0) > 0 && existsSync(destination));
+    const attemptId = held.claim!.attemptId!, deadline = held.claim!.deadline;
+    const recover = `cotal backup recover ${attemptId} --yes`;
+    for (const [label, args] of [
+      ["another backup create", ["backup", "create", join(root, "second-backup")]],
+      ["up", ["up", "--detach", "--open", "--server", server, "--space", space]],
+      ["backup recover", ["backup", "recover", attemptId, "--yes"]],
+    ] as const) {
+      const refused = run(...args);
+      assert.equal(refused.status, 2, `${label} refuses while the backup process lives\n${refused.stderr}`);
+      assert.match(refused.stderr, /LIFECYCLE_BLOCKED/, `${label} is a known refusal`);
+      assert.ok(refused.stderr.includes(`holds this root until ${deadline}, and its backup process ${child.pid} is still running`), `${label} names the backup process and the deadline\n${refused.stderr}`);
+      assert.ok(refused.stderr.includes(recover), `${label} names the recovery\n${refused.stderr}`);
+    }
+
+    process.kill(-child.pid!, "SIGINT");
+    process.kill(child.pid!, "SIGCONT");
+    assert.equal(await exited, 130, `the interrupted create exits 130\n${stderr}`);
+    assert.ok(stderr.includes(`left a partial artifact at ${destination}`) && stderr.includes(recover), `the interrupt names its partial artifact and its recovery\n${stderr}`);
+    assert.equal(journalState(root), "claimed", "the interrupted create leaves its claim");
+    const verified = run("backup", "verify", destination);
+    assert.equal(verified.status, 1, `verify refuses the partial artifact\n${verified.stderr}`);
+    assert.ok(verified.stderr.includes("has no manifest.json, so it is an incomplete artifact"), `verify calls the partial artifact incomplete\n${verified.stderr}`);
+    const samePath = run("backup", "create", destination);
+    assert.equal(samePath.status, 2, `a create at the partial artifact refuses\n${samePath.stderr}`);
+    assert.ok(samePath.stderr.includes(`is the partial artifact of interrupted backup attempt ${attemptId}`) && samePath.stderr.includes(recover), `that refusal names the attempt and its recovery\n${samePath.stderr}`);
+    // The broker's watchdog stops it once the backup process is gone; recovery waits for that only.
+    let recovered = run("backup", "recover", attemptId, "--yes");
+    for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
+    must("recover the interrupted create", recovered);
+    assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
+    assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
+    assert.equal(existsSync(destination), false, "recovery removed the partial artifact");
+    assert.deepEqual(attemptResidue(root), [], "recovery leaves no clone or broker files");
+    must("create at the same destination after recovery", run("backup", "create", destination));
+    assertValidManifest(destination, space, "full");
+    must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
+    must("down", run("down"));
+  } finally {
+    run("down");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 await backupStageFaultScenario();
 await restoreExactIdTimeoutReplayScenario();
+await interruptedRestoreScenario();
+await interruptedCreateScenario();
 console.log("backup faults live smoke: ok");

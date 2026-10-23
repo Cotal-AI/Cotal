@@ -43,9 +43,10 @@ import { assertControllerResumeEligible } from "../lib/controller-resume.js";
 import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
 import { refuseControllerCut } from "../lib/stack-journal.js";
 import { authorityFingerprint } from "../lib/maintenance-files.js";
-import { connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "../lib/isolated-broker.js";
+import { attemptProcessesGone, connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "../lib/isolated-broker.js";
 import { cotalRoot } from "../lib/paths.js";
-import { restoreNextStep } from "../lib/restore.js";
+import { heldClaim, restoreNextStep } from "../lib/restore.js";
+import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { liveMeshProcesses } from "./clean.js";
 import { backupMaintenance } from "./backup-maintenance.js";
 import { backupRead } from "./backup-read.js";
@@ -86,6 +87,16 @@ function selection(value: string | undefined): SpaceBackupSelection {
 
 function localOwner(id: string): ProcessOwner {
   return { pid: process.pid, host: hostname(), startedAt: new Date().toISOString(), id };
+}
+
+/** What an interrupted backup create left, read from the journal at the moment of the signal. */
+function backupInterruptNotice(root: string, attemptId: string, destination: string): string {
+  const journal = readMaintenanceJournal(root);
+  if (journal?.state !== "claimed" || journal.claim.attemptId !== attemptId) return `Interrupted: backup attempt ${attemptId} stopped and holds no claim on this root.`;
+  const recover = `cotal backup recover ${attemptId} --yes`;
+  if (lstatSync(join(destination, "manifest.json"), { throwIfNoEntry: false }))
+    return `Interrupted: backup attempt ${attemptId} published ${destination} but stopped before it released this root.\nRelease it with ${recover}; the published artifact is kept.`;
+  return `Interrupted: backup attempt ${attemptId} stopped before it published, and left a partial artifact at ${destination}.\nRemove it and release this root with ${recover}; a backup create to another directory also does that first.`;
 }
 
 /** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
@@ -384,7 +395,9 @@ export function validateBackupArguments(args: ParsedArgs): void {
   const [mode, directory, ...extra] = args.positionals;
   if (!mode || !["create", "inspect", "verify", "restore", "recover", "cleanup-fallback"].includes(mode) || !directory?.trim() || extra.length || /[\u0000-\u001f\u007f]/u.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", "use backup create/inspect/verify/restore <directory>, or backup recover/cleanup-fallback <full-attempt-id>");
   const maintenance = mode === "recover" || mode === "cleanup-fallback";
-  if (maintenance && !/^restore-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", "name the full restore attempt id, restore-<uuid>; a prefix, path or backup directory is refused", { remedy: "cotal status shows the attempt this root holds, under Maintenance" });
+  // recover also takes an interrupted backup create's own attempt; cleanup-fallback only a restore's.
+  const attempt = new RegExp(`^(${mode === "recover" ? "restore|backup" : "restore"})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, "i");
+  if (maintenance && !attempt.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", mode === "recover" ? "name the full attempt id, restore-<uuid> or backup-<uuid>; a prefix, path or backup directory is refused" : "name the full restore attempt id, restore-<uuid>; a prefix, path or backup directory is refused", { remedy: "cotal status shows the attempt this root holds, under Maintenance" });
   const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run"] : [])]);
   if (Object.keys(args.values).some((flag) => !allowed.has(flag))) throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
   if (mode === "create") selection(args.values.only as string | undefined);
@@ -446,8 +459,12 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   // Refusals that need no lock come first, so a refused create leaves no maintenance state behind.
   if (!readMaintenanceJournal(root)) throw notReady(root, undefined);
   const destinationPath = resolve(destination);
-  if (lstatSync(destinationPath, { throwIfNoEntry: false }))
-    throw new CommandFailure("refused", "CONFLICT", "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: "name a directory that does not exist yet" });
+  if (lstatSync(destinationPath, { throwIfNoEntry: false })) {
+    // The partial artifact of an interrupted create is named with the command that removes it.
+    const journal = readMaintenanceJournal(root);
+    const partial = journal?.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
+    throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with cotal backup recover ${partial} --yes, then run this create again` : "name a directory that does not exist yet" });
+  }
   const storeDir = resolve(values["store-dir"] ?? resolve(root, ".cotal", "nats"));
   const attemptId = `backup-${randomUUID()}`;
   observed.attemptId = attemptId;
@@ -459,12 +476,20 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   let broker: IsolatedBroker | undefined;
   let claimed = false;
   let writer: ReturnType<typeof createArtifactWriter> | undefined;
+  let releaseNotice: (() => void) | undefined;
   try {
     const current = readMaintenanceJournal(root);
     if (current?.state === "claimed") {
-      observed.mutationAttempted = true;
       observed.priorClaimAttemptId = current.claim.attemptId;
-      recoverStaleMaintenanceClaim(lock);
+      // An earlier attempt's claim that is not provably stale refuses before anything is removed.
+      try { recoverStaleMaintenanceClaim(lock, { unrecordedOwnersDead: attemptProcessesGone(root) }); }
+      catch (error) {
+        if (isMaintenanceError(error) && ["claim-not-expired", "claim-live", "claim-owner-ambiguous"].includes(error.code))
+          throw heldClaim(root, current.claim.attemptId, current.claim, "backup create", error.code === "claim-owner-ambiguous" ? "ambiguous" : "live");
+        observed.mutationAttempted = true;
+        throw error;
+      }
+      observed.mutationAttempted = true;
     }
     ready = requireReady(root, storeDir);
     assertBackupPaths(root, ready.source.path, destination);
@@ -487,6 +512,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     // Ownership precedes existence: the claim is journaled with pending slots for every path this
     // attempt may create, so a crash at any later instant leaves a journal owner to recover from.
     observed.mutationAttempted = true;
+    releaseNotice = noticeOnInterrupt(() => backupInterruptNotice(root, attemptId, destinationPath));
     claimMaintenanceReady(lock, {
       attemptId,
       deadline: deadline.toISOString(),
@@ -575,6 +601,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       if (claimed && !residue.length) releaseMaintenanceClaim(lock, attemptId);
     } finally {
       releaseMaintenanceLock(lock);
+      releaseNotice?.();
     }
     observed.cleanupConfirmed = claimed && !residue.length;
     if (residue.length) {
