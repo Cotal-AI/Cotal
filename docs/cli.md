@@ -4329,12 +4329,17 @@ them in a `CHANNELS_DENIED` warning. DM history and `--since` by sequence are no
 user-auth identity. A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.
 
-`--follow` prints the window and then each new message until interrupted. With `--json` each line is
+`--follow` prints the window and then each new message until interrupted. A lost connection is
+reported in one line while the follow re-establishes it, so a follow outlives a broker restart. A
+credential that can no longer connect ends the follow. It may have expired, or the broker may now
+reject it, as after `reset space`. The follow then ends with the refusal a one-shot command with that
+credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. With `--json` each line is
 one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
-The first record is a `snapshot` holding the window, then one `event` per message. A `gap` record
-says the connection was re-established and messages sent while it was down are not shown. An
-`error` record names a failure on the live feed, and an `end` record closes the stream. The exit
-code is the snapshot's.
+The first record is a `snapshot` holding the window, then one `event` per message. An `error`
+record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
+`gap` record says the connection was re-established and messages sent while it was down are not
+shown. An `end` record always closes the stream. The exit code is the snapshot's, or the refusal's
+when the credential ended the follow.
 
 `history clear` purges retained history from every channel in the selected space; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
