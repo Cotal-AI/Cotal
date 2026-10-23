@@ -2,7 +2,9 @@
  * With no space to act on, `cotal auth mint` and `cotal doctor auth` name the next step. `auth mint`
  * refuses with TARGET_NOT_FOUND (exit 2) and the remedy the workspace gives for a missing mesh.
  * `doctor auth` in a folder whose root holds no space reports a partial result (exit 4) whose
- * remedy says to run it in a space's root, in JSON and in the text report. Nothing is written.
+ * remedy says to run it in a space's root, in JSON and in the text report. `cotal persona` with
+ * a `--server` no registration names refuses with TARGET_NOT_FOUND and says this folder is not a
+ * space's project. Nothing is written.
  * Broker-free; the mesh registry is private to this run.
  *
  * Run: pnpm smoke:no-space-next
@@ -15,6 +17,7 @@ import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { exitCode, findCotalRoot, isCommandFailure, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 import { mint } from "../src/commands/mint.js";
+import { persona } from "../src/commands/persona.js";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -28,6 +31,15 @@ const base = realpathSync(mkdtempSync(join(tmpdir(), "cotal-no-space-next-")));
 process.env.COTAL_HOME = join(base, "home");
 const bare = join(base, "bare");
 mkdirSync(bare);
+
+/** The refusal one `persona` run in `bare` ends with. */
+async function personaRefusal(values: Record<string, string | boolean | undefined>, positionals: string[]): Promise<CommandFailure> {
+  process.chdir(bare);
+  try { await persona({ values, positionals, raw: [] }); }
+  catch (error) { if (isCommandFailure(error)) return error; throw error; }
+  finally { process.chdir(startCwd); }
+  throw new Error(`persona ${positionals.join(" ")} did not refuse`);
+}
 
 /** One doctor run in `bare`: what it wrote to stdout and stderr, and its exit code. */
 async function diagnose(values: Record<string, string | boolean | undefined>): Promise<{ out: string; err: string; code: number | undefined }> {
@@ -89,6 +101,16 @@ try {
     assert.equal(code, 4, "doctor text with no space: exit 4");
     assert.deepEqual(readdirSync(bare), [], "doctor with no space writes nothing");
   }
+
+  // 4. persona with a --server that no registration names: outside a project there is no catalog,
+  //    and the folder is not made into one.
+  for (const [values, positionals] of [[{ server: "nats://127.0.0.1:1", json: true }, []], [{ server: "nats://127.0.0.1:1", prompt: "x", subscribe: "" }, ["create", "zz"]]] as const) {
+    const failure = await personaRefusal(values, [...positionals]);
+    const what = `persona ${positionals.join(" ")} --server <unregistered>`.replace("  ", " ");
+    assert.equal(failure.code, "TARGET_NOT_FOUND", `${what}: code (${failure.message})`);
+    assert.equal(failure.message, "no space registered here is at nats://127.0.0.1:1, and this folder is not a space's project", `${what}: the refusal names the address`);
+    assert.deepEqual(readdirSync(bare), [], `${what} writes nothing here`);
+  }
 } finally {
   process.chdir(startCwd);
   if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -96,5 +118,5 @@ try {
   rmSync(base, { recursive: true, force: true });
 }
 
-console.log("no-space-next smoke: OK - auth mint with no mesh refuses TARGET_NOT_FOUND with its next step, and doctor auth with no space is partial (exit 4) with a remedy in JSON and text; nothing is written");
+console.log("no-space-next smoke: OK - auth mint with no mesh refuses TARGET_NOT_FOUND with its next step, doctor auth with no space is partial (exit 4) with a remedy in JSON and text, and persona --server with no registration refuses; nothing is written");
 emitSentinel({ passed: cells(), failed: 0 });

@@ -315,6 +315,10 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
   }
+  // A --server that no registration names reads the project in this folder, as launch does.
+  const inProject = cotal(["persona", "--json", "--server", "nats://127.0.0.1:1"], persona, noSeed);
+  check("control: in a project, persona --server <unregistered> lists that project's catalog",
+    inProject.status === 0 && /"kind":"personas","items":\[\{"name":"x"/.test(inProject.stdout), shown(inProject));
 }
 
 // ── team check names each located manifest problem, without quoting a persona file ───────────────

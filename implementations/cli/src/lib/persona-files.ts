@@ -8,7 +8,7 @@ import {
   type AgentDef,
 } from "@cotal-ai/core";
 import {
-  cachedPreferences, CommandFailure, inputDisabledByFlag, isWorkspaceTargetError,
+  cachedPreferences, CommandFailure, inputDisabledByFlag, isGenuineSpace, isWorkspaceTargetError, loadMeshes,
   resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 
@@ -19,6 +19,12 @@ export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeM
 export function personaCatalog(values: { space?: string; server?: string }): PersonaCatalog {
   try {
     const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
+    // A `--server` that no registration names resolves to this folder's project, as launch does.
+    // Outside a project there is no catalog there, and the folder is not made into one.
+    if (values.server !== undefined && values.space === undefined && !loadMeshes().some((m) => m.server === values.server) && !isGenuineSpace(target.root))
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space registered here is at ${values.server}, and this folder is not a space's project`, {
+        remedy: "name a prepared or registered space with `--space <name>`, or run this in its project folder", target: { server: values.server },
+      });
     return catalogAt(target.root, target.space);
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;

@@ -3096,7 +3096,9 @@ cotal persona remove <name> --yes
 selected space's local `.cotal/agents` catalog without connecting, refreshing a remote catalog
 or seeding connectors. `--space` and `--server` select the same root used by launch. A prepared
 space has an offline catalog before it is started. Failed target resolution never falls back
-to the current directory. Remote `--on` operations refuse as unsupported here.
+to the current directory: a `--server` that no registration names reads the project in this
+folder, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing.
+Remote `--on` operations refuse as unsupported here.
 
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
