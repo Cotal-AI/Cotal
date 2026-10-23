@@ -954,7 +954,10 @@ stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart
 manager keeps running, then run `cotal down`. Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
-line and its remedy without the command help.
+line and its remedy without the command help. A stop records each step in the stack journal in the root's
+`.cotal`. When this account cannot write that folder, `down` refuses `PERMISSION_DENIED`, exit 2,
+before the plan, names the folder and the `chmod u+w` that fixes it, and stops nothing. A dry run
+names it as a refusal the real stop would hit.
 
 A bare `down` stops only the stack of the folder it runs in. In a folder whose root holds no
 stack, when the space named by `--space`, or else the selected space, is a controller stack rooted

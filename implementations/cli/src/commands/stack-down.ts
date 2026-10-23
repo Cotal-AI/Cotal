@@ -6,6 +6,8 @@
  *  recorded as such under its definition's lock and is not stopped again, so a repeated stop is a
  *  no-op. Shared registry and credential cleanup follow only a complete confirmed stop. Nothing
  *  outside the recorded members is touched. The whole apply holds the root's maintenance lock. */
+import { accessSync, constants } from "node:fs";
+import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -20,7 +22,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, resumableSignalStop, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
-import { RESUME_REMEDY, abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { RESUME_REMEDY, abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -45,6 +47,19 @@ export function stackRootElsewhere(space: string, root: string): string | undefi
 /** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
 export const sameDown = (values: ParsedArgs["values"]): string =>
   ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+
+/** A stop records each step in the stack journal in the root's `.cotal`, so a folder this account
+ *  cannot write refuses before the plan, naming it, rather than after the plan at the first write. */
+function assertJournalWritable(root: string, values: ParsedArgs["values"]): void {
+  const dir = dirname(stackJournalPath(root));
+  try { accessSync(dir, constants.W_OK | constants.X_OK); }
+  catch {
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dir}, where down records each step of the stop in the stack journal; no member was stopped`, {
+      target: { root, path: dir },
+      remedy: `make it writable with chmod u+w ${dir}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
+    });
+  }
+}
 
 export function validateStackDownArguments(root: string, values: ParsedArgs["values"]): void {
   const preserve = values["preserve-state"] === true;
@@ -217,7 +232,7 @@ function previewStackStop(root: string, values: ParsedArgs["values"], presentati
   if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, false);
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined;
-  try { restore = scopeRefusals(journal0); }
+  try { restore = scopeRefusals(journal0); assertJournalWritable(root, values); }
   catch (error) { if (!isCommandFailure(error)) throw error; blocked = error; }
   const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }] : [];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
@@ -242,6 +257,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, abandonWarnings);
   if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
+  assertJournalWritable(root, values);
   if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared
   // while its dependants run; it is recomputed after they stop and refuses on any change then.

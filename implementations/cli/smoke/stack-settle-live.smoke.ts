@@ -58,6 +58,8 @@
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
  *     stops that broker again and fails `OPERATION_FAILED`, naming the open-file limit. The next `up`
  *     under the normal limit starts the stack.
+ * 12. A `down --yes` in a folder whose `.cotal` this account cannot write refuses `PERMISSION_DENIED`
+ *     before the plan, naming the folder, and stops nothing. Once it is writable, `down` stops it.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -65,7 +67,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, watch } from "node:fs";
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -674,6 +676,25 @@ try {
     check(`${space}: the next up under the normal limit starts the stack, and down stops it`, recovered.status === 0 && stopped.status === 0 && gone(space, "stack-broker"), { up: shown(recovered), down: shown(stopped) });
   }
 
+  // 12. A down in a folder whose .cotal this account cannot write. Root bypasses the mode.
+  if (process.getuid?.() !== 0) {
+    const space = "readonly";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    track(space);
+    const dir = join(root, ".cotal"), journal = readFileSync(join(dir, "stack-controller.json"), "utf8");
+    chmodSync(dir, 0o500);
+    let refused: Run;
+    try { refused = cli(root, "down", "--yes", "--json"); }
+    finally { chmodSync(dir, 0o700); }
+    check(`${space}: down --yes with an unwritable .cotal refuses PERMISSION_DENIED, exit 2, naming it, and stops nothing`,
+      started.status === 0 && refused.status === 2 && refused.env?.error?.code === "PERMISSION_DENIED" && (refused.env.error.message ?? "").includes(dir) &&
+        (refused.env.error.remedy ?? "").includes(`chmod u+w ${dir}`) && !gone(space, "stack-broker") && readFileSync(join(dir, "stack-controller.json"), "utf8") === journal,
+      { up: shown(started), down: shown(refused) });
+    const stopped = cli(root, "down", "--yes", "--json");
+    check(`${space}: once it is writable, down --yes stops the stack`, stopped.status === 0 && gone(space, "stack-broker"), shown(stopped));
+  }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
 }
