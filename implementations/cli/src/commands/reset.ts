@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, brokerAddressForDisplay, canonicalRoot, CommandFailure, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, writeResult, type Report } from "@cotal-ai/workspace";
 import { liveMeshProcesses, safeStoreCleanupPath } from "./clean.js";
-import { assertResetEligible, resetStoreApply, selectResetTarget } from "./reset-store-apply.js";
+import { assertResetEligible, resetStoreApply, selectResetTarget, STORE_CONTENTS, storeContentsText } from "./reset-store-apply.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
@@ -103,6 +103,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
     unreadableBootRecords: [...bootAttempts.refused, ...bootSummaries.refused].map(({ path }) => path),
     brokerSharing: "exact local registration matches only; aliases and live tenants not checked", brokerProbe,
     identityInventory: "not-applicable", exactIdentityPaths: "not-applicable",
+    storeContents: { removed: store.identity ? STORE_CONTENTS : [], listed: false },
     applyVerdict, dryRun: true, effectAttempted: false, persisted: false };
   // A preview that read what it could succeeds. It is partial in what it proves, which the
   // verdict's apply rechecks under the maintenance lock.
@@ -112,6 +113,10 @@ export async function reset(args: ParsedArgs): Promise<void> {
       : [{ kind: "lines", lines: [{ text: `reset store ${space} is offered. The apply runs every check again under the root's maintenance lock.`, tone: "ok" }] },
         { kind: "commands", items: [{ command: `cotal reset store ${space} --yes`, description: "Remove only this stopped store" }] }] },
     { title: "Reset local impact", blocks: [{ kind: "fields", rows: [["Scope", data.operation], ["Space", data.space], ["Recorded root", data.root], ["Store candidate", data.recordedStorePath], ["Inspected path", data.inspectedStorePath], ["Store state", data.storeState], ["Identity", data.identityImpact], ["Maintenance", data.maintenance], ["Broker probe", data.brokerProbe], ["Recorded processes that may run", data.possibleProcesses.length ? data.possibleProcesses.join(", ") : "none found in legacy pidfiles"], ["Service instance records", String(data.serviceOwners.length)], ["Supervisor receipts", String(data.serviceCensus.supervisors.length)], ["Retained native attempts", String(data.serviceCensus.nativeAttempts.length)], ["Additive ledgers", String(data.additiveLedgers.length)], ["Unreadable additive ledgers", String(data.unreadableAdditiveLedgers.length)], ["Retained additive deployments", String(data.retainedAdditiveAttempts.length)], ["Unreadable additive attempts", String(data.unreadableAdditiveAttempts.length)], ["Unsettled fresh attempts", String(data.unsettledBootAttempts.length)], ["Unreadable fresh records", String(data.unreadableBootRecords.length)], ["Other exact-address registrations", String(data.otherBrokerRegistrations.length)], ["Identity inventory", data.identityInventory], ["Exact identity paths", data.exactIdentityPaths]] }, { kind: "lines", lines: [{ text: "The local reads are not a maintenance lock, exclusive custody or broker stop proof. A negative credless probe may miss TLS-first listeners. Provider-owned secrets, full deletion paths and broker exclusivity remain unproved. No process was stopped and no file or registration was removed.", tone: "waiting" }] }] },
+    ...(data.storeContents.removed.length ? [{ title: "Store contents", blocks: [{ kind: "lines" as const, lines: [
+      `Removing the store removes ${storeContentsText(data.storeContents.removed)}. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards.`,
+      { text: `They are not listed: only the broker reads the store, and it is stopped. To see the runs first, run cotal up and cotal run ps from ${data.root}, then cotal down --yes.`, tone: "waiting" as const },
+    ] }] }] : []),
     { title: "Additive ownership at root", blocks: [
       data.additiveLedgers.length ? { kind: "table", columns: [{ key: "deploymentId", label: "Deployment ID" }, { key: "space", label: "Space" }, { key: "agents", label: "Agents" }, { key: "channels", label: "Channels" }], rows: data.additiveLedgers.slice(0, 100).map((row) => ({ ...row, agents: String(row.agents), channels: String(row.channels) })) } : { kind: "lines", lines: ["No readable additive ledger was found under this root."] },
       ...(data.unreadableAdditiveLedgers.length ? [{ kind: "lines" as const, lines: ["Unreadable ledger paths:", ...data.unreadableAdditiveLedgers.slice(0, 100)] }] : []),

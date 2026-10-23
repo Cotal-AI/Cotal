@@ -36,6 +36,13 @@ export interface ResetTarget {
 
 export type ResetCommand = "reset store" | "reset space";
 
+/** What the broker kept in a space's store, all of which a store reset removes. They are named, not
+ *  listed: a stopped broker is the only reader of its store. */
+export const STORE_CONTENTS = ["workflow runs and their journals", "channel history", "stored messages", "every other record the broker kept there"];
+
+/** {@link STORE_CONTENTS} as one phrase. */
+export const storeContentsText = (items: readonly string[]) => `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+
 export function selectResetTarget(space: string, command: ResetCommand): ResetTarget {
   let entry: ReturnType<typeof findMesh>, prepared: ReturnType<typeof findPreparedSpace>;
   try { entry = findMesh(space); prepared = findPreparedSpace(space); }
@@ -167,7 +174,7 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
     throw new CommandFailure("refused", "CONFLICT", "the selected root or custom store path is not a safe absolute project target", { target });
   const expected = await assertResetEligible(selected, "reset store");
   if (!yes) {
-    const answer = await prompts.confirm({ message: `Delete only the stopped store at ${oneLine(expected.path)} for ${oneLine(space)} on ${oneLine(brokerAddressForDisplay(selected.server) ?? "the recorded broker")}? Trust, credentials and registration stay.`, initialValue: false });
+    const answer = await prompts.confirm({ message: `Delete only the stopped store at ${oneLine(expected.path)} for ${oneLine(space)} on ${oneLine(brokerAddressForDisplay(selected.server) ?? "the recorded broker")}? Its ${storeContentsText(STORE_CONTENTS)} go with it. Trust, credentials and registration stay.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
       writeResult(presentation, { command: "reset", target, result: { kind: "reset-store", confirmed: false, deleted: false }, noOp: true }, (): Report => ({ sections: [{ title: "Store kept", blocks: [{ kind: "lines", lines: ["No store path was removed."] }] }] }));
       return;
@@ -199,8 +206,8 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
   if (failure) throw failure;
   const paths = removed ?? [];
   const records = selected.source === "registration" ? "kept" : "none; the prepared record and stack journal stay";
-  writeResult(presentation, { command: "reset", target, result: { kind: "reset-store", space, removedPaths: paths, trustRemoved: false, credentialsRemoved: false, registrationRemoved: false, selectedBy: selected.source }, ...(paths.length ? {} : { noOp: true }) }, (data): Report => ({ sections: [{ title: data.removedPaths.length ? "Store removed" : "Store already absent", blocks: [
-    { kind: "fields", rows: [["Space", data.space], ["Store path", expected.path], ["Trust and credentials", "kept"], ["Registration", records]] },
+  writeResult(presentation, { command: "reset", target, result: { kind: "reset-store", space, removedPaths: paths, removedContents: paths.length ? STORE_CONTENTS : [], trustRemoved: false, credentialsRemoved: false, registrationRemoved: false, selectedBy: selected.source }, ...(paths.length ? {} : { noOp: true }) }, (data): Report => ({ sections: [{ title: data.removedPaths.length ? "Store removed" : "Store already absent", blocks: [
+    { kind: "fields", rows: [["Space", data.space], ["Store path", expected.path], ...(data.removedContents.length ? [["Removed with it", storeContentsText(data.removedContents)]] as [string, string][] : []), ["Trust and credentials", "kept"], ["Registration", records]] },
     { kind: "lines", lines: data.removedPaths.length ? data.removedPaths : ["No store directory existed at the pinned path."] },
   ] }, { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: `Start ${space} again on an empty store, from ${root}` }] }] }] }));
 }

@@ -1324,6 +1324,12 @@ a reset selects, so no reset reaches it once stopped. There the step after `cota
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
 `reset space`, with `--store-dir <dir>` when the registration records a custom store.
 
+Removing the store removes what the broker kept in it: workflow runs and their journals, channel
+history, stored messages and every other record. A run still waiting for an answer goes with it and
+cannot be answered or resumed afterwards. The preview, the confirmation and the receipt say so but
+do not list the runs, because only the broker reads the store and it is stopped. To see them first,
+run `cotal up` and `cotal run ps`, then `cotal down --yes`.
+
 The store dry-run is a local-impact preview that exits 0. It requires a space selected that way, a
 real project `.cotal` and a root readable as one local tenant. It opens with a verdict: the apply is
 offered, with `cotal reset store <space> --yes` as Next, or it would refuse, with the apply's own
