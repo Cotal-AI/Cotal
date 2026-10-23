@@ -2616,7 +2616,12 @@ with `--service-endpoints`. Every subcommand is one request to the service's
 `/service-endpoint-host` route as the signed-in user: the route verifies your IdP token and derives
 the granter itself, so no command names one. `approve` and `refuse` are the owner's: the command
 reads the proposal and its name first and decides at those revisions, so a proposal or name that
-moved in between is a conflict the host reports, never a decision on something else. `proposal`,
+moved in between is a conflict the host reports, never a decision on something else.
+`--caller-ceiling` names capabilities the proposed commands declare, such as `read`. Each one
+becomes a ceiling entry, pinned to the proposed instance, for every proposed command that declares
+it, and callers can later be granted only commands inside that ceiling. A name that no proposed
+command declares is refused with nothing decided, and so is one a targeted command declares,
+because a capability name does not choose a target mode. Without the flag the ceiling is empty. `proposal`,
 `operation` and `name` read as the owner: another owner's record reads absent. `name-bind` is the
 operator's: it needs the auth service on this machine and runs on its loopback face under the
 exchange capability, with your signed-in subject as the audit id. The host verifies no domain

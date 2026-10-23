@@ -412,6 +412,22 @@ try {
   const m3read = await propRead(mPid);
   c.check("M2 an id this root never recorded is refused, M3 a recorded id under another command or with new flags is refused, and nothing is sent",
     m2 === "TARGET_NOT_FOUND" && m3 === "USAGE_INVALID" && m3b === "USAGE_INVALID" && m3read.state === "present" && (m3read.record.value as { state: string }).state === "approved", { m2, m3, m3b, m3read });
+  // A caller ceiling names capabilities: each becomes every proposed command that declares it.
+  const mReg5 = await viaProvider("a", register(rid()));
+  const mPid5 = mReg5.state === "approval-required" ? mReg5.proposalId : "";
+  signIn("a");
+  const m5read = await propRead(mPid5);
+  const m5view = m5read.state === "present" ? m5read.record.value as { endpoint: string; instanceId: string; commands: { name: string; capability: string }[] } : undefined;
+  const m5bad = await refusal(["approve", mPid5], { "caller-ceiling": "write" });
+  const m5badRead = await propRead(mPid5);
+  let m5: Awaited<ReturnType<typeof serviceEndpointHostCall>> | string;
+  try { m5 = await serviceEndpointHostCall(clientDir, space, ["approve", mPid5], { "caller-ceiling": "read" }); } catch (e) { m5 = e instanceof Error ? e.message : String(e); }
+  const m5ceiling = typeof m5 !== "string" && m5.answer.state === "approved" ? m5.answer.approval.callerCeiling : undefined;
+  const m5expected = (m5view?.commands ?? []).filter((cmd) => cmd.capability === "read").map((cmd) => cmd.name).sort();
+  c.check("M5 approve --caller-ceiling read approves with a ceiling of every proposed command that declares read, pinned to the proposed instance; a capability no proposed command declares is refused and nothing is decided",
+    m5bad === "USAGE_INVALID" && m5badRead.state === "present" && (m5badRead.record.value as { state: string }).state === "proposed"
+    && m5expected.length > 0 && Array.isArray(m5ceiling) && m5ceiling.every((cap) => cap.endpoint === m5view?.endpoint && cap.instanceId === m5view?.instanceId && cap.instanceOnly === true)
+    && JSON.stringify(m5ceiling.map((cap) => cap.command).sort()) === JSON.stringify(m5expected), { m5bad, m5, m5expected });
   // A lost answer: a proxy in front of the loopback face forwards the proposal read and drops the
   // connection on the decide, so the decision is recorded but never reaches the host.
   const mReg2 = await viaProvider("a", register(rid()));

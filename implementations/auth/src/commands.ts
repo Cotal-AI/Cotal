@@ -629,7 +629,7 @@ const authCommands: Command[] = [
       jsonFlag, plainFlag, spaceFlag,
       { name: "owner", type: "string", value: "<u_…>", description: "name-bind: the derived owner token the name is bound to" },
       { name: "claim", type: "string", value: "<ref>", description: "name-bind: your claim reference for the namespace (the host verifies no domain control)" },
-      { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: the capability ceiling callers of this service may be granted (default: none)" },
+      { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: capabilities the proposed commands declare, such as read; callers may be granted every command that declares one (default: none)" },
       { name: "request-id", type: "string", value: "<hex32>", description: "approve, refuse, name-bind: send the request an earlier run here recorded under this id again, as it was; the host replays its answer" },
     ],
     run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
