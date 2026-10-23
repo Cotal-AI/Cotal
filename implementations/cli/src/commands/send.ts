@@ -114,7 +114,15 @@ function bodyOf(input: SendInput, values: Values): string {
   return text;
 }
 
-async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string): Promise<Presence> {
+/** A shared name's remedy names the full identities that carry it. A mention travels as the name, so
+ *  only a direct send can reach one of them. */
+function sharedNameRemedy(use: "to" | "mention", ids: readonly string[]): string {
+  return use === "to"
+    ? `send to one full identity instead: ${ids.join(", ")}`
+    : `a mention carries the name, so it cannot single one of them out; send to one with --to <full identity> instead: ${ids.join(", ")}`;
+}
+
+async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention"): Promise<Presence> {
   // Presence arrives asynchronously. Never turn a partial name into a fuzzy target.
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
@@ -122,11 +130,11 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
       if (peer) return peer;
     } catch (error) {
       if (!(error instanceof AmbiguousPeerError)) throw error;
-      throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name; use a full identity", { target: { space, name, candidates: error.candidates } });
+      throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name", { target: { space, name, candidates: error.candidates }, remedy: sharedNameRemedy(use, error.candidates.map((candidate) => candidate.id)) });
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name } });
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with cotal who --all --space ${space}, then use one name or full identity` });
 }
 
 /** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
@@ -194,14 +202,14 @@ export async function send(args: ParsedArgs): Promise<void> {
     for (const name of values.mention ?? []) {
       // A mention travels as the peer's name (SPEC §5), the value a receiver compares with its own.
       // An instance id is accepted only when its name resolves back to that same peer.
-      const peer = await directPeer(ep, space, name.replace(/^@/, ""));
+      const peer = await directPeer(ep, space, name.replace(/^@/, ""), "mention");
       let named: Presence | undefined;
       try { named = resolvePeer(ep.getRoster(), peer.card.name); } catch { named = undefined; }
       if (named?.card.id !== peer.card.id)
-        throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name } });
+        throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name }, remedy: `send to that participant with cotal send -t ${peer.card.id} instead` });
       mentions.push(peer.card.name);
     }
-    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target) : undefined;
+    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to") : undefined;
     // The envelope only adds to the body. A body under the limit can still make a frame over it,
     // which the client refuses before writing any of it.
     const bytes = Buffer.byteLength(text, "utf8");

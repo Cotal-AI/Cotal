@@ -2,7 +2,7 @@
  * A classified `send` refusal on a resolved space names that space. `send -t <absent>` used to print
  * its TARGET_NOT_FOUND report with no `Mesh:` line and a JSON target without `space`, although the
  * space was resolved and connected before the recipient was looked up. The same lookup serves
- * `--mention`.
+ * `--mention`. The refusal also says what to run next, in `error.remedy` and the human report.
  *
  * Starts one static-auth broker owned by this suite, registers its space under a sandboxed
  * COTAL_HOME, and drives the built binary from the space's root.
@@ -27,7 +27,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string; name?: string } | null;
-  error?: { code: string };
+  error?: { code: string; remedy?: string };
 }
 
 const { check, finish } = createSuite();
@@ -70,12 +70,14 @@ try {
     const r = run(["send", "-t", absent, "hello", "--space", space, ...style]);
     check(`${label}: an absent recipient is refused, exit 2`, r.status === 2 && r.stderr.includes("TARGET_NOT_FOUND"), shown(r));
     check(`${label}: the refusal begins with Mesh: <space>`, firstLine(r.stderr) === `Mesh: ${space}`, shown(r));
+    check(`${label}: the refusal says what to run next`, r.stderr.includes(`cotal who --all --space ${space}`), shown(r));
   }
 
   const json = run(["send", "-t", absent, "hello", "--space", space, "--json"]);
   check("json: the refusal envelope is TARGET_NOT_FOUND", json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.error?.code === "TARGET_NOT_FOUND", shown(json));
   check("json: the envelope target carries the resolved space and the name", json.envelope?.target?.space === space && json.envelope.target.name === absent, json.envelope?.target);
   check("json: stderr still has the human report with the Mesh line", firstLine(json.stderr) === `Mesh: ${space}`, shown(json));
+  check("json: the remedy names who to list", json.envelope?.error?.remedy?.includes(`cotal who --all --space ${space}`) === true, json.envelope?.error);
 
   const mention = run(["send", "-c", "general", "--mention", absent, "hello", "--space", space, "--json"]);
   check("mention: an absent mention is refused with the resolved space", mention.status === 2 && mention.envelope?.error?.code === "TARGET_NOT_FOUND" && mention.envelope.target?.space === space, shown(mention));

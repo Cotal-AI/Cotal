@@ -3599,13 +3599,16 @@ stdin must contain nonempty UTF-8 text; their content is preserved and never pri
 No destination, several destinations, several body sources or an empty message is refused.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar; a channel publication cannot name a wildcard.
-A direct target resolves by its full identity or an unambiguous name. A name collision refuses;
-no fuzzy match selects an agent for you.
+A direct target resolves by its full identity or an unambiguous name. A name collision refuses
+with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, and a target that is not
+present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
+agent for you.
 
 For a channel post, repeat `--mention <agent>` to add explicit wake hints without changing the
 destination. Each one resolves like a direct target and is sent as that agent's name, which is what
 a receiving session compares. An instance id is refused when its name also resolves to another
-participant. Direct and role sends have no native mention field and refuse that option.
+participant, and a shared name refuses with the full identities to send to with `--to` instead.
+Direct and role sends have no native mention field and refuse that option.
 A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
 still has no inbox and does not promise thread continuity.
 
