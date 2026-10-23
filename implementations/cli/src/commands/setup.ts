@@ -1111,7 +1111,7 @@ function writeDemoAgent(path: string, body: string, wrote: (what: string, path: 
       wrote("backup of your edited persona", `${path}.bak`);
     }
   }
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writePrivateRecord(path, body);
   wrote("persona", path);
 }

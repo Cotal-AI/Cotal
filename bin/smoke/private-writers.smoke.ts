@@ -3,7 +3,8 @@
  *
  * Each cell plants a symlink at the name a shipped writer uses and calls that writer. It must refuse
  * (`EPERM`, or `EEXIST` for an exclusive create) and leave the link's target unchanged. Where a writer
- * creates the file, a second cell checks it lands 0600 under umask 0002. The writers are the ones
+ * creates the file, a second cell checks it lands 0600 under umask 0002, and a directory it creates
+ * for a persona or the setup log lands 0700. The writers are the ones
  * moved onto the private open after the sweep: core `hardenPrivate` (files) and `saveAgentFile`, the
  * manager's delivery-aware marker, the auth health file, the CLI's onboarding marker, setup log,
  * setup personas, the web session file and detached log, the feedback store,
@@ -92,6 +93,9 @@ try {
     check("...and the link's target keeps its bytes and mode", linked2.intact);
     saveAgentFile(join(agents, "peer.md"), { name: "peer", subscribe: [] });
     check("saveAgentFile writes an agent file 0600 under umask 0002", mode(join(agents, "peer.md")) === 0o600, mode(join(agents, "peer.md")).toString(8));
+    const catalog = join(dir("project-new"), ".cotal", "agents");
+    saveAgentFile(join(catalog, "peer.md"), { name: "peer", subscribe: [] });
+    check("saveAgentFile creates a missing .cotal and catalog 0700 under umask 0002", mode(join(catalog, "..")) === 0o700 && mode(catalog) === 0o700, [mode(join(catalog, "..")), mode(catalog)].map((m) => m.toString(8)));
   }
 
   console.log("2. manager and auth");
@@ -124,6 +128,9 @@ try {
     check("...and the link's target keeps its bytes and mode", linked2.intact);
     openSetupLog(log).line("probe");
     check("the setup log is created 0600 under umask 0002", mode(log) === 0o600, mode(log).toString(8));
+    const newLog = join(dir("setup-new"), ".cotal", "setup.log");
+    openSetupLog(newLog);
+    check("the setup log creates a missing .cotal 0700 under umask 0002", mode(join(newLog, "..")) === 0o700, mode(join(newLog, "..")).toString(8));
 
     const persona = join(root, "setup", ".cotal", "agents", "default.md");
     const missing = join(root, "setup", "missing-target.md");
@@ -134,6 +141,9 @@ try {
     rmSync(persona);
     reconcileDefaultAgent(persona);
     check("setup's default persona is seeded 0600 under umask 0002", mode(persona) === 0o600, mode(persona).toString(8));
+    const newCatalog = join(dir("setup-new"), ".cotal", "agents");
+    reconcileDefaultAgent(join(newCatalog, "default.md"));
+    check("the default persona's missing catalog is created 0700 under umask 0002", mode(newCatalog) === 0o700, mode(newCatalog).toString(8));
   }
 
   console.log("4. web and delivery");

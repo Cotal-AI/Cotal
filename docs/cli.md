@@ -568,8 +568,9 @@ The default `control-group` mode signals every member at the same time, and a ma
 directly does not stop through its request-bound stop.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
-even with a group-writable umask. `up` creates `.cotal` and the broker store owner-private (`0700`)
-too. An existing directory keeps its mode. The broker log `.cotal/nats.log` and the auth service,
+even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
+`.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
+keeps its mode. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
@@ -1766,7 +1767,8 @@ accounts, so with one configured, group write refuses. `getent` and `getfacl` ru
 with a 2 second limit each, so the first check in a process can take a few seconds. A proven group
 holds for the life of the process. When a read is unavailable, group write refuses; install the
 `acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
-allowed. New control directories use mode 0700. An unsafe existing path refuses before the
+allowed. New control directories, the persona catalog `.cotal/agents` included, use mode 0700,
+even with a group-writable umask. An unsafe existing path refuses before the
 prepared record is written, without changing its permissions. The refusal names every unsafe path
 in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that lists each path.
 It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
