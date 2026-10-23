@@ -416,6 +416,10 @@ setCurrent("keep");
   check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(named.env?.error?.message ?? "") && named.env?.error?.remedy?.includes(fresh), shown(named));
   const inRoot = await json(["who"], fresh);
   check("a command run in its root with nothing selected is TARGET_UNAVAILABLE", refused(inRoot, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(inRoot.env?.error?.message ?? ""), shown(inRoot));
+  // The refusal's target names the space and its root, from the resolver and from the connect path.
+  const endpoints = await json(["endpoints", "--space", "demo"]);
+  check("each of those refusals names the space and its root under target",
+    [named, inRoot, endpoints].every((r) => refused(r, 2, "TARGET_UNAVAILABLE") && JSON.stringify(r.env?.target) === JSON.stringify({ space: "demo", root: fresh })), [named, inRoot, endpoints].map((r) => r.env?.target ?? shown(r)));
   const selected = await json(["use", "demo"]);
   check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
   // The default report says it under Brokers; the recorded-meshes diagnostics say it again under --verbose.

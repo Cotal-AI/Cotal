@@ -21,6 +21,7 @@ import {
   renderWorkspaceError,
   runOperation,
   workspaceErrorParts,
+  spaceRootTarget,
   targetErrorCode,
   terminalWidth,
   type OperationScope,
@@ -504,7 +505,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(e.failure(), scope.space), json, parsed.values.plain === true);
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-        failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json, parsed.values.plain === true);
+        const target = spaceRootTarget(e.details);
+        failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true);
       }
       if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true);
       failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true);

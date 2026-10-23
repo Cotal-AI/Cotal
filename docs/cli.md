@@ -1864,7 +1864,8 @@ that several running spaces could serve asks which one when it runs in a termina
 target of that one run, and the selection stays as it is; cancelling the question does nothing and
 exits 0. A script, a `--json` caller and `--no-input` are not asked: the command refuses with
 `TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
-in `error.remedy`, apart from `error.message`.
+in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
+`target` when they are known, as for a prepared space that is not started.
 
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
 the `--space` is registered at, `main` when no space is named, and keeps that registration's TLS

@@ -353,7 +353,15 @@ export class ConnectRefusal extends Error {
 /** A refusal over a workspace failure: the one-line sentence for a terminal, its parts for a
  *  structured command. */
 function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
-  return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e) });
+  const target = e.kind === "target" ? spaceRootTarget(e.error.details) : e.kind === "preflight" ? spaceRootTarget(e.target) : undefined;
+  return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e), ...(target ? { target } : {}) });
+}
+
+/** The space and root a failure names, as a structured refusal's `target`, or undefined when it
+ *  names neither. A script reads which space refused from it rather than from the message. */
+export function spaceRootTarget(at: { space?: string; root?: string }): { space?: string; root?: string } | undefined {
+  const target = { ...(at.space === undefined ? {} : { space: at.space }), ...(at.root === undefined ? {} : { root: at.root }) };
+  return Object.keys(target).length ? target : undefined;
 }
 
 export function isConnectRefusal(e: unknown): e is ConnectRefusal {
