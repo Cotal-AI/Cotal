@@ -387,12 +387,18 @@ async function validateManifest(
       // on a 30-day cadence, "you rotated after taking this backup" is the common case, not an exotic
       // one. Without this the operator sees an opaque fingerprint mismatch on the artifact they were
       // counting on during a disaster.
+      // Checked before any transition, as the space is above: a refusal, not an unknown outcome.
       const sameAccount = manifest.authority?.account !== undefined && manifest.authority.account === currentAuthority.account;
-      throw new Error(
+      throw new CommandFailure("refused", "CONFLICT",
         sameAccount
-          ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain. Restore it into a root holding that chain, or use a backup taken after the rotation."
-          : "backup authority fingerprint does not match current trust state",
-      );
+          ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain; the preserved cut was not changed"
+          : "backup authority fingerprint does not match current trust state: this full artifact was taken under another trust state, such as another machine's or a reset root's; the preserved cut was not changed",
+        {
+          target: { space: ready.space },
+          remedy: sameAccount
+            ? "restore it into a root holding that chain, or use a backup taken after the rotation"
+            : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root",
+        });
     }
   }
 }

@@ -1460,7 +1460,10 @@ the declared metadata; terminal file lists are bounded and state their omissions
 file is missing, an undeclared file is present, or a file does not match its declared size and
 SHA-256, the refusal names that file and the fault, and its JSON target carries `file` and `fault`.
 A directory with no `manifest.json` is refused as an incomplete artifact, the kind an interrupted
-`backup create` leaves, with the fault `manifest-missing`.
+`backup create` leaves, with the fault `manifest-missing`. A full artifact of an authenticated space
+restores only into a root that still holds the trust state it was taken under, so it cannot move to
+another machine or a fresh root. `backup create`, `backup inspect` and `backup verify` say so in a
+`Restores into` row, and their JSON carries `trustBound`.
 
 File integrity is not a signature or a restore proof. Matching a manifest does not authenticate
 its author, verify snapshot semantics or prove existing trust will accept a restore. The guarded
@@ -1492,9 +1495,10 @@ process and whether the manager, delivery and auth service started. The restore 
 artifact's own selection, and `--only registry` narrows a full artifact to the registry. Any other
 `--only` value is refused, because the restore could not honor it. The space, broker and runtime
 come from the preserved cut, so no selector can rebind them. An artifact of another space refuses
-`CONFLICT` (exit 2) and names both spaces. An artifact file that is missing, undeclared or not its
-declared size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backup verify`
-does. In each case the preserved cut is not changed. A receipt means the
+`CONFLICT` (exit 2) and names both spaces, and a full artifact taken under another trust state
+refuses `CONFLICT` the same way. An artifact file that is missing, undeclared or not its declared
+size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backup verify` does. In
+each case the preserved cut is not changed. A receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
 confirm that any seat joined. `--store-dir` names a store the restore creates, so a path that

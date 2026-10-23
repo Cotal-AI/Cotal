@@ -143,6 +143,10 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     must("full backup", run("backup", "create", artifact));
     must("registry backup", run("backup", "create", registryArtifact, "--only", "registry"));
     assert.ok(existsSync(join(artifact, "manifest.json")));
+    // A full artifact of an authenticated space restores only where its trust state survives, and says so.
+    const trustBound = (dir: string) => (JSON.parse(run("backup", "inspect", dir, "--json").stdout) as { result: { trustBound: boolean } }).result.trustBound;
+    assert.equal(trustBound(artifact), mode === "auth", `a full ${mode} artifact says whether it is bound to this root's trust state`);
+    assert.equal(trustBound(registryArtifact), false, "a registry artifact is not bound to this root's trust state");
     const originalCheckpoints = JSON.parse(readFileSync(join(artifact, "checkpoints.json"), "utf8")) as Checkpoint[];
     if (mode === "auth") {
       assert.ok(originalCheckpoints.length >= 3, "authenticated backup captured Plane-3 and TASK checkpoints");
@@ -214,8 +218,9 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.equal(rotatedSystem.account.pub, validBeforeDrift.account.pub);
       saveSpaceAuth(authDir(root), rotatedSystem);
       const driftedRoot = run("up", "--restore", artifact, "--detach", "--server", server, "--space", space);
-      assert.notEqual(driftedRoot.status, 0, "valid root-chain drift must refuse a full restore");
+      assert.equal(driftedRoot.status, 2, "valid root-chain drift refuses a full restore with exit 2, not an unknown outcome");
       assert.match(driftedRoot.stderr, /authority fingerprint does not match current trust state/);
+      assert.match(driftedRoot.stderr, /CONFLICT/, "root-chain drift is a CONFLICT refusal");
       assert.equal(readFileSync(journalPath, "utf8"), journalBefore, "root-chain drift leaves the ready journal byte-identical");
       const sourceAfterDrift = lstatSync(join(root, ".cotal", "nats"), { bigint: true });
       assert.equal(sourceAfterDrift.dev, sourceBefore.dev);
