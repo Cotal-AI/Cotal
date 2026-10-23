@@ -466,8 +466,9 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with cotal backup recover ${partial} --yes, then run this create again` : "name a directory that does not exist yet" });
   }
   // Omitted, the store is the cut's own source, which a restore into --store-dir put outside
-  // .cotal/nats. A named store is still checked against it.
-  const storeDir = resolve(values["store-dir"] ?? (journal.state === "ready" ? journal.source.path : resolve(root, ".cotal", "nats")));
+  // .cotal/nats. An interrupted create's claim keeps that source, and this create recovers the claim
+  // first. A named store is still checked against it.
+  const storeDir = resolve(values["store-dir"] ?? (journal.state === "ready" || journal.state === "claimed" ? journal.source.path : resolve(root, ".cotal", "nats")));
   const attemptId = `backup-${randomUUID()}`;
   observed.attemptId = attemptId;
   const deadline = new Date(Date.now() + OPERATION_TIMEOUT_MS);

@@ -1432,7 +1432,8 @@ brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`,
 `backup recover` refuse `LIFECYCLE_BLOCKED` and name the backup process and the deadline, and
 `cotal status` names the attempt and its next step. Once it is stale, `backup recover` removes the
 partial artifact, the clone and the broker files, each matched by inode, and a create to another
-directory does the same before it starts. A create naming the partial artifact refuses `CONFLICT`
+directory does the same before it starts, then backs up the cut's recorded store, a custom
+`--store-dir` one included. A create naming the partial artifact refuses `CONFLICT`
 and names that recovery.
 
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
