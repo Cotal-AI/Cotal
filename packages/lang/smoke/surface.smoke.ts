@@ -15,7 +15,9 @@
  * 5. every method in the curated tables is callable on its receiver, and `sort`'s total order holds;
  * 6. every ```js block in the language reference and the guide VALIDATES as written (it is not run:
  *    a block's behaviour is held by the cells above and by the differential suite, this holds only
- *    that no example uses syntax or names the language refuses).
+ *    that no example uses syntax or names the language refuses);
+ * 7. Appendix A of the language reference is the catalog;
+ * 8. the package exports every table the validator reads frozen, so no caller can change a verdict.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -28,6 +30,7 @@ import { BUILTINS } from "../src/primitives.js";
 import { ADMITTED_NODES, FORBIDDEN_CHILDREN, FORBIDDEN_NODES, KNOWN_NODES, STRUCTURAL_NODES } from "../src/syntax.js";
 import { arrayMethods, builtins, numberMethods, stringMethods } from "../src/library.js";
 import { NotCrossable, Prng, assertCrossable } from "../src/values.js";
+import * as entry from "../src/index.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -151,7 +154,7 @@ const CORPUS: readonly string[] = [
   // `Program` is the entry: `run` hands its body to `executeBlock` directly, so it has no case.
   const missing = [...ADMITTED_NODES].filter((t) => t !== "Program" && !labels.has(t));
   ok("every admitted node type has a case in the interpreter", missing.length === 0, missing);
-  const extra = [...labels].filter((t) => !ADMITTED_NODES.has(t) && !STRUCTURAL_NODES.has(t));
+  const extra = [...labels].filter((t) => !ADMITTED_NODES.includes(t) && !STRUCTURAL_NODES.includes(t));
   ok("and the interpreter has no case for a node type the table does not admit", extra.length === 0, extra);
 }
 
@@ -654,6 +657,18 @@ for (const rel of ["spec/cotal-lang.md", "docs/workflows.md", "docs/lang-card.md
     thrown.size >= 8 && uncataloged.length === 0,
     uncataloged.map(([code, at]) => `${code} at ${at.join(", ")}`),
   );
+}
+
+// ---- 8) no caller can write a table the validator reads ----------------------------------------------
+
+{
+  // `validate` reads these on every call, so a table a caller could write would change what the
+  // language accepts for the whole process. `Object.freeze` does not stop `add` or `delete` on a
+  // `Set`, so each name and node table is a frozen array and the validator keeps its own Sets.
+  const lists = ["ADMITTED_NODES", "STRUCTURAL_NODES", "RESERVED_NAMES", "FORBIDDEN_GLOBALS", "MUTATING_METHODS"] as const;
+  const writable = lists.filter((n) => !Array.isArray(entry[n]) || !Object.isFrozen(entry[n]));
+  ok("the package exports each name and node table as a frozen array", writable.length === 0, writable);
+  ok("and the error catalog frozen", Object.isFrozen(entry.CATALOG));
 }
 
 console.log(`surface.smoke: ${pass} checks passed`);

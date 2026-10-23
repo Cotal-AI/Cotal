@@ -14,7 +14,7 @@ import type { LangErrorCode } from "./errors.js";
 import { deepFreeze } from "./values.js";
 
 /** Node types the interpreter executes. A validated program is made of these and nothing else. */
-export const ADMITTED_NODES: ReadonlySet<string> = new Set([
+export const ADMITTED_NODES: readonly string[] = Object.freeze([
   // statements
   "Program",
   "ExpressionStatement",
@@ -56,7 +56,7 @@ export const ADMITTED_NODES: ReadonlySet<string> = new Set([
  * Node types that only occur INSIDE an admitted node and are executed as part of it: a `Property`
  * inside an object literal, a `SwitchCase` inside a `switch`, a pattern inside a declaration.
  */
-export const STRUCTURAL_NODES: ReadonlySet<string> = new Set([
+export const STRUCTURAL_NODES: readonly string[] = Object.freeze([
   "VariableDeclarator",
   "Property",
   "SpreadElement",
