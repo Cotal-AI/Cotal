@@ -6,10 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   existsSync,
-  openSync,
-  fstatSync,
   statSync,
-  readSync,
   closeSync,
   lstatSync,
   realpathSync,
@@ -3308,8 +3305,6 @@ export interface DetachOpts {
   /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
    *  `--channels` file. Takes precedence over {@link channels}. */
   seed?: ChannelRegistryFile;
-  /** Live boot lines, tailed from the server's log file (safe for a detached child). */
-  onLine?: (line: string) => void;
   /** PUBLIC-exchange daemon argv (`--exchange-public-port` et al), threaded verbatim to the
    *  auth-service daemon when THIS boot starts it. */
   publicExchange?: string[];
@@ -3398,9 +3393,7 @@ export function openBrokerLog(path: string): number {
 /**
  * Start a background nats-server (JetStream), wait until it's reachable, pre-create the
  * space's streams, and leave it running detached (pid in `.cotal/nats.pid`). Used by
- * `up --detach`. When `onLine` is given, boot output is tailed from the
- * log file and forwarded — the child writes to the file (not a pipe), so it survives the
- * parent exiting.
+ * `up --detach`. The child writes to the log file, so it survives the parent exiting.
  */
 export async function startMeshDetached(
   // The `= {}` default is gone with the optional transport: an options object that can be omitted
@@ -3410,20 +3403,13 @@ export async function startMeshDetached(
   const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source } = await prepareBrokerStart(opts);
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
-  const startOffset = fstatSync(fd).size;
   const listenerStartedAt = new Date().toISOString();
   const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
 
-  let tailing = Boolean(opts.onLine);
-  if (opts.onLine) tailLines(logPath, startOffset, opts.onLine, () => !tailing);
-  try {
-    await awaitSpawnedListener({ child, server, space, creds: setup?.creds, log: logPath, boundListener: opts.boundListener });
-  } finally {
-    tailing = false;
-  }
+  await awaitSpawnedListener({ child, server, space, creds: setup?.creds, log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile, transport,
     host: opts.host,
@@ -3732,29 +3718,6 @@ function seedPersonaAfterUp(root: string, quiet = false): void {
     return;
   }
   if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
-}
-
-/** Poll a growing log file and forward newly-appended lines until `stopped()` is true. */
-function tailLines(path: string, from: number, onLine: (l: string) => void, stopped: () => boolean): void {
-  let offset = from;
-  const tick = () => {
-    if (stopped()) return;
-    try {
-      const size = statSync(path).size;
-      if (size > offset) {
-        const fd = openSync(path, "r");
-        const buf = Buffer.alloc(size - offset);
-        readSync(fd, buf, 0, buf.length, offset);
-        closeSync(fd);
-        offset = size;
-        for (const line of buf.toString("utf8").split("\n")) if (line.trim()) onLine(line);
-      }
-    } catch {
-      // file may not exist yet on the first ticks — keep polling
-    }
-    setTimeout(tick, 150);
-  };
-  setTimeout(tick, 150);
 }
 
 async function waitReady(server: string, creds?: string): Promise<boolean> {
