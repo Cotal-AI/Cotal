@@ -43,6 +43,10 @@ import {
   presenceBucket,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
+  assertValidChannel,
+  isConcreteChannel,
+  validateChannelConfig,
+  validateChannelDefaults,
   LEASE_TTL_MS,
   mkSecretDir,
   openPrivateAppend,
@@ -50,6 +54,8 @@ import {
   writeSecretFile,
   type AuthPrepared,
   type SpaceAuth,
+  type ChannelConfig,
+  type ChannelDefaults,
   type ChannelRegistryFile,
   type ParsedArgs,
   type FlagSpec,
@@ -1043,6 +1049,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // require its own project root, while dry-run must write nothing to create one.
   const previewRoot = values.file && values["dry-run"] && !values.root && inheritedMachineHomeRoot() ? process.cwd() : undefined;
   const meshRoot = previewRoot ?? cotalRoot();
+  // A bare start seeds the root's default channels file, so one it would refuse is named here,
+  // before anything starts; an explicit --channels file was checked with the other flags.
+  if (!values.file && !values.restore && values.channels === undefined) loadChannelsFile();
   const transport = resolveTransport(values, undefined, meshRoot, {
     persist: false,
     quiet: true,
@@ -4067,17 +4076,57 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
   if (explicit) return readChannelsFile(resolve(explicit));
   const path = cotalPath("channels.json");
   if (!existsSync(path)) return undefined;
-  return JSON.parse(readFileSync(path, "utf8")) as ChannelRegistryFile;
+  return readChannelsFile(path, false);
 }
 
-/** Read and parse an explicit `--channels` file. One that is missing, unreadable or not JSON is a
- *  usage refusal that names its path. */
-function readChannelsFile(path: string): ChannelRegistryFile {
+/** Read, parse and check a channels file: `explicit` is a `--channels` path, else the root's default
+ *  `.cotal/channels.json`. One that is missing, unreadable or not JSON is a usage refusal, and one
+ *  whose content the registry would not take is a schema refusal; each names the file. */
+function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
+  const remedy = explicit ? "fix the file, or omit --channels" : `fix or remove ${path}`;
   let text: string;
   try { text = readFileSync(path, "utf8"); }
-  catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: "name an existing channels file with --channels <path>, or omit --channels" }); }
-  try { return JSON.parse(text) as ChannelRegistryFile; }
-  catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy: "fix the file, or omit --channels" }); }
+  catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy }); }
+  const problem = channelsFileProblem(value);
+  if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `the channels file ${path} is invalid: ${problem}`, { remedy });
+  return value as ChannelRegistryFile;
+}
+
+const CHANNEL_DEFAULT_FIELDS: Record<keyof ChannelDefaults, true> = { replay: true, replayWindow: true, deliveryClass: true };
+const CHANNEL_FIELDS: Record<keyof ChannelConfig, true> = { ...CHANNEL_DEFAULT_FIELDS, description: true, instructions: true };
+
+/** Why the registry would not take this seed: the shape, an unknown key, a channel name `channel set`
+ *  refuses, or a field value the registry's write checks refuse. Undefined when every entry passes. */
+function channelsFileProblem(value: unknown): string | undefined {
+  const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const fieldsProblem = (where: string, entry: unknown, fields: Record<string, true>, check: (patch: Record<string, unknown>) => void): string | undefined => {
+    if (!isObject(entry)) return `${where} must be an object`;
+    for (const [field, fieldValue] of Object.entries(entry)) {
+      if (!Object.hasOwn(fields, field)) return `${where} has an unknown key ${JSON.stringify(field)}; it takes ${Object.keys(fields).join(", ")}`;
+      try { check({ [field]: fieldValue }); }
+      catch (error) { return `${where} ${field}: ${(error as Error).message}`; }
+    }
+    return undefined;
+  };
+  if (!isObject(value)) return 'it must be a JSON object with "defaults" and "channels"';
+  for (const key of Object.keys(value)) if (key !== "defaults" && key !== "channels") return `unknown key ${JSON.stringify(key)}; the file takes "defaults" and "channels"`;
+  if (value.defaults !== undefined) {
+    const problem = fieldsProblem('"defaults"', value.defaults, CHANNEL_DEFAULT_FIELDS, validateChannelDefaults);
+    if (problem) return problem;
+  }
+  if (value.channels === undefined) return undefined;
+  if (!isObject(value.channels)) return '"channels" must be an object of channel names';
+  for (const [name, config] of Object.entries(value.channels)) {
+    try { assertValidChannel(name); }
+    catch (error) { return (error as Error).message; }
+    if (!isConcreteChannel(name)) return `channel ${JSON.stringify(name)} is a wildcard; name one concrete channel`;
+    const problem = fieldsProblem(`channel ${JSON.stringify(name)}`, config, CHANNEL_FIELDS, validateChannelConfig);
+    if (problem) return problem;
+  }
+  return undefined;
 }
 
 /**
