@@ -149,7 +149,10 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   catch { throw new CommandFailure("refused", "CONFLICT", "the root's broker holds several spaces or an unreadable tenant record; a single-space reset cannot be scoped", { target: where }); }
   let store: ReturnType<typeof safeStoreCleanupPath>;
   try { store = safeStoreCleanupPath(root, target.storeDir); }
-  catch { throw new CommandFailure("refused", "CONFLICT", "the recorded store path is not one real directory the reset may remove; nothing was removed", { target: { ...where, storeDir: target.storeDir ?? null } }); }
+  catch (error) {
+    if (error instanceof CommandFailure) throw error;
+    throw new CommandFailure("refused", "CONFLICT", "the recorded store path is not one real directory the reset may remove; nothing was removed", { target: { ...where, storeDir: target.storeDir ?? null } });
+  }
   let maintenance: ReturnType<typeof readMaintenanceJournal>, running: string[], legacy: boolean, stoppedByDown: boolean;
   try {
     maintenance = readMaintenanceJournal(root); running = liveMeshProcesses(root, space, true);

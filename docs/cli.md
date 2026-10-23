@@ -607,7 +607,9 @@ existing part of the path follows the [`space create`](#selecting-a-space) rule 
 writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
 is written. A path still to create needs its nearest existing directory to be writable by this
 account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. A non-empty
-directory is accepted, since it may hold an existing store. A control
+directory is accepted, since it may hold an existing store. When it holds anything besides a
+store's `jetstream` directory and `.cotal-store-id` marker, `up` warns and names those entries,
+because `clean store` and `reset store` refuse such a directory. A control
 directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
 other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
 with credentials and records, or with another root's store, and `reset store` could not remove it.
@@ -1324,6 +1326,7 @@ after a refused cut retires that seat through its retirement path.
 
 ```bash
 cotal clean <history|store|all> --force
+cotal clean <store|all> --dry-run
 cotal clean restore-attempt --attempt <id> --force
 cotal clean restore-fallback --attempt <id> --force [--discard-history]
 ```
@@ -1334,16 +1337,20 @@ cotal clean restore-fallback --attempt <id> --force [--discard-history]
 | `--dms` | off | `history`: also clear DM history |
 | `--store-dir <dir>` | `.cotal/nats` | `store`/`all`: JetStream store directory |
 | `--force` | none | Required: destructive, no prompting |
+| `--dry-run` | off | `store`/`all`: list what would be removed and remove nothing; needs no `--force` |
 | `--attempt <id>` | none | `restore-attempt`: exact stale pre-commit attempt; `restore-fallback`: matching healthy committed restore |
 | `--discard-history` | off | `restore-fallback`: also delete a registry-only restore's old store, the only copy of the history it left out |
 
-One configurable cleanup verb; every target requires `--force`.
+One configurable cleanup verb; every target requires `--force`, except a `--dry-run` of `store` or `all`.
 
 - `history` purges the retained message backlog on the **running** broker (channels, plus DMs
   with `--dms`). The same operation as [`history clear`](#history), which stays as an alias.
 - `store` deletes the **stopped** mesh's JetStream store (`.cotal/nats`): streams, durable
   consumers, and messages. This is the reset for stale on-disk broker state, e.g. durables
-  minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle.
+  minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle. It removes the
+  store's `jetstream` directory and `.cotal-store-id` marker, then the empty store directory. A
+  store directory that holds anything else refuses `CONFLICT` (exit 2), names those entries and
+  removes nothing; move them out and run it again.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
   registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
@@ -1365,6 +1372,10 @@ store location for `up`'s own repair, but `clean` still takes `--store-dir` itse
 not read the record. Custom cleanup targets must contain either the Cotal store-generation marker or a
 real `jetstream/` store directory; filesystem roots, project roots, and Cotal auth/maintenance trees
 are always refused.
+
+`--dry-run` runs the same checks as `store` or `all` and prints `would remove <path>` for each
+store, credential, record and registration the command would remove, then removes nothing and takes
+no maintenance lock. A check that would refuse the command refuses its dry run the same way.
 
 `store` and `all` also refuse every maintenance journal state, with `LIFECYCLE_BLOCKED`, exit 2. The
 refusal names the attempt and, as Next, the step `cotal status` shows for it, such as bare
@@ -1448,7 +1459,9 @@ have changed state. A TLS-required or TLS-first target refuses
 because a credless probe cannot prove it is down. The route preserves trust,
 credentials and registration. A cleanup with an unconfirmed outcome is reported
 as unknown and is not retried. Credless nonresponse and the recorded process
-checks are not proof that no unrecorded process exists.
+checks are not proof that no unrecorded process exists. A store directory that holds anything
+besides the store refuses both routes and their dry runs as it refuses `clean store`, naming those
+entries.
 
 `reset space <space>` adds local identity cleanup through the existing native
 clean-all operation. This route currently requires Linux, a space selected as above and a

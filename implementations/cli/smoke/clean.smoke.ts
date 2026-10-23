@@ -5,13 +5,15 @@
  * Covers: the live-process guard (a running recorded pid refuses cleanup; a STALE or corrupt
  * pidfile does not; an EPERM-unsignalable pid DOES), the `store` removal set (JetStream store
  * only), the `all` removal set (store + auth + every derived local cred + crash residue: stale
- * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the already-clean
- * no-op, and that `clean all` drops only registry entries rooted at THIS project (a named open
- * mesh must never delete the default space's entry).
+ * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the refusal of a store
+ * directory that holds anything else (with nothing in it removed) and `up`'s warning about one, the
+ * dry run, the already-clean no-op, and that `clean all` drops only registry entries rooted at THIS
+ * project (a named open mesh must never delete the default space's entry).
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +30,7 @@ await import("../src/index.js"); // register the base local-process lifecycle de
 const { registry } = await import("@cotal-ai/core");
 registry.register((await import("@cotal-ai/workspace")).DELIVERY_PROCESS);
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
+const { warnForeignStoreEntries } = await import("../src/lib/store-dir.js");
 const { down, pidfileState } = await import("../src/commands/down.js");
 const { isReachable } = await import("@cotal-ai/core");
 const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent, spaceMaterialDir, spaceSegment, renewalRecordPath, defaultStartToken } = await import("@cotal-ai/workspace");
@@ -220,7 +223,7 @@ try {
   const customRoot = meshRoot();
   const customStore = mkdtempSync(join(tmpdir(), "cotal-store-"));
   mkdirSync(join(customStore, "jetstream"));
-  writeFileSync(join(customStore, "stream.dat"), "x");
+  writeFileSync(join(customStore, "jetstream", "stream.dat"), "x");
   // Cleanup resolves its target before deleting it, and REPORTS what it actually removed — so the
   // report names the resolved store, which is the spelling that matters for a destructive op. Pin
   // the canonical form now, while the dir still exists to resolve. (A substring check against the
@@ -241,6 +244,66 @@ try {
     /unsafe store cleanup target/,
   );
   rmSync(customRoot, { recursive: true, force: true });
+
+  // --- a store directory that holds anything else is refused, and nothing in it is removed -----
+  // `up --store-dir` starts on a folder that already holds files, so a store cleanup must not take
+  // them with the store. A planted `jetstream/` beside them does not make the folder a store.
+  const foreignRoot = meshRoot();
+  const shared = mkdtempSync(join(tmpdir(), "cotal-shared-"));
+  mkdirSync(join(shared, "jetstream", "$G"), { recursive: true });
+  writeFileSync(join(shared, "report.txt"), "keep");
+  mkdirSync(join(shared, "photos"));
+  writeFileSync(join(shared, "photos", "a.jpg"), "keep");
+  const sharedEntries = ["jetstream", "report.txt", join("photos", "a.jpg")];
+  for (const dryRun of [false, true])
+    await assert.rejects(
+      () => removeLocalState(foreignRoot, { includeAuth: false, storeDir: shared, dryRun }),
+      /also holds photos, report\.txt, which no Cotal store writes; nothing was removed/,
+    );
+  check("foreign entries: clean store and its dry run refuse, naming them, and remove nothing", sharedEntries.every((entry) => existsSync(join(shared, entry))));
+  const decoy = mkdtempSync(join(tmpdir(), "cotal-decoy-"));
+  mkdirSync(join(decoy, "jetstream"));
+  writeFileSync(join(decoy, "jetstream", "stream.dat"), "x");
+  writeFileSync(join(decoy, "notes.txt"), "keep");
+  await assert.rejects(() => removeLocalState(foreignRoot, { includeAuth: false, storeDir: decoy }), /also holds notes\.txt/);
+  check("foreign entries: a planted jetstream/ beside a file is not a store", existsSync(join(decoy, "notes.txt")) && existsSync(join(decoy, "jetstream", "stream.dat")));
+  if (process.platform !== "win32") {
+    const linked = mkdtempSync(join(tmpdir(), "cotal-linked-"));
+    writeFileSync(join(linked, ".cotal-store-id"), `${randomUUID()}\n`);
+    symlinkSync(shared, join(linked, "jetstream"));
+    await assert.rejects(() => removeLocalState(foreignRoot, { includeAuth: false, storeDir: linked }), /also holds jetstream,/);
+    check("foreign entries: a jetstream link is not a store entry", existsSync(join(linked, "jetstream")) && existsSync(join(shared, "report.txt")));
+    rmSync(linked, { recursive: true, force: true });
+  }
+  writeFileSync(join(foreignRoot, ".cotal", "nats", "notes.txt"), "keep");
+  await assert.rejects(() => removeLocalState(foreignRoot, { includeAuth: true }), /also holds notes\.txt/);
+  check("foreign entries: in .cotal/nats, clean all removes nothing, identity included", existsSync(join(foreignRoot, ".cotal", "nats", "notes.txt")) && existsSync(join(foreignRoot, ".cotal", "auth", "auth.json")));
+  const warnings: string[] = [];
+  const consoleError = console.error;
+  console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+  try {
+    warnForeignStoreEntries(shared);
+    warnForeignStoreEntries(join(foreignRoot, ".cotal", "agents", "missing"));
+    rmSync(join(foreignRoot, ".cotal", "nats", "notes.txt"));
+    warnForeignStoreEntries(join(foreignRoot, ".cotal", "nats"));
+  } finally {
+    console.error = consoleError;
+  }
+  check("up --store-dir: warns once, naming the entries beside the store, and not for a store or a new path", warnings.length === 1 && /--store-dir .* also holds photos, report\.txt; /.test(warnings[0] ?? ""), warnings);
+  rmSync(foreignRoot, { recursive: true, force: true });
+  rmSync(shared, { recursive: true, force: true });
+  rmSync(decoy, { recursive: true, force: true });
+
+  // --- --dry-run lists what store/all would remove and removes nothing ------------------------
+  const dryRoot = meshRoot();
+  writeFileSync(join(dryRoot, ".cotal", "nats", ".cotal-store-id"), `${randomUUID()}\n`);
+  const listed = await removeLocalState(dryRoot, { includeAuth: true, dryRun: true });
+  check("dry run: lists the store with its entries", listed[0] === ".cotal/nats (JetStream store: .cotal-store-id, jetstream)", listed);
+  check("dry run: removes nothing", existsSync(join(dryRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(dryRoot, ".cotal", "auth", "auth.json")) && DERIVED.every((f) => existsSync(join(dryRoot, ".cotal", f))));
+  const removedAfterDry = await removeLocalState(dryRoot, { includeAuth: true });
+  check("dry run: lists what the real run then removes", JSON.stringify(listed) === JSON.stringify(removedAfterDry), { listed, removedAfterDry });
+  await assert.rejects(() => clean({ positionals: ["history"], values: { "dry-run": true }, raw: [] }), /--dry-run previews clean store and clean all only/);
+  rmSync(dryRoot, { recursive: true, force: true });
 
   const empty = mkdtempSync(join(tmpdir(), "cotal-empty-"));
   check("already clean: removes nothing, throws nothing", (await removeLocalState(empty, { includeAuth: true })).length === 0);
@@ -298,8 +361,8 @@ try {
   // A named OPEN mesh has no .cotal/auth, so a space-name lookup would resolve to the default
   // space ("main") and delete an unrelated mesh's registry entry - the drop must key on root.
   const openRoot = mkdtempSync(join(tmpdir(), "cotal-open-"));
-  mkdirSync(join(openRoot, ".cotal", "nats"), { recursive: true });
-  writeFileSync(join(openRoot, ".cotal", "nats", "s.dat"), "x");
+  mkdirSync(join(openRoot, ".cotal", "nats", "jetstream"), { recursive: true });
+  writeFileSync(join(openRoot, ".cotal", "nats", "jetstream", "s.dat"), "x");
   const otherRoot = mkdtempSync(join(tmpdir(), "cotal-other-"));
   const entry = (space: string, root: string) =>
     ({ space, server: "nats://127.0.0.1:1", root, mode: "open" as const, ts: "2026-07-09T00:00:00.000Z" });

@@ -205,7 +205,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument } from "../lib/store-dir.js";
+import { assertStoreDirArgument, warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -1715,6 +1715,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (!sameStoreIdentity(readStoreIdentity(storeDir), resumeJournal.source))
       throw new Error(`resume store ${storeDir} no longer matches the preserved source identity; refusing to open JetStream over it`);
   }
+  if (values["store-dir"]) warnForeignStoreEntries(storeDir);
   // Owner-private regardless of umask: a recursive create also makes a missing `.cotal`, which every
   // later protection check walks as an ancestor.
   mkdirSync(storeDir, { recursive: true, mode: 0o700 });
@@ -3485,6 +3486,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   refuseOpenOverUserState(Boolean(opts.open), space);
   const root = cotalRoot();
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
+  if (opts.storeDir) warnForeignStoreEntries(storeDir);
   if (opts.existingStore) {
     if (opts.existingStore.named !== storeDir) throw new Error("prepareBrokerStart: the pinned existing store is not the store being prepared");
     recheckExistingStore(opts.existingStore, { space, storeDir });
