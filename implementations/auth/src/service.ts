@@ -95,7 +95,7 @@ import { makeNativeIssuanceRecorder, pruneNativeIssuance, type NativeIssuanceRec
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { parseServiceHostRequest, type ServiceEndpointHost } from "./service-host-contract.js";
-import { ownBrokerCallerPayload, type OwnBrokerCallerPayload } from "./own-broker-caller-payload.js";
+import { serviceEndpointsOption } from "./own-broker-caller-payload.js";
 import { S2A_INVOCATION_MS, openServiceHostEffect, openServiceHostOperations, type ServiceHostEffect, type ServiceHostEffectScope, type ServiceHostOperations, type ServiceHostOperationsOptions } from "./service-host-ops.js";
 import { SERVICE_ENDPOINT_AUTHORITY_PATH, SERVICE_ENDPOINT_HOST_PATH, answerServiceAuthority, serviceAuthorityDenied, serviceAuthorityInfo, serviceHostGranterFor, type ServiceAuthorityCaller, type ServiceAuthorityDoor } from "./service-endpoint-authority.js";
 import { validateServiceRenewalProof } from "./service-renewal.js";
@@ -2312,9 +2312,8 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   }
   // Own-broker caller issuance rides the retained system-account signing seed, when this root has
   // one; otherwise the engine and door open without it and caller grants refuse as unsupported.
-  const callerPayload: OwnBrokerCallerPayload = serviceEndpoints ? await ownBrokerCallerPayload(secrets, space) : { state: "absent", reason: "" };
-  if (serviceEndpoints && callerPayload.state === "absent") console.error(`auth-service: ${callerPayload.reason}`);
-  if (callerPayload.state === "composed") console.error(`auth-service: service caller issuance composes from the retained system account ${callerPayload.sysPub}`);
+  const endpoints = await serviceEndpointsOption(secrets, space, serviceEndpoints);
+  if (endpoints.log !== undefined) console.error(`auth-service: ${endpoints.log}`);
   const started = await startAuthContext({
     space,
     server,
@@ -2324,7 +2323,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     secrets,
     hostedStore: store !== undefined,
     ...(publicFace !== undefined ? { publicFace } : {}),
-    ...(serviceEndpoints ? { serviceEndpoints: { startup: { kind: "normal" as const }, ...(callerPayload.state === "composed" ? { callerPayload: callerPayload.callerPayload } : {}) } } : {}),
+    ...(endpoints.option !== undefined ? { serviceEndpoints: endpoints.option } : {}),
     // The CLI composition's local manager is this workspace root's persisted instance, re-read per
     // selection exactly as before. A hosted context passes no local manager at all.
     localManager: () => loadManagerInstanceIdentity(root, space),

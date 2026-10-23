@@ -6,7 +6,7 @@
  *  record refuses; an explicit rotation replaces the record with the successor's. No broker. */
 import { createSpaceAuth, credsClaims, rotateSystemAccount } from "@cotal-ai/core";
 import { getSpaceAuth, putSpaceAuth, readSystemSigningSeed, retainSystemSigningSeed, systemSigningSeedKey } from "@cotal-ai/workspace";
-import { CALLER_PAYLOAD_NOT_COMPOSED, ownBrokerCallerPayload } from "../src/own-broker-caller-payload.js";
+import { CALLER_PAYLOAD_NOT_COMPOSED, ownBrokerCallerPayload, serviceEndpointsOption } from "../src/own-broker-caller-payload.js";
 import { checks } from "./_service-custody-fixture.js";
 import { MemoryStore } from "./_hosted-auth-fixture.js";
 
@@ -65,6 +65,20 @@ c.check("S6 an explicit rotation replaces the record with the successor's seed a
 c.check("S6 the composition follows the successor; the retired account's seed is gone from custody", composedAfter.state === "composed" && composedAfter.sysPub === rotated.sys.pub && !JSON.stringify([...store.values.values()]).includes(auth.sys.signingSeed!));
 const stripped = await thrown(() => retainSystemSigningSeed(store, { ...rotated, sys: { pub: rotated.sys.pub, jwt: rotated.sys.jwt } }));
 c.check("S7 retaining from a stripped signer refuses", /no system-account signing seed/.test(stripped), stripped);
+
+// What the daemon passes to the plane: a legacy root (trust record, no custody) still opens the
+// engine and door; only caller issuance is left out, and the log says why.
+const legacy = await serviceEndpointsOption(bare, space, true);
+c.check("S8 a legacy root with --service-endpoints still opens the engine and door: startup normal, no callerPayload, and the reason logged",
+  legacy.option?.startup.kind === "normal" && legacy.option.callerPayload === undefined && legacy.log === CALLER_PAYLOAD_NOT_COMPOSED, legacy);
+const retainedOpt = await serviceEndpointsOption(store, space, true);
+c.check("S8 a root with custody passes the composed callerPayload and logs the account", retainedOpt.option?.callerPayload !== undefined && retainedOpt.log?.includes(rotated.sys.pub) === true, retainedOpt.log);
+const untouched = new MemoryStore({ kind: "injected", coordinate: "untouched" });
+untouched.get = async () => { throw new Error("the store must not be read with the flag off"); };
+const off = await serviceEndpointsOption(untouched, space, false);
+c.check("S8 without the flag nothing is composed and the store is not read", off.option === undefined && off.log === undefined);
+const staleOpt = await thrown(() => serviceEndpointsOption(stale, space, true));
+c.check("S8 a present but malformed record refuses the start rather than starting without issuance", /not well formed/.test(staleOpt), staleOpt);
 
 console.log(c.failed === 0 ? `\nSYSTEM SIGNING SEED CUSTODY SMOKE OK (${c.passed} passed)` : `\nSYSTEM SIGNING SEED CUSTODY SMOKE FAILED (${c.passed} passed, ${c.failed} failed)`);
 c.finish();

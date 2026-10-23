@@ -34,3 +34,16 @@ export async function ownBrokerCallerPayload(store: SecretStore, space: string):
   const sys = { pub: record.sysPub, signingSeed: record.signingSeed };
   return { state: "composed", sysPub: record.sysPub, callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds(sys) } };
 }
+
+/** What `--service-endpoints` passes to the authority plane: off means no engine, no door and no
+ *  store read; on means the engine and door open, with caller issuance composed only when this root
+ *  retained its seed. A root without custody keeps every other route; only caller grants refuse as
+ *  unsupported, as they did before custody existed. */
+export async function serviceEndpointsOption(store: SecretStore, space: string, enabled: boolean):
+  Promise<{ option: { startup: { kind: "normal" }; callerPayload?: ServiceCallerPayloadBootstrap } | undefined; log: string | undefined }> {
+  if (!enabled) return { option: undefined, log: undefined };
+  const composed = await ownBrokerCallerPayload(store, space);
+  return composed.state === "composed"
+    ? { option: { startup: { kind: "normal" }, callerPayload: composed.callerPayload }, log: `service caller issuance composes from the retained system account ${composed.sysPub}` }
+    : { option: { startup: { kind: "normal" } }, log: composed.reason };
+}
