@@ -47,7 +47,6 @@ import {
   readRunRecord,
   serverConfig,
   setupSpaceStreams,
-  startTimerWriter,
   standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -60,6 +59,7 @@ import {
   ledgerAuthorizeGrant,
 } from "../../auth/src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { hostTimerWriter, type HostedTimerWriter } from "./_timer-writer.js";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -77,7 +77,7 @@ const releaseBroker = teardownOnSignal(broker, BROKER_DIR);
 let httpServer: import("node:http").Server | undefined;
 let managerProc: ChildProcess | undefined;
 let timerNc: Awaited<ReturnType<typeof connect>> | undefined;
-let timerWriter: Awaited<ReturnType<typeof startTimerWriter>> | undefined;
+let timerWriter: HostedTimerWriter | undefined;
 
 let pass = 0;
 let fail = 0;
@@ -122,7 +122,7 @@ try {
 
   const dlvCreds = await mintCreds(auth, newIdentity(), "delivery");
   timerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: dlvCreds, tls: false }), maxReconnectAttempts: 0 });
-  timerWriter = await startTimerWriter(timerNc, SPACE, { pollMs: 1_000 });
+  timerWriter = await hostTimerWriter(timerNc, SPACE, { pollMs: 1_000 });
 
   const idpPair = generateKeyPairSync("ed25519");
   const IDP_ISS = "https://idp.example/ef-joint";
