@@ -116,7 +116,7 @@ const runCommand: Command = {
     { name: "release", type: "string", value: "<handle>", description: "REFUSED by `migrate`: it decides what a commit does with an orphan, and that verb only checks" },
     { name: "discard-approvals", type: "boolean", description: "REFUSED by `migrate`: it decides what a commit does with a recorded decision, and that verb only checks" },
     { name: "page", type: "boolean", description: "hosted ps: one bounded diagnostic JSON page; requires --on and proves no absence or ownership" },
-    { name: "limit", type: "string", value: "<n>", description: "ps --page: row limit from 1 to 16 (default 8); byte and read bounds can return fewer" },
+    { name: "limit", type: "string", value: "<n>", description: "ps --page: row limit from 1 to 16 (default 8); byte and read bounds can return fewer. show: journal rows printed, 1 to 1000 (default 20)" },
     { name: "cursor", type: "string", value: "<cursor>", description: "ps --page: continuation from the same manager instance, epoch and filter" },
     jsonFlag, plainFlag,
     { name: "handler", type: "string", value: "<results.json>", description: "simulate: explicit JSON simulation results; no JavaScript handler is executed" },

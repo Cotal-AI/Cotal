@@ -1,7 +1,7 @@
 import type { RunJournalRow, RunListRow, RunStatusView } from "@cotal-ai/core";
 import { oneLine, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
 
-interface OutputValues { json?: boolean; plain?: boolean; on?: string }
+interface OutputValues { json?: boolean; plain?: boolean; on?: string; limit?: string }
 const recordedState = (state: string | undefined): Styled => ({ text: state ?? "not recorded", tone: state === "completed" ? "ok" : state === "failed" ? "failed" : state === "released" || state === "held" ? "waiting" : "hint" });
 const managerPin = (values: OutputValues) => values.on ? ` --on ${values.on}` : "";
 const runToken = (value: string | undefined) => value && /^run-[0-9a-f]{32}$/.test(value) ? value : "<run-id>";
@@ -38,7 +38,7 @@ function answerRow(step: string, record: string, answer: AnswerFacts, artifacts:
 }
 
 export function printRunDetail(space: string, view: RunStatusView, values: OutputValues): void {
-  const shown = view.journal.slice(-20);
+  const shown = view.journal.slice(-(values.limit === undefined ? 20 : Number(values.limit)));
   // A step's rows run from pending to settled, so only its last row says whether it is still open
   // and which answer it settled with.
   const steps = new Map<string, StepRow>();
@@ -62,7 +62,7 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
     ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }], rows: needsAnswer.map((row) => ({ step: row.step, asks: row.asks ?? "" })) }] }] : []),
     ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const }] }] }] : []),
     ...(errored.length ? [{ title: "Step errors", blocks: [{ kind: "lines" as const, lines: errored.flatMap((row) => [{ text: `${row.step}  ${row.outcome}`, tone: "failed" as const }, ...row.errorMessage!.split("\n").map((line) => `  ${oneLine(line)}`)]) }] }] : []),
-    { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
+    { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --limit <n> for up to 1000 rows, or --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }] }] },
   ] }));
 }
