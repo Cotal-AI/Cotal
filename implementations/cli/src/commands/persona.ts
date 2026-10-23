@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
-import { assertValidChannel, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { assertValidChannel, assertValidRole, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   loadMeshes, loadPreparedSpaces, writeResult, type Presentation, type Report,
@@ -120,10 +120,19 @@ function createSource(name: string, path: string, values: Values): Buffer {
     const def = validatePersona(bytes, source);
     // The file's own name is known, so name it and the create that keeps it.
     if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy: `create it under its own name with cotal persona create ${def.name} --file ${values.file}, or set its name to '${name}'` });
+    // A role is an address `send -r` reaches, so a role it would refuse is refused here.
+    if (def.role !== undefined) {
+      try { assertValidRole(def.role); }
+      catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${source}: ${(error as Error).message}`); }
+    }
     return bytes;
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
   if (values.harness !== undefined) checkHarness(values.harness);
+  if (values.role !== undefined) {
+    try { assertValidRole(values.role); }
+    catch (error) { throw usage(`--role: ${(error as Error).message}`); }
+  }
   const body = values.prompt ?? readInput(values.from!).toString("utf8");
   if (!body.trim()) throw usage("persona body is empty");
   // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than

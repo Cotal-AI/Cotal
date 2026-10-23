@@ -9,8 +9,8 @@
  * The kernel cells run the src kernel over a fixture command in a child, because a classified failure
  * ends the process. The persona cells run the built binary: `persona create` over an existing file
  * refuses with a target-less CONFLICT on a prepared space, and a `--file` the agent-file rules refuse
- * names the field and the reason. An edit that is not saved keeps its draft and names it. No broker
- * is started.
+ * names the field and the reason, as does a role token `send -r` would refuse. An edit that is not
+ * saved keeps its draft and names it. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
@@ -105,6 +105,18 @@ for (const [label, text, reason] of [
   check(`a --file with ${label} is SCHEMA_INVALID naming the file and the reason`,
     refused.status === 1 && refused.envelope?.error?.code === "SCHEMA_INVALID" && message.includes(`invalid persona definition ${badFile}: ${reason}`) && !message.includes("secret-value"), shown(refused));
 }
+// A role is an address `send -r` reaches, so create refuses a role token it would refuse.
+const roleFlag = cotal("persona", "create", "badrole", "--prompt", "x", "--role", "bad role!", "--subscribe", "", "--json");
+check("persona create --role with a role send -r refuses is USAGE_INVALID naming --role",
+  roleFlag.status === 1 && roleFlag.envelope?.error?.code === "USAGE_INVALID" && (roleFlag.envelope.error.message ?? "").startsWith('--role: invalid role "bad role!"') && !existsSync(agentFilePath(root, "badrole")), shown(roleFlag));
+const roleFile = join(root, "badrole.md");
+writeFileSync(roleFile, "---\nname: badrole\nrole: bad role!\nsubscribe: []\n---\n");
+const roleInFile = cotal("persona", "create", "badrole", "--file", roleFile, "--json");
+check("persona create --file whose role send -r refuses is SCHEMA_INVALID naming the file and the role",
+  roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: invalid role "bad role!"`) && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
+const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
+check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
+
 // An edit that is not saved keeps its draft and names it: a draft the agent-file rules refuse says
 // why, and an editor that exits non-zero keeps what it wrote. The catalog file is unchanged.
 const drafts = join(home, "drafts");
