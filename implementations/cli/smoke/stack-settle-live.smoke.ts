@@ -53,6 +53,8 @@
  *     `up` then `down` cycle the stack. Killed while the manager's record is `stopping` and before
  *     its request is published, the next bare `down` stops the stack and releases the reservation
  *     that killed `down` took.
+ * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
+ *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -632,6 +634,23 @@ try {
     track(space);
     const final = cli(root, "down", "--yes", "--json");
     check(`${space}: up then down cycle the stack`, restarted.status === 0 && final.status === 0 && gone(space, "stack-manager"), { up: shown(restarted), down: shown(final) });
+  }
+
+  // 10. A repeated down --with-agents.
+  {
+    const space = "repeatreap";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const reaped = cli(root, "down", "--with-agents", "--yes", "--json");
+    const again = cli(root, "down", "--with-agents", "--yes", "--json");
+    check(`${space}: a repeat of a completed down --with-agents is a no-op, exit 0`, started.status === 0 && reaped.status === 0 && again.status === 0 && again.env?.outcome === "no-op", { up: shown(started), first: shown(reaped), again: shown(again) });
+    const restarted = cli(root, "up", "--json");
+    track(space);
+    const spared = cli(root, "down", "--yes", "--json");
+    const refused = cli(root, "down", "--with-agents", "--yes", "--json");
+    check(`${space}: after a down without --with-agents it still refuses LIFECYCLE_BLOCKED`, restarted.status === 0 && spared.status === 0 && refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED", { up: shown(restarted), down: shown(spared), refused: shown(refused) });
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");

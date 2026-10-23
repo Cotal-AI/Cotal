@@ -108,8 +108,9 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
  *  for any space its records name. One that may still front a process refuses instead, naming each
  *  record and its pid in the message and the remedy, because no command shows another space's
  *  records; nothing is stopped, adopted or removed. A real --with-agents refuses too, because no
- *  running manager can stop the agents; its preview shows the no-op. The legacy route answers the
- *  same way. `warnings` report what this command changed before it found nothing running. */
+ *  running manager can stop the agents, unless the caller knows none can remain: the last down took
+ *  --with-agents, or the root never started a stack. Its preview shows the no-op. The legacy route
+ *  answers the same way. `warnings` report what this command changed before it found nothing running. */
 export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = []): void {
   // A root that names no space resolves to the default one, as `resolveSpace` answers.
   const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
@@ -213,7 +214,10 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   const abandoned = ours && typeof values["abandon-stop"] === "string" ? await abandonRetainedStackStop(ours, values["abandon-stop"]) : undefined;
   const abandonWarnings: OutputWarning[] = abandoned ? [{ code: "STOP_ABANDONED", target: { ...instanceProjection(abandoned.row), role: abandoned.role, requestId: abandoned.abandonment.requestId, receipts: abandoned.abandonment.receipts }, message: abandonNotice(abandoned.role, abandoned.abandonment) }] : [];
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
-  if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, withAgents, abandonWarnings);
+  // The completed down that stopped the stack also stopped its agents when it took --with-agents, so
+  // a repeat has nothing left to stop. A stack that never started has no agents either.
+  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, abandonWarnings);
+  if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
   if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared

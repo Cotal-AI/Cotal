@@ -946,7 +946,9 @@ normalizes away names one path for every space and is read as that path. The ref
 record by name, path under the root and pid, and its next step names the pids and paths to check.
 It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
 `LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first. Its
-preview, `cotal down --dry-run --with-agents`, shows the no-op.
+preview, `cotal down --dry-run --with-agents`, shows the no-op. When the stack's last completed
+`down` took `--with-agents`, or the root never started a stack, no agent of it can remain, and
+`--with-agents` reports the same no-op.
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
 accept the new named-service JSON/plain/yes apply receipt flags, except that `--json` and

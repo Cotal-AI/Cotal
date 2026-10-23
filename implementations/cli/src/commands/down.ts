@@ -259,18 +259,20 @@ const pidRecordsUnder = (root: string): boolean => readdirSync(join(root, ".cota
  *  remains at the top of its `.cotal`. The root still holds the broker configuration a start rendered
  *  there (`server-open.conf`, or `auth/server.conf` in auth mode) or a space prepared there. When the
  *  root names its space, none of that space's saved services runs either. Undefined when any of that
- *  is missing, so bare down refuses rather than guess. `nothingRunning` reads every other record a
- *  local-process descriptor names under the root, for any space, before it answers. */
-function stoppedLegacyStack(): { root: string; space?: string } | undefined {
+ *  is missing, so bare down refuses rather than guess. `started` says whether a start rendered that
+ *  broker configuration. `nothingRunning` reads every other record a local-process descriptor names
+ *  under the root, for any space, before it answers. */
+function stoppedLegacyStack(): { root: string; space?: string; started: boolean } | undefined {
   const root = canonicalRoot(cotalRoot());
   if (root === canonicalRoot(homedir()) || !realDirNoSymlink(root, ".cotal") || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;
   let space: string | undefined;
   try { space = soleSpaceOf(authDir(root)); } catch { return undefined; }
   const prepared = preparedSpaceAt(root);
-  if (!prepared && !existsSync(join(root, ".cotal", "server-open.conf")) && !existsSync(join(authDir(root), "server.conf"))) return undefined;
+  const started = existsSync(join(root, ".cotal", "server-open.conf")) || existsSync(join(authDir(root), "server.conf"));
+  if (!prepared && !started) return undefined;
   space ??= prepared?.space;
   if (space !== undefined && planBareDownServices(space).some((row) => row.action !== "already-stopped")) return undefined;
-  return { root, ...(space === undefined ? {} : { space }) };
+  return { root, ...(space === undefined ? {} : { space }), started };
 }
 
 /** Why bare down found no stack of its own at this root, with the one step that moves it on. */
@@ -385,7 +387,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
   if (bareStop(args.values)) {
     const stopped = stoppedLegacyStack();
-    if (stopped) return nothingRunning(presentationOf(args.values), stopped, values["with-agents"] === true && values["dry-run"] !== true);
+    // A root that never started a stack never ran a manager, so it has no agents to stop.
+    if (stopped) {
+      const { started, ...target } = stopped;
+      return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && values["dry-run"] !== true && started);
+    }
   }
   if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) return previewWholeStack(args);
   if (values["preserve-state"] && values["with-agents"])
