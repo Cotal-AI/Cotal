@@ -34,7 +34,8 @@ const viewRequest = { v: request.v, kind: request.kind, operation: "describe-vie
   observation: { subject: epRequestSubject(request.space, { endpoint: request.endpoint, command: "describe", route: { mode: "one" },
     caller: { owner, actor: "caller", uid: "c".repeat(32) }, nonce: "n".repeat(32) }), fingerprint: contractDigest({ observed: 1 }) } };
 const viewEnvelope: ServiceAuthorityEnvelope = { request: viewRequest, proof: { kind: "service-access", token: "fixture-access" } };
-const info = { v: 1, kind: "service-endpoint-authority-info", space: request.space, accountPublicKey };
+const info = { v: 1, kind: "service-endpoint-authority-info", space: request.space, accountPublicKey,
+  issuer: "https://auth.example/exchange", keys: [{ kty: "OKP", crv: "Ed25519", kid: "kid-1", x: "A".repeat(43) }] };
 let mode = "info", requests = 0, redirectRequests = 0;
 let expectedEnvelope = envelope;
 const dir = mkdtempSync(join(tmpdir(), "service-client-"));

@@ -7,8 +7,9 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   EpEnvelopeError, GOVERNED_TRAIT_URNS, SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, canonicalJson, contractDigest,
   serviceAuthorityRequestDigest, serviceWitnessDigest, verifyClusterManifest, verifyClusterRoot,
-  type EpCommandAuthority, type ServiceAuthorityInfo, type ServiceAuthorityRequest, type ServiceAuthorityStatus, type ServiceRegistrationWitness,
+  type EpCommandAuthority, type ServiceAuthorityInfo, type ServiceAuthorityRequest, type ServiceAuthorityStatus, type ServiceIssuerKey, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
+import type { UserTokenIssuer } from "./issuer.js";
 import type { ServiceHostRequest, ServiceHostResult, ServiceProposalTombstoneView, ServiceProposalView } from "./service-host-contract.js";
 import { serviceHostOperationId, serviceRegisterHostRequest, type ServiceHostOperations, type ServiceServeOperation, type ServiceServeResult } from "./service-host-ops.js";
 
@@ -30,8 +31,16 @@ export interface ServiceAuthorityReply { status: number; body: unknown }
 type Command = EpCommandAuthority & { name: string };
 type Echo = Pick<ServiceAuthorityRequest, "v" | "kind" | "operation" | "requestId" | "space" | "accountPublicKey" | "endpoint" | "instanceId">;
 
-export function serviceAuthorityInfo(door: ServiceAuthorityDoor): ServiceAuthorityInfo {
-  return { v: 1, kind: "service-endpoint-authority-info", space: door.space, accountPublicKey: door.accountPublicKey };
+/** The door's account plus the issuer identity a guest verifies its access bearer under: the exact
+ *  `iss` this context mints and the public coordinates of the keys `GET /jwks` publishes. A key the
+ *  service access contract cannot name is refused rather than dropped from the answer. */
+export function serviceAuthorityInfo(door: ServiceAuthorityDoor, issuer: Pick<UserTokenIssuer, "issuer" | "jwks">): ServiceAuthorityInfo {
+  const keys = issuer.jwks().keys.map((key): ServiceIssuerKey => {
+    if (key.kty !== "OKP" || key.crv !== "Ed25519" || typeof key.kid !== "string" || typeof key.x !== "string")
+      throw new Error("service authority: the issuer publishes a key that is not an Ed25519 public key");
+    return { kty: "OKP", crv: "Ed25519", kid: key.kid, x: key.x };
+  });
+  return { v: 1, kind: "service-endpoint-authority-info", space: door.space, accountPublicKey: door.accountPublicKey, issuer: issuer.issuer, keys };
 }
 
 /** The engine request id of one public request: the full public idempotency key (account, space,

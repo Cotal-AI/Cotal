@@ -3693,7 +3693,7 @@ async function handleServiceEndpointAuthority(req: IncomingMessage, res: ServerR
   if (door === undefined) return send(res, 404, { error: "service endpoint authority is not enabled for this space" });
   if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
   const noStore = { "cache-control": "no-store" };
-  if (req.method === "GET") return send(res, 200, serviceAuthorityInfo(door), noStore);
+  if (req.method === "GET") return send(res, 200, serviceAuthorityInfo(door, ctx.issuer), noStore);
   if (req.method !== "POST") return send(res, 405, { error: "GET or POST only" });
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
     return send(res, 415, { error: "content-type must be application/json" });

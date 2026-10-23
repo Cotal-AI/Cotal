@@ -20,7 +20,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { KvWatchInclude, Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
-  GOVERNED_TRAIT_URNS, VOID_SCHEMA_DIGEST, contractArtifactCanonicalBytes, contractDigest, contractStoreContext, endpointRegistrationBarrier,
+  EpEnvelopeError, GOVERNED_TRAIT_URNS, VOID_SCHEMA_DIGEST, authorizeGuestServeGrant, contractArtifactCanonicalBytes, contractDigest, contractStoreContext, endpointRegistrationBarrier,
   endpointToken, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, publishContractArtifact, RECORD_KINDS, recordSpecKey,
   recordStatusKey, recordsBucket, registerServiceInstance, serviceAuthorityRequestDigest, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
   type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness,
@@ -460,6 +460,17 @@ try {
   c.check("F5 X9 two identical concurrent activates: one intent, one activation CAS, both answered", c9a.state === "credential" && c9b.state === "credential"
     && idx9?.row.intents.filter((x) => x.operation === "activate").length === 1 && gateWrites.length === 1 && g9b.row.serviceAuthority.activationIssued,
     { c9a: c9a.state, c9b: c9b.state, gateWrites });
+  // The guest seam, end to end: the live credential brands under the issuer and keys the door's own
+  // info answer carries, and not under any other key set.
+  const info9 = await cotalAuthProvider.serviceEndpointInfo!({ store: clientStore, dir: clientDir, space });
+  const seam = (authenticity: { issuer: string; keys: typeof info9.keys }) => c9a.state === "credential"
+    ? authorizeGuestServeGrant({ accountPublicKey, result: c9a, registration: registration(orders), authenticity }).catch((e: unknown) => e as Error)
+    : Promise.resolve(new Error("no credential"));
+  const guest9 = await seam(info9), guest9x = await seam({ issuer: info9.issuer, keys: [{ ...info9.keys[0]!, x: "A".repeat(43) }] });
+  c.check("F5b the guest seam brands the live credential with the door's own issuer and published keys",
+    !(guest9 instanceof Error) && guest9.instanceId === s9.instanceId && guest9.endpoint === ordersEp && guest9.space === space, guest9 instanceof Error ? guest9.message : guest9);
+  c.check("F5c the same credential refuses under another key published for the same kid",
+    guest9x instanceof EpEnvelopeError && guest9x.code === "permission-denied", guest9x instanceof Error ? guest9x.message : guest9x);
   const s10 = await approved("a", ordersEp, orders), w10 = await registered(s10), r10 = witnessReq("activate", w10);
   await simIntent(ownerA, r10);
   await registered(s10, registerReq(ordersEp, s10.instanceId, orders, w10));
