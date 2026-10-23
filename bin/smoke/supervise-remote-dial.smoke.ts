@@ -40,6 +40,7 @@ import type { AddressInfo } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (child: ChildProcess, ms = 5_000): Promise<void> =>
@@ -529,6 +530,28 @@ try {
   ok("J: ps --on <name> is answered by the manager started with that name", pinned.code === 0, pinned);
   const who = await caller("who", "--all", "--space", space);
   ok("J: who --all shows that manager by its name", who.code === 0 && who.out.includes("manager j-one"), who.out.slice(-900));
+  // On a terminal the same unpinned ps asks which manager, the most recently started first and the
+  // default, and Enter runs it there. COTAL_NO_PROMPT=1 keeps the refusal.
+  const onTerminal = async (keys: string | undefined, extra: Record<string, string> = {}) => {
+    const env = Object.fromEntries(Object.entries({ ...childHomeEnv(callerHome), TERM: "xterm-256color", ...extra }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+    const pty = cotalPty(["ps", "--space", space], { cwd: callerRoot, env });
+    let raw = "", code: number | undefined;
+    pty.onData((data) => { raw += data; });
+    pty.onExit((e) => { code = e.exitCode; });
+    for (let i = 0; i < 600 && code === undefined && !(keys !== undefined && /Which one should run this/.test(clean(raw))); i++) await sleep(100);
+    if (keys !== undefined && code === undefined) pty.write(keys);
+    for (let i = 0; i < 600 && code === undefined; i++) await sleep(100);
+    if (code === undefined) pty.kill();
+    return { code, out: clean(raw) };
+  };
+  const picked = await onTerminal("\r");
+  ok("J: on a terminal, an unpinned ps asks which of the live managers should run it, marking the most recent",
+    /\d+ of your managers are live\. Which one should run this\?/.test(picked.out) && picked.out.includes("most recent"), picked.out.slice(-1200));
+  ok("J: Enter runs it on the most recently started manager, and a receipt names that manager",
+    picked.code === 0 && new RegExp(`Manager chosen[\\s\\S]*Instance:\\s+${twoIds[1]}`).test(picked.out) && /No managed agents/.test(picked.out), picked);
+  const scripted = await onTerminal(undefined, { COTAL_NO_PROMPT: "1" });
+  ok("J: with COTAL_NO_PROMPT=1 the terminal is not asked and the refusal stands",
+    scripted.code === 2 && /of your managers are live, and this command needs exactly one of them/.test(scripted.out) && !/Which one should run this/.test(scripted.out), scripted.out.slice(-900));
 
   // K: a managed spawn the host refuses at enrollment is refused, not unknown. The caller's grant no
   // longer carries admin, so the envelope walk applies, and the persona's role is not in its scope.

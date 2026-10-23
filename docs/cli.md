@@ -2966,6 +2966,16 @@ instance id otherwise. The code stays
 `PERMISSION_DENIED` and the exit 2. `who --all` lists the same managers at any time. By default, when every manager you registered has
 exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
 
+On a terminal, `spawn`, `ps`, `stop`, `attach`, `input`, `models`, `persona` and `status` ask
+instead of refusing. Every manager the exchange counts is one of yours in the space the command
+resolved, from the folder or `--space`, so the question lists those managers with the most recently
+started first, and that one is the default. The command then runs on the manager you pick, as the
+Next would run it. The question and a `Manager chosen` receipt, with the manager, its instance id
+and the `--on` that skips the question, go to stderr. Cancelling the question does nothing and
+exits 0. Without a terminal on stdin and stdout, with `--no-input`, with `--json`, which implies
+`--no-input`, or with `COTAL_NO_PROMPT=1`, the command refuses as above. A `--json` caller passes
+`--on`, and the result's `target.managerInstanceId` names the manager that answered.
+
 A trusted hosted composition may opt into an [interactive local primary](embedding.md#interactive-manager-primary).
 Under that policy, unpinned human control selects the genuine local Manager up front, even when your
 own remote Manager is live; an unavailable local Manager refuses without remote substitution. This

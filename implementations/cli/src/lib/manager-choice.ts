@@ -1,5 +1,5 @@
 import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, instanceIdShaped, resolveMeshTarget } from "@cotal-ai/workspace";
+import { CommandFailure, DEFAULT_MANAGER_NAME, instanceIdShaped, renderReport, resolveMeshTarget, terminalWidth } from "@cotal-ai/workspace";
 import { onInstance, onInstanceId } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -158,6 +158,49 @@ export const rerunOn = (argv: readonly string[], selector: string): string => [d
 const reruns = (managers: readonly ManagerCandidate[], argv: readonly string[]): string =>
   `rerun it on one: ${managers.map((m) => rerunOn(argv, selectorFor(m, managers))).join(" or ")}`;
 
+/** The managers an unpinned manager selection refused to choose between, with what the roster
+ *  says about each, or undefined when `failure` is not that refusal. A roster that cannot be read
+ *  leaves the instance ids. */
+async function severalLive(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>): Promise<ManagerCandidate[] | undefined> {
+  const found = failure.code === "PERMISSION_DENIED" ? SEVERAL_LIVE.exec(failure.message) : null;
+  if (!found) return undefined;
+  const owner = found[2]!;
+  const ids = found[3]!.split(",").map((id) => id.trim()).filter(Boolean);
+  let roster: readonly Presence[] = [];
+  try { roster = await readRoster(); } catch { /* the instance ids still name the choice */ }
+  return ids.map((instanceId) => candidateOf(instanceId, roster.find((p) => p.card.id === `${owner}.${remoteManagerActors(instanceId).supervisor}` && p.status !== "offline")));
+}
+
+/**
+ * The manager to rerun a command on, asked on this terminal after its unpinned manager selection
+ * was refused among several live managers: the most recently started is listed first and is the
+ * default. The question and the chosen manager are written to stderr, so `--json` output stays
+ * whole. The pick is the `--on` the refusal's Next reruns with, and the refusal came before any
+ * effect. Undefined for any other failure, and null when the question is cancelled.
+ */
+export async function pickManager(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>, argv: readonly string[]): Promise<ManagerCandidate | null | undefined> {
+  const managers = await severalLive(failure, readRoster);
+  if (!managers) return undefined;
+  const newest = [...managers].sort((a, b) => (b.since ?? "").localeCompare(a.since ?? ""));
+  const prompts = await import("./prompts.js");
+  const picked = await prompts.select({
+    message: `${managers.length} of your managers are live. Which one should run this?`,
+    options: newest.map((m, index) => ({ value: index, label: m.name ?? m.instanceId, hint: [m.instanceId, m.host ?? "host not reported (started by an older cotal)", m.activity, m.since ? `since ${m.since}` : null, index === 0 ? "most recent" : null].filter(Boolean).join(" · ") })),
+    initialValue: 0,
+    output: process.stderr,
+  });
+  if (prompts.isCancel(picked)) {
+    prompts.cancel("nothing was done - no manager was chosen", { output: process.stderr });
+    return null;
+  }
+  const chosen = newest[picked]!;
+  process.stderr.write(`${renderReport({ sections: [{ title: "Manager chosen", blocks: [
+    { kind: "fields", rows: [["Manager", chosen.name ?? chosen.instanceId], ["Instance", chosen.instanceId], ["Host", chosen.host ?? "not reported (started by an older cotal)"]] },
+    { kind: "lines", lines: [{ text: `To choose it without this question: ${rerunOn(argv, selectorFor(chosen, managers))}`, tone: "hint" }] },
+  ] }] }, "rich", terminalWidth(process.stderr))}\n`);
+  return chosen;
+}
+
 /** `failure` restated as the choice it is, when it is the refusal of an unpinned manager selection
  *  among several live managers, or a `--on` that picked no single manager: each manager by name,
  *  with its instance id and the host, activity and process start its presence reports, and a Next
@@ -173,14 +216,9 @@ export async function managerChoiceFailure(
     if (!failure.managers.length) return undefined;
     return new CommandFailure(failure.outcome, failure.code, failure.message, { target: failure.target, native: failure.native, remedy: reruns(failure.managers, argv), cause: failure });
   }
-  const found = failure.code === "PERMISSION_DENIED" ? SEVERAL_LIVE.exec(failure.message) : null;
-  if (!found) return undefined;
-  const owner = found[2]!;
-  const ids = found[3]!.split(",").map((id) => id.trim()).filter(Boolean);
-  let roster: readonly Presence[] = [];
-  try { roster = await readRoster(); } catch { /* the instance ids still name the choice */ }
-  const managers = ids.map((instanceId) => candidateOf(instanceId, roster.find((p) => p.card.id === `${owner}.${remoteManagerActors(instanceId).supervisor}` && p.status !== "offline")));
-  return new CommandFailure(failure.outcome, failure.code, `${ids.length} of your managers are live, and this command needs exactly one of them`, {
+  const managers = await severalLive(failure, readRoster);
+  if (!managers) return undefined;
+  return new CommandFailure(failure.outcome, failure.code, `${managers.length} of your managers are live, and this command needs exactly one of them`, {
     target: failure.target,
     native: { detail: { managers } },
     remedy: reruns(managers, argv),
