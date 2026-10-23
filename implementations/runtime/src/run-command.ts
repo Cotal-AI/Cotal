@@ -674,8 +674,12 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     }
     return r.reply.data;
   } catch (e) {
+    // No answer is an unavailable target, not a usage error. Only this machine's records can name a
+    // manager that runs and does not answer, and `cotal status` reads them.
+    if (e instanceof EpEnvelopeError && unansweredRequest(e))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", unansweredManagerRefusal(e), { target: { space: t.space }, native: { code: e.code }, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
     if (e instanceof EpEnvelopeError) {
-      console.error(unansweredRequest(e) ? unansweredManagerRefusal(e) : `${e.code}: ${e.message}`);
+      console.error(`${e.code}: ${e.message}`);
       process.exit(1);
     }
     throw e;

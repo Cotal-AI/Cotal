@@ -3062,7 +3062,9 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   that answers with a refusal is shown with its own cause; "no manager reachable" is said only when
   nothing answered at all. If the scatter's own registry read fails (the freeze or the reconcile),
   `ps` says the manager registry could not be read rather than pronouncing on the managers, which
-  may all be up.
+  may all be up. When nothing answered and this root's stack manager process still runs, as a hung
+  one does, `ps` refuses `TARGET_UNAVAILABLE` naming its pid, and its Next ends that process so bare
+  `cotal up` starts the manager again.
 
 **The verdict is scoped to the endpoint rail the request rode.** An issued caller rides the
 versioned `ep.v1` rail, a separate subject space from the legacy `ep` rail, and an endpoint serves
@@ -3073,7 +3075,9 @@ it is consistent with: no manager running, or one older than the rail. The CLI c
 apart, because the service registry records no package version, so check whether a manager is
 running and, if it is, its version. The same scoping applies to `cotal run`'s hosted verbs, which
 drop the `--local` suggestion there, since `--local` drives the run from the calling process and
-names the caller as its answerer.
+names the caller as its answerer. A hosted verb that no manager answered refuses
+`TARGET_UNAVAILABLE`, exit 2, and its Next is `cotal status`, which names a stack manager that runs
+but does not answer, with its pid.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a

@@ -9,8 +9,9 @@
  *  4. A SIGINT with no stop request leaves that manager running. A plain SIGTERM, as `kill`, a
  *     systemd stop or a system shutdown sends, stops it and it exits; `up` starts it again.
  *  5. `status` reports the running manager as answering. Stopped with SIGSTOP, as a hang, it reads
- *     not answering by pid, and `down --yes` refuses it by pid; once that process is killed, the
- *     final `down --yes` stops the stack.
+ *     not answering by pid, `down --yes` and `ps` refuse it by pid, and `run ps` refuses
+ *     TARGET_UNAVAILABLE pointing to `status`; once that process is killed, the final
+ *     `down --yes` stops the stack.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the manager its own `up` started. Needs `nats-server` on PATH.
@@ -113,6 +114,10 @@ try {
   const refused = cli("down", "--yes");
   check("down refuses a manager that does not answer, naming its pid", refused.status === 2 && refused.out.includes("LIFECYCLE_BLOCKED") && refused.out.includes(`the manager process ${hung} is running but did not answer its endpoint`) && refused.out.includes("no stop was submitted"), refused.out);
   check("...and its Next ends that process", refused.out.includes(`end that process with kill -KILL ${hung}; the same command then finds it gone and goes on`), refused.out);
+  const silentPs = cli("ps");
+  check("ps names the running manager that did not answer, by pid, with the way out", silentPs.status === 2 && silentPs.out.includes("TARGET_UNAVAILABLE") && silentPs.out.includes(`this space's stack manager (pid ${hung}) is running but did not answer`) && silentPs.out.includes(`end that process with kill -KILL ${hung}; then bare cotal up starts the manager again`), silentPs.out);
+  const silentRun = cli("run", "ps");
+  check("run ps refuses TARGET_UNAVAILABLE, exit 2, and points to status", silentRun.status === 2 && silentRun.out.includes("TARGET_UNAVAILABLE") && silentRun.out.includes("cotal status shows whether this space's manager answers"), silentRun.out);
   if (hung !== undefined) process.kill(hung, "SIGKILL");
   for (let i = 0; i < 50 && hung !== undefined && alive(hung); i++) await sleep(100);
 } finally {
