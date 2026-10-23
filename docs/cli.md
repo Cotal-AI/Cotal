@@ -3968,8 +3968,9 @@ Choose one destination: `--to/-t` for a direct message, `--channel/-c` for a cha
 or `--role/-r` for the role's native work queue. Choose one body source: a quoted positional
 argument, `--file/-f <path>`, or explicit `--stdin`; `--file -` reads stdin as `--stdin` does. There
 are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; their content is
-preserved and never printed in the receipt. A file that cannot be read is refused with its path,
-`TARGET_NOT_FOUND` when it does not exist.
+preserved and never printed in the receipt. A file that cannot be used is refused with its path:
+`TARGET_NOT_FOUND` when it does not exist, `PERMISSION_DENIED` when this account may not read it,
+and `USAGE_INVALID` (exit 1, without the command's help) for a directory or text that is not UTF-8.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
 `--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.

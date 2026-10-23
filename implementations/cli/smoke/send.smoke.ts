@@ -51,7 +51,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 62;
+const EXPECTED = 63;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -402,6 +402,19 @@ try {
   const starred = await run(["send", "-c", "gen*", "x", "--json"]);
   check("`cotal send -c` with * inside a segment gets the wildcard sentence, not a rule that lists '*' and '>'",
     starred.code === 1 && starred.stdout.includes("name one concrete channel, without wildcards") && !starred.stdout.includes("'*', or '>'"), starred);
+
+  // A directory used to get a bare line and the usage block, and text that is not UTF-8 did not name its file.
+  const absentFile = join(storeDir, "absent.txt");
+  const dirFile = join(storeDir, "a-dir");
+  mkdirSync(dirFile);
+  const notUtf8 = join(storeDir, "not-utf8.txt");
+  writeFileSync(notUtf8, Buffer.from([0x6f, 0x6b, 0xff, 0xfe]));
+  const [noFile, dirBody, badBody] = await Promise.all([absentFile, dirFile, notUtf8].map((file) => run(["send", "-c", "general", "--file", file])));
+  check("a missing, directory or non-UTF-8 --file is each refused in one classified block naming the path, without the usage block",
+    noFile.code === 2 && /Code: +TARGET_NOT_FOUND/.test(noFile.stderr) && noFile.stderr.includes(`"${absentFile}" could not be read`)
+      && dirBody.code === 1 && /Code: +USAGE_INVALID/.test(dirBody.stderr) && dirBody.stderr.includes(`"${dirFile}" is a directory; --file reads one file`)
+      && badBody.code === 1 && /Code: +USAGE_INVALID/.test(badBody.stderr) && badBody.stderr.includes(`"${notUtf8}" is not valid UTF-8`)
+      && [noFile, dirBody, badBody].every((r) => r.stderr.includes("Request refused") && !r.stderr.includes("Usage")), { noFile, dirBody, badBody });
 
   // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.
   const bigFile = join(storeDir, "big.txt");
