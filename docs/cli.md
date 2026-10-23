@@ -3838,6 +3838,10 @@ The mesh is resolved once, and its recorded auth mode picks the admission. No ot
 | static | The space's manager admits the session and mints its own credential ([Static chat sessions](control-surface.md#static-chat-sessions)) | 15 minutes, never renewed |
 | user | The auth service admits it under your own `cli` grant; sign in with `cotal login` first | Up to 8 hours, never extended |
 
+A static or user session shows its end time in the banner, and says when it ends a minute before.
+After a session ends, `--plain` answers every line with how to leave, and `/quit` or the end of
+input leaves.
+
 A named channel is the session's initial channel. On a static or user-auth mesh it is also the
 session's whole read and post list, so a session opened without one can send and receive direct
 messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`

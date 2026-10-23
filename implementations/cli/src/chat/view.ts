@@ -428,13 +428,24 @@ export function heardFrom(state: ChatState): Person[] {
   return state.transcript.flatMap((e) => (e.kind === "message" ? [e.message.from] : []));
 }
 
+/** How long before a session's set end the view says it is ending. */
+export const ENDING_NOTICE_MS = 60_000;
+
+/** The notice a session with a set end gets {@link ENDING_NOTICE_MS} before it, and when it is due.
+ *  Undefined for a session without a set end. */
+export function endingNotice(identity: SessionIdentity): { readonly at: number; readonly text: string } | undefined {
+  if (identity.expiresAt === undefined) return undefined;
+  return { at: identity.expiresAt - ENDING_NOTICE_MS, text: `this session ends at ${shownTime(identity.expiresAt)}; open a new session to keep chatting after that` };
+}
+
 /** The header: the mesh first, as every command's report opens, then who this session is and under
  *  which mode's guarantees. Never a credential. */
 export function headerRows(state: ChatState): Row[] {
   const id = state.identity;
+  const until = id.expiresAt === undefined ? undefined : shownTime(id.expiresAt);
   const mode =
-    id.mode === "user" ? "signed-in session"
-    : id.mode === "static" ? "static session (credential valid until expiry)"
+    id.mode === "user" ? `signed-in session${until ? ` (ends at ${until})` : ""}`
+    : id.mode === "static" ? `static session (${until ? `ends at ${until}; credential valid until then` : "credential valid until expiry"})`
     : "open mesh: routing only, no identity guarantee";
   const conn: Row =
     state.connection === "connected" ? { text: "connected", tone: "ok" }
