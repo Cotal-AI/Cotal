@@ -644,7 +644,10 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   let controllerStack = false;
   try { controllerStack = readStackJournal(root)?.journal.space === space; } catch { controllerStack = false; }
   const storedState = !controllerStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
-  if (storedState) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+  // While a maintenance journal holds the store, clean store refuses, so it is not offered.
+  let maintained = false;
+  try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
+  if (storedState && !maintained) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
   return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack);
 }
 

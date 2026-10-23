@@ -6,7 +6,9 @@ import {
   readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
-import { restoreNextStep } from "../lib/restore.js";
+import { heldRestoreClaim, restoreNextStep } from "../lib/restore.js";
+import { attemptProcessesGone } from "../lib/isolated-broker.js";
+import { acquireStackOperationLock } from "../lib/stack-journal.js";
 import { cotalRoot } from "../lib/paths.js";
 import { canPrompt } from "./meshes-wizard.js";
 
@@ -25,17 +27,18 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   const snapshot = recorded as RecoveryRecord;
   const target = { root, space: snapshot.space, attemptId, revision: snapshot.revision };
   const restore = snapshot.restore;
-  const assessment = snapshot.state === "restore-ready" ? assessRestoreClaim(snapshot) : null;
-  const preview = { kind: "backup-maintenance-preview", operation: mode, ...target, state: snapshot.state, preservedSource: snapshot.source.path, restoreTarget: restore.targetPath, previousSource: restore.previousSource?.identity.path ?? null, restoreMethod: restore.method, claimAssessment: assessment, effectAttempted: false, nativeGuardsStillRequired: true };
+  const assessment = snapshot.state === "restore-ready" ? assessRestoreClaim(snapshot, { unrecordedOwnersDead: attemptProcessesGone(root) }) : null;
+  const claim = snapshot.state === "restore-ready" ? snapshot.claim : undefined;
+  const preview = { kind: "backup-maintenance-preview", operation: mode, ...target, state: snapshot.state, preservedSource: snapshot.source.path, restoreTarget: restore.targetPath, previousSource: restore.previousSource?.identity.path ?? null, restoreMethod: restore.method, claimAssessment: assessment, claimDeadline: claim?.deadline ?? null, claimHolderPid: claim?.coordinator.pid ?? null, effectAttempted: false, nativeGuardsStillRequired: true };
   if (args.values["dry-run"]) {
     writeResult(presentation, { command: `backup ${mode}`, target, result: preview }, (data): Report => ({ sections: [{ title: "Maintenance operation plan", blocks: [
-      { kind: "fields", rows: [["Operation", data.operation], ["Root", data.root], ["Space", data.space], ["Full restore attempt", data.attemptId], ["Journal revision", String(data.revision)], ["Recorded state", data.state], ["Preserved source", data.preservedSource], ["Restore target", data.restoreTarget], ["Previous source", data.previousSource ?? (data.restoreMethod === "disaster" ? "none retained; the restore replaced a missing source" : "not recorded")], ["Claim observation", data.claimAssessment ?? "not a pre-commit claim"]] },
-      { kind: "lines", lines: [mode === "recover" ? "Apply requires the deadline elapsed and every recorded coordinator, watchdog and broker owner proven dead. It uses native rollback; a live or ambiguous owner refuses. No coordinator override or process kill is supplied." : data.restoreMethod === "disaster" ? "Apply retires the completed restore journal after the native healthy-active and finalization checks. This restore retained no old store, so nothing is removed, and the active restored target is never deleted." : "Apply removes only the matching unchanged old-store identity after the native healthy-active and finalization checks. It never deletes the active restored target and retires the completed restore journal only after cleanup.", "Preview took no maintenance lock and made no filesystem change. Store identity, liveness and journal revision must pass again at apply; this is not permission to delete a path by hand."] },
+      { kind: "fields", rows: [["Operation", data.operation], ["Root", data.root], ["Space", data.space], ["Full restore attempt", data.attemptId], ["Journal revision", String(data.revision)], ["Recorded state", data.state], ["Preserved source", data.preservedSource], ["Restore target", data.restoreTarget], ["Previous source", data.previousSource ?? (data.restoreMethod === "disaster" ? "none retained; the restore replaced a missing source" : "not recorded")], ["Claim observation", data.claimAssessment ?? "not a pre-commit claim"], ...(data.claimDeadline ? [["Claim deadline", data.claimDeadline], ["Restore process", String(data.claimHolderPid)]] as [string, string][] : [])] },
+      { kind: "lines", lines: [mode === "recover" ? "Apply requires the restore process and every recorded watchdog and broker proven dead, and either every broker this root started proven gone or the claim deadline passed. It uses native rollback; a live or ambiguous owner refuses. No coordinator override or process kill is supplied." : data.restoreMethod === "disaster" ? "Apply retires the completed restore journal after the native healthy-active and finalization checks. This restore retained no old store, so nothing is removed, and the active restored target is never deleted." : "Apply removes only the matching unchanged old-store identity after the native healthy-active and finalization checks. It never deletes the active restored target and retires the completed restore journal only after cleanup.", "Preview took no maintenance lock and made no filesystem change. Store identity, liveness and journal revision must pass again at apply; this is not permission to delete a path by hand."] },
     ] }] }));
     return;
   }
   if (!args.values.yes) {
-    if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `run cotal backup ${mode} ${attemptId} --dry-run first` });
+    if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with cotal backup ${mode} ${attemptId} --dry-run, then run cotal backup ${mode} ${attemptId} --yes` });
     const confirmed = await prompts.confirm({ message: `${mode === "recover" ? "Recover the stale pre-commit attempt" : restore.method === "disaster" ? "Retire the completed restore journal for" : "Remove only the unchanged retained old source for"} ${oneLine(attemptId)} in ${oneLine(snapshot.space)}? Root ${oneLine(root)}; source ${oneLine(mode === "recover" ? snapshot.source.path : restore.previousSource?.identity.path ?? "not recorded")}. No live-owner, identity or journal guard is bypassed.`, initialValue: false });
     if (prompts.isCancel(confirmed) || !confirmed) {
       writeResult(presentation, { command: `backup ${mode}`, target, result: { kind: "backup-maintenance-cancelled", operation: mode, changed: false }, noOp: true }, () => ({ sections: [{ title: "Maintenance state kept", blocks: [{ kind: "lines", lines: ["No recovery, cleanup or process signal was requested."] }] }] }));
@@ -48,14 +51,17 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   let failure: CommandFailure | undefined;
   let fatal: unknown;
   try {
-    lock = acquireMaintenanceLock(root);
+    lock = acquireStackOperationLock(root);
     assertSingleSpaceBroker(authDir(root), `cotal backup ${mode}`);
     const current = readMaintenanceJournal(root);
     if (!current || current.revision !== snapshot.revision || current.state !== snapshot.state || !("restore" in current) || current.restore.attemptId !== attemptId) throw new CommandFailure("refused", "CONFLICT", "the reviewed maintenance journal changed; no recovery or cleanup was submitted", { target });
     if (mode === "recover") {
-      if (current.state !== "restore-ready" || assessRestoreClaim(current) !== "stale") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the original restore claim is live or not every owner is proven dead; no rollback was submitted", { target });
+      if (current.state !== "restore-ready") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "pre-commit recovery requires restore-ready; no rollback was submitted", { target, remedy: restoreNextStep(current.state, attemptId) });
+      const unrecordedOwnersDead = attemptProcessesGone(root);
+      const held = assessRestoreClaim(current, { unrecordedOwnersDead });
+      if (held !== "stale") throw heldRestoreClaim(root, current, "cotal backup recover", held);
       invoked = true;
-      const ready = rollbackRestoreWithBroker(lock);
+      const ready = rollbackRestoreWithBroker(lock, { unrecordedOwnersDead });
       result = { kind: "backup-attempt-recovered", operation: mode, root, space: ready.space, attemptId, state: ready.state, preservedSource: ready.source.path, activeTarget: null, restoreMethod: restore.method, originalRevision: snapshot.revision, processSignals: false };
     } else {
       invoked = true;

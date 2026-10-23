@@ -1407,8 +1407,9 @@ its author, verify snapshot semantics or prove existing trust will accept a rest
 read path refuses unsupported file-protection environments rather than using a weaker reader.
 
 `backup recover <full-attempt-id>` uses the original root's pre-commit restore journal, not a
-manifest path or selected-space guess. It requires the native deadline and every recorded owner
-to prove the attempt stale, then performs the native rollback. Commit intent forbids rollback.
+manifest path or selected-space guess. It rolls the attempt back once it is stale: its restore
+process and every recorded watchdog and broker are proven dead, and either every broker this root
+started is proven gone or the claim's deadline has passed. Commit intent forbids rollback.
 `backup cleanup-fallback <full-attempt-id>` requires the matching healthy active restore and
 removes only its unchanged retained old-store identity; it never removes the restored target.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
@@ -1467,11 +1468,17 @@ directory is trusted operator input: hashes detect corruption, not malicious rew
 
 Restore validates and stages the exact allowlisted artifact bytes before moving or creating a store.
 It requires the same space and existing trust state. The whole pre-commit window holds a journaled
-liveness claim (coordinator, watchdogs, brokers, absolute deadline): ordinary `up` and a repeated
-`up --restore` refuse while the claim is live, and a stale attempt is recovered only after the
-deadline has elapsed and every recorded owner is proven dead. A retried `up --restore` handles this
-automatically; an operator can also recover it explicitly with `cotal backup recover <full-attempt-id> --yes`. Nothing
-ever rolls back a live attempt. A registry-only artifact restores as registry-only whether or not
+liveness claim (coordinator, watchdogs, brokers, and a deadline 30 minutes after the restore
+began). While the claim is live, ordinary `up`, a repeated restore and `backup recover` refuse
+`LIFECYCLE_BLOCKED` (exit 2) and name the restore process and the deadline. A command that finds
+the root's maintenance lock held refuses the same way and names the pid that holds it. The attempt
+is stale once the restore process and every recorded owner are proven dead on this host, and
+either the deadline has passed or every broker the root started is proven gone. A broker's
+watchdog stops it when the restore process exits, so a restore stopped by Ctrl-C is stale within
+seconds. A retried restore rolls a stale attempt back and continues; an operator can also roll it
+back with `cotal backup recover <full-attempt-id> --yes`. Nothing ever rolls back a live attempt.
+A restore interrupted by SIGINT, SIGTERM or SIGHUP before it commits exits 130, 143 or 129 and
+prints its attempt id and that recovery command. A registry-only artifact restores as registry-only whether or not
 `--restore-only registry` is passed; omitted infrastructure is always created and the exact
 post-restore stream inventory is asserted before commit intent. Ordinary `up` from a preserved cut
 resumes only the exact recorded source store and runtime; a contradicting `--store-dir` or

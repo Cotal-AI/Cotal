@@ -36,6 +36,7 @@ import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
+import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
@@ -73,14 +74,15 @@ export async function clean(args: ParsedArgs): Promise<void> {
 
   if (target === "restore-attempt") {
     // The explicit pre-commit recovery action: roll back one exact stale attempt. A live claim
-    // (deadline not elapsed, or any recorded owner alive) is always refused.
+    // (any recorded owner alive, or the deadline not elapsed while a broker it started is not
+    // proven gone) is always refused.
     if (!values.attempt) throw new Error("clean restore-attempt requires --attempt <id>");
     const lock = acquireMaintenanceLock(root);
     try {
       const journal = readMaintenanceJournal(root);
       if (!journal || journal.state !== "restore-ready" || journal.restore.attemptId !== values.attempt)
         throw new Error(`no pre-commit restore attempt ${values.attempt} is recorded${journal ? ` (maintenance state is ${journal.state}${"restore" in journal ? ` for attempt ${journal.restore.attemptId}` : ""})` : ""}`);
-      rollbackRestoreWithBroker(lock);
+      rollbackRestoreWithBroker(lock, { unrecordedOwnersDead: attemptProcessesGone(root) });
       console.log(c.green(`✓ rolled back stale restore attempt ${values.attempt}`));
       console.log(c.dim("  the preserved source is back at ready; resume with `cotal up` or retry `cotal up --restore`"));
     } finally {

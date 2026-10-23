@@ -4,6 +4,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireMaintenanceLock,
+  assessRestoreClaim,
   beginMaintenanceCut,
   beginOrdinaryResume,
   bindRestoreListener,
@@ -58,6 +59,7 @@ import {
   type OrdinaryResumeIntentRecord,
   type ProcessOwner,
   type RestoreListenerProof,
+  type RestoreReadyRecord,
 } from "../src/maintenance.js";
 
 let passed = 0;
@@ -1232,6 +1234,25 @@ if (process.platform !== "win32") {
     journal?.state === "restore-ready" && journal.claim.coordinator.id === restoreCoordinator.id);
   const recovered = rollbackRestore(p.lock, { now: new Date(Date.now() + 120_000), ownerStatus: () => "dead" });
   check("a provably stale claim recovers by rollback to ready", recovered.state === "ready");
+  releaseMaintenanceLock(p.lock);
+}
+
+// Before its deadline a claim is stale only when every owner is proven dead AND the caller proves no
+// process the attempt started outside its recorded owners is alive.
+{
+  const p = ready("restore-claim-early");
+  prepareAlternateRestore(p.lock, { attemptId: "claim-early", targetPath: join(p.root, "target"), claim: restoreClaim() });
+  const record = readMaintenanceJournal(p.root) as RestoreReadyRecord;
+  check("before the deadline, dead recorded owners alone keep the claim live",
+    assessRestoreClaim(record, { ownerStatus: () => "dead" }) === "live");
+  check("before the deadline, the unrecorded proof with the coordinator alive keeps it live",
+    assessRestoreClaim(record, { unrecordedOwnersDead: true, ownerStatus: (candidate) => candidate.id === restoreCoordinator.id ? "alive" : "dead" }) === "live");
+  check("before the deadline, the unrecorded proof with an unknown owner keeps it live",
+    assessRestoreClaim(record, { unrecordedOwnersDead: true, ownerStatus: () => "unknown" }) === "live");
+  expectCode("a rollback without the unrecorded proof refuses before the deadline", "claim-live", () =>
+    rollbackRestore(p.lock, { ownerStatus: () => "dead" }));
+  const recovered = rollbackRestore(p.lock, { unrecordedOwnersDead: true, ownerStatus: () => "dead" });
+  check("every owner dead and the unrecorded proof recover before the deadline", recovered.state === "ready");
   releaseMaintenanceLock(p.lock);
 }
 

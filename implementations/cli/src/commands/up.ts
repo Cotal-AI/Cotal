@@ -202,6 +202,7 @@ import {
   markPreparedRestoreActive,
   markPreparedRestoreDegraded,
   heldRestoreAttempt,
+  heldRestoreClaim,
   prepareRestore,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
@@ -209,6 +210,7 @@ import {
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
+import { attemptProcessesGone } from "../lib/isolated-broker.js";
 
 const pendingRestores = new Map<string, PreparedRestore>();
 
@@ -698,12 +700,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // Ordinary up NEVER rolls back an in-progress restore: a live attempt's target may still be
         // written by its isolated broker. Refuse with the exact recovery recourse instead.
         const attempt = journal.restore.attemptId;
-        const assessment = assessRestoreClaim(journal);
-        if (assessment === "live")
-          throw new Error(`cotal up is refused: restore attempt ${attempt} is in progress (claim live until ${journal.claim.deadline}); wait for it to complete or become provably stale`);
-        if (assessment === "ambiguous")
-          throw new Error(`cotal up is refused: restore attempt ${attempt} owners cannot be proven dead; inspect the recorded coordinator, watchdog, and broker processes before recovery`);
-        throw new Error(`cotal up is refused: stale restore attempt ${attempt} holds the store; roll it back with \`cotal clean restore-attempt --attempt ${attempt} --force\`, or recover it with \`cotal up --restore\``);
+        const assessment = assessRestoreClaim(journal, { unrecordedOwnersDead: attemptProcessesGone(root) });
+        if (assessment !== "stale") throw heldRestoreClaim(root, journal, "cotal up", assessment);
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: restore attempt ${attempt} stopped before it committed and still holds the store; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `roll it back with cotal backup recover ${attempt} --yes, then run cotal up; or run the restore again` });
       }
       const controllerCut = journal ? cutController(journal.cut) : undefined;
       if (journal && controllerCut && journal.state !== "cut-intent" && journal.state !== "cut-committed" && journal.state !== "resume-retired") {

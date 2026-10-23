@@ -58,7 +58,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
-  readMaintenanceJournal,
+  localProcessOwnerStatus, readMaintenanceJournal,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
   recordRestoreManagerCommit,
@@ -77,12 +77,14 @@ import {
   type ProcessOwner,
   type RestoreActiveRecord,
   type RestoreDegradedRecord,
-  type RestoreListenerProof,
+  type RestoreListenerProof, type RestoreReadyRecord,
   type RestoreManagerCommittedRecord,
 } from "@cotal-ai/workspace";
 import { readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
-import { connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
+import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
+import { noticeOnInterrupt } from "./interrupt-notice.js";
+import { acquireStackOperationLock } from "./stack-journal.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
 import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
@@ -646,9 +648,26 @@ function removeOwnedDirectory(path: string, identity: { dev: bigint; ino: bigint
 /** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
  *  degraded attempt goes forward through bare `up`, which continues it. */
 export function restoreNextStep(state: string, attemptId: string): string {
-  if (state === "restore-ready") return `roll the pre-commit attempt back: review cotal backup recover ${attemptId} --dry-run, then run it without --dry-run`;
-  if (state === "active") return `the restore completed: review cotal backup cleanup-fallback ${attemptId} --dry-run, then run it without --dry-run to retire its journal`;
+  if (state === "restore-ready") return `roll the pre-commit attempt back with cotal backup recover ${attemptId} --yes; preview it first with --dry-run`;
+  if (state === "active") return `the restore completed: retire its journal with cotal backup cleanup-fallback ${attemptId} --yes; preview it first with --dry-run`;
   return `recover forward with bare cotal up from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
+}
+
+/** The refusal while a pre-commit restore claim is not provably stale: what holds it, until when,
+ *  and when `backup recover` can roll it back. The refusing command changed nothing. */
+export function heldRestoreClaim(root: string, journal: RestoreReadyRecord, command: string, assessment: "live" | "ambiguous"): CommandFailure {
+  const attemptId = journal.restore.attemptId, { coordinator, owners, deadline } = journal.claim;
+  const running = owners.filter((owner) => localProcessOwnerStatus(owner) === "alive").map((owner) => owner.pid);
+  const coordinatorRuns = localProcessOwnerStatus(coordinator) === "alive";
+  const recover = `cotal backup recover ${attemptId} --yes`;
+  const [holder, remedy] = assessment === "ambiguous"
+    ? [`its processes on host ${coordinator.host} cannot be proven gone from this host`, `prove its restore process and brokers on ${coordinator.host} have exited, then run ${recover}`]
+    : coordinatorRuns
+      ? [`its restore process ${coordinator.pid} is still running`, `wait for that restore to finish; if it was stopped, run ${recover} once process ${coordinator.pid} has exited`]
+      : running.length
+        ? [`its restore process ${coordinator.pid} has exited, and its brokers (pid ${running.join(", ")}) are still stopping`, `run ${recover} again once they have exited`]
+        : [`its restore process ${coordinator.pid} has exited, but a broker it started cannot be proven gone`, `run ${recover} after ${deadline}`];
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: restore attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
 /** The restore attempt the root's journal holds, with the step that moves it on, so a failure can
@@ -681,7 +700,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   // With no journal there is no cut to restore into. Refuse before the lock creates the maintenance
   // directory, so a refused restore leaves the folder as it found it and `up` there sees no state.
   if (!readMaintenanceJournal(root)) throw notRestorable(root, undefined);
-  let lock = acquireMaintenanceLock(root);
+  let lock = acquireStackOperationLock(root);
   let staged: StagedArtifact | undefined;
   let transitioned = false;
   let targetBound = false;
@@ -699,17 +718,17 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       releaseMaintenanceLock(resourceLock);
     }
   };
+  // From here an interrupt leaves whatever this attempt journaled; the notice names it and its recovery.
+  const releaseNotice = noticeOnInterrupt(() => restoreInterruptNotice(root, attemptId));
   try {
     let journal = readMaintenanceJournal(root);
     if (journal?.state === "restore-ready") {
       // Never touch a live attempt: recover by rollback only once the recorded claim is provably
-      // stale (deadline elapsed, coordinator/watchdogs/brokers all dead).
-      const assessment = assessRestoreClaim(journal);
-      if (assessment === "live")
-        throw new Error(`restore attempt ${journal.restore.attemptId} is in progress (claim live until ${journal.claim.deadline}); retry after it completes or becomes provably stale`);
-      if (assessment === "ambiguous")
-        throw new Error(`restore attempt ${journal.restore.attemptId} owners cannot be proven dead; inspect the recorded coordinator, watchdog, and broker processes before recovery`);
-      journal = rollbackRestoreWithBroker(lock);
+      // stale (every owner dead, and the deadline elapsed or every broker it started gone).
+      const unrecordedOwnersDead = attemptProcessesGone(root);
+      const assessment = assessRestoreClaim(journal, { unrecordedOwnersDead });
+      if (assessment !== "stale") throw heldRestoreClaim(root, journal, "this restore", assessment);
+      journal = rollbackRestoreWithBroker(lock, { unrecordedOwnersDead });
     }
     if (!journal || journal.state !== "ready") throw notRestorable(root, journal);
     // A controller cut restores only through its recorded members,
@@ -986,8 +1005,19 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       throw new Error(`${error instanceof Error ? error.message : String(error)}; pre-commit rollback also failed: ${rollbackFailure.message}`);
     throw error;
   } finally {
+    releaseNotice();
     if (lock) releaseMaintenanceLock(lock);
   }
+}
+
+/** What an interrupted restore left, read from the journal at the moment of the signal. */
+function restoreInterruptNotice(root: string, attemptId: string): string {
+  const journal = readMaintenanceJournal(root);
+  const ours = journal !== undefined && "restore" in journal && journal.restore.attemptId === attemptId;
+  if (ours && journal.state === "restore-ready")
+    return `Interrupted: restore attempt ${attemptId} stopped before it committed, and nothing was restored.\nRoll it back with cotal backup recover ${attemptId} --yes, or run the restore again, which rolls it back first.`;
+  if (ours) return `Interrupted: restore attempt ${attemptId} committed before it stopped. Continue it with bare cotal up from ${root}.`;
+  return `Interrupted: restore attempt ${attemptId} stopped before it claimed this root; nothing was restored.`;
 }
 
 export function markPreparedRestoreActive(

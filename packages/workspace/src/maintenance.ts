@@ -3257,14 +3257,18 @@ function newRestoreClaim(input: RestoreClaimInput): { claim: RestoreClaim; owned
 }
 
 /** Assess the recorded pre-commit liveness claim. `live` while the deadline has not elapsed or any
- *  recorded owner is alive; `stale` only when the deadline elapsed AND every owner is proven dead. */
+ *  recorded owner is alive; `stale` once the deadline elapsed AND every owner is proven dead. Before
+ *  the deadline it is `stale` only when the caller also proves that no process the attempt started
+ *  outside the recorded owners is alive (`unrecordedOwnersDead`), and every recorded owner,
+ *  coordinator included, is proven dead. */
 export function assessRestoreClaim(
   record: RestoreReadyRecord,
-  options: { readonly now?: Date; readonly ownerStatus?: (owner: ProcessOwner) => OwnerStatus } = {},
+  options: { readonly now?: Date; readonly ownerStatus?: (owner: ProcessOwner) => OwnerStatus; readonly unrecordedOwnersDead?: boolean } = {},
 ): RestoreClaimAssessment {
   const now = options.now ?? new Date();
-  if (now.getTime() <= Date.parse(record.claim.deadline)) return "live";
   const status = options.ownerStatus ?? localProcessOwnerStatus;
+  if (now.getTime() <= Date.parse(record.claim.deadline))
+    return options.unrecordedOwnersDead === true && [record.claim.coordinator, ...record.claim.owners].every((owner) => status(owner) === "dead") ? "stale" : "live";
   const statuses = [record.claim.coordinator, ...record.claim.owners].map(status);
   if (statuses.includes("alive")) return "live";
   if (statuses.includes("unknown")) return "ambiguous";
@@ -3896,6 +3900,9 @@ export interface RollbackRestoreOptions {
   readonly asCoordinator?: ProcessOwner;
   readonly now?: Date;
   readonly ownerStatus?: (owner: ProcessOwner) => OwnerStatus;
+  /** The caller's proof that no process the attempt started outside its recorded owners is alive.
+   *  With every recorded owner proven dead, it makes the claim stale before its deadline. */
+  readonly unrecordedOwnersDead?: boolean;
   /** A controller alternate restore with a recorded broker reconfiguration: the live broker
    *  definition revision the caller read under the definition writer lock. Rollback proceeds only
    *  while it is the revision the reconfiguration says the cut runs at again. */
@@ -3903,7 +3910,8 @@ export interface RollbackRestoreOptions {
 }
 
 /** Refuse to touch a LIVE restore attempt: only the exact recorded coordinator, or a caller that
- *  proves the attempt stale (deadline elapsed + every owner dead), may roll it back. */
+ *  proves the attempt stale (every owner dead, and the deadline elapsed or no unrecorded owner
+ *  alive), may roll it back. */
 export function assertRestoreClaimRollbackable(lock: MaintenanceLock, record: RestoreReadyRecord, options: RollbackRestoreOptions): void {
   if (options.asCoordinator) {
     if (!sameProcessOwner(options.asCoordinator, record.claim.coordinator))

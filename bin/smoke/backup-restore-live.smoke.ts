@@ -753,10 +753,10 @@ async function restoreClaimRaceScenario(): Promise<void> {
     releaseMaintenanceLock(lock);
     const refusedUp = run("up", "--detach", "--server", server, "--space", space);
     assert.notEqual(refusedUp.status, 0, "ordinary up refuses a live restore attempt");
-    assert.match(refusedUp.stderr, /restore attempt race-live is in progress/);
+    assert.match(refusedUp.stderr, /restore attempt race-live holds this root until [^,]+, and its restore process \d+ is still running/);
     const refusedRestore = run("up", "--restore", artifact, "--detach", "--server", server, "--space", space);
     assert.notEqual(refusedRestore.status, 0, "repeated restore refuses a live attempt");
-    assert.match(refusedRestore.stderr, /restore attempt race-live is in progress/);
+    assert.match(refusedRestore.stderr, /restore attempt race-live holds this root until [^,]+, and its restore process \d+ is still running/);
     const refusedClean = run("clean", "restore-attempt", "--attempt", "race-live", "--force");
     assert.notEqual(refusedClean.status, 0, "explicit rollback refuses a live claim");
     assert.match(refusedClean.stderr, /claim is still live/);

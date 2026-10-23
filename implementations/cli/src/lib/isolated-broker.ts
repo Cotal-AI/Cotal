@@ -97,6 +97,27 @@ function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
+/** Whether every isolated broker and watchdog started under `root` is proven gone. Each start
+ *  creates its handshake file before it spawns the watchdog, and the watchdog writes both pids into
+ *  it, so this covers a process the attempt started but never recorded in its claim. A handshake the
+ *  watchdog never completed, or a pid that is not proven gone (ESRCH), is not proof. */
+export function attemptProcessesGone(root: string): boolean {
+  const attempts = join(resolve(root), ".cotal", "maintenance", "attempts");
+  let names: string[];
+  try { names = readdirSync(attempts); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  for (const name of names.filter((entry) => entry.endsWith(".pids"))) {
+    let pids: { broker?: unknown; watchdog?: unknown } | null;
+    try { pids = JSON.parse(readFileSync(join(attempts, name), "utf8")) as typeof pids; } catch { return false; }
+    for (const pid of [pids?.broker, pids?.watchdog]) {
+      if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
+      try { process.kill(pid, 0); return false; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
+    }
+  }
+  return true;
+}
+
 function owner(child: ChildProcess, id: string): ProcessOwner {
   if (!child.pid) throw new Error(`${id} process has no pid`);
   return { pid: child.pid, host: hostname(), startedAt: new Date().toISOString(), id };
