@@ -1618,7 +1618,8 @@ cotal use [<space>] [--json|--plain]
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable`; its registration stays. A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full, the selected one when no name is
-given, and probes only that broker. Neither writes anything.
+given, and probes only that broker. Neither writes anything. A registry record that cannot be
+read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 
 `--json` writes one document. `space` gives `current` (the selected space or null),
 `currentRecorded`, `items` and `prepared`; each item is the row `cotal status --json` gives under

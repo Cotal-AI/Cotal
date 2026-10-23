@@ -4,13 +4,14 @@
  * binary reads the records a real `up`, `meshes add` or catalog sync leaves. A real broker answers
  * for one space; another points at a port nothing listens on; a discovered one points at a listener
  * that counts connections, so the suite can show a read never dials it.
+ * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID.
  *
  * Needs `nats-server` on PATH.
  *
  * Run: pnpm smoke:space-reads
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -203,6 +204,17 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("completion offers the registered names after space show", ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(names.stdout)), shown(names));
   const useNames = run(["__complete", "use", ""]);
   check("completion offers the registered names after use", ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(useNames.stdout)), shown(useNames));
+}
+
+// ── A record that does not parse ─────────────────────────────────────────────────────────────────────
+{
+  const file = join(meshesDir(), "space.6f6d656761.json");
+  writeFileSync(file, '{"space":"omega"');
+  for (const args of [["space"], ["space", "show", "alpha"]]) {
+    const r = json(args);
+    check(`cotal ${args.join(" ")} refuses a record that does not parse with SCHEMA_INVALID, exit 1, naming the file`, r.status === 1 && r.env?.outcome === "refused" && r.env.error?.code === "SCHEMA_INVALID" && String(r.env.error.message).includes(file), shown(r));
+  }
+  rmSync(file);
 }
 
 // The broker and the listener would keep the process alive past the last cell.
