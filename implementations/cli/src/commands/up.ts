@@ -1585,7 +1585,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   }
 
   // A repair keeps its own store rules above, and a resume or restore names its store.
-  if (!resumeAttempt && !repairing && values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
+  if (!resumeAttempt && !repairing) {
+    if (values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
+    else refuseMissingNamedStore(resolve(values["store-dir"]));
+  }
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   const boundListener: DetachOpts["boundListener"] = restored ? {
     serverName: restored.serverName,
@@ -2887,6 +2890,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     throw new Error("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate");
   // Before the dry-run print and before connector preflight or any write, as the refusals above.
   if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
+  else refuseMissingNamedStore(resolve(opts.storeDir));
 
   if (opts.dryRun) {
     // Dial-host SAN must refuse here too (S6). The real route runs assertServesDialHost after
@@ -4288,20 +4292,37 @@ function validateRecorded(
   return transport;
 }
 
-/** `down` drops the record that named a custom or restored store, so a later start that names none
- *  would open an empty second store and leave the data where it was. Each real start writes its
- *  `store_dir` into the broker config it renders, and that file outlives `down`: while the store it
- *  names differs and still holds JetStream data, and the default store holds none, refuse and name it. */
-function refuseUnnamedLastStore(storeDir: string): void {
-  if (existsSync(join(storeDir, "jetstream"))) return;
+/** The store this root's last broker served, when it differs from `storeDir` and still holds
+ *  JetStream data. `down` drops the record that named a custom or restored store, but each real start
+ *  writes its `store_dir` into the broker config it renders, and that file outlives `down`. */
+function lastServedStore(storeDir: string): string | undefined {
   for (const conf of [join(authDir(cotalRoot()), "server.conf"), cotalPath("server-open.conf")]) {
     if (!existsSync(conf)) continue;
     // The core renderer writes the path as a JSON string.
     const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
     const last = named === undefined ? undefined : resolve(JSON.parse(named) as string);
-    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream")))
-      throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
+    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream"))) return last;
   }
+  return undefined;
+}
+
+/** A start that names no store would open an empty second store and leave the data where it was:
+ *  while the last served store holds data and the default store holds none, refuse and name it. */
+function refuseUnnamedLastStore(storeDir: string): void {
+  if (existsSync(join(storeDir, "jetstream"))) return;
+  const last = lastServedStore(storeDir);
+  if (last !== undefined)
+    throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
+}
+
+/** A `--store-dir` that does not exist yet, while the last served store holds data, is taken for a
+ *  mistyped path: the start would open a new empty store there. Creating the directory first names a
+ *  new store on purpose. */
+function refuseMissingNamedStore(storeDir: string): void {
+  if (existsSync(storeDir)) return;
+  const last = lastServedStore(storeDir);
+  if (last !== undefined)
+    throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and --store-dir names ${storeDir}, which does not exist, so this start would open a new empty store there; nothing was started`, { target: { root: cotalRoot(), storeDir: last, requested: storeDir }, remedy: `reopen it with --store-dir ${last}, or create ${storeDir} first to start on a new empty store` });
 }
 
 /**

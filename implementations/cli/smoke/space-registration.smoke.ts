@@ -861,8 +861,38 @@ if (process.platform === "linux") {
   const ownStore = await json(["up", "--server", DEAD, "--store-dir", join(control, "nats"), "--restore-only", "x"], storeRoot);
   check("up --store-dir naming the root's own .cotal/nats passes the store check",
     refused(ownStore, 1, "USAGE_INVALID") && (ownStore.env?.error?.message ?? "").includes("--restore-only takes registry"), shown(ownStore));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const sealed = join(home, "store-sealed");
+    mkdirSync(sealed);
+    chmodSync(sealed, 0o500);
+    const uncreatable = await json(["up", "--server", DEAD, "--store-dir", join(sealed, "store")], storeRoot);
+    check("up --store-dir under a directory this account cannot write is PERMISSION_DENIED, exit 2, naming it",
+      refused(uncreatable, 2, "PERMISSION_DENIED") && (uncreatable.env?.error?.message ?? "").includes(`cannot be created, because this account cannot write ${sealed}`) &&
+        !existsSync(join(sealed, "store")), shown(uncreatable));
+    chmodSync(sealed, 0o700);
+  }
   check("no store refusal wrote a stack journal", !existsSync(stackJournalPath(storeRoot)));
   rmSync(exposed, { recursive: true, force: true });
+}
+
+// ── A --store-dir that does not exist, while the last served store holds data ───────────────────────
+// It is taken for a mistyped path and refused, and nothing is created. A directory created first
+// names a new store on purpose and passes.
+{
+  const lastRoot = projectRoot("store-last");
+  const last = join(lastRoot, "altstore");
+  const typo = join(lastRoot, "altstoer");
+  mkdirSync(join(last, "jetstream"), { recursive: true });
+  writeFileSync(join(lastRoot, ".cotal", "server-open.conf"), `jetstream { store_dir: ${JSON.stringify(last)} }\n`);
+  writeFileSync(join(lastRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: store-last\nbroker: { servers: "${DEAD}", auth: false }\nchannels:\n  lobby: { description: "base" }\n`);
+  const mistyped = await run(["up", "-f", "cotal.yaml", "--dry-run", "--store-dir", typo], {}, lastRoot);
+  check("up -f --store-dir naming a missing path while the last store holds data refuses CONFLICT, exit 2, naming both",
+    mistyped.status === 2 && mistyped.stderr.includes("CONFLICT") && mistyped.stderr.includes(`served the store ${last}, and --store-dir names ${typo}, which does not exist`) &&
+      mistyped.stderr.includes(`reopen it with --store-dir ${last}`), shown(mistyped));
+  check("the refused start created no store", !existsSync(typo));
+  mkdirSync(typo);
+  const created = await run(["up", "-f", "cotal.yaml", "--dry-run", "--store-dir", typo], {}, lastRoot);
+  check("the same start with the directory created first is not refused", created.status === 0, shown(created));
 }
 
 finish();

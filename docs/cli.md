@@ -589,7 +589,9 @@ An explicit `--store-dir` on `up`, `up --restore` or `backup restore` must name 
 path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it. The
 existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
 writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
-is written. A non-empty directory is accepted, since it may hold an existing store. A control
+is written. A path still to create needs its nearest existing directory to be writable by this
+account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. A non-empty
+directory is accepted, since it may hold an existing store. A control
 directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
 other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
 with credentials and records, or with another root's store, and `reset store` could not remove it.
@@ -754,7 +756,9 @@ different `--store-dir` rather than silently opening a second store. `down` drop
 later start without `--store-dir` reads the store its last broker served from the broker config `up`
 wrote. When that store is not the default `.cotal/nats` and still holds JetStream data while the
 default store holds none, such as after `backup restore --store-dir`, the start refuses `CONFLICT`
-(exit 2) and names it. Pass `--store-dir <dir>` to reopen it.
+(exit 2) and names it. Pass `--store-dir <dir>` to reopen it. While that store holds data, a
+`--store-dir` that does not exist is taken for a mistyped path, and the start refuses `CONFLICT`
+(exit 2) and names both. Create the directory first to start a new empty store there.
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit
