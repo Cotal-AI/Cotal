@@ -68,7 +68,7 @@ export const statusFlags = [
   { name: "creds", type: "string", value: "<file>", description: "named agent: use an explicit connection credential" },
   { name: "all", type: "boolean", description: "check every recorded mesh, not only the selected one" },
   { name: "verbose", short: "v", type: "boolean", description: "include installation paths, local records and detailed diagnostics" },
-  { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving; 1 absent; 2 present but not serving; 3 probe refused)" },
+  { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving, or the optional dashboard not installed; 1 absent; 2 present but not serving; 3 probe refused)" },
   jsonFlag,
   plainFlag,
 ] as const;
@@ -1369,11 +1369,13 @@ function section(name: string): void {
  * knows about a component; a component-owned control answer says it is actually serving.  Do not
  * flatten those questions — the manager incident was exactly a live lease holder that had not
  * reached its service rail. */
-type ComponentVerdict = "serving" | "absent" | "not-serving" | "refused";
+type ComponentVerdict = "serving" | "not-installed" | "absent" | "not-serving" | "refused";
 type ComponentHealth = { name: string; verdict: ComponentVerdict; facts: string[] };
 
 const COMPONENT_EXIT: Record<ComponentVerdict, number> = {
   serving: 0,
+  // An optional component that was never installed is not a failed one.
+  "not-installed": 0,
   absent: 1,
   "not-serving": 2,
   refused: 3,
@@ -1763,6 +1765,12 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   const record = processRecord(WEB_PIDFILE, context);
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
+  if (record.kind === "absent") {
+    // An installation that cannot be read keeps the absent verdict rather than a clean zero.
+    let installed: boolean | undefined;
+    try { installed = webInstalled(); } catch { installed = undefined; }
+    if (installed === false) return { name: "web", verdict: "not-installed", facts: ["optional"] };
+  }
   if (stopped) {
     if (record.kind === "dead") facts.push("stale pidfile");
     if (record.kind === "unattributable") facts.push("unattributable pidfile");

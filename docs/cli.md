@@ -2075,8 +2075,8 @@ no `--json`, `--plain` or `--all`. It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
-state wins). That exit replaces the report's own, so a partial report followed by a clean pass exits
-0:
+state wins). An optional component that is not installed prints `not-installed`, which exits `0`.
+That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
   `status` service reachability from this host. Manager builds that do not report static
@@ -2087,8 +2087,9 @@ state wins). That exit replaces the report's own, so a partial report followed b
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
-- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded
-  once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
+- **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
+  Otherwise, the local PID record, then the `/api/meta` response at the address the dashboard
+  recorded once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
   on the `Web process` row: a service-run dashboard's own session record, found through its web
   service instance and named on the row as `service instance <id>`, or `web.session` for any other
   holder. The probe presents the readiness nonce recorded beside that address, the one credential

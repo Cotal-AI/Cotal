@@ -314,7 +314,8 @@ ExecStart=/usr/bin/cotal status --components --space main
 
 Run that check from a systemd timer or another monitor and alert on a nonzero exit. The command
 distinguishes `absent`, `not-serving`, and `refused` components and never treats a sibling's health as
-proof. Its delivery-process check is local to the broker host, so run it there. On a split topology,
+proof. A dashboard whose extension is not installed reads `not-installed` and keeps the exit at `0`.
+Its delivery-process check is local to the broker host, so run it there. On a split topology,
 also probe the broker URL from the manager host and monitor the manager's own service there. A remote
 manager cannot observe the broker host's delivery PID, and an `active` unit on either host says
 nothing about the other host.
