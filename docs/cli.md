@@ -1250,7 +1250,8 @@ are always refused.
 `store` and `all` also refuse every maintenance journal state. After a healthy committed restore,
 `restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
-completed restore journal so a later `down --preserve-state` can start a new backup cycle.
+completed restore journal so a later `down --preserve-state` can start a new backup cycle. After an
+`--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
 
@@ -1405,6 +1406,9 @@ manifest path or selected-space guess. It requires the native deadline and every
 to prove the attempt stale, then performs the native rollback. Commit intent forbids rollback.
 `backup cleanup-fallback <full-attempt-id>` requires the matching healthy active restore and
 removes only its unchanged retained old-store identity; it never removes the restored target.
+A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
+so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
+starts a new backup cycle.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
