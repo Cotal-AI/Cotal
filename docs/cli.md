@@ -4789,9 +4789,10 @@ the manager's answer deadline.
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
-run is recorded; a program that does not validate is refused with every problem listed. `resume`
-asks the manager to take an existing run back and continue it from its step journal; the source is
-the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
+run is recorded; a program that does not validate is refused with every problem listed. A program
+file that cannot be read is refused with `TARGET_NOT_FOUND`, exit 2, by every verb that takes one.
+`resume` asks the manager to take an existing run back and continue it from its step journal; the
+source is the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. An open pause prints its question
 under `Needs an answer`, and only then does Next offer `answer`. A pause counts as open while its

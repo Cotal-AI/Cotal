@@ -17,7 +17,6 @@
  * resolves, it just cannot expire a pause.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -65,7 +64,7 @@ import {
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
-import { offlineWorkflow } from "./offline-command.js";
+import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
@@ -200,7 +199,7 @@ function readProgram(values: RunValues): string {
     console.error("run start: --file <program> is required");
     process.exit(1);
   }
-  return readFileSync(values.file, "utf8");
+  return sourceOf(values.file);
 }
 
 /**
@@ -219,7 +218,7 @@ async function resumeSource(values: RunValues, planes: Planes, endpoint: string,
     }
     return recorded.source;
   }
-  const source = readFileSync(values.file, "utf8");
+  const source = sourceOf(values.file);
   if (recorded !== undefined && recorded.source !== source) {
     console.error(`run ${runId}: ${values.file} is not the program this run was started from; a resume takes the recorded source (omit --file), and an edited program is a migration or a fork`);
     process.exit(1);
@@ -547,7 +546,7 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
     process.exit(1);
   }
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
-  const source = readFileSync(values.file, "utf8");
+  const source = sourceOf(values.file);
   const report = await migrateRun({
     endpoint,
     runId,
