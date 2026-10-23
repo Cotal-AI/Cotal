@@ -1630,7 +1630,8 @@ against this root: take a fresh full backup after each rotation. The composed co
 immediately before store mutation and never includes secret seeds. Restore never creates fresh auth.
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
-source needs explicit `--accept-missing-source`. Quarantine and target restores use current canonical
+source needs explicit `--accept-missing-source`. Without it, the restore refuses `TARGET_NOT_FOUND`
+(exit 2), names the missing path and changes nothing. Quarantine and target restores use current canonical
 configs on isolated random-loopback brokers, never expose native snapshot consumers, and publish a
 commit-intent immediately before the normal listener starts. Archive bytes never instantiate the real
 target: after quarantine validation, every stream is re-snapshotted from the validated quarantine
