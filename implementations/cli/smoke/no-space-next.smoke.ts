@@ -3,8 +3,8 @@
  * refuses with TARGET_NOT_FOUND (exit 2) and the remedy the workspace gives for a missing mesh.
  * `doctor auth` in a folder whose root holds no space reports a partial result (exit 4) whose
  * remedy says to run it in a space's root, in JSON and in the text report. `cotal persona` with
- * a `--server` no registration names refuses with TARGET_NOT_FOUND and says this folder is not a
- * space's project. Nothing is written.
+ * nothing selected, or with a `--server` no registration names, refuses with TARGET_NOT_FOUND and
+ * says no space is selected here, since its catalog is read offline. Nothing is written.
  * Broker-free; the mesh registry is private to this run.
  *
  * Run: pnpm smoke:no-space-next
@@ -82,6 +82,15 @@ try {
     assert.deepEqual(readdirSync(bare), [], "auth mint with no mesh writes nothing");
   }
 
+  // 1b. persona with nothing selected: its catalog is offline, so the refusal names the missing
+  //     selection, not a mesh that is not running.
+  {
+    const failure = await personaRefusal({}, []);
+    assert.equal(failure.code, "TARGET_NOT_FOUND", `persona with nothing selected: code (${failure.message})`);
+    assert.equal(failure.message, "no space is selected, and this folder is not a space's project", "persona with nothing selected says so");
+    assert.equal(failure.remedy, "run `cotal up` in a project, or name a prepared or registered space with `--space <name>`", "persona with nothing selected: the remedy names the next step");
+  }
+
   // 2. doctor auth in a folder whose root holds no space: partial with a next step in JSON.
   {
     const { out, code } = await diagnose({ json: true });
@@ -118,5 +127,5 @@ try {
   rmSync(base, { recursive: true, force: true });
 }
 
-console.log("no-space-next smoke: OK - auth mint with no mesh refuses TARGET_NOT_FOUND with its next step, doctor auth with no space is partial (exit 4) with a remedy in JSON and text, and persona --server with no registration refuses; nothing is written");
+console.log("no-space-next smoke: OK - auth mint with no mesh and persona with no selection refuse TARGET_NOT_FOUND with their next step, doctor auth with no space is partial (exit 4) with a remedy in JSON and text, and persona --server with no registration refuses; nothing is written");
 emitSentinel({ passed: cells(), failed: 0 });
