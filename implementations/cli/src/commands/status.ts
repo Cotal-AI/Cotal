@@ -184,7 +184,7 @@ export interface StatusResult {
   /** Older serialized/read-view inputs may omit this observation; absence is never an empty inventory. */
   services?: OwnedServiceStatus;
   /** Selected folder's local boot intents, not a live broker or ownership census. */
-  bootAttempts?: { root: string; state: "read" | "partial" | "not-checked"; observedAt: string; unsettled: { deploymentId: string; space: string; server: string; createdAt: string }[]; additive: { deploymentId: string; space: string; server: string; createdAt: string; recordedState: ReturnType<typeof additiveTeamRecordedState> }[]; unreadable: string[] };
+  bootAttempts?: { root: string; state: "read" | "partial" | "not-checked"; observedAt: string; unsettled: { deploymentId: string; space: string; server: string; createdAt: string }[]; additive: { deploymentId: string; space: string; server: string; createdAt: string; recordedState: ReturnType<typeof additiveTeamRecordedState> }[]; unreadable: string[]; elsewhere: { deploymentId: string; root: string }[] };
   /** This folder's maintenance journal: a preserved cut, a restore or a resume, with the full attempt
    *  a recovery command names. Null when the root holds none; older inputs may omit it. */
   maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
@@ -320,13 +320,14 @@ function claimedNextStep(root: string, claim: MaintenanceClaim): string {
 function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["bootAttempts"]> {
   // A refusal with its own cause, such as a root other local accounts can write, is named.
   const because = (error: unknown) => isCommandFailure(error) ? ` (${error.message})` : "";
-  const result: NonNullable<StatusResult["bootAttempts"]> = { root, state: "not-checked", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [] };
+  const result: NonNullable<StatusResult["bootAttempts"]> = { root, state: "not-checked", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] };
   try {
     if (!realDirNoSymlink(root, ".cotal")) return result;
     const attempts = listFreshTeamAttempts(root), summaries = listFreshTeamSummaries(root);
     const byId = new Map(summaries.valid.map((summary) => [summary.deploymentId, summary]));
     result.unsettled = attempts.valid.filter((attempt) => !freshTeamAttemptSettled(attempt, byId.get(attempt.deploymentId)))
       .map(({ deploymentId, space, server, createdAt }) => ({ deploymentId, space, server: brokerAddressForDisplay(server) ?? "not displayable", createdAt }));
+    result.elsewhere = summaries.elsewhere.map(({ deploymentId, root: recordedRoot }) => ({ deploymentId, root: recordedRoot }));
     const unreadable = [...attempts.refused, ...summaries.refused].map(({ path }) => path);
     result.unreadable.push(...unreadable);
     if (unreadable.length) gaps.add("FRESH_BOOT_RECORD_UNREADABLE", "one or more fresh boot attempts or returned summaries are unreadable; their outcomes were not treated as absent", { root, paths: unreadable });
@@ -1357,11 +1358,15 @@ function ownedServicesOverview(services: OwnedServiceStatus | undefined): Sectio
 }
 
 function bootAttemptOverview(snapshot: StatusResult["bootAttempts"]): Section | undefined {
-  if (!snapshot || !snapshot.unsettled.length && !snapshot.additive.length && !snapshot.unreadable.length) return undefined;
+  if (!snapshot) return undefined;
+  const elsewhere = [...snapshot.elsewhere.slice(0, 100).map((row) => `Launch summary ${row.deploymentId} was recorded at ${row.root}. This folder was moved or copied since, so it reports only that earlier boot and blocks nothing here.`), ...(snapshot.elsewhere.length > 100 ? ["Additional summaries are in JSON."] : [])];
+  if (!snapshot.unsettled.length && !snapshot.additive.length && !snapshot.unreadable.length)
+    return elsewhere.length ? { title: "Deployment attempts", blocks: [{ kind: "fields", rows: [["Folder root", snapshot.root]] }, { kind: "lines", lines: elsewhere }] } : undefined;
   return { title: "Deployment attempts", blocks: [
     { kind: "fields", rows: [["Folder root", snapshot.root], ["Local read", snapshot.state], ["Unsettled fresh", String(snapshot.unsettled.length)], ["Additive attempts", String(snapshot.additive.length)], ["Unreadable records", String(snapshot.unreadable.length)]] },
     snapshot.unsettled.length ? { kind: "table", columns: [{ key: "id", label: "Fresh boot" }, { key: "space", label: "Space" }, { key: "broker", label: "Recorded broker" }], rows: snapshot.unsettled.slice(0, 100).map((row) => ({ id: row.deploymentId, space: row.space, broker: row.server })) } : { kind: "lines", lines: ["No readable unsettled fresh attempt in this folder."] },
     snapshot.additive.length ? { kind: "table", columns: [{ key: "id", label: "Additive intent" }, { key: "space", label: "Space" }, { key: "state", label: "Recorded state" }], rows: snapshot.additive.slice(0, 100).map((row) => ({ id: row.deploymentId, space: row.space, state: row.recordedState })) } : { kind: "lines", lines: ["No readable additive attempt in this folder."] },
+    ...(elsewhere.length ? [{ kind: "lines" as const, lines: elsewhere }] : []),
     { kind: "lines", lines: [...snapshot.unreadable.slice(0, 100).map((path) => `Unreadable record: ${path}`), ...(snapshot.unsettled.length > 100 || snapshot.additive.length > 100 || snapshot.unreadable.length > 100 ? ["Additional records are in JSON."] : []), "A fresh intent may have started a broker; an additive intent may have changed its resources. No retry or stop authority follows from this read."] },
     { kind: "commands", items: [{ command: `${displayCmd()} team show <deployment-id>`, description: "Inspect the original attempt from its recorded root" }] },
   ] };

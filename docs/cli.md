@@ -1942,7 +1942,8 @@ readable coordinates in JSON.
 It appears only when there is something to inspect. A missing fresh summary
 does not prove the original broker never started; an additive intent does not
 prove which resources changed. This read grants neither retry nor stop
-authority. If the folder inherits
+authority. A fresh summary that names another folder, as one does after its folder was moved or
+copied, is listed with its recorded path and is not counted as unreadable. If the folder inherits
 the machine's home `.cotal`, status warns that unqualified `up` refuses instead of starting
 there. Prepare the intended folder first with
 `space create <space> --root .`; `up --root .` then names it.
@@ -5363,7 +5364,10 @@ responder stays unsettled and
 blocks a later fresh boot. `team show <id>` and the team inventory expose the original intent without
 claiming whether its broker started. `team show` displays up to 100 declared names from a
 summary and retains the complete list in JSON; none are claimed to have joined. A missing
-or refused summary after boot is not a reason to boot again.
+or refused summary after boot is not a reason to boot again. A summary records the absolute folder
+`up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
+path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
+refuses it with CONFLICT, naming the folder it was recorded at.
 The inventory stays partial because older fresh boots may have no summary. The
 terminal lists up to 100 records; JSON retains all readable records. Its Next column
 says inspect the stack for a fresh record or review the native scoped teardown plan for an

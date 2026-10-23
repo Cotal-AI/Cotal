@@ -166,6 +166,33 @@ if (!brokerDisplayOnly) {
   check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --yes`), report);
 }
 
+// ── a launch summary recorded at a folder this one was moved from is listed, not unreadable ──────
+{
+  const { home, run } = sandbox();
+  const server = ["--server", `nats://127.0.0.1:${await freePort()}`];
+  const before = run(["status", ...server, "--json"]);
+  const summaries = join(home, ".cotal", "team-summaries");
+  mkdirSync(summaries, { mode: 0o700 });
+  const moved = "0123456789abcdef", recordedRoot = `${home}-moved-from`;
+  writeFileSync(join(summaries, `${moved}.json`), JSON.stringify({ schemaVersion: 1, kind: "fresh-team-summary", deploymentId: moved, space: "held", root: recordedRoot, server: server[1], authMode: "auth", manifestPath: join(recordedRoot, "cotal.yaml"), requestedAgents: [], declaredChannels: ["general"], recordedAt: new Date().toISOString(), managerRequested: true, controlPlaneReturned: true, authServiceReturned: true, deliveryResponderBound: true, agentReadiness: "not-checked" }), { mode: 0o600 });
+  const json = run(["status", ...server, "--json"]);
+  const attempts = (json.envelope?.result as { bootAttempts?: { unreadable: string[]; elsewhere: { deploymentId: string; root: string }[] } } | null)?.bootAttempts;
+  check("a summary naming the folder it was moved from is not an unreadable record", json.status === before.status && !json.envelope?.warnings.some((w) => w.code === "FRESH_BOOT_RECORD_UNREADABLE") && attempts?.unreadable.length === 0, shown(json));
+  check("status --json lists it with the root it was recorded at", attempts?.elsewhere.length === 1 && attempts.elsewhere[0]!.deploymentId === moved && attempts.elsewhere[0]!.root === recordedRoot, attempts);
+  const plain = run(["status", ...server, "--plain"]);
+  check("the report says where it was recorded", words(plain.stdout).includes(`Launch summary ${moved} was recorded at ${recordedRoot}.`) && !plain.stdout.includes("Unreadable record"), plain.stdout);
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, ".cotal-home");
+  try { recordMesh({ space: "held", server: server[1]!, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() }); }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+  const show = run(["team", "show", moved, "--space", "held", "--json"]);
+  check("team show refuses it with CONFLICT naming the recorded root", show.status === 2 && show.envelope?.error?.code === "CONFLICT" && show.envelope.error.message.includes(`recorded at ${recordedRoot}`), shown(show));
+  // Control: a summary that does not parse is still unreadable.
+  writeFileSync(join(summaries, "fedcba9876543210.json"), "{", { mode: 0o600 });
+  const broken = run(["status", ...server, "--json"]);
+  check("control: an unparsable summary is still reported unreadable", broken.envelope?.warnings.some((w) => w.code === "FRESH_BOOT_RECORD_UNREADABLE") === true, shown(broken));
+}
+
 // ── a part it cannot read is named on its row, and the read is partial ───────────────────────────
 {
   const { home, run } = sandbox();
