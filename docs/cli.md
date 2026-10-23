@@ -1948,7 +1948,10 @@ refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A director
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
 no seed block, an invalid seed, or Windows (CRLF) line endings. A file that other accounts can read
 is still used, with a warning on stderr that gives the `chmod 600` command. `join --creds` reads its
-file the same way.
+file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
+credential's own permissions name one other space, the refusal names that space, such as
+`credentials rejected at <server>: <file> is a credential for space "<owner>", not "<space>"`, and
+its Next is `--space <owner>`.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
