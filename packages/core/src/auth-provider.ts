@@ -579,6 +579,11 @@ export type ServiceEndpointRenewalState =
 export interface ServiceEndpointRenewal {
   /** The bearer function: a fresh, unexpired service access bearer. Concurrent calls share one request. */
   bearer(): Promise<string>;
+  /** The same pull as `bearer()`, answering the whole validated `credential` result: the witness,
+   *  the host-authorized snapshot and the access bearer a guest hands to `authorizeGuestServeGrant`.
+   *  Concurrent `bearer()` and `credential()` calls share one request; the persisted request ids
+   *  and the terminal behaviour are the same. */
+  credential(): Promise<Extract<ServiceAuthorityResult, { state: "credential" }>>;
   /** The current state, with expiries only. */
   state(): ServiceEndpointRenewalState;
   /** The space's deny-all sentinel creds the endpoint presents with the bearer, known after the first success. */
