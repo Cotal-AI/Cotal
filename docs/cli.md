@@ -1492,7 +1492,9 @@ process and whether the manager, delivery and auth service started. The restore 
 artifact's own selection, and `--only registry` narrows a full artifact to the registry. Any other
 `--only` value is refused, because the restore could not honor it. The space, broker and runtime
 come from the preserved cut, so no selector can rebind them. An artifact of another space refuses
-`CONFLICT` (exit 2) and names both spaces; the preserved cut is not changed. A receipt means the
+`CONFLICT` (exit 2) and names both spaces. An artifact file that is missing, undeclared or not its
+declared size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backup verify`
+does. In each case the preserved cut is not changed. A receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
 confirm that any seat joined. `--store-dir` names a store the restore creates, so a path that

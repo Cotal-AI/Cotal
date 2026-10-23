@@ -191,6 +191,23 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
         writeFileSync(authPath, originalAuthText);
       }
 
+      // A copy whose file no longer matches its manifest is refused as backup verify refuses it, by name.
+      const tampered = join(root, "full-backup-tampered");
+      cpSync(artifact, tampered, { recursive: true });
+      const snapshot = readdirSync(tampered).find((name) => name.endsWith(".snap"))!;
+      writeFileSync(join(tampered, snapshot), "X", { flag: "a" });
+      for (const command of ["verify", "restore"]) {
+        const refused = run("backup", command, tampered, "--json");
+        const envelope = JSON.parse(refused.stdout) as { error?: { code?: string }; target?: { file?: string; fault?: string } };
+        assert.equal(refused.status, 1, `backup ${command} of a tampered copy exits 1: ${refused.stderr}`);
+        assert.equal(envelope.error?.code, "SCHEMA_INVALID", `backup ${command} of a tampered copy is SCHEMA_INVALID`);
+        assert.equal(envelope.target?.file, snapshot, `backup ${command} of a tampered copy names the file`);
+        assert.equal(envelope.target?.fault, "mismatch", `backup ${command} of a tampered copy names the fault`);
+      }
+      assert.equal(readFileSync(journalPath, "utf8"), journalBefore, "a tampered restore leaves the ready journal byte-identical");
+      assert.equal(existsSync(attemptsPath) && readdirSync(attemptsPath).length > 0, false, "a tampered restore leaves no staged copy");
+      rmSync(tampered, { recursive: true, force: true });
+
       const validBeforeDrift = loadSoleSpaceAuth(authDir(root));
       assert.ok(validBeforeDrift);
       const rotatedSystem = await rotateSystemAccount(validBeforeDrift);

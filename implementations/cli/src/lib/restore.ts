@@ -82,7 +82,7 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
@@ -789,7 +789,17 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // The journal is ready with no live claim, and the artifact/target are proven disjoint from
     // the attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
-    const artifact = stageArtifact(artifactPath, stageParent);
+    // Staging checks each artifact file before any transition, so a file fault leaves the preserved
+    // cut unchanged: the same refusal `backup verify` gives for that file.
+    let artifact: StagedArtifact;
+    try { artifact = stageArtifact(artifactPath, stageParent); }
+    catch (error) {
+      if (!(error instanceof ArtifactFileFault)) throw error;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored and the preserved cut was not changed`, {
+        target: { directory: artifactPath, file: error.file, fault: error.fault },
+        remedy: "this copy cannot be restored as it is: check another copy of the same artifact with cotal backup verify and restore that one, or restore a newer backup",
+      });
+    }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
     const checkpoints = readStagedCheckpoints(artifact);
