@@ -3373,7 +3373,7 @@ export class Manager {
       if (own !== undefined && own.info.pid === process.pid)
         await this.ep.releaseManagerLease(this.managerInstanceId, own.revision);
     } catch {
-      // Best-effort, like the release it wraps: a broker failure here is recovered by the bucket TTL.
+      // Best-effort: a release that did not commit is reported by the re-read below.
     }
     try {
       const stillOurs = await this.ep.readOwnManagerLease(this.managerInstanceId);
