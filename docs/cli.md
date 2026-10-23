@@ -4163,6 +4163,8 @@ whether the window goes back to `--since`. An age outside the supported date ran
 that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting. So is a
 `--since` in any other form. A time is an ISO 8601 date such as `2026-10-23`, or a date and time such
 as `2026-10-23T09:00:00Z`, on a real calendar day, so `-5`, `10/23/2026` and `2026-02-30` are refused.
+A date alone, or a date and time with no offset, is local time, so `--since 2026-10-23` starts at
+local midnight. The report prints the resolved cutoff under `Since`.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
 is the ISO time. A DM row shows its recipient's name when a message in the window came from that
 principal, and the principal otherwise. `result.items[].to` is the principal.

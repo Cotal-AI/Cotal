@@ -49,7 +49,7 @@ type Item = { seq: number | null; id: string; ts: string; channel: string | null
 type Result = {
   kind: string;
   channels: string[];
-  window: { limit: number; read: number; olderRetained: boolean | null; reachesSince: boolean | null };
+  window: { limit: number; read: number; olderRetained: boolean | null; since: string | null; reachesSince: boolean | null };
   retention: { perSender: number | null; gaps: { channel: string; name: string | null; retained: number }[] } | null;
   replay: { channel: string; replay: boolean | null }[];
   items: Item[];
@@ -91,9 +91,9 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key ===
 // Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[]): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], env: Record<string, string> = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd: shell, env: isolatedEnv, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...env }, timeout: 120_000 }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -200,6 +200,18 @@ try {
   check("--since a sequence keeps only later messages", JSON.stringify(texts(bySeq)) === JSON.stringify(["looks good", "deploy finished"]) && bySeq.envelope?.result?.window.reachesSince === true, texts(bySeq));
   const byTime = await run(["history", "general", "--since", midpoint, "--json"]);
   check("--since a time keeps only messages after it", JSON.stringify(texts(byTime)) === JSON.stringify(["deploy finished"]), texts(byTime));
+  // A date alone is local midnight, as a date and time with no offset is local time. Kiritimati is
+  // UTC+14 with no daylight time, so its midnight is ten in the morning UTC of the day before, and
+  // there a date read as UTC midnight starts later today and keeps nothing sent so far.
+  const kiritimati = { TZ: "Pacific/Kiritimati" };
+  const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: kiritimati.TZ }).format(new Date()).split("-").map(Number) as [number, number, number];
+  const localDay = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  const midnight = new Date(Date.UTC(y, m - 1, d) - 14 * 3_600_000).toISOString();
+  const byDate = await run(["history", "general", "--since", localDay, "--json"], kiritimati);
+  const byDatePlain = await run(["history", "general", "--since", localDay, "--plain"], kiritimati);
+  check("--since a date alone starts at local midnight, and the plain report prints that cutoff",
+    byDate.envelope?.result?.window.since === midnight && JSON.stringify(texts(byDate)) === JSON.stringify(texts(general)) && /Since: .*\(/.test(byDatePlain.stdout) && byDatePlain.stdout.includes(`(${midnight})`),
+    { since: byDate.envelope?.result?.window.since, midnight, texts: texts(byDate), plain: byDatePlain.stdout.slice(0, 300) });
   const narrow = await run(["history", "general", "--limit", "1", "--since", String(items[0]?.seq), "--json"]);
   check("a window that does not reach back to --since says so", narrow.envelope?.result?.window.reachesSince === false, narrow.envelope?.result?.window);
   const fromBob = await run(["history", "--from", "bob", "--json"]);

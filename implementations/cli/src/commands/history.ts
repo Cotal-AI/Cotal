@@ -112,13 +112,19 @@ const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?
 
 /** `raw` as epoch milliseconds when it is an ISO 8601 time on a real calendar day, else NaN.
  *  `Date.parse` alone also reads shapes such as `-5` or `10/23/2026` as dates, and rolls
- *  `2026-02-30` over into March. */
+ *  `2026-02-30` over into March. It also reads a date alone as UTC midnight, while ISO 8601 and a
+ *  date and time with no offset are local time, so a date alone is read as local midnight here. */
 function isoTime(raw: string): number {
   const date = ISO_TIME.exec(raw);
   if (!date) return NaN;
-  const [month, day] = [Number(date[2]) - 1, Number(date[3])];
-  const calendar = new Date(Date.UTC(Number(date[1]), month, day));
-  return calendar.getUTCMonth() === month && calendar.getUTCDate() === day ? Date.parse(raw) : NaN;
+  const [year, month, day] = [Number(date[1]), Number(date[2]) - 1, Number(date[3])];
+  const calendar = new Date(Date.UTC(year, month, day));
+  if (calendar.getUTCMonth() !== month || calendar.getUTCDate() !== day) return NaN;
+  if (raw.includes("T")) return Date.parse(raw);
+  const midnight = new Date(0);
+  midnight.setFullYear(year, month, day);
+  midnight.setHours(0, 0, 0, 0);
+  return midnight.getTime();
 }
 
 function parseSince(raw: string | undefined, now: number): Since | undefined {
@@ -489,6 +495,10 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
     sections: [
       {
         blocks: [
+          // The resolved cutoff, so a read that shows nothing says what it compared against.
+          ...(r.window.since !== null
+            ? [{ kind: "fields" as const, rows: [["Since", /^\d+$/.test(r.window.since) ? `after chat stream sequence ${r.window.since}` : `after ${new Date(r.window.since).toLocaleString()} local time (${r.window.since})`]] as [string, string][] }]
+            : []),
           ...(r.items.length
             ? [{
                 kind: "table" as const,
