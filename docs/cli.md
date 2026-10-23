@@ -5286,7 +5286,10 @@ A hosted verb the manager refuses reports the outcome and code as other commands
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
 denied credential, a step in the wrong state or a program that does not validate, is refused, exit
 2. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
-`cotal run show <runId>` as the next step. Any other refusal of `start`, `resume`, `answer` or
+`cotal run show <runId>` as the next step. A manager activates at most 8 runs at once, counting
+each `start` or `resume` until its run is recorded. One more is refused `LIFECYCLE_BLOCKED`, exit 2,
+before anything is written; the refusal names the runs still activating, and the next step is to
+wait until one has activated and run it again. Any other refusal of `start`, `resume`, `answer` or
 `amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
 
 An unpinned hosted verb run by the operator reads the space's service registry first. When it

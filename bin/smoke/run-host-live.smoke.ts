@@ -520,13 +520,15 @@ try {
       space: spaceA, servers: brokerA.servers, endpoint: "manager", instanceId: mintLifecycleUid(),
       holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: () => undefined,
     });
-    const gate = capped as unknown as { launching: number; reconciled: boolean };
+    const gate = capped as unknown as { launching: Map<symbol, string | undefined>; reconciled: boolean };
     gate.reconciled = true;
-    gate.launching = 1_000_000;
+    for (let i = 0; i < 8; i++) gate.launching.set(Symbol(`held-${i}`), `run-held${i}`);
     const first = await capped.resume({ runId }).then(() => undefined, (e: unknown) => e);
     const second = await capped.resume({ runId }).then(() => undefined, (e: unknown) => e);
     c("a resume refused at the admission cap is resource-exhausted and gives its slot back: the next attempt is refused the same way, never as a conflict on a run nobody is driving",
       code(first) === "resource-exhausted" && code(second) === "resource-exhausted" && capped.liveCount === 0, { first: code(first), second: code(second), live: capped.liveCount });
+    c("and the refusal is not-executed and names the runs holding the launch slots",
+      (first as { outcome?: string })?.outcome === "not-executed" && /\(run-held0, run-held1, .*run-held7\); nothing was written/.test(String((first as Error)?.message)), (first as Error)?.message);
     await capped.stop();
     // The boot gate refuses before any admission is read, so the served context here only needs
     // the shape: the issued caller on the versioned rail, as the manager's dispatcher hands it in.
@@ -759,7 +761,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 74;
+const EXPECTED_CELLS = 75;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
