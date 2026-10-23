@@ -9,7 +9,7 @@
 import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult, type RegisterResult } from "./protocol.js";
+import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
 export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"> & { readonly space: string }): Promise<
@@ -45,6 +45,23 @@ export async function registerViaDaemon(opts: Pick<QueryOptions, "paths" | "peer
 
 export interface ClientCounters {
   bytesWritten: number;
+}
+
+/** Ask the daemon to connect, disconnect or report its own service connection to `space`. */
+export async function serviceViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"> & { readonly space: string; readonly op: "service-connect" | "service-disconnect" | "service-status" }): Promise<
+  { readonly ok: true; readonly result: ServiceConnectionResult } | { readonly ok: false; readonly code: string; readonly message: string }> {
+  const sock = await openVerified({ ...opts, timeoutMs: 5000 });
+  try {
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: opts.op, space: opts.space }));
+    // A connect runs the register replay, the first renewal, the broker connection and `ready`, each
+    // bounded by its stock client (30 s); allow for all of them.
+    const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
+    if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
+    if ("event" in reply || !("state" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the service request with something else" };
+    return { ok: true, result: reply.result as ServiceConnectionResult };
+  } finally {
+    sock.destroy();
+  }
 }
 
 export interface QueryOptions {

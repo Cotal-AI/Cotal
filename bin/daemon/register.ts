@@ -18,7 +18,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { contractDigest, resolveAuthProvider, ServiceAuthorityTransportError, singleDocumentClosure, VOID_SCHEMA_DIGEST, type ServiceAuthorityRequest, type ServiceAuthorityResult } from "@cotal-ai/core";
+import { contractDigest, resolveAuthProvider, ServiceAuthorityTransportError, singleDocumentClosure, VOID_SCHEMA_DIGEST, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { connectCheck, DAEMON_ENDPOINT } from "./connect.js";
 import type { RegisterResult } from "./protocol.js";
@@ -76,6 +76,21 @@ const NOT_SENT = "the daemon could not send the registration request; nothing wa
 const UNUSABLE = "the space answered the registration with something the daemon does not use; run the same command again";
 
 export async function registerDaemon(space: string, home: string = homeCotalDir()): Promise<RegisterResult> {
+  const sent = await sendRegister(space, home);
+  return "outcome" in sent ? sent : registerAnswer(sent.result, sent.ids);
+}
+
+/** The stock witness this daemon's own registration holds in `space`, read by replaying its persisted
+ *  register request unchanged: the same requestId and body, so no new key or registration. Anything
+ *  but `registered` is returned as the daemon's register outcome. */
+export async function daemonWitness(space: string, home: string = homeCotalDir()): Promise<{ witness: ServiceRegistrationWitness } | RegisterResult> {
+  const sent = await sendRegister(space, home);
+  if ("outcome" in sent) return sent;
+  if (sent.result.state === "registered") return { witness: sent.result.witness };
+  return registerAnswer(sent.result, sent.ids);
+}
+
+async function sendRegister(space: string, home: string): Promise<RegisterResult | { result: ServiceAuthorityResult; ids: Ids }> {
   const ready = await connectCheck(space, home);
   if (ready.outcome !== "ready-to-register") return ready;
   const entry = findMesh(space)!;
@@ -112,7 +127,7 @@ export async function registerDaemon(space: string, home: string = homeCotalDir(
       return { outcome: "not-signed-in", space, message: NOT_SIGNED_IN };
     return { outcome: "refused", space, message: NOT_SENT };
   }
-  return registerAnswer(result, ids);
+  return { result, ids };
 }
 
 type Ids = { space: string; requestId: string; endpoint: string; instanceId: string };

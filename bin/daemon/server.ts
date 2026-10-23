@@ -13,10 +13,11 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkSocket, ensureDir, refuseExisting, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type RegisterResult } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { registerDaemon } from "./register.js";
+import { createServiceConnections } from "./service.js";
 import { homeCotalDir } from "@cotal-ai/workspace";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
@@ -34,6 +35,7 @@ export interface ServerCounters {
   cancelsAnswered: number;
   connectChecksAnswered: number;
   registersAnswered: number;
+  serviceAnswered: number;
 }
 
 export interface RunningDaemon {
@@ -81,9 +83,10 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   const dirOutcome = ensureDir(paths.dir, uid);
   refuseExisting(paths.socket);
 
-  const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0, loginsStarted: 0, loginsRefused: 0, cancelsAnswered: 0, connectChecksAnswered: 0, registersAnswered: 0 };
+  const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0, loginsStarted: 0, loginsRefused: 0, cancelsAnswered: 0, connectChecksAnswered: 0, registersAnswered: 0, serviceAnswered: 0 };
   const machineHome = opts.sessionDir ?? homeCotalDir();
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
+  const services = createServiceConnections(machineHome);
   const startedAt = new Date();
   const status = (): DaemonStatus => ({
     state: "ready",
@@ -163,6 +166,16 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
             counters.registersAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
           });
+        return;
+      }
+      if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
+        const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
+          : (req.op === "service-connect" ? services.connect(req.space) : services.disconnect(req.space))
+            .catch((): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: "the daemon could not complete the request; nothing is connected" }));
+        void run.then((result) => {
+          counters.serviceAnswered++;
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+        });
         return;
       }
       if (req.op === "login-cancel") {
@@ -266,6 +279,8 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
     closed ??= (async () => {
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
+      // Every service connection, its endpoint and its renewal source close before the socket does.
+      await services.close();
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => server.close(() => r()));
       // Remove the public socket only if it is still the exact file (dev + ino) this process
