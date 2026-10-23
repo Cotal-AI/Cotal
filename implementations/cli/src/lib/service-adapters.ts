@@ -38,8 +38,14 @@ export function resolveServiceAdapter(name: string, options: Readonly<Record<str
   return { pin, declaration };
 }
 
+/** Whether two pins name the same provider and declaration. A built-in or `@cotal-ai/*` adapter is
+ *  version-locked to this CLI, so its recorded version only says which release wrote the record:
+ *  after an upgrade that left the declaration unchanged, instances an earlier release recorded stay
+ *  controllable. Any other package keeps its version in the pin. */
 export function sameServiceAdapterPin(a: ServiceAdapterPin | undefined, b: ServiceAdapterPin | undefined): boolean {
-  return a === undefined ? b === undefined : b !== undefined && a.name === b.name && a.package === b.package && a.version === b.version && a.declarationSha256 === b.declarationSha256;
+  if (a === undefined || b === undefined) return a === b;
+  const cliLocked = a.package === null || a.package.startsWith("@cotal-ai/");
+  return a.name === b.name && a.package === b.package && (cliLocked || a.version === b.version) && a.declarationSha256 === b.declarationSha256;
 }
 
 /** Call only after an explicitly authorized operation has reserved its definition and launch. */

@@ -390,6 +390,11 @@ Update reads the recorded mesh inventory without refreshing account space catalo
 login to a remote mesh does not block the software update. Local manager continuity checks still
 apply before changing the installation.
 
+After an upgrade, `up`, `down` and the `service` verbs still control the stack members and
+first-party service instances an earlier release recorded, as long as their adapter's declaration
+did not change. A third-party adapter's instances stay pinned to the package version that started
+them.
+
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
 binary: it force-reconciles the four built-in connectors, brings what a connector installed in its
 harness to this release (the `cotal` plugin copy Claude Code sessions load, and its Claude Desktop entry), then reinstalls other `@cotal-ai/*`
