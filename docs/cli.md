@@ -935,7 +935,11 @@ implied. A dry run reads records only, takes no lock, does not establish native 
 its JSON marks `completeness` as `partial`. It lists members in stop order, says when the stop would
 first settle an earlier operation, and names a scope check the real stop would refuse as a warning.
 A member whose recorded process is already gone is recorded as stopped without loading its adapter
-or credential, so a second `down --yes` stops nothing and is a no-op. When the manager is
+or credential, so a second `down --yes` stops nothing and is a no-op. Before it stops a live
+manager, `down` reads the workflow runs it hosts and records the unfinished ones, with the steps
+they wait on, in the stack journal, where `reset store` lists them. A read that fails is recorded
+with its reason and does not stop the `down`; the JSON receipt carries the record as
+`operation.runs`. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
 stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
 manager keeps running, then run `cotal down`. Controller roots refuse
@@ -1326,9 +1330,12 @@ a reset selects, so no reset reaches it once stopped. There the step after `cota
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and
-cannot be answered or resumed afterwards. The preview, the confirmation and the receipt say so but
-do not list the runs, because only the broker reads the store and it is stopped. To see them first,
-run `cotal up` and `cotal run ps`, then `cotal down --yes`.
+cannot be answered or resumed afterwards. Only the broker reads the store, and it is stopped, so
+`cotal down` reads the stack's runs from its manager before stopping it and records them in the
+stack journal with the steps they wait on. The preview, the confirmation and the receipt list those
+runs as of the last down, and `--json` carries them as `storeContents.runsAtLastDown` and
+`removedRuns`. When that down could not read them, or no down recorded them, the preview says so.
+To see the runs then, run `cotal up` and `cotal run ps`, then `cotal down --yes`.
 
 The store dry-run is a local-impact preview that exits 0. It requires a space selected that way, a
 real project `.cotal` and a root readable as one local tenant. It opens with a verdict: the apply is

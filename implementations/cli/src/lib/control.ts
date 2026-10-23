@@ -86,6 +86,8 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean; self?: 
   transcriptReceive: { command: "transcript-receive" },
   chatSessionOpen: { command: "chat-session-open" },
   chatSessionRetire: { command: "chat-session-retire" },
+  runPs: { command: "run-ps" },
+  runStatus: { command: "run-status" },
 };
 
 /** Operator reach for one targeted control call: `owner` rides the caller's own-domain verb rows
