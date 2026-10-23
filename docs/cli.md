@@ -4335,8 +4335,10 @@ retention, a replay policy, the channel list when a channel is named, or one cha
 reported in one line while the follow re-establishes it, so a follow outlives a broker restart. A
 credential that can no longer connect ends the follow. It may have expired, or the broker may now
 reject it, as after `reset space`. The follow then ends with the refusal a one-shot command with that
-credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. With `--json` each line is
-one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
+credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `--creds` on a
+static-auth space the follow mints its own credential from the space's trust, so when the broker
+rejects it the Next says to run the follow again, which mints one from the current trust. With
+`--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
 The first record is a `snapshot` holding the window, then one `event` per message. An `error`
 record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not

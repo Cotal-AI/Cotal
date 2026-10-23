@@ -37,6 +37,7 @@ import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, te
 import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
+import { credentialEnded } from "../src/lib/connect.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -285,6 +286,16 @@ try {
   check("an expired credential ends a --plain follow with the one-shot's refusal and no re-establishing line, exit 2",
     ended?.[1] === 2 && once.envelope?.error !== undefined && fl.stderr().includes(once.envelope.error.message) && fl.stderr().includes(once.envelope.error.remedy ?? "?") && !/re-establish|Authentication Expired/.test(fl.stderr() + fl.lines.join("\n")),
     { ended, lines: fl.lines.slice(-3), stderr: fl.stderr() });
+
+  // A credential the broker rejects, as after `reset space` replaced the trust it was minted from.
+  // Given as a file it ends a follow with the one-shot's Next; minted by the follow from the space's
+  // trust, the Next says to run it again.
+  const rejected = await mintCreds(await createSpaceAuth(space), newIdentity(), "observer");
+  const given = await credentialEnded({ server: servers, space, tls: false, creds: rejected });
+  const minted = await credentialEnded({ server: servers, space, tls: false, creds: rejected, auth });
+  check("a rejected --creds file ends a follow PERMISSION_DENIED with the one-shot's Next", given?.code === "PERMISSION_DENIED" && given.failure().remedy === foreign.envelope?.error?.remedy, { given: given?.failure(), oneShot: foreign.envelope?.error });
+  check("a rejected credential the follow minted ends it PERMISSION_DENIED saying to run it again",
+    minted?.code === "PERMISSION_DENIED" && minted.failure().message === given?.failure().message && /run it again/.test(minted.failure().remedy ?? ""), minted?.failure());
 
   // A followed line is drawn for the terminal it is shown in, as the window above it is.
   const tty = nodePty([BIN, "history", "--follow", "--grep", "wrapped"], { cwd: shell, env: isolatedEnv as Record<string, string>, cols: 60, rows: 30 });
