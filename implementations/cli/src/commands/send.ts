@@ -23,6 +23,7 @@ import { openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 /**
  * One explicit --to, --channel or --role chooses the native delivery mode. The command
@@ -77,8 +78,16 @@ export function sendArguments(args: ParsedArgs): SendInput {
   const destination = destinations[0]!;
   destination.target = destination.target.replace(destination.mode === "msg" ? /^#/ : /^@/, "");
   const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
-  if (!destination.target.trim() || args.positionals.length > 1 || bodies !== 1 || (args.positionals.length === 1 && !args.positionals[0]?.trim()) || values.file === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: 'run cotal send -t <agent> "<message>"' });
+  // A remedy reruns the destination the caller gave.
+  const flag = destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t";
+  const again = (body: string) => `run cotal send ${destination.target.trim() ? `${flag} ${shellWord(destination.target)}` : "-t <agent>"} ${body}`;
+  if (!destination.target.trim() || args.positionals.length > 1 || bodies !== 1 || values.file === "")
+    throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
+  // Stdin is read only when asked for, so a lone `-` is refused rather than published.
+  if (args.positionals[0] === "-")
+    throw new CommandFailure("refused", "USAGE_INVALID", 'a lone "-" is not read as stdin; send stdin with --stdin or --file -', { remedy: again("--stdin") });
+  if (args.positionals.length === 1 && !args.positionals[0]?.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "the message is empty", { remedy: again('"<message>"') });
   try {
     if (destination.mode === "msg") {
       assertValidChannel(destination.target);

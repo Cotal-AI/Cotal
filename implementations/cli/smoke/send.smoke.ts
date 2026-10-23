@@ -49,7 +49,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 50;
+const EXPECTED = 52;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -339,6 +339,15 @@ try {
   const missing = await run(["send", "-t", "nobody-here", "x"]);
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);
   check("`cotal send -t` to an absent agent says TARGET_NOT_FOUND and no matching participant", missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes("no matching participant"), missing.stderr);
+
+  // A lone `-` used to be published as the text "-": stdin is read only when asked for. An empty
+  // quoted body used to be told to choose one body, with a remedy for another destination.
+  const dash = await run(["send", "-c", "general", "-", "--json"]);
+  check("`cotal send -c general -` is refused, names --stdin and --file -, and suggests the same channel",
+    dash.code === 1 && dash.stdout.includes('"code":"USAGE_INVALID"') && dash.stdout.includes('a lone \\"-\\" is not read as stdin; send stdin with --stdin or --file -') && dash.stdout.includes("run cotal send -c general --stdin"), dash);
+  const empty = await run(["send", "-c", "general", "", "--json"]);
+  check("an empty quoted body says the message is empty and suggests the same channel",
+    empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run cotal send -c general \\"<message>\\"'), empty);
 
   // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.
   const bigFile = join(storeDir, "big.txt");
