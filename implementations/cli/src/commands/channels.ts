@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
-  isConcreteChannel, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
+  ChannelRegistryConflict, isConcreteChannel, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -124,7 +124,10 @@ export async function channels(args: ParsedArgs): Promise<void> {
       const file = action === "defaults" ? { defaults: patch(values) } : { channels: { [name!]: patch(values) } };
       await seedChannelRegistry({ ...options, file });
     }
-  } catch {
+  } catch (error) {
+    // A write that kept losing the revision race to other writers saved nothing.
+    if (error instanceof ChannelRegistryConflict)
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with cotal ch show, then repeat the change" });
     throw new CommandFailure(purged === undefined ? "unknown" : "partial", purged === undefined ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL",
       purged === undefined ? "The channel change did not return a confirmed outcome. It may have been applied." : `The purge reported ${purged} messages removed, but channel metadata removal was not confirmed.`,
       { target, ...(purged === undefined ? {} : { changed: [{ kind: "channel-history", channel: name, purged }] }), remedy: "Read the channel and its history before retrying; do not assume the change failed." });

@@ -4047,6 +4047,12 @@ channel-writer view, which needs ledger scope `admin` ([Identity & auth](identit
 On a remote user-auth mesh that view is served by the public exchange; space-history `purger`
 and the read-only admin view are not.
 
+`set` and `defaults` change only the fields you name. Each write lands on the registry entry as it
+was read, so writers changing different fields of one channel at once all keep their change: one
+that loses the race reads the entry again and merges again. A write that keeps losing to other
+writers refuses with `CONFLICT` (exit 2) and saves nothing. Two writers setting the same field leave
+the value of whichever wrote last.
+
 With a static or open-mesh credential, `list` reads the registry with one Direct Get and leaves no
 consumer on the broker. On a user-auth mesh your login has no Direct Get row on the registry, so
 `list` scans it with a consumer that stays on the broker for five minutes after the command exits.
