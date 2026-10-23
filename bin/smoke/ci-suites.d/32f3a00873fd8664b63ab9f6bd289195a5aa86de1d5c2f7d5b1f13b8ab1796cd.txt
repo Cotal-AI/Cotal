@@ -1,0 +1,2 @@
+# run-answer on a signerless host passes a non-Error rejection of the locate step through.
+smoke:run-answer-rejection
