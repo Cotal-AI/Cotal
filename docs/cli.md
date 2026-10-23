@@ -743,9 +743,11 @@ contradict each other and are refused loudly; a running broker cannot change aut
 without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 
 `--rotate-sys` renews the two `$SYS` credentials (`membership-observer`, `connection-evictor`).
-They carry a 30-day expiry and nothing re-signs them in place, because the system-account seed is
-never persisted, so they are renewed by issuing a **new system account** under the same broker
-operator and minting fresh creds against it. A plain re-`up` does **not** do this: it reuses the
+They carry a 30-day expiry and nothing re-signs them in place, because the trust record never
+carries the system-account seed, so they are renewed by issuing a **new system account** under the
+same broker operator and minting fresh creds against it. The root keeps that seed in its own secret
+store, written at space creation and replaced here, so an auth service started with
+`--service-endpoints` can mint the short-lived observer credentials service caller issuance needs. A plain re-`up` does **not** do this: it reuses the
 existing trust record, and its `$SYS` creds along with it.
 
 The rotation is safe to run on a real space, with one operational cost. The data account, the account

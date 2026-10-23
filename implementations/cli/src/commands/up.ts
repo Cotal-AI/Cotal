@@ -149,6 +149,7 @@ import {
   connectUserControlOrThrow,
   userViewAuth,
   recordOperationSpace,
+  retainSystemSigningSeed,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
@@ -4170,6 +4171,7 @@ async function authSetup(
   if (!auth) {
     auth = await createSpaceAuth(space);
     await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
+    await retainSystemSigningSeed(store, auth); // … and the host keeps the seed itself, beside the record, for own-broker caller issuance
     await provisionMembershipCreds(auth, cotalRoot(), space); // … so the observer can still be minted here (fresh-space only)
     // A fresh space's $SYS material was just minted from the seed that only exists in this branch, so
     // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never

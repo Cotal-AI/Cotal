@@ -11,6 +11,7 @@ import {
 } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
+import { retainSystemSigningSeed } from "./system-signing-seed.js";
 import { readLocalRecordSource } from "./protected-records.js";
 import {
   connectionEvictorCredsKey,
@@ -139,6 +140,7 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   // `space.<hex>/` dir on a root whose pair has never been segmented.
   const composition = { injected: false as const, root };
   await putSpaceAuth(s, rotated);
+  await retainSystemSigningSeed(s, rotated); // the successor's seed replaces the retired account's
   await s.put(membershipObserverCredsKey(expectedSpace, composition), observer);
   await s.put(connectionEvictorCredsKey(expectedSpace, composition), evictor);
 
