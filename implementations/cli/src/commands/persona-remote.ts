@@ -22,11 +22,16 @@ const INPUT_LIMIT = 1024 * 1024;
 const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 const csv = (text: string | undefined) => text?.split(",").map((part) => part.trim()).filter(Boolean);
 
+/** The command an `--on` refusal tells the caller to rerun with `--on <instance>` added. */
+function personaVerb(mode: string | undefined, name: string | undefined): string {
+  return mode === undefined || mode === "list" || name === undefined ? "cotal persona" : `cotal persona ${mode} ${name}`;
+}
+
 export function validateRemotePersonaArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const values = args.values as PersonaValues;
-  onInstance(values.on!, "cotal persona --on");
   const [mode, name, ...extra] = args.positionals;
+  onInstance(values.on!, personaVerb(mode, name));
   if (mode !== undefined && !["list", "show", "create"].includes(mode)) throw new CommandFailure("refused", "UNSUPPORTED", "remote persona operations support list, show and create only; no local edit or removal was substituted");
   if (extra.length || (mode === undefined || mode === "list" ? name !== undefined : !name)) throw new CommandFailure("refused", "USAGE_INVALID", "use persona --on <full-manager-instance>, persona show <name> --on <id>, or persona create <name> --on <id>");
   if (name !== undefined) {
@@ -109,7 +114,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
   const values = args.values as PersonaValues;
   const [mode = "list", name] = args.positionals;
   const input = mode === "create" ? definitionInput(values, name!) : undefined;
-  const instanceId = (await managerPin(values, "cotal persona --on"))!;
+  const instanceId = (await managerPin(values, personaVerb(mode, name)))!;
   const requestId = randomUUID();
   let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
   let sender: Awaited<ReturnType<typeof openTransient>> | undefined;

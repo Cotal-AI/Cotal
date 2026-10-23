@@ -10,7 +10,8 @@
  * ends the process. The persona cells run the built binary: `persona create` over an existing file
  * refuses with a target-less CONFLICT on a prepared space, and a `--file` the agent-file rules refuse
  * names the field and the reason, as does a role token `send -r` would refuse. An edit that is not
- * saved keeps its draft and names it. No broker is started.
+ * saved keeps its draft and names it, and a malformed `--on` names the command to rerun. No broker
+ * is started.
  *
  * Run: pnpm smoke:operation-space
  */
@@ -116,6 +117,17 @@ check("persona create --file whose role send -r refuses is SCHEMA_INVALID naming
   roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: invalid role "bad role!"`) && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
 const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
 check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
+
+// A malformed --on names the command to rerun, with --on written once.
+for (const [argv, rerun] of [
+  [["persona", "--on", "bad"], "cotal persona --on <instance>"],
+  [["persona", "create", "h1", "--prompt", "x", "--on", "bad"], "cotal persona create h1 --on <instance>"],
+] as const) {
+  const pinned = cotal(...argv, "--json");
+  const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
+  check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
+    pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as ${rerun}`) && !said.includes("--on --on"), shown(pinned));
+}
 
 // An edit that is not saved keeps its draft and names it: a draft the agent-file rules refuse says
 // why, and an editor that exits non-zero keeps what it wrote. The catalog file is unchanged.
