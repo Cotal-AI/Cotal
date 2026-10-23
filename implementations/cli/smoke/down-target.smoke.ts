@@ -812,8 +812,8 @@ try {
   rmSync(neverRoot, { recursive: true, force: true });
 
   // `--space` naming a controller stack another folder holds is refused with that folder and the
-  // same down to run there, from a folder whose `.cotal` a failed start left with no stack. Nothing
-  // is started, so the journals name no member instance.
+  // same down to run there: from a folder with its own stack, and from one whose `.cotal` a failed
+  // start left with no stack. Nothing is started, so the journals name no member instance.
   {
     const ts = new Date().toISOString();
     const stackAt = (space: string) => {
@@ -829,6 +829,14 @@ try {
     };
     const sa = stackAt("sa"), sb = stackAt("sb");
     const elsewhere = `--space sb names a controller stack rooted at ${sb}`;
+    for (const [flag, again] of [["yes", "cotal down --yes"], ["dry-run", "cotal down --dry-run"]] as const) {
+      const r = await bareDownIn(sa, { space: "sb", [flag]: true });
+      check(`down --${flag} --space sb in another stack's folder refuses CONFLICT, naming sb's root, this folder's stack, and \`${again}\` from sb's root`,
+        r.error?.code === "CONFLICT" && Boolean(r.error.message?.includes(elsewhere)) && Boolean(r.error.message?.includes("this folder's stack is sa")) && r.error.remedy === `run \`${again}\` from ${sb}`, r);
+    }
+    const unknown = await bareDownIn(sa, { space: "nosuch", yes: true });
+    check("a --space no local stack holds names this folder's stack and the step to stop it",
+      unknown.error?.code === "CONFLICT" && Boolean(unknown.error.message?.includes("--space nosuch is not this folder's stack")) && Boolean(unknown.error.remedy?.includes("drop --space to stop sa here")), unknown);
     const leftover = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-leftover-")));
     mkdirSync(join(leftover, ".cotal"), { recursive: true, mode: 0o700 });
     writeFileSync(join(leftover, ".cotal", "server-open.conf"), "# rendered by a start that failed\n", { mode: 0o600 });
