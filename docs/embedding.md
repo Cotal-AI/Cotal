@@ -1424,7 +1424,9 @@ process-local grant `serveEndpoint` consumes with `authorizeGuestServeGrant({ ac
 result, registration, authenticity })`: the parsed result, the service's own embedded closure, and
 the pinned issuer's `iss` and published keys. The issuer and keys come from the registered
 space's authority URL the service already pins, tenant path included: the auth provider's
-`serviceEndpointInfo` answer carries them, and a service passes that answer as `authenticity`.
+`serviceEndpointInfo` answer carries them, and a service passes `serveAuthenticityOf(info)` as
+`authenticity`; an authority that does not publish them yet makes that call refuse, so the
+service does not serve on a bearer it cannot verify.
 It verifies the access bearer's EdDSA signature under the published key its `kid` names and the
 same closed claims the host's token validator checks, so a bearer the issuer did not sign for
 this witness brands nothing; the closure is bound to the service's own embedded contract, not to

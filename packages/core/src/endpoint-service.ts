@@ -27,7 +27,8 @@ import {
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { canonicalJson, contractDigest } from "./canonical.js";
-import type { ServiceAuthorityResult, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
+import { isCanonicalEd25519PublicCoordinate } from "./remote-service-authority.js";
+import type { ServiceAuthorityInfo, ServiceAuthorityResult, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
@@ -1734,6 +1735,15 @@ export interface GuestServeAuthenticity {
   keys: readonly ServiceIssuerKey[];
 }
 
+/** The authenticity a guest takes from the authority's own info answer. A door that predates the
+ *  issuer identity answers without it, and a guest that cannot verify its bearer refuses to serve
+ *  rather than brand on bytes it cannot check. */
+export function serveAuthenticityOf(info: ServiceAuthorityInfo): GuestServeAuthenticity {
+  if (info.issuer === undefined || info.keys === undefined)
+    throw new EpEnvelopeError("failed-precondition", "the service authority does not publish its issuer identity; a guest cannot verify its access bearer until the authority is upgraded");
+  return { issuer: info.issuer, keys: info.keys };
+}
+
 /** The user-token `ver` a service access bearer carries (the host validator's constant). */
 const SERVICE_ACCESS_BEARER_VER = 1;
 /** Clock tolerance on `iat` and `nbf` only; expiry is refused at the original second (SPEC 13.9). */
@@ -1765,7 +1775,8 @@ function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationW
   if (!header || header.alg !== "EdDSA" || typeof header.kid !== "string" || !header.kid || header.kid.length > 256)
     refuseBearer("header is not {alg: EdDSA, kid}");
   const key = auth.keys.find((k) => k.kid === header!.kid);
-  if (!key || key.kty !== "OKP" || key.crv !== "Ed25519" || typeof key.x !== "string") refuseBearer(`names a kid the issuer does not publish`);
+  if (!key || key.kty !== "OKP" || key.crv !== "Ed25519" || typeof key.x !== "string" || !isCanonicalEd25519PublicCoordinate(key.x))
+    refuseBearer("names a kid the issuer does not publish as a full-order Ed25519 key");
   let publicKey;
   try { publicKey = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: key.x }, format: "jwk" }); } catch { refuseBearer("names a published key that does not import"); }
   if (!verifySignature(null, Buffer.from(`${parts[0]}.${parts[1]}`), publicKey!, Buffer.from(parts[2], "base64url")))
