@@ -53,7 +53,15 @@ function safeParents(path: string, create = false): void {
     mkdirSync(path, { mode: 0o700 }); info = lstatSync(path);
   }
   const sticky = info.uid === 0 && (info.mode & 0o1000) !== 0;
-  if (!info.isDirectory() || info.isSymbolicLink() || (info.uid !== 0 && info.uid !== process.getuid!()) || ((info.mode & 0o022) !== 0 && !sticky)) throw new CommandFailure("refused", "PERMISSION_DENIED", "completion paths cross a symlink, untrusted owner or writable ancestor; custom shell wiring was not changed");
+  const writable = "is writable by group or others";
+  const problem = info.isSymbolicLink() ? "is a symlink" : !info.isDirectory() ? "is not a directory"
+    : info.uid !== 0 && info.uid !== process.getuid!() ? "is owned by another user" : (info.mode & 0o022) !== 0 && !sticky ? writable : undefined;
+  if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `the completion path ${path} ${problem}; custom shell wiring was not changed`, {
+    target: { path },
+    remedy: problem === writable
+      ? `remove group and other write permission (chmod go-w ${path}) and run the command again, or wire completion yourself from cotal completion script <shell>`
+      : "wire completion yourself from cotal completion script <shell>",
+  });
 }
 function read(path: string, privateFile = false): Snapshot | undefined {
   safeParents(dirname(path));
