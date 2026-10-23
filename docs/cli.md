@@ -3739,8 +3739,12 @@ original registration revision and preserves successor or in-flight governance s
 create-only intent, registration and removal records retain the original coordinates. A later
 launch of the same local instance refuses an unsettled or malformed attempt instead of silently
 repeating it. Unconfirmed initialization or cleanup remains unknown; neither process disappearance
-nor an initialization receipt proves native cleanup. The separate `endpoint deregister` route
-retains its broker-gone and revision guards.
+nor an initialization receipt proves native cleanup. When the earlier host process is gone, as
+after a `kill -9`, the refusal names its native registration and gives the way out: remove it with
+`cotal endpoint deregister <endpoint> <instance> --yes`, then start a fresh instance with
+`cotal service start <name> --new-instance --space <s>`. A `service restart` of that instance
+gives the same commands. The separate `endpoint deregister` route retains its broker-gone and
+revision guards.
 
 ## Endpoint control
 
