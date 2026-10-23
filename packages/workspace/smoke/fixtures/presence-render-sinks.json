@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 627,
+    "total": 647,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 523
+    "non-render/control": 543
   },
   "renderers": [
     {
@@ -712,6 +712,13 @@
       "anchor": "`exited with status ${result.status}`",
       "class": "non-render/control",
       "rationale": "Persona editor failure: the editor process's exit status; process state, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/persona-files.ts",
+      "kind": "derived-output",
+      "anchor": "`the editor ${JSON.stringify(editor)} ${result.status === 127 ? \"was not found\" : \"could not be run\"} - not saved`",
+      "class": "non-render/control",
+      "rationale": "Persona editor failure: the editor's exit status in a not-saved message; process state, not agent presence."
     },
     {
       "path": "implementations/cli/src/commands/up.ts",
@@ -3641,6 +3648,48 @@
       "rationale": "Down control flow: verifies the bare-down service plan for the registered space; no rendering."
     },
     {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`${values.space === undefined ? `the selected space \"${space}\" is` : `--space ${space} names`} a controller stack rooted at ${root}, and \\`cotal down\\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the controller stack root that a bare down from here does not stop; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`run \\`${again}\\` from ${root}`",
+      "class": "non-render/control",
+      "rationale": "Down refusal remedy: names the command to run again from the stack's root; not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the broker for \"${mesh.space}\" runs on the store ${mesh.storeDir}, not ${resolvePath(storeOverride)}; nothing was stopped`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: the registered broker's store differs from --store-dir; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`omit --store-dir, or pass --store-dir ${mesh.storeDir}`",
+      "class": "non-render/control",
+      "rationale": "Down refusal remedy: names the registration's recorded store; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "readStoreIdentity(storeDir)",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: reads the store's identity to compare it with the recorded cut; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`  source: ${storeDir}`",
+      "class": "non-render/control",
+      "rationale": "Preserve report line: prints the preserved source store path; a registration record, not presence."
+    },
+    {
       "path": "implementations/cli/src/commands/endpoint-deregister.ts",
       "kind": "status-token",
       "anchor": "t: \"not checked\", tone: \"waiting\" }], [\"Governance and re",
@@ -3741,13 +3790,6 @@
     {
       "path": "implementations/cli/src/commands/reset.ts",
       "kind": "derived-output",
-      "anchor": "liveMeshProcesses(root, space)",
-      "class": "non-render/control",
-      "rationale": "Reset preview plumbing: lists local mesh processes under the registration record's root; no presence is rendered."
-    },
-    {
-      "path": "implementations/cli/src/commands/reset.ts",
-      "kind": "derived-output",
       "anchor": "listLedgerFiles(root, { requireReadable: true })",
       "class": "non-render/control",
       "rationale": "Reset preview plumbing: lists additive deployment ledgers under the registration record's root; no presence is rendered."
@@ -3795,11 +3837,32 @@
       "rationale": "Reset preview report: \"waiting\" is the color tone for the unproved-scope caveat, not presence."
     },
     {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "liveMeshProcesses(root, space, true)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: lists local mesh processes under the registration record's root; no presence is rendered."
+    },
+    {
       "path": "implementations/cli/src/commands/send.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Comparison that chooses whether the send result carries the RECIPIENT_OFFLINE warning; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/send.ts",
+      "kind": "derived-output",
+      "anchor": "`post to a channel this identity may post to: ${list(post)}`",
+      "class": "non-render/control",
+      "rationale": "Send refusal remedy: lists the channels this identity may post to; ACL data, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/send.ts",
+      "kind": "derived-output",
+      "anchor": "list(post)",
+      "class": "non-render/control",
+      "rationale": "Send refusal remedy: formats the identity's post ACL; not presence."
     },
     {
       "path": "implementations/cli/src/commands/service-actions.ts",
@@ -3940,6 +4003,48 @@
       "anchor": "Number.isSafeInteger(error.status)",
       "class": "non-render/control",
       "rationale": "Stack up failure shaping: checks the JetStream error's HTTP status before copying it into the cause; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`stop space ${holder.space} with cotal down from ${holder.root}`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal remedy: names the local space that holds the address and its root; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`stop the broker of space ${holder.space}`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal remedy: names the remote space that holds the address; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`something already answers at the stack's broker address ${server}${holder ? `, where space ${holder.space} is registered` : \"\"}, without this stack's broker instance; it was not adopted or stopped`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal text: something else answers at the stack's broker address; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`, where space ${holder.space} is registered`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal text: names the space registered at the address that already answers; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or ${stopHolder} and run cotal up again`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`${stopHolder}, then run bare cotal up from ${root}; this stack keeps its recorded address`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/status.ts",
@@ -4206,6 +4311,13 @@
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "Help context line: \"waiting\" is the color tone for unreadable local defaults, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/help.ts",
+      "kind": "derived-output",
+      "anchor": "`cotal up --root ${prepared.root}`",
+      "class": "non-render/control",
+      "rationale": "Help context line: the start command for the prepared space's root; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/lib/controller-preserve.ts",
@@ -4557,6 +4669,34 @@
       "anchor": "`conversation identity discovery answered HTTP ${response.status}; no identity was requested`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/conversation-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`its discovery document answered HTTP ${response.status}`",
+      "class": "non-render/control",
+      "rationale": "Conversation identity discovery failure: the discovery document's HTTP status; not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Use report line: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/manager-choice.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/seed/reconcile.ts",
+      "kind": "derived-output",
+      "anchor": "`the seed child exited with status ${r.status}`",
+      "class": "non-render/control",
+      "rationale": "Connector seed failure: the seed child's exit status; process state, not agent presence."
     }
   ]
 }
