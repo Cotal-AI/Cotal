@@ -73,7 +73,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: `cotal status --space ${row.space}`, description: "Check the restored stack" },
-      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: "Remove only the unchanged retained old store, after review" },
+      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: "Retire the restore journal and any unchanged retained old store, after review" },
     ] }] },
   ] }));
 }
