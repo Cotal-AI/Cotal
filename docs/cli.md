@@ -4626,7 +4626,8 @@ and does not retry the mint.
 
 Lifetime inputs use native seconds. The receipt reports the resulting JWT expiry, rather than
 promising a default lifetime. `--expires-in` and `--expires-at` are mutually exclusive, and an
-`--expires-at` that is not in the future refuses before anything is written. JSON is
+`--expires-at` that is not in the future refuses before anything is written. So does an expiry
+after the last date Cotal can represent, in the year 275760. JSON is
 one finite document; plain output uses the same public receipt. Signing material is exported by
 [auth signer](#account-signer-export), not a signer flag on mint. The old top-level `mint` spelling
 is refused with the literal namespace replacement.

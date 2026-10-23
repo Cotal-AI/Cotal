@@ -27,7 +27,7 @@
  *   8. --identity <creds> re-mints for the SAME nkey: the new credential's principal equals the
  *      original's; the seed file is read by core's own loader
  *   9. the refusals: both lifetime flags at once; --expires-in the seam would refuse (0, negative,
- *      fractional) without echoing it; --identity on a file with no seed; --identity with a missing
+ *      fractional) without echoing it; an expiry past the last representable date; --identity on a file with no seed; --identity with a missing
  *      path → refused each, one sentence, nothing written
  *
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
@@ -480,6 +480,12 @@ try {
     for (const at of ["1", String(Math.floor(Date.now() / 1000))]) {
       const r = await runMint(["x", "--profile", "observer", "--expires-at", at, "--out", out]);
       check(`--expires-at ${at === "1" ? "in the past" : "now"} exits 1 with the reason and mints nothing`, r.code === 1 && /--expires-at is not in the future/.test(r.out) && !existsSync(out), r.out);
+    }
+    // An expiry no date can show used to mint, and every use then overflowed a client timer.
+    for (const flags of [["--expires-in", "99999999999999"], ["--expires-at", "8640000000001"]]) {
+      const r = await runMint(["x", "--profile", "observer", ...flags, "--out", out]);
+      check(`${flags[0]} past the last representable date exits 1 with the reason and mints nothing`,
+        r.code === 1 && /the credential would expire after \+275760-09-13T00:00:00\.000Z, the last date Cotal can represent; nothing was written/.test(r.out) && !existsSync(out), r.out);
     }
     for (const bad of ["0", "-5", "1.5", "abc"]) {
       // A leading-dash value needs the `=` form to get past parseArgs' strict token parser; the

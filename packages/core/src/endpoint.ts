@@ -223,6 +223,9 @@ export const MULTI_FILTER_READ_CONCURRENCY = 4;
  *  across the gap between pulls on a slow link. */
 const HISTORY_READER_INACTIVE_MS = 5 * 60_000;
 
+/** The longest delay `setTimeout` honors, 2^31-1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
 /** One read's hold on a history-reader name (see {@link CotalEndpoint}'s `acquireHistoryReader`). */
 type HistoryReader = {
   nc: NatsConnection;
@@ -1326,9 +1329,12 @@ export class CotalEndpoint extends EventEmitter {
         ? credsExp * 1000
         : undefined;
     if (expiryMs === undefined || this.stopped) return;
-    this.authExpiryReconnectTimer = setTimeout(() => {
-      if (this.nc === nc) this.disableLibraryReconnect(nc);
-    }, Math.max(0, expiryMs - Date.now() - 500));
+    // Node fires a delay above 2^31-1 ms (about 24.8 days) after 1 ms, which would disable reconnect
+    // at once. A later expiry waits in steps of that bound, and the fence is armed again from there.
+    const delay = Math.max(0, expiryMs - Date.now() - 500);
+    this.authExpiryReconnectTimer = delay > MAX_TIMER_MS
+      ? setTimeout(() => { if (this.nc === nc) this.armAuthExpiryReconnectFence(nc); }, MAX_TIMER_MS)
+      : setTimeout(() => { if (this.nc === nc) this.disableLibraryReconnect(nc); }, delay);
     this.authExpiryReconnectTimer.unref?.();
   }
 
