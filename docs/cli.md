@@ -3866,7 +3866,7 @@ In `--plain`, a line you type becomes the draft, and it is sent only when you an
 question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
 name without `@`, is refused with that list of forms, and the numbered list opens. In the list, an
-empty line keeps the current recipient. `:multi` starts a message of several lines, which a line
+empty line keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view.
 

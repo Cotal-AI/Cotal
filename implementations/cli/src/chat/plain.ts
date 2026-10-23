@@ -97,7 +97,7 @@ export async function runPlain(opts: {
       case "compose": print(`[to ${recipientLabel(state.recipient)}] type a message, /command, :to, :multi`); break;
       case "confirm": print(`send to ${recipientLabel(mode.to)}? y = send, anything else = keep as draft`); break;
       case "multi": print("(multi-line: end with a line containing only .)"); break;
-      case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels"); break;
+      case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels, /quit leaves"); break;
       case "confirm-leave": print("you have an unsent draft. y = discard and leave, anything else = keep editing"); break;
     }
   };
@@ -196,6 +196,12 @@ export async function runPlain(opts: {
       case "pick": {
         const t = line.trim();
         if (!t) { mode = { kind: "compose" }; return; }
+        // /quit leaves from the list as it does from the composer.
+        const slash = t.startsWith("/") ? parseSlash(t) : undefined;
+        if (slash?.ok && slash.command.name === "quit") {
+          mode = state.draft ? { kind: "confirm-leave" } : { kind: "compose" };
+          return state.draft ? undefined : leave();
+        }
         const n = Number(t);
         if (Number.isInteger(n) && n >= 1 && n <= mode.choices.length) return choose(mode.choices[n - 1]!.recipient);
         const parsed = parseRecipient(t);

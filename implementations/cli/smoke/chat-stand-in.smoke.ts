@@ -239,5 +239,26 @@ if (mode === "plain" || mode === "stdio") {
     await run;
   }
 
+  console.log("7. /quit leaves --plain from the recipient list");
+  {
+    const close: CloseReport = { retirement: "retired", connectionClosed: "confirmed", message: "" };
+    const { session, closes } = standIn(close);
+    // The list reads the session's connection and roster; neither is needed to list nothing.
+    Object.assign(session, { connection: async () => ({ outcome: "failed", message: "not read" }), roster: async () => ({ outcome: "failed", message: "not read" }) });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let printed = "";
+    output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    // A target without `@` is refused, and the numbered list opens.
+    input.write(":to manager\n");
+    input.write("/quit\n");
+    const state = await Promise.race([run, new Promise<undefined>((resolve) => setTimeout(resolve, 5_000))]);
+    check("/quit in the recipient list leaves while input is still open, and the session closes once", state?.ended === close && closes() === 1, { closes: closes(), printed });
+    check("...and the list says /quit leaves", printed.includes("empty line cancels, /quit leaves"), printed);
+    input.end();
+    await run;
+  }
+
   finish();
 }
