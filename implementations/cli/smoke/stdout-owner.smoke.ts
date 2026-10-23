@@ -10,9 +10,9 @@
  *     between that write's callback and its error event;
  *   - after the release settles, a closed pipe exits through the binary's listener again;
  *   - owned, an EIO reaches the owner; unowned, an EIO is rethrown and exits 1;
- *   - the views that must finish their own shutdown own stdout's errors and attach no listener of
- *     their own to process.stdout.
- * The views themselves (chat, watch, service logs, the service journal) are not driven here.
+ *   - the views that must finish their own shutdown, and `down`, which must finish its stops, own
+ *     stdout's errors and attach no listener of their own to process.stdout.
+ * The views themselves (chat, watch, service logs, the service journal) and `down` are not driven here.
  *
  * Run: pnpm smoke:stdout-owner
  */
@@ -142,11 +142,11 @@ if (mode !== undefined) {
     check("unowned, an EIO is rethrown and exits 1", unowned.code === 1 && unowned.stderr.includes("synthetic EIO"), unowned);
   }
 
-  console.log("4. the views that close their own work own stdout's errors");
+  console.log("4. the views and the command that close their own work own stdout's errors");
   {
     const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
     const direct = /process\.stdout\.(?:on|once|prependListener|prependOnceListener|addListener)\(\s*"error"/;
-    for (const file of ["chat/frontend.ts", "watch-json.ts", "commands/service-log-follow.ts", "lib/service-journal.ts"]) {
+    for (const file of ["chat/frontend.ts", "watch-json.ts", "commands/service-log-follow.ts", "lib/service-journal.ts", "commands/down.ts"]) {
       const text = readFileSync(join(src, file), "utf8");
       check(`${file} owns stdout's errors and adds no listener of its own`, /\bownStdoutErrors\(/.test(text) && !direct.test(text));
     }

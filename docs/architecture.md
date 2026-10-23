@@ -145,7 +145,8 @@ The confirmed full scope is rechecked under the native stop reservation and agai
 Native stop hooks bind service, launch and stop IDs plus both process creation identities. Phase
 files are create-only, and accepted/returned evidence plus the original process exit is required
 for a stopped record. A missing terminal remains unknown; generic signal escalation is not a
-native stop substitute. Reservations are not reclaimed. The adapter releases one only after its own
+native stop substitute. A reservation is reclaimed only when the process that took it has exited
+before it published a request, so it handed the child nothing. Otherwise the adapter releases one only after its own
 completed receipt with the original process exit, or a refused receipt as the only one, settles the
 request, and only once the process that took it has exited. A request with neither is cleared only
 when an operator abandons it by its ID, after the original process and the process that took the

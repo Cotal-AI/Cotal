@@ -19,7 +19,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
+import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
 import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
@@ -62,7 +62,7 @@ function readMembers(journal: StackJournal): Member[] {
     const retained = retainedStopRequest(instance.record.value);
     if (instance.record.value.state === "stopping" || retained) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained?.publication === "unknown"
       ? "a recorded stack member's stop request file does not read as its own, so whether a stop was published is unknown; nothing was resubmitted and no member was stopped"
-      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: retained?.publication === "published" ? `${inspect}; ${abandonRemedy(retained.requestId)}` : inspect });
+      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: retained?.publication === "published" ? `${inspect}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(instance.record.value) ? `${inspect}; ${abandonRemedy(instance.record.value.requestId)}` : inspect });
     assertNoServiceUnitAttempts(journal.space, row.definition);
     members.push({ role: row.role, definition, instance, live: state === "running" });
   }
@@ -108,8 +108,9 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
  *  for any space its records name. One that may still front a process refuses instead, naming each
  *  record and its pid in the message and the remedy, because no command shows another space's
  *  records; nothing is stopped, adopted or removed. A real --with-agents refuses too, because no
- *  running manager can stop the agents; its preview shows the no-op. The legacy route answers the
- *  same way. `warnings` report what this command changed before it found nothing running. */
+ *  running manager can stop the agents, unless the caller knows none can remain: the last down took
+ *  --with-agents, or the root never started a stack. Its preview shows the no-op. The legacy route
+ *  answers the same way. `warnings` report what this command changed before it found nothing running. */
 export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = []): void {
   // A root that names no space resolves to the default one, as `resolveSpace` answers.
   const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
@@ -131,7 +132,9 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
 /** What an abandoned member stop leaves unconfirmed. */
 function abandonNotice(role: StackRole, abandonment: ServiceAdapterStopAbandonment): string {
   const receipts = abandonment.receipts.length ? `only ${abandonment.receipts.join(" and ")} receipts` : "no receipt";
-  return `stop request ${abandonment.requestId} of the ${role} was abandoned: its process exited with ${receipts}, and the down that sent it has exited. Whether the ${role} ${abandonment.withAgents ? "stopped and deprovisioned its agents" : "stopped or released its agents' seats"} is not confirmed; a seat that runs outside the ${role} process may still run`;
+  const abandoned = `stop request ${abandonment.requestId} of the ${role} was abandoned: its process exited with ${receipts}, and the down that sent it has exited.`;
+  if (role !== "manager") return `${abandoned} Whether that stop caused the exit is not confirmed`;
+  return `${abandoned} Whether the ${role} ${abandonment.withAgents ? "stopped and deprovisioned its agents" : "stopped or released its agents' seats"} is not confirmed; a seat that runs outside the ${role} process may still run`;
 }
 
 /** The retained active restore an admitted stop names. */
@@ -211,7 +214,10 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   const abandoned = ours && typeof values["abandon-stop"] === "string" ? await abandonRetainedStackStop(ours, values["abandon-stop"]) : undefined;
   const abandonWarnings: OutputWarning[] = abandoned ? [{ code: "STOP_ABANDONED", target: { ...instanceProjection(abandoned.row), role: abandoned.role, requestId: abandoned.abandonment.requestId, receipts: abandoned.abandonment.receipts }, message: abandonNotice(abandoned.role, abandoned.abandonment) }] : [];
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
-  if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, withAgents, abandonWarnings);
+  // The completed down that stopped the stack also stopped its agents when it took --with-agents, so
+  // a repeat has nothing left to stop. A stack that never started has no agents either.
+  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, abandonWarnings);
+  if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
   if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared
