@@ -149,6 +149,9 @@ A command whose `structured output` line also names `plain` takes `--plain`, whi
 report as plain lines: no color, no marks, ASCII labels. Plain writes these punctuation marks in
 ASCII wherever they appear: `·` and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§`
 as `section`. Other characters, such as the letters of a name or a message, are written as they are.
+Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, then `LANG` decide,
+reports and error lines draw their marks and punctuation as plain does, and keep their color. With
+none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
 terminal is written as one labeled record per row, so no value is cut off.
 
