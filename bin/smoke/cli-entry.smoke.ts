@@ -235,6 +235,10 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
   const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
+  for (const sub of ["list", "show", "edit", "new", "rm"]) {
+    const help = cotal(["help", "personas", sub]);
+    check(`help personas ${sub} prints that subcommand's help`, help.status === 0 && help.stdout.includes(`cotal personas ${sub}`), shown(help));
+  }
   // A catalog folder its owner made read-only stays read-only. Root writes through the mode, so the
   // cell runs only for an ordinary POSIX user.
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
