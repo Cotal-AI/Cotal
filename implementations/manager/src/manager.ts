@@ -347,7 +347,7 @@ const NO_OWNER_MATCHES = "-no-owner-";
  *  getter or `toString` throws. A handler that throws while building its text skips the work after
  *  it, and on a detached chain ends the manager with an unhandled rejection, so the coercion to text
  *  runs inside the guard. */
-function rejectionText(e: unknown): string {
+export function rejectionText(e: unknown): string {
   try {
     return String((e as Error)?.message ?? e);
   } catch {

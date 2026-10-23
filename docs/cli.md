@@ -3404,6 +3404,8 @@ Its native registration, lease, renewal, session-ledger and goal maintenance can
 Local runtime startup now records identity and execution mode during admission. A later failed
 authentication or registration can leave those files classified as runtime. Invalid supervise
 arguments refuse before connector seeding, with one error line rather than seeding first.
+A refusal names the caught value's `message`, or the value itself when it has none, so an auth
+provider that rejects with `null` or a string still gets its refusal line and exit status 1.
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that
