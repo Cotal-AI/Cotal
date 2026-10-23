@@ -344,6 +344,7 @@ console.log("a preserve refuses what the broker's stop would cut off, before any
   const dependants = isCommandFailure(stranded) ? (stranded.target as { dependants?: Array<{ definition: string; instanceId: string }> }).dependants ?? [] : [];
   await check("another live service instance in the space refuses the preserve and is named", isCommandFailure(stranded) && stranded.code === "LIFECYCLE_BLOCKED" && dependants.some((row) => row.definition === "web" && row.instanceId === web));
   await check("its remedy names the preserve to run again", isCommandFailure(stranded) && (stranded.remedy ?? "").includes("cotal down --preserve-state"));
+  await check("and the stop of that instance by its full ID, with no placeholder", isCommandFailure(stranded) && (stranded.remedy ?? "").includes(`cotal svc stop web --instance ${web} --space ${other.space} --yes`) && !(stranded.remedy ?? "").includes("<name>"));
   await check("no prepare intent, stack operation, maintenance journal or member stop was written", untouched(other, otherBefore, undefined));
 
   const shared = preservable("scope-shared");

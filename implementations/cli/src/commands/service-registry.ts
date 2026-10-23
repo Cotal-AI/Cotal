@@ -10,14 +10,15 @@ import { importServiceDefinition, serviceDefinitionProjection, serviceDefinition
 import { serviceAction } from "./service-actions.js";
 import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
-import { removableServiceInstances, removeStoppedInstanceRecords } from "../lib/service-process.js";
+import { removableServiceInstances, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
+import { STACK_DEFINITION } from "../lib/stack-journal.js";
 import { localRecordName } from "../lib/protected-records.js";
 
 export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
   { name: "preset", type: "string", value: "<name>", description: "add: use a declared preset and that adapter's schema-derived options; starts nothing" },
   { name: "file", short: "f", type: "string", value: "<definition.json>", description: "add: import the version-1 local service definition" },
   { name: "yes", short: "y", type: "boolean", description: "stop/restart/remove/uninstall: confirm the exact selected local target" },
-  { name: "instance", type: "string", value: "<full-id>", description: "select one full owned service instance ID, not a prefix" },
+  { name: "instance", type: "string", value: "<full-id>", description: "select one full owned service instance ID, not a prefix; remove: forget only that stopped instance record" },
   { name: "new-instance", type: "boolean", description: "start: explicitly allocate another process-driver instance" },
   { name: "foreground", type: "boolean", description: "start: keep the owned process in this terminal; not a detachable view" },
   { name: "with-agents", type: "boolean", description: "stop/restart: request the declared native agent-stop policy; never generic descendant signals" },
@@ -39,7 +40,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   }
   if (args.values.file !== undefined && mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--file belongs to service add");
   if (args.values.yes !== undefined && !["remove", "stop", "restart", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to service stop, restart, remove or uninstall");
-  if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation"); serviceInstanceId(String(args.values.instance)); }
+  if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
   if (args.values["new-instance"] && (mode !== "start" || args.values.instance !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--new-instance belongs to start and cannot be combined with --instance");
   if (args.values.foreground && (mode !== "start" || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
   if (args.values["with-agents"] !== undefined && !["stop", "restart"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents belongs to service stop or restart with a declared native policy");
@@ -122,6 +123,20 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   if (mode === "remove") {
     const row = store.read(suppliedName!);
     if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName } });
+    if (args.values.instance !== undefined) {
+      // One stopped instance record goes; the definition, its other instances and the logs stay.
+      const id = String(args.values.instance), at = { ...target, name: row.name, instanceId: id };
+      if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: at, remedy: `they go with the stack: cotal down --yes, then cotal space forget ${space}` });
+      removableServiceInstances(space, row.name, id);
+      if (!args.values.yes) {
+        if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with cotal svc remove ${row.name} --instance ${id} --yes` });
+        const answer = await prompts.confirm({ message: `Forget stopped instance ${id} of ${oneLine(row.name)}? No process or OS unit will be removed.`, initialValue: false });
+        if (prompts.isCancel(answer) || !answer) return cancelled("Instance record kept");
+      }
+      removeStoppedInstanceRecord(row, id);
+      writeResult(presentation, { command: "service", target: at, result: { kind: "service-instance-record-removed", name: row.name, instanceId: id, processesChanged: false, supervisorChanged: false } }, (): Report => ({ sections: [{ title: "Instance record forgotten", blocks: [{ kind: "fields", rows: [["Name", row.name], ["Instance", id], ["Space", space]] }, { kind: "lines", lines: ["Only this stopped instance record was removed. Its logs, the definition and the other instances were kept, and no process or OS unit was changed."] }] }] }));
+      return;
+    }
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
       if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with cotal svc remove ${row.name} --yes` });
