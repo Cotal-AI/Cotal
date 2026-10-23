@@ -12,10 +12,10 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { JetStreamApiError } from "@nats-io/jetstream";
-import { isReachable, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
+import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, hasUserAuthState,
-  isCommandFailure, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveOnPath,
+  isCommandFailure, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
   terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
@@ -449,7 +449,24 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const credsKey = deliveryCredsKey(space, { injected: false, root });
       const credsPath = join(root, ".cotal", credsKey);
       const deliveryRows = serviceInstances(space, STACK_DEFINITION.delivery);
-      if (!(deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running")) await store.put(credsKey, await mintCreds(auth, newIdentity(), "delivery"));
+      if (!(deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running")) {
+        const creds = await mintCreds(auth, newIdentity(), "delivery");
+        // A daemon that was killed, or that exited when its broker went away, cannot release shard 0,
+        // and a replacement started inside the row's TTL loses the create and refuses to bind. No
+        // daemon runs here, so a row held by the credential this folder gave the previous one is that
+        // dead daemon's: wait for the bucket TTL to remove it. A row written again meanwhile has a
+        // live holder, and that is refused.
+        const previous = await store.get(credsKey);
+        if (previous !== undefined) {
+          const waited = await awaitDeadDeliveryLease({
+            servers: server, space, creds, tls: resolveNativeServiceTarget(root, space, server).tlsRequired,
+            deadHolder: deliveryLeaseHolderFor(previous), ttlMs: LEASE_TTL_MS,
+            onWait: (ms) => { if (request.presentation !== "json") process.stderr.write(`${STACK_DEFINITION.delivery}: shard 0 is still leased to this folder's previous delivery daemon, which is not running; waiting ${Math.ceil(ms / 1000)}s for the lease to expire\n`); },
+          });
+          if (waited === "rewritten") throw new CommandFailure("refused", "CONFLICT", "shard 0 of the delivery lease names this folder's previous delivery daemon and was written again while up waited for it to expire, so a live daemon holds it; no second daemon was started", { target: { root, space }, remedy: `find the process running delivery for space ${space} and stop it or keep it; cotal down does not reach a daemon this folder has no record of` });
+        }
+        await store.put(credsKey, creds);
+      }
       const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
     }

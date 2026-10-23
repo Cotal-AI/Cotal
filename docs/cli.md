@@ -719,6 +719,8 @@ must name this workspace root and a pid that is not running on this host; the ne
 `which is not running on this host; waiting` and the seconds left. For delivery, no daemon may be
 recorded running in this folder and the row must be held by the credential this folder gave its
 previous daemon; `up` prints `shard 0 is still leased to this folder's previous delivery daemon`.
+This holds on a controller stack too, both for an `up` right after the crash and for one after a
+`down` that recorded the members as already stopped, because that `down` keeps the credential.
 The wait never writes the lease. A row that is written again while `up` waits has a live holder, so
 the start is refused and `up` exits nonzero. A row held by any other process is refused at once,
 as before.
@@ -856,7 +858,10 @@ shows the member set and the live manager's native agent impact before confirmat
 manager, delivery and broker in that order. `--yes` acknowledges that scope in scripts; `--with-agents`
 requests the manager's native retirement policy. The broker scope is checked again after its
 dependants stop. A failure stops the sequence and preserves completed and unattempted members.
-Only a complete confirmed stop removes the delivery credential and local registration. Saved
+Only a complete confirmed stop removes the delivery credential and local registration. When the
+delivery daemon was already gone, its credential stays: that daemon never released its lease, and
+the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
+The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
 definitions and the journal remain for the next `up`. No descendant, lease or authority cleanup is
 implied. A dry run reads records only, takes no lock, does not establish native impact and exits 0;
 its JSON marks `completeness` as `partial`. It lists members in stop order, says when the stop would
