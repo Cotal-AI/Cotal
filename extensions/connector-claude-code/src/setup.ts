@@ -100,13 +100,16 @@ function hostedConnector(s: SignedInSpace): string {
 
 /** Write the `cotal` entry into Claude Desktop's config where Desktop is installed. With `add` false
  *  only an entry already there is brought current. Setup for a signed-in space writes nothing there
- *  and names the hosted connector instead. `undefined` when there was nothing to do. */
+ *  and names the hosted connector instead, and nothing is written while Desktop runs. `undefined`
+ *  when there was nothing to do. */
 function desktop(cotal: readonly string[], add: boolean, signedIn?: SignedInSpace): string | undefined {
   const path = desktopConfigPath();
   if (!path || !existsSync(dirname(path))) return undefined;
   if (signedIn) return `Claude Desktop ${hostedConnector(signedIn)}`;
   if (!add && readDesktopEntry(path) === undefined) return undefined;
   const state = writeDesktopEntry(path, desktopEntry(cotal));
+  if (state === "not added" || state === "not updated")
+    return `Claude Desktop ${state}: Claude Desktop is running and writes back the config it read when it started, which would drop the entry. Quit Claude Desktop, then run \`cotal setup\` again from a terminal outside it`;
   return `Claude Desktop ${state}${state === "current" ? "" : "; quit and reopen Claude Desktop to load it"}`;
 }
 
