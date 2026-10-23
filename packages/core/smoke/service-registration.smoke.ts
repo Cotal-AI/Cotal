@@ -8,9 +8,9 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
-  completeFrozenRegistrationFromSpec, contractDigest, createEndpointStreams, epAuthBucket, epgateKey,
-  endpointRegistrationBarrier, isReachable, mintLifecycleUid, openRecordsBucket, parseEndpointGate,
-  recordSpecKey, RECORD_KINDS, registerServiceInstance, type EndpointGateRow, type EpIssuanceBarrier,
+  completeFrozenRegistrationFromSpec, contractDigest, createEndpointStreams, epAuthBucket, epcredRowKey, epgateKey,
+  endpointRegistrationBarrier, isReachable, loadEndpointRepairCursor, mintLifecycleUid, openRecordsBucket, parseEndpointGate,
+  provisionEndpointGateOpen, recordSpecKey, RECORD_KINDS, registerServiceInstance, type EndpointGateRow, type EpIssuanceBarrier,
 } from "../src/index.js";
 
 const counted = countedAssert(nodeAssert);
@@ -90,7 +90,45 @@ try {
     assert.equal((await kv.get(key))!.revision, entry.revision, "readback after success does not change the epoch or revision");
   }
   assert.deepEqual(failures, [], "atomic registration completion and abort provenance");
-  console.log("service registration: abort preservation, atomic success, lost reply and op-bound native recovery passed");
+  // A resumed registration clears only the repair cursor its own freeze saved. Once its reopen
+  // commits, a second registration of the instance may freeze the gate and save its own cursor.
+  for (const scenario of ["resume-alone", "resume-raced"] as const) {
+    const endpoint = `org.example.stamps.${scenario}`, instanceId = mintLifecycleUid(), principal = `${owner}.${actor}`;
+    const spec = { endpoint, owner, clusterDigests: [contractDigest(manifest)], protocol: { v: 1 as const } };
+    await provisionEndpointGateOpen(kv, { endpoint, instanceId, principal });
+    await kv.create(epcredRowKey(endpoint, instanceId, "cred0"), bytes({ credentialId: "cred0", holderPrincipal: principal,
+      lifecycleUid: instanceId, endpoint, sourceChain: ["root"], state: "active", exp: Math.floor(Date.now() / 1000) + 600 }));
+    const barrier = (opId: string, evict = (holders: readonly string[]): Promise<boolean[]> | boolean[] => holders.map(() => true)) =>
+      endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId, evict });
+    const run = (b: EpIssuanceBarrier) => registerServiceInstance(records, { space, spec, instanceId, registrant: { owner },
+      authority: { authorize: () => ({ authorized: true, revision: 0 }) }, barrier: b, readClusterArtifact: (digest) => documents.get(digest) });
+    const opId = mintLifecycleUid(), first = barrier(opId);
+    await assert.rejects(run({ ...first, reopen: async () => { throw new Error("interrupted before reopen"); } }), /reopen did not complete/);
+    assert.equal((await loadEndpointRepairCursor(kv, endpoint, instanceId))?.cursor.opId, opId);
+    const resumed = barrier(opId);
+    if (scenario === "resume-alone") {
+      await run(resumed);
+      assert.equal(await loadEndpointRepairCursor(kv, endpoint, instanceId), null, "a lone resume clears its own cursor");
+      continue;
+    }
+    let reopened!: () => void, release!: () => void;
+    const reopenedP = new Promise<void>((r) => { reopened = r; }), releaseP = new Promise<void>((r) => { release = r; });
+    const resume = run({ ...resumed, reopen: async (pin, next) => {
+      const ok = await resumed.reopen(pin, next);
+      reopened();
+      await releaseP;
+      return ok;
+    } });
+    await Promise.race([reopenedP, resume]);
+    const second = run(barrier(mintLifecycleUid(), async (holders) => { release(); await resume; return holders.map(() => true); }));
+    second.then(release, release);
+    await resume;
+    await assert.doesNotReject(second, "a later registration keeps the cursor it saved after the resumed reopen");
+    const key = epgateKey(endpoint, instanceId), gate = parseEndpointGate((await kv.get(key))!.value, key);
+    assert.deepEqual([gate.state, gate.generation], ["open", 2]);
+    assert.equal(await loadEndpointRepairCursor(kv, endpoint, instanceId), null);
+  }
+  console.log("service registration: abort preservation, atomic success, lost reply, op-bound native recovery and own-cursor resume cleanup passed");
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await nc?.close();
