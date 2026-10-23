@@ -1039,9 +1039,9 @@ interface ManagedAgent {
   staticCredentialRenewal?: Promise<void>;
 }
 
-/** What the teardown chain (trackDeprovision → deprovision → driveDeprovision) needs to tear one
- *  incarnation down. Each hop passes the value on as a variable, which TypeScript does not
- *  excess-check, so the hops share this one declaration. */
+/** What the teardown chain (trackDeprovision → deprovision → driveDeprovision →
+ *  driveStaticRetirement) needs to tear one incarnation down. Each hop passes the value on as a
+ *  variable, which TypeScript does not excess-check, so the hops share this one declaration. */
 interface TeardownTarget {
   id: string;
   name: string;
@@ -1052,6 +1052,8 @@ interface TeardownTarget {
   runtime?: RuntimeReference;
   delegatedHandle?: AgentHandle;
   launch?: { allowSubscribe: readonly string[] };
+  /** The departed agent's admitted renewal, which the static terminal drains before it begins. */
+  staticCredentialRenewal?: Promise<void>;
 }
 
 /** A name held pending its incarnation's retirement. It keeps the teardown target whole, so a
@@ -3153,7 +3155,7 @@ export class Manager {
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
       managed.filter((a) => !a.suppressCleanup).map((a) =>
-        this.deprovision({ ...a, ...(a.handedOff ? { delegatedHandle: a.handle } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`)),
+        this.deprovision(this.teardownTarget(a)).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`)),
       ),
     );
     if (failures.length)
@@ -3189,7 +3191,7 @@ export class Manager {
     await Promise.all(managed.map(async (a) => {
       try {
         // No cut holds a delegated seat (runPreparation refuses one), so stopping it is its retirement.
-        if (a.handedOff) await this.deprovision({ ...a, delegatedHandle: a.handle });
+        if (a.handedOff) await this.deprovision(this.teardownTarget(a));
         else a.handle.stop({ graceful: false });
       } catch (e) {
         failures.push(`${a.name}: stop failed: ${rejectionText(e)}`);
@@ -4295,7 +4297,7 @@ export class Manager {
       // A delegated seat's close runs only inside its retirement, after the host revoked its grant,
       // so stopping it starts that retirement. Every exit wait on a stop path then settles on that
       // close; the free path's own teardown joins the same flight.
-      if (a.handedOff) this.trackDeprovision({ ...a, delegatedHandle: a.handle });
+      if (a.handedOff) this.trackDeprovision(this.teardownTarget(a));
       else a.handle.stop({ graceful });
     } catch (e) {
       const failure = rejectionText(e);
@@ -4723,7 +4725,7 @@ export class Manager {
     // The departed agent's own custody reference rides the teardown: the exit that freed this slot
     // is usually the seat ending, but a stop that could not prove the process gone leaves one the
     // terminal must still address before it frees the alias.
-    const target: TeardownTarget = { id: a.id, name: a.name, lifecycleUid: a.lifecycleUid, userOwner: a.userOwner, delegated: a.delegated, secretPaths: a.secretPaths, runtime: a.handle?.reference, ...(a.handedOff ? { delegatedHandle: a.handle } : {}), launch: { allowSubscribe: a.launch.allowSubscribe } };
+    const target: TeardownTarget = { ...this.teardownTarget(a), runtime: a.handle?.reference };
     // #29 piece 3: on a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
     // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
     // and the alias frees only when all of it completes (not the retirement alone). The detached
@@ -4746,9 +4748,14 @@ export class Manager {
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
     // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
     // makes this fire exactly once per agent across every free path (despawn / self-stop / reap / exit).
-    // The agent's own fields ride along for its accepted renewal, which the static terminal drains first.
     if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence))
-      this.trackDeprovision({ ...a, ...target });
+      this.trackDeprovision(target);
+  }
+
+  /** A live agent's teardown target, built field by field so the rest of its record (handle, seed,
+   *  restart state) never rides into the detached teardown or its single-flight map. */
+  private teardownTarget(a: ManagedAgent): TeardownTarget {
+    return { id: a.id, name: a.name, lifecycleUid: a.lifecycleUid, userOwner: a.userOwner, delegated: a.delegated, secretPaths: a.secretPaths, ...(a.handedOff ? { delegatedHandle: a.handle } : {}), launch: { allowSubscribe: a.launch.allowSubscribe }, staticCredentialRenewal: a.staticCredentialRenewal };
   }
 
   /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its local-principal durables
@@ -9972,7 +9979,7 @@ export class Manager {
    *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
    *  and the hold clears, the honest upgrade path. */
-  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void>; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }, surfaceFailure = false): Promise<void> {
+  private async driveStaticRetirement(a: TeardownTarget, surfaceFailure = false): Promise<void> {
     // A renewal that published its flight before the synchronous terminal latch is accepted work.
     // Drain it before the durable terminal enumerates credential ids and before cleanup deletes its
     // material; a failed renewal must not block retirement because it may still have staged an id.
