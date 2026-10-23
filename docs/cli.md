@@ -2986,7 +2986,10 @@ Show and edit accept a definition whose `name` is not its catalog name. The seed
 persona is one: its file is `default.md` and its agents launch as `default_agent`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
-preferences). A successful editor exit and valid definition are required before saving. A changed
+preferences). The value runs as a shell command, so quote a path that holds spaces. With no editor
+set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
+and names the setting to fix. A successful editor exit and valid definition are required before
+saving. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
 CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.

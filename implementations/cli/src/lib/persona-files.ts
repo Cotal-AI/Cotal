@@ -148,6 +148,12 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
     writeSecretFile(draft, source.bytes);
     const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
     const result = spawnSync(`${editor} ${quoted}`, { shell: true, stdio: "inherit" });
+    // A POSIX shell exits 127 when it finds no such command and 126 when it cannot run it: the editor
+    // is missing, as it is when none is set, and nothing was edited.
+    if (process.platform !== "win32" && !result.error && (result.status === 127 || result.status === 126))
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} ${result.status === 127 ? "was not found" : "could not be run"} - not saved`, {
+        remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; the value runs as a shell command, so quote a path that holds spaces",
+      });
     if (result.error || result.status !== 0)
       throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`);
     const edited = requirePersonaSource(draft).bytes;
