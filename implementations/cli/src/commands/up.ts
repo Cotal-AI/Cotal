@@ -1013,6 +1013,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     persist: false,
     quiet: true,
   });
+  // The manifest route checks its own effective address, which `--server` only overrides.
+  if (!values.file && values.server !== undefined) assertTlsIntentServed(values.server, transport, "--server");
 
   // CONTROLLER-OWNED STACK. A root whose stack the service controller owns, or a fresh prepared
   // static-auth, open or user-auth root with nothing legacy retained, starts as exact controller members instead
@@ -2792,6 +2794,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, "broker.host", "broker.servers") : (m.broker?.servers ?? DEFAULT_SERVER);
+  assertTlsIntentServed(server, opts.transport, opts.server !== undefined ? "--server" : "the manifest's broker.servers");
   const open = m.broker?.auth === false; // default is auth
   const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
   const runtime = m.runtime ?? "pty";
@@ -4058,6 +4061,14 @@ function resolveTransport(
   // Eager write here is S5: a refuse path cannot unwrite, and the next bare up inherits fiction.
   if (opts.persist === true) writeBrokerPolicy(root, { version: 1, transport: validated });
   return validated;
+}
+
+/** A `tls://` broker address is recorded as required TLS, and every later dial through the record
+ *  trusts it. Refuse it, before anything starts, when this start would serve plaintext. */
+function assertTlsIntentServed(server: string, transport: BrokerTransport, source: string): void {
+  const tls = server.split(",").some((url) => url.trim().toLowerCase().startsWith("tls://"));
+  if (tls && transport.kind !== "tls-required")
+    throw new CommandFailure("refused", "USAGE_INVALID", `${source} names a tls:// address, but no TLS certificate and key are configured, so the broker would serve plaintext; nothing was started`, { target: { server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "serve TLS with --tls-cert <cert.pem> --tls-key <key.pem>, or use a nats:// address" });
 }
 
 /** Persist a transport after its listener starts; a structured boot leaves stdout to its receipt. */
