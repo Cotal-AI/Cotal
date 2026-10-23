@@ -473,6 +473,11 @@ setCurrent("keep");
   check("up with a missing --channels file is USAGE_INVALID, exit 1, naming the file, and leaves the root and registrations unchanged",
     refused(noChannels, 1, "USAGE_INVALID") && (noChannels.env?.error?.message ?? "").includes(missingChannels) &&
       cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(noChannels));
+  const serverHost = new URL(server).hostname;
+  const hostPort = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--host", `${serverHost}:${new URL(server).port}`], {}, fresh);
+  check("up with a port-bearing --host refuses, exit 1, pointing at --server, and leaves the root and registrations unchanged",
+    hostPort.status === 1 && /is not a valid bind host/.test(hostPort.stderr) && /the port comes from --server/.test(hostPort.stderr) &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(hostPort));
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
