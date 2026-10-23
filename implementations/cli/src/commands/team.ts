@@ -257,7 +257,10 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) {
     let resolved: ReturnType<typeof loadManifest>;
     try { resolved = loadManifest(resolve(file)); }
-    catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest could not be resolved; no native effect was submitted"); }
+    catch (e) {
+      if (e instanceof ManifestError) throw manifestRefusal(e, resolve(file));
+      throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest could not be resolved; no native effect was submitted");
+    }
     if (resolved.agents.length) {
       const { applyAgentTeam } = await import("./team-agent-apply.js");
       return applyAgentTeam(file, values);

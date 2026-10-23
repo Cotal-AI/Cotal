@@ -313,6 +313,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ['m.yaml:7:16: "ghost" is not declared in agents: (at channels.ops.subscribe)']],
     ["a persona with invalid frontmatter", `${head}agents:\n  sec: agents/sec.md\nchannels:\n  ops:\n    subscribe: [sec]\n`, ["m.yaml: agent file ", "sec.md: invalid YAML frontmatter; Flow sequence in block collection must be sufficiently indented and end with a ] at line 2, column 24 (at agents.sec)"]],
   ];
+  for (const verb of ["boot", "deploy"]) {
+    const r = cotal(["team", verb, "m.yaml"], files(cases[0]![1]), noSeed);
+    check(`team ${verb} names a manifest problem by file, line and reason`,
+      r.status === 1 && cases[0]![2].every((part) => r.stderr.includes(part)) && r.stderr.includes("fix each named problem and run team check again"), shown(r));
+  }
   for (const [label, manifest, located] of cases) {
     const r = cotal(["team", "check", "m.yaml"], files(manifest), noSeed);
     check(`team check names ${label} by file, line and reason`,
