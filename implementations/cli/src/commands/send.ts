@@ -163,7 +163,16 @@ export async function send(args: ParsedArgs): Promise<void> {
       }
     }
     const mentions = input.mode === "msg" ? [...mentionsIn(text)] : [];
-    for (const name of values.mention ?? []) mentions.push((await directPeer(ep, space, name.replace(/^@/, ""))).card.id);
+    for (const name of values.mention ?? []) {
+      // A mention travels as the peer's name (SPEC §5), the value a receiver compares with its own.
+      // An instance id is accepted only when its name resolves back to that same peer.
+      const peer = await directPeer(ep, space, name.replace(/^@/, ""));
+      let named: Presence | undefined;
+      try { named = resolvePeer(ep.getRoster(), peer.card.name); } catch { named = undefined; }
+      if (named?.card.id !== peer.card.id)
+        throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name } });
+      mentions.push(peer.card.name);
+    }
     const peer = input.mode === "dm" ? await directPeer(ep, space, input.target) : undefined;
     let messageId: string;
     let sequence: number | null = null;

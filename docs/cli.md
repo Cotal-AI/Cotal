@@ -3554,7 +3554,9 @@ A direct target resolves by its full identity or an unambiguous name. A name col
 no fuzzy match selects an agent for you.
 
 For a channel post, repeat `--mention <agent>` to add explicit wake hints without changing the
-destination. Direct and role sends have no native mention field and refuse that option.
+destination. Each one resolves like a direct target and is sent as that agent's name, which is what
+a receiving session compares. An instance id is refused when its name also resolves to another
+participant. Direct and role sends have no native mention field and refuse that option.
 A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
 still has no inbox and does not promise thread continuity.
 
@@ -3582,11 +3584,15 @@ reach the broker's limit of 1000 consumers per stream, and the broker refuses fu
 the old consumers expire. A channel send also reads that channel's policy, with one Direct Get on a
 static or open mesh and with one more scan consumer on a user-auth mesh.
 
-A recipient can still answer a
-`send --to` or `send --role` with `cotal_dm`, by the sender's name or by the id on the message it
-holds: the reply is stored under the sender's id in the space's DM history, which an operator's DM
-view such as the dashboard's Direct messages lens shows. The `cotal send` that asked has already
-exited, so the reply never reaches that shell.
+A recipient can still answer a `send --to` or `send --role` with `cotal_dm` or from a `chat`
+session. On a static or open mesh every send has its own principal under the same display name, so
+the sender's name works only while it names one principal among the senders the recipient has heard
+from and the present peers. Once the recipient has heard two sends from the same login and host, a
+reply by that name refuses with `TARGET_AMBIGUOUS` and lists the principals. Answer by the id on
+the message instead (`from.id` in `chat --stdio`), or with `/reply` in `chat`. The reply is stored
+under the sender's id in the space's DM history, which an operator's DM view such as the
+dashboard's Direct messages lens shows. The `cotal send` that asked has already exited, so the reply
+never reaches that shell.
 
 ## chat
 
@@ -3831,7 +3837,8 @@ many messages were read, whether older retained messages exist that the window d
 whether the window goes back to `--since`. An age outside the supported date range or a sequence
 that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
-is the ISO time.
+is the ISO time. A DM row shows its recipient's name when a message in the window came from that
+principal, and the principal otherwise. `result.items[].to` is the principal.
 
 Retained history is not every message sent. The chat stream keeps a fixed number of messages per
 sender on each channel, so a busy sender's oldest messages are discarded while other senders'
