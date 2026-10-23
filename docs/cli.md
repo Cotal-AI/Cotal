@@ -4584,7 +4584,7 @@ this standalone caller. User-auth issuance and managed static launch are not sup
 
 ```bash
 cotal login --idp <auth base URL> [--client-id <id>] [--plain]
-cotal logout --idp <auth base URL>
+cotal logout --idp <auth base URL> [--local]
 ```
 
 Signs you in to a per-user-auth mesh's IdP (device code flow) and caches the session; run it
@@ -5445,7 +5445,11 @@ Bare `logout` chooses among cached providers. A single cached provider is unambi
 with multiple providers must select one with `--idp`. `logout --json` and `--plain` report the
 same result. No cached session is a local no-op, not proof that all provider sessions are gone.
 Revocation must return before local cleanup. If revocation is unconfirmed the login is retained
-for retry; a later cleanup failure is partial and keeps the confirmed server outcome.
+for retry, and the refusal names `--local`; a later cleanup failure is partial and keeps the
+confirmed server outcome. `logout --local` clears this machine's cached login and that account's
+discovered registry entries without contacting the provider, for a provider that is down or does
+not confirm sign-out. The provider session stays valid until it expires or is revoked at the
+provider, and the receipt says so.
 
 
 `endpoints --json` and `endpoints --plain` show the authorized live presence snapshot, including

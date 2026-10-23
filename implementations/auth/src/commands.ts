@@ -208,8 +208,12 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", localLogin: "absent", serverRevoked: null }, noOp: true }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp]] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }] }] }] }));
     return;
   }
-  try { await revokeIdpSession(idp, session.token); }
-  catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: "retry logout for this provider, or revoke the session at the provider" }); }
+  // `--local` forgets this machine's login without contacting the provider, whose session stays valid.
+  const local = args.values.local === true;
+  if (!local) {
+    try { await revokeIdpSession(idp, session.token); }
+    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run cotal logout --idp ${idp} --local` }); }
+  }
   let localCleared = false;
   let removed: string[] = [];
   try {
@@ -217,10 +221,12 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     localCleared = true;
     if (session.sub) removed = removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session.sub));
   } catch {
+    if (local && !localCleared) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the cached login could not be confirmed cleared; the provider was not contacted", { target: { idp } });
+    if (local) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the cached login was cleared, but discovered-space cleanup was not confirmed; the provider was not contacted", { target: { idp }, changed: [{ kind: "local-login", idp, cleared: true }] });
     throw new CommandFailure("partial", "OPERATION_PARTIAL", localCleared ? "the server session was revoked and the cached login cleared, but discovered-space cleanup was not confirmed" : "the server session was revoked, but local cleanup was not confirmed", { target: { idp }, changed: [{ kind: "idp-session", idp, revoked: true }, ...(localCleared ? [{ kind: "local-login", idp, cleared: true }] : [])] });
   }
-  writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", serverRevoked: true, localLoginCleared: true, removedRegistrations: removed } }, (result) => ({ sections: [
-    { title: "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }] }] },
+  writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", serverRevoked: !local, localLoginCleared: true, removedRegistrations: removed } }, (result) => ({ sections: [
+    { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
   ] }));
 }
@@ -658,14 +664,15 @@ const authCommands: Command[] = [
     kind: "command",
     name: "logout",
     group: "Identity",
-    summary: "revoke the IdP session and clear the cached login --idp <auth base URL>",
-    usage: "cotal logout [--idp <auth base URL>] [--json|--plain]",
+    summary: "revoke the IdP session and clear the cached login --idp <auth base URL> [--local]",
+    usage: "cotal logout [--idp <auth base URL>] [--local] [--json|--plain]",
     prepareMeshTarget: false,
     outputs: ["json", "plain"],
     validate: (args) => validateAccountArguments(args, "logout"),
     flags: [
       jsonFlag, plainFlag,
       { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
+      { name: "local", type: "boolean", description: "forget this machine's cached login without contacting the provider; its session stays valid until it expires or is revoked there" },
     ],
     run: runLogout,
   },
