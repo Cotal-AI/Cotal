@@ -198,23 +198,30 @@ try {
   }
 
   // A file other accounts can open is named by its mode, with the chmod that fixes it, and a file
-  // the NATS client cannot parse is a finding although its claims are legible.
+  // the NATS client cannot parse is a finding although its claims are legible. A $SYS store file at
+  // 0644 is one row like the others: the run still checks every other file.
   {
     const shared = join(agents, "bob.creds");
     const crlf = join(agents, "dave.creds");
+    const observer = join(material, "membership-observer.creds");
     writeFileSync(shared, bounded, { mode: 0o600 });
     chmodSync(shared, 0o644);
+    chmodSync(observer, 0o644);
     writeFileSync(crlf, bounded.replace(/\n/g, "\r\n"), { mode: 0o600 });
     const { envelope, code } = await runDoctor({ json: true });
     if (process.platform !== "win32") {
       assert.equal(item(envelope!, "bob.creds")?.problem, "the credential file is not private to you (mode 0644)", "a 0644 credential is named by its mode, not as a parse failure");
       assert.equal(item(envelope!, "bob.creds")?.repair, `chmod 600 ${shared}`, "its repair is the chmod that makes it private");
+      assert.equal(item(envelope!, "membership-observer.creds")?.problem, "the credential file is not private to you (mode 0644)", "a 0644 $SYS store credential is named by its mode, not a refusal of the whole run");
+      assert.equal(item(envelope!, "membership-observer.creds")?.repair, `chmod 600 ${observer}`, "its repair is the chmod that makes it private");
+      assert.equal(item(envelope!, "delivery.creds")?.state, "healthy", "the other files are still checked");
     }
     assert.equal(item(envelope!, "dave.creds")?.problem, "the NATS client cannot parse it: it has Windows (CRLF) line endings", "a CRLF credential is a finding, as --creds refuses it");
     assert.match(item(envelope!, "dave.creds")?.repair ?? "", /^save it with LF line endings/, "its repair says how to fix the line endings");
     assert.equal(code, 5, "the findings exit 5");
     rmSync(shared);
     rmSync(crlf);
+    chmodSync(observer, 0o600);
   }
 
   // Refusals: no `auth` word, and an unknown space that must never read as healthy or open.

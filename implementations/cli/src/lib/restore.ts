@@ -700,6 +700,24 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: ${kind} attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
+/** The store a same-path restore set aside, as its maintenance journal records it. */
+export function retainedPreviousStore(root: string, attemptId: string): string | undefined {
+  try {
+    const journal = readMaintenanceJournal(root);
+    return journal && "restore" in journal && journal.restore.attemptId === attemptId ? journal.restore.previousSource?.identity.path : undefined;
+  } catch { return undefined; }
+}
+
+/** What a registry-only restore says about history: it brings back channel settings only, and every
+ *  other stream, chat and DM history included, starts empty. The store it set aside holds the only
+ *  copy of that history, which cleanup-fallback deletes only with `--discard-history`. */
+export function registryRestoreNotes(attemptId: string, previousStore: string | undefined): [string, string] {
+  return [
+    "A registry-only restore brings back channel settings only, so chat and DM history start empty.",
+    previousStore ? `The previous store at ${previousStore} holds the only copy of that history. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : "No previous store was retained.",
+  ];
+}
+
 /** The restore attempt the root's journal holds, with the step that moves it on, so a failure can
  *  name the full attempt a recovery command needs. An unreadable journal names none. */
 export function heldRestoreAttempt(root: string): { attemptId: string; journalState: string; remedy: string } | undefined {
@@ -818,6 +836,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // The partial selection is a property of the artifact, not only of the flag: a registry-only
     // artifact restored without --restore-only registry must still create omitted infrastructure.
     const onlyRegistry = flags["restore-only"] === "registry" || artifact.manifest.selection === "registry";
+    // Journaled, so cleanup-fallback knows the previous store holds the only copy of what was left out.
+    const selection = onlyRegistry ? "registry" as const : "full" as const;
     // Retained agents relaunch under their preserved runtime; a contradicting override must fail
     // in preflight, before any mutation or listener exposure.
     if (!onlyRegistry && flags.runtime && inventoryRuntimes[0] && flags.runtime !== inventoryRuntimes[0])
@@ -859,13 +879,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (!sourceExists) {
       if (!flags["accept-missing-source"])
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved source ${journal.source.path} is missing; nothing was changed`, { target: { root, space: journal.space, source: journal.source.path }, remedy: "put the preserved store back at that path, or, once you have verified it is lost, repeat the restore with --accept-missing-source to rebuild it from this backup" });
-      prepareMissingSourceRestore(lock, { attemptId, targetPath, claim });
+      prepareMissingSourceRestore(lock, { attemptId, targetPath, claim, selection });
     } else if (targetPath === journal.source.path) {
       const fallbackPath = join(dirname(targetPath), `.cotal-restore-fallback-${attemptId}`);
-      prepareSamePathRestore(lock, { attemptId, targetPath, fallbackPath, claim });
+      prepareSamePathRestore(lock, { attemptId, targetPath, fallbackPath, claim, selection });
       moveSamePathRestoreSource(lock);
     } else {
-      prepareAlternateRestore(lock, { attemptId, targetPath, claim });
+      prepareAlternateRestore(lock, { attemptId, targetPath, claim, selection });
     }
     transitioned = true;
     createOwnedDirectory(targetPath);

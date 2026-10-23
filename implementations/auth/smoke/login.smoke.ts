@@ -11,6 +11,7 @@
  * emits it on a faster-than-interval poll this client never sends; the handling is code-reviewed.
  * Loopback HTTP only; broker-free. Run: pnpm smoke:auth-login
  */
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
@@ -758,11 +759,33 @@ console.log("E) hostile-IdP responses");
   // A non-401 sign-out failure is NOT the goal state (the server-side session may still be alive),
   // so revokeIdpSession must throw loudly — this is the signal `cotal logout` keys off to KEEP the
   // local session for a retry rather than silently dropping the handle.
-  const so = createServer((_req, res) => { res.writeHead(503, { "content-type": "application/json" }).end("{}"); });
+  let signOuts = 0;
+  const so = createServer((_req, res) => { signOuts++; res.writeHead(503, { "content-type": "application/json" }).end("{}"); });
   await new Promise<void>((r) => so.listen(0, "127.0.0.1", r));
   const soBase = `http://127.0.0.1:${(so.address() as AddressInfo).port}/api/auth`;
   await rejects("a non-401 sign-out failure is a loud throw (server-side session may still be alive)",
     () => revokeIdpSession(soBase, "sess"), "may still be alive");
+  // The command keeps the login on that failure and names `--local`, which clears it here without
+  // contacting the provider.
+  const logoutHome = mkdtempSync(join(tmpdir(), "cotal-logout-"));
+  saveIdpSession(logoutHome, soBase, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
+  // Asynchronous, so this process's sign-out server can answer the child.
+  const cli = (...args: string[]) => new Promise<{ status: number | null; envelope?: { outcome?: string; result?: { serverRevoked?: boolean; localLoginCleared?: boolean } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
+    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "logout", "--idp", soBase, "--json", ...args],
+      { env: { ...process.env, HOME: logoutHome, COTAL_HOME: logoutHome, XDG_CONFIG_HOME: join(logoutHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000 },
+      (error, stdout, stderr) => {
+        let envelope;
+        try { envelope = JSON.parse(stdout); } catch { envelope = undefined; }
+        done({ status: error ? (typeof error.code === "number" ? error.code : null) : 0, envelope, stderr: stderr.slice(0, 400) });
+      });
+  });
+  const before = signOuts;
+  const kept = await cli();
+  check("logout on an unconfirmed sign-out exits 3, keeps the login and names --local",
+    kept.status === 3 && kept.envelope?.error?.code === "OPERATION_UNKNOWN" && (kept.envelope.error.remedy ?? "").includes(`cotal logout --idp ${soBase} --local`) && loadIdpSession(logoutHome, soBase) !== undefined, kept);
+  const local = await cli("--local");
+  check("logout --local clears the login without contacting the provider",
+    local.status === 0 && local.envelope?.result?.serverRevoked === false && local.envelope.result.localLoginCleared === true && loadIdpSession(logoutHome, soBase) === undefined && signOuts === before + 1, { local, signOuts, before });
   so.close();
 }
 

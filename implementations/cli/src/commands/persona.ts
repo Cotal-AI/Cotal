@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
-import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
+import { assertValidChannel, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   loadMeshes, loadPreparedSpaces, writeResult, type Presentation, type Report,
@@ -125,8 +125,18 @@ function createSource(name: string, path: string, values: Values): Buffer {
   if (values.harness !== undefined) checkHarness(values.harness);
   const body = values.prompt ?? readInput(values.from!).toString("utf8");
   if (!body.trim()) throw usage("persona body is empty");
-  const channels = (text: string | undefined) => text?.split(",").map(value => value.trim()).filter(Boolean);
-  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe: channels(values.subscribe), allowSubscribe: channels(values["allow-subscribe"]), allowPublish: channels(values["allow-publish"]) });
+  // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than
+  // the private draft the flags are written to.
+  const channels = (flag: string, text: string | undefined) => text?.split(",").map(value => value.trim()).filter(Boolean).map(channel => {
+    try { return assertValidChannel(channel); }
+    catch (error) {
+      throw new CommandFailure("refused", "USAGE_INVALID", `${flag}: ${(error as Error).message}`, channel.startsWith("#") ? { remedy: `name the channel without its #, as ${channel.slice(1)}` } : {});
+    }
+  });
+  const subscribe = channels("--subscribe", values.subscribe), allowSubscribe = channels("--allow-subscribe", values["allow-subscribe"]);
+  try { resolveReadAcl(subscribe ?? [], allowSubscribe); }
+  catch (error) { throw usage(`${(error as Error).message}; every --subscribe channel must be within --allow-subscribe`); }
+  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: channels("--allow-publish", values["allow-publish"]) });
 }
 
 function list(catalog: PersonaCatalog, presentation: Presentation): void {

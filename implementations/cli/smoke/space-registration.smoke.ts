@@ -9,8 +9,8 @@
  * and is partial when it cannot remove them. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
- * no installed provider, and one naming a missing channels file, have refused and left the root as
- * it was. Create and a later `up` write the
+ * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
+ * default channels file, have refused and left the root as it was. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -491,7 +491,24 @@ setCurrent("keep");
     check("a --root this account cannot write is PERMISSION_DENIED, exit 2, with nothing written",
       refused(denied, 2, "PERMISSION_DENIED") && (denied.env?.error?.message ?? "").startsWith(`${readOnly} is not writable by this account`) && !existsSync(join(readOnly, ".cotal")) && findPreparedSpace("other") === undefined, shown(denied));
     chmodSync(readOnly, 0o700);
+    // A Cotal home this account cannot write is refused too, and the empty .cotal the attempt made is removed.
+    const lockedHome = join(home, "locked-home");
+    const homeless = join(home, "homeless");
+    mkdirSync(lockedHome, { mode: 0o500 });
+    mkdirSync(homeless);
+    const noHome = await run(["space", "create", "other", "--root", homeless, "--json"], { COTAL_HOME: join(lockedHome, ".cotal") });
+    const noHomeEnv = JSON.parse(noHome.stdout || "{}") as Record<string, any>;
+    check("a Cotal home this account cannot write is PERMISSION_DENIED, exit 2, naming it, with nothing left in the root",
+      refused({ ...noHome, env: noHomeEnv }, 2, "PERMISSION_DENIED") && (noHomeEnv.error?.message ?? "").startsWith(`this account cannot write this machine's Cotal home ${join(lockedHome, ".cotal")}`) && readdirSync(homeless).length === 0 && findPreparedSpace("other") === undefined, shown(noHome));
+    chmodSync(lockedHome, 0o700);
   }
+  // A .cotal that links to a folder that does not exist is refused naming both, with nothing written.
+  const dangling = join(home, "dangling");
+  mkdirSync(dangling);
+  symlinkSync(join(home, "nowhere"), join(dangling, ".cotal"));
+  const linked = await json(["space", "create", "other", "--root", dangling]);
+  check("a .cotal linking to a missing folder is TARGET_NOT_FOUND, exit 2, naming the link and its target",
+    refused(linked, 2, "TARGET_NOT_FOUND") && linked.env?.error?.message === `${join(dangling, ".cotal")} links to ${join(home, "nowhere")}, which does not exist; nothing was written` && !existsSync(join(home, "nowhere")) && findPreparedSpace("other") === undefined, shown(linked));
   // A prepared folder that is moved keeps none of its space, so a bare up there would start the
   // default. With that space selected and its recorded folder gone, up refuses and names the step.
   {
@@ -585,6 +602,31 @@ setCurrent("keep");
   check("up with a port-bearing --host refuses, exit 1, pointing at --server, and leaves the root and registrations unchanged",
     hostPort.status === 1 && /is not a valid bind host/.test(hostPort.stderr) && /the port comes from --server/.test(hostPort.stderr) &&
       cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(hostPort));
+  // Content the registry would not take refuses before anything starts, naming the file and the entry.
+  const badSeeds: [string, string, string][] = [
+    ["a channel name channel set refuses", '{"channels":{"bad name!":{}}}', 'invalid channel "bad name!"'],
+    ["a replay window that is not a duration", '{"channels":{"ops":{"replayWindow":"2x"}}}', 'channel "ops" replayWindow: invalid duration "2x"'],
+    ["a file that is not an object", "[1,2]", "it must be a JSON object"],
+    ["a misspelled top-level key", '{"chanels":{"ops":{}}}', 'unknown key "chanels"'],
+    ["a misspelled channel field", '{"channels":{"ops":{"replayWindw":"6h"}}}', 'channel "ops" has an unknown key "replayWindw"'],
+  ];
+  for (const [what, text, named] of badSeeds) {
+    const seedPath = join(fresh, "bad-channels.json");
+    writeFileSync(seedPath, text);
+    const badSeed = await json(["up", "--open", "--channels", seedPath, "--server", server], fresh);
+    check(`up with ${what} in --channels is SCHEMA_INVALID, exit 1, naming the file and the entry, and leaves the root unchanged`,
+      refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
+        cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
+  }
+  // The default file is read once the root is settled, so it refuses after the stack lock's layout
+  // exists and before a store, a broker or a registration.
+  const defaultSeed = join(fresh, ".cotal", "channels.json");
+  writeFileSync(defaultSeed, '{"chanels":{}}');
+  const badDefault = await json(["up", "--open", "--server", server], fresh);
+  check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
+    refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
+  unlinkSync(defaultSeed);
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");

@@ -477,7 +477,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f` |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
-| `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written |
+| `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
@@ -871,6 +871,30 @@ While those creds are expired the mesh keeps delivering messages, but the
 [membership feed](delivery-daemon.md) and live connection eviction stay down; `cotal doctor auth`
 and the manager's log both name the credential and this repair.
 
+### Channel seed file
+
+A start seeds the channel registry from the `--channels` file, or from the root's
+`.cotal/channels.json` when you pass none. The file is one JSON object with two optional keys:
+
+```json
+{
+  "defaults": { "replay": false, "replayWindow": "6h", "deliveryClass": "durable" },
+  "channels": {
+    "news": { "description": "Daily news" },
+    "ops": { "deliveryClass": "live", "instructions": "Keep posts short." }
+  }
+}
+```
+
+`defaults` takes `replay` (`true` or `false`), `replayWindow` (a number followed by `s`, `m`, `h`
+or `d`) and `deliveryClass` (`live` or `durable`). Each key under `channels` is one concrete channel
+name, as `channel set` takes it, and its object takes those three fields plus `description` (up to
+200 characters) and `instructions` (up to 2000). Each field in the file overwrites that field in the
+registry, and fields the file leaves out keep their values. Any other key, a wildcard or invalid
+channel name, or an invalid value refuses `SCHEMA_INVALID` before anything starts, naming the file
+and the entry. A default file that is invalid refuses the same way, with a remedy to fix or remove
+it. A manifest start (`-f`) seeds from the manifest's own channels instead.
+
 ## down
 
 Every `down` runs to its end when the reader of its output goes away, as `| head` does. It
@@ -921,8 +945,11 @@ summary points to this read-only command from the recorded root.
 On a root with a controller journal, bare `down` reads only its recorded full instance IDs. It
 shows the member set and the live manager's native agent impact before confirmation, then stops
 manager, delivery and broker in that order. `--yes` acknowledges that scope in scripts; `--with-agents`
-requests the manager's native retirement policy. The broker scope is checked again after its
-dependants stop. A failure stops the sequence and preserves completed and unattempted members.
+requests the manager's native retirement policy. Another live service instance in the space
+refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
+`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. The broker scope
+is checked again after its dependants stop. A failure stops the sequence and preserves completed and
+unattempted members.
 Only a complete confirmed stop removes the delivery credential and local registration. When the
 delivery daemon was already gone, its credential stays: that daemon never released its lease, and
 the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
@@ -1260,7 +1287,7 @@ after a refused cut retires that seat through its retirement path.
 ```bash
 cotal clean <history|store|all> --force
 cotal clean restore-attempt --attempt <id> --force
-cotal clean restore-fallback --attempt <id> --force
+cotal clean restore-fallback --attempt <id> --force [--discard-history]
 ```
 
 | Flag | Default | Meaning |
@@ -1270,6 +1297,7 @@ cotal clean restore-fallback --attempt <id> --force
 | `--store-dir <dir>` | `.cotal/nats` | `store`/`all`: JetStream store directory |
 | `--force` | none | Required: destructive, no prompting |
 | `--attempt <id>` | none | `restore-attempt`: exact stale pre-commit attempt; `restore-fallback`: matching healthy committed restore |
+| `--discard-history` | off | `restore-fallback`: also delete a registry-only restore's old store, the only copy of the history it left out |
 
 One configurable cleanup verb; every target requires `--force`.
 
@@ -1303,7 +1331,8 @@ are always refused.
 `store` and `all` also refuse every maintenance journal state. After a healthy committed restore,
 `restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
-completed restore journal so a later `down --preserve-state` can start a new backup cycle. After an
+completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a
+registry restore it also requires `--discard-history`, as `backup cleanup-fallback` does. After an
 `--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
@@ -1411,6 +1440,13 @@ definitions and stopped-instance records, installed packages, login sessions
 and remote data remain. Local cleanup does not revoke a remote credential or
 clear Cloud data.
 
+A saved service definition whose `credentialRef` names a credential this space's account issued,
+such as one `cotal auth mint` wrote, would hand its child a credential the next identity rejects.
+Reset reads the issuing account from each such file and clears that `credentialRef`, and both the
+preview and the receipt name the service and the file. A file it cannot read as a credential is
+left as it is. To give the service a credential again, mint one after `cotal up`, then remove the
+service and add it again with that `credentialRef`.
+
 ## Backups
 
 ```bash
@@ -1419,7 +1455,7 @@ cotal backup create <dir> [--only full|registry] [--store-dir <dir>] [--json|--p
 cotal backup inspect <dir> [--json|--plain]
 cotal backup verify <dir> [--json|--plain]
 cotal backup recover <full-attempt-id> [--yes|--dry-run] [--json|--plain]
-cotal backup cleanup-fallback <full-attempt-id> [--yes|--dry-run] [--json|--plain]
+cotal backup cleanup-fallback <full-attempt-id> [--yes|--dry-run] [--discard-history] [--json|--plain]
 cotal backup restore <dir> [--only registry] [--store-dir <dir>] [--accept-missing-source] [--json|--plain]
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 ```
@@ -1490,7 +1526,9 @@ started is proven gone or the claim's deadline has passed. Commit intent forbids
 removes only its unchanged retained old-store identity; it never removes the restored target.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
-starts a new backup cycle.
+starts a new backup cycle. A registry restore leaves every other stream out, so its old store holds
+the only copy of that history. Its `--dry-run` warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`, and the
+cleanup refuses `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
@@ -1514,7 +1552,11 @@ size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backu
 each case the preserved cut is not changed. A receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
-confirm that any seat joined. `--store-dir` names a store the restore creates, so a path that
+confirm that any seat joined. A registry restore brings back channel settings only, so chat and DM
+history start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
+names the store the restore set aside, which holds the only copy of that history. Its next step says
+that `backup cleanup-fallback` deletes that store only with `--discard-history`.
+`up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
@@ -1826,7 +1868,9 @@ stop from that root. `cotal up` starts a space only under a name of 1 to 200 let
 underscores or hyphens, so any other name refuses with `USAGE_INVALID`, exit 1, before anything is
 written. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
 space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
-account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written. `space` lists
+account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
+does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
+does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. `space` lists
 prepared spaces under their own heading, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
@@ -1952,7 +1996,10 @@ refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A director
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
 no seed block, an invalid seed, or Windows (CRLF) line endings. A file that other accounts can read
 is still used, with a warning on stderr that gives the `chmod 600` command. `join --creds` reads its
-file the same way.
+file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
+credential's own permissions name one other space, the refusal names that space, such as
+`credentials rejected at <server>: <file> is a credential for space "<owner>", not "<space>"`, and
+its Next is `--space <owner>`.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
@@ -2595,6 +2642,7 @@ session, so there is no unread count or connection state to report.
 | Static auth, signer on this machine | `space-signer` | Everything; each command mints its own short-lived credential for its task, so there is no standing principal |
 | Static auth, no signer here | `no-credential` | Nothing without `--creds <file>` |
 | User auth | `user` | The signed-in user's `cli` actor: `read`, `post` and `capabilities` are its ledger row |
+| A `--server` no registration here names, with no trust for it in this folder | `unknown` | Unknown: `mode` and the access fields are `null`, and the run is `partial` (exit 4) with `BROKER_NOT_PROBED` |
 
 A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
 "not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant
@@ -2605,6 +2653,8 @@ principal unknown on this machine, rather than calling the user signed out. The 
 advisory and the command does not verify the login with the IdP. `dms` says whether the identity
 may read DM history: on an open mesh, or with the space signer's audit credential on an authenticated mesh. The report
 reads local configuration and does not contact the broker to check its authentication requirements.
+So an address no registration names is reported as unknown, never as open; adding the space with
+`cotal space add` checks the broker.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments, and escape terminal
 controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
@@ -3179,7 +3229,10 @@ refused with `SCHEMA_INVALID`, naming the file's own name and the `persona creat
 They cannot be combined with
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
 including `--subscribe ""` for no channels, and accepts `--role` and `--model`. Both refuse control
-characters with `USAGE_INVALID`. `--harness` must name a harness this machine knows, as
+characters with `USAGE_INVALID`. Each entry of `--subscribe`, `--allow-subscribe` and
+`--allow-publish` must be a valid channel name, written without `#`, and each `--subscribe` channel
+must be within `--allow-subscribe` when it is given, or creation refuses with `USAGE_INVALID`,
+naming the flag and the entry. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
@@ -3519,7 +3572,7 @@ cotal service status <name> [--instance <id>]
 cotal service logs <name> [--instance <id>] [--tail <n>] [--follow]
 cotal service install <name> [--instance <id>] [--dry-run]
 cotal service uninstall <name> [--instance <id>] [--yes|--dry-run]
-cotal service remove <name> [--yes]
+cotal service remove <name> [--instance <id>] [--yes]
 ```
 
 `svc` and `services` are aliases. Every form takes `--space`, `--json` and `--plain`.
@@ -3597,6 +3650,11 @@ installed unit, a `restart` whose process is already gone stops nothing, so it d
 start or stop that finds nothing to do says so and reports `no-op`.
 
 `remove` forgets a definition once every instance is stopped and no unit is installed. Logs stay.
+With `--instance <id>` it forgets only that stopped instance record, and keeps the definition and
+its other instances. A command that names no instance while several records exist refuses
+`TARGET_AMBIGUOUS`; its Next lists each instance with its state and the `remove --instance` command
+for each stopped one, so a finished record stops blocking the bare form. A controller stack's
+member records are not removed this way; they go with `cotal space forget`.
 
 `install` writes an owned systemd user unit for a saved direct-process definition with no
 `envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
@@ -3821,7 +3879,9 @@ preserved and never printed in the receipt. A file that cannot be read is refuse
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`.
 The recipient grammar is checked before connector installation or target preparation. Channel
-and role names use the native subject grammar; a channel publication cannot name a wildcard.
+and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
+`name one concrete channel, without wildcards`, and a channel or role name outside the grammar is
+refused with the rule it breaks.
 A direct target resolves by its full identity or an unambiguous name. A name collision refuses
 with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, and a target that is not
 present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
@@ -3840,9 +3900,11 @@ role sends include the broker's stored sequence. Storage does not confirm delive
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
 `<agent> is offline. The message is stored and delivered when <agent> reconnects; a new agent spawned as <agent> does not receive it.`
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
-`--verbose/-v` to show the actual sending principal. An unregistered channel is labeled; its native
-space policy still controls publication and no registry metadata is created. Unreadable metadata
-stays not checked. A message over the broker's message limit, envelope included, refuses
+`--verbose/-v` to show the actual sending principal. A post to an unregistered channel warns
+`CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
+and lists the space's registered channels, so a mistyped name stands out. It reads that count as
+`cotal history` lists channels. Its native space policy still controls publication and no registry
+metadata is created. Metadata or a count it cannot read stays not checked. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A channel post the broker
 refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
 the space or this identity may not post to it. The remedy lists the channels this identity may post
@@ -3921,8 +3983,9 @@ and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
-name without `@`, is refused with that list of forms, and the numbered list opens. In the list, an
-empty line keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
+name without `@`, is refused with that list of forms, and the numbered list opens. A `#<channel>`
+holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
+keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view.
 `/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
@@ -3993,7 +4056,7 @@ id that follows the first request's result. Requests run one at a time in arriva
 refusal waits its turn too, so every `result` and `error` record comes back in the order its line
 arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
 by its id. A missing field, a field the type does not take or a malformed value refuses with
-`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and a role a
+`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and is refused with the sentence `cotal send -c` gives for that name. A role must be a
 valid role name.
 
 | `type` | Fields | Result |
@@ -4553,7 +4616,7 @@ this standalone caller. User-auth issuance and managed static launch are not sup
 
 ```bash
 cotal login --idp <auth base URL> [--client-id <id>] [--plain]
-cotal logout --idp <auth base URL>
+cotal logout --idp <auth base URL> [--local]
 ```
 
 Signs you in to a per-user-auth mesh's IdP (device code flow) and caches the session; run it
@@ -4647,7 +4710,8 @@ lists.
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.
 A credential file that other accounts can open is a finding that names its mode, with `chmod 600`
-on the file as its repair. Each file is also parsed the way `--creds` checks one, so a file the NATS
+on the file as its repair. That includes the space's own store credentials, and the other files are
+still checked. Each file is also parsed the way `--creds` checks one, so a file the NATS
 client cannot parse is a finding even when its claims are legible, such as one with Windows (CRLF)
 line endings.
 A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
@@ -4911,11 +4975,16 @@ key. A read looks through `--space`, else the space selected with `cotal use`, e
 `--user` reads your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
-and `persona` have per-space values. A write that a variable outranks in this shell is still saved,
-with a `PREFERENCE_SHADOWED` warning naming the variable. A `persona` that the space's catalog
-does not hold is saved with a `PERSONA_NOT_FOUND` warning naming the catalog. A variable whose
-value `config set` would refuse still wins, and `config`, `config get` and `status` name it in a
-`PREFERENCE_INVALID` warning with the reason. Setting a value that is already saved, or
+and `persona` have per-space values. `set --space` takes a space registered or prepared on this
+machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
+A read and `unset --space` also take a space that still holds a saved value, so a value left for
+a space you removed can be read and removed, and refuse any other name the same way. A write that
+another value outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming
+that value: a variable, or your value for the selected space when you write your defaults without
+`--user`. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
+warning naming the catalog. A variable whose value `config set` would refuse still wins, and
+`config`, `config get` and `status` name it in a `PREFERENCE_INVALID` warning with the reason.
+Setting a value that is already saved, or
 unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
 with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
 refused with `CONFLICT`. A preferences folder you cannot write is refused with `PERMISSION_DENIED`
@@ -5414,7 +5483,11 @@ Bare `logout` chooses among cached providers. A single cached provider is unambi
 with multiple providers must select one with `--idp`. `logout --json` and `--plain` report the
 same result. No cached session is a local no-op, not proof that all provider sessions are gone.
 Revocation must return before local cleanup. If revocation is unconfirmed the login is retained
-for retry; a later cleanup failure is partial and keeps the confirmed server outcome.
+for retry, and the refusal names `--local`; a later cleanup failure is partial and keeps the
+confirmed server outcome. `logout --local` clears this machine's cached login and that account's
+discovered registry entries without contacting the provider, for a provider that is down or does
+not confirm sign-out. The provider session stays valid until it expires or is revoked at the
+provider, and the receipt says so.
 
 
 `endpoints --json` and `endpoints --plain` show the authorized live presence snapshot, including
