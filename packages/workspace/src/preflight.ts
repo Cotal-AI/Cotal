@@ -2,6 +2,7 @@ import { createConnection } from "node:net";
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
 import { loadMeshes, pruneMesh } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
+import { stoppedLoopbackListener } from "./pid.js";
 
 /**
  * Liveness verification for a resolved mesh target — the companion to {@link resolveMeshTarget}
@@ -35,7 +36,10 @@ export type PreflightFailure =
    *  NEVER a prune signal: a slow or jittery link is not a dead broker (#851). Distinct from
    *  `tls-trust`, whose evidence is an actual plaintext INFO greeting; a bare timeout has none, so
    *  it must not borrow that verdict's CA guidance. */
-  | "slow-link";
+  | "slow-link"
+  /** The first dial timed out and the process holding the loopback listener is stopped, so the
+   *  confirm budget is not spent on it. NEVER a prune signal: the broker is there, only paused. */
+  | "broker-stopped";
 
 /** Pure decision tree — separated from I/O so the whole branch tree is unit-testable (it's the
  *  riskiest logic: a wrong branch prunes a LIVE registry entry). Only a registry-OWNED source
@@ -81,7 +85,7 @@ export function classifyPreflightFailure(
 export async function preflightTarget(
   target: MeshTarget,
   probeCreds?: string,
-): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean }> {
+): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean; pid?: number }> {
   // A user-mode target has no probe credential by design (its auth is a per-connect bearer) — a
   // credless probe would be DENIED by the callout and misclassified as a stale registry entry
   // (prune:true). Callers own the user connect; reaching here with one is a caller bug, fail loud.
@@ -103,6 +107,9 @@ export async function preflightTarget(
   const auth = { ...(creds ? { creds } : {}), ...(target.tlsRequired ? { tls: true as const } : {}) };
   let probe = await probeConnect(target.server, auth);
   if (probe.ok) return { ok: true };
+  // A stopped broker never answers, so its pid is named now instead of after the confirm budget.
+  const stopped = probe.reason === "timeout" ? stoppedLoopbackListener(target.server) : undefined;
+  if (stopped !== undefined) return { ok: false, kind: "broker-stopped", prune: false, pid: stopped };
   // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED
   // connect: TCP, INFO, then the JWT exchange — several round trips. A perfectly healthy broker
   // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely.
@@ -238,9 +245,12 @@ export interface MeshSweep {
 }
 
 /** Whether `server` answers a liveness probe. A first miss is confirmed with a second, longer probe
- *  before it counts, so a slow link reads as live. */
+ *  before it counts, so a slow link reads as live. A miss whose loopback listener is a stopped
+ *  process counts at once. */
 export async function brokerAnswers(server: string): Promise<boolean> {
-  return (await isReachable(server)) || (await isReachable(server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS }));
+  if (await isReachable(server)) return true;
+  // A stopped broker never answers, so the longer confirm is not spent on it.
+  return stoppedLoopbackListener(server) === undefined && await isReachable(server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
 }
 
 export async function pruneStaleMeshes(): Promise<MeshSweep> {

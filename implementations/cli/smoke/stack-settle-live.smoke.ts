@@ -346,10 +346,13 @@ try {
     const seat = { ...env, COTAL_NAME: "settle-seat", COTAL_ID: "settle-seat", COTAL_LIFECYCLE_UID: uid, COTAL_SPACE: space, COTAL_ACCEPTED_TOKEN: "settle-token" };
     const rejected = cliAs(seat, root, "down", "--yes", "--json");
     check("a live broker's refusal of a managed seat's credential is kept, not reported as a registry mismatch, and nothing stops", rejected.status !== 0 && rejected.env?.error?.message === "Authorization Violation" && broker !== null && alive(broker) && manager !== null && alive(manager), shown(rejected));
-    // A suspended broker takes the connection and sends nothing, so the manager read times out.
+    // A suspended broker takes the connection and sends nothing; down reads its stopped state instead.
     if (broker !== null) process.kill(broker, "SIGSTOP");
+    const hungAt = Date.now();
     const hung = cli(root, "down", "--yes", "--json");
+    const hungMs = Date.now() - hungAt;
     if (broker !== null) process.kill(broker, "SIGCONT");
+    check("down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
     check("down with a suspended broker refuses naming its pid and kill -CONT, and stops nothing", hung.status === 2 && hung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(hung.env.error.message.includes(`pid ${broker}`)) && Boolean(hung.env.error.remedy?.includes(`kill -CONT ${broker}`)) && broker !== null && alive(broker) && manager !== null && alive(manager), shown(hung));
     if (broker !== null) process.kill(broker, "SIGKILL");
     await until(() => gone(space, "stack-broker"), 10_000);

@@ -207,6 +207,13 @@ broker or manager did not answer), `AUTH_REQUIRED` (it needs a sign-in or a fres
 `PERMISSION_DENIED` (it refused the credential), `DEPENDENCY_UNAVAILABLE` (trust material, the
 user-auth service or a space catalog it needs could not be used), or `UNSUPPORTED`.
 
+On Linux, a broker on a loopback address whose process is stopped by a signal, such as SIGSTOP,
+still accepts connections and never answers. Once the first dial to it times out, the refusal names
+that process's pid and gives `kill -CONT <pid>` as the remedy, without waiting out the longer
+confirm, so a command such as `send` or `run ps` returns in a few seconds. `cotal status` shows the
+connection as `broker process <pid> is stopped` and offers the same command. A broker that runs but
+does not answer, or one on another host, still waits out the confirm.
+
 A command with a JSON output exits by its outcome, with or without `--json`:
 
 | Outcome | Exit | Codes |
@@ -1028,9 +1035,10 @@ with its reason and does not stop the `down`; the JSON receipt carries the recor
 `operation.runs`. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
 stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
-manager keeps running, then run `cotal down`. When the broker's process runs but does not answer,
-as a suspended one does, the manager read waits out its bound and `down` refuses
-`TARGET_UNAVAILABLE`, exit 2, naming the broker's pid, and stops nothing. The broker stops last and
+manager keeps running, then run `cotal down`. On Linux, a broker process stopped by a signal, such
+as SIGSTOP, is read from its process state, and `down` refuses `TARGET_UNAVAILABLE`, exit 2, at
+once, naming its pid, and stops nothing. When the broker's process runs but does not answer, the
+manager read waits out its bound and `down` refuses the same way. The broker stops last and
 is never force killed, so `down` does not signal it. Resume a suspended broker with
 `kill -CONT <pid>` and run `cotal down` again; end one that stays unresponsive, then take the route
 above. Controller roots refuse

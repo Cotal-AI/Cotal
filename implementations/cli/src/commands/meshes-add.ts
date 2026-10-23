@@ -353,7 +353,7 @@ export function candidateTarget(space: string, server: string, root: string, mod
 /** The registration-time wording for a failed probe. Deliberately NOT the shared preflight copy:
  *  that speaks to a mesh already in the registry ("stale entry", "re-run `cotal up`"), and here
  *  nothing is recorded yet — the operator is being told what to fix in the command they just ran. */
-export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string): string {
+export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string, pid?: number): string {
   switch (kind) {
     case "unreachable":
       return `✗ no broker answered at ${server} - check the address and that the mesh is up on that machine`;
@@ -369,6 +369,8 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the broker at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, then re-run`;
     case "slow-link":
       return `✗ the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - nothing was registered; retry, and if it keeps happening, check that the broker process is not stopped or overloaded`;
+    case "broker-stopped":
+      return `✗ the broker at ${server} is served by process ${pid}, which is stopped, so it accepts the connection and never answers - nothing was registered; resume it with kill -CONT ${pid} and run this again`;
   }
 }
 
@@ -379,7 +381,7 @@ export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   if (r.ok) return good(undefined);
   const wrongScheme = r.kind === "unreachable" ? await plainNatsAt(target.server) : undefined;
   if (wrongScheme) return bad(wrongScheme, preflightCode(r.kind));
-  return bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+  return bad(verifyFailureMessage(r.kind, target.space, target.server, target.root, r.pid), preflightCode(r.kind));
 }
 
 /** When a `tls://`, `ws://` or `wss://` address did not answer, whether a NATS broker greets on its

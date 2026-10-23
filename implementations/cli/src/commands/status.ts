@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, assessMaintenanceClaim, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MaintenanceClaim, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { stoppedLoopbackListener, accountInventory, assessMaintenanceClaim, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MaintenanceClaim, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -208,6 +208,8 @@ type SelectedResult =
       idp: string | null;
       personas: PersonaCatalog;
       connection: string;
+      /** The stopped process holding a loopback broker's listener, when `connection` is `broker-stopped`. */
+      brokerPid?: number;
       staleRecord: boolean;
       login: { idp: string; subject: string | null; expiresAt: string | null; actor: "granted" | "not-granted" | "not-checkable" | null; grant: { label: string | null; read: string[]; post: string[]; scope: string[] } | null } | null;
       deliveryResponder: DeliveryResponderState | null;
@@ -922,7 +924,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, gaps)) };
   }
   const preflight = await preflightTarget(target);
-  if (!preflight.ok) return { ...base, connection: preflight.kind, staleRecord: preflight.prune, snapshot: { state: "skipped", reason: "broker not connected" } };
+  if (!preflight.ok) return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune, snapshot: { state: "skipped", reason: "broker not connected" } };
   // The mesh-level statement of the same axis (#1576). The folder section says what this machine's
   // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is
   // the question "can I spawn into this mesh right now" actually reduces to. An operator reading a
@@ -1241,6 +1243,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   const states: Readonly<Record<string, string>> = {
     unreachable: "unreachable",
     "slow-link": "connection timed out",
+    "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
     "stale-auth": "credentials need renewal",
     "auth-required": "authentication required",
@@ -1349,10 +1352,11 @@ function nextActions(r: StatusResult): Section {
     items.push({ command: `${cmd} use`, description: "Choose another space" });
     if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }
-  // A local controller stack that does not answer, or one with a member whose process is gone,
-  // restarts its stopped members from its own records.
+  // A stopped broker is resumed, not restarted. A local controller stack that does not answer,
+  // or one with a member whose process is gone, otherwise restarts its stopped members from its own records.
   const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && row.observedProcess === "gone") === true;
-  if (r.selected.resolved && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable") && r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space)
+  if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
+  else if (r.selected.resolved && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable") && r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space)
     items.unshift({ command: `${cmd} up --root ${r.selected.root}`, description: "Restart this stack's stopped members from its recorded inputs" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
   return { title: "Next", blocks: [{ kind: "commands", items }, ...r.hints.map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
@@ -1581,6 +1585,8 @@ async function componentEp(
  *  after its timeout, because the client library does not release a connection it never finished,
  *  and status could then never exit. */
 async function requireGreeting(target: MeshTarget): Promise<void> {
+  const stopped = stoppedLoopbackListener(target.server);
+  if (stopped !== undefined) throw new Error(`the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is served by process ${stopped}, which is stopped`);
   if (!(await isReachable(target.server, { ...(target.tlsRequired ? { tls: true } : {}), timeoutMs: 3_000 })))
     throw new Error(`the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is not answering`);
 }

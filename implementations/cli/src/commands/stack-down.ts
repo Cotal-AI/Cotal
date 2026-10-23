@@ -11,7 +11,7 @@ import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, readNatsInfoGreeting,
+  CommandFailure, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readNatsInfoGreeting,
   releaseMaintenanceLock, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
   recordOperationSpace, stackHomeRemedy, stackRunsUnderOtherHome,
@@ -285,6 +285,11 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   // a repeat has nothing left to stop. A stack that never started has no agents either.
   if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, abandonWarnings);
   if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
+  // A stopped broker takes connections and never answers, so every read through it would wait out
+  // its budget and the broker's own stop would wait on a signal it cannot act on.
+  const broker = members.find((member) => member.role === "broker" && member.live);
+  const brokerPid = broker?.instance.record.value.process?.pid;
+  if (brokerPid !== undefined && processStopped(brokerPid)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPid}, is stopped, so it accepts connections at ${journal0.server} and never answers; no member was stopped`, { target: { ...target, broker: broker!.instance.name, pid: brokerPid }, remedy: `resume it with kill -CONT ${brokerPid} and run cotal down again` });
   const admittedRestore = scopeRefusals(journal0);
   assertJournalWritable(root, values);
   if (!values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
