@@ -134,6 +134,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   reset();
   const got4 = await attempt(["answer", "run-0", "/checkpoint:approve#0"], { by: "dana" });
   c("hosted `answer --by` is refused: the manager records the caller", usageRefusal(got4, "--by is only for the local path"), got4);
+  // Revoke is local only and needs --by, so a hosted one names that requirement with or without --by.
+  for (const by of [{}, { by: "dana" }, { by: "dana", reason: "why" }] as Record<string, string>[]) {
+    reset();
+    const got5 = await attempt(["revoke", "run-0"], by);
+    c(`hosted \`revoke\` ${JSON.stringify(by)} names what revoke requires`, usageRefusal(got5, "run revoke requires --local --by <actor> --reason <text>"), got5);
+  }
   const flags = registry.resolve<Command>("command", "run").flags ?? [];
   const help = (name: string) => flags.find((f) => f.name === name)?.description ?? "";
   c("and the declared flag help places `--file` on resume and `--by` on answer and amend only beside `--local`",

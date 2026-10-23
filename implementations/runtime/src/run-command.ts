@@ -954,9 +954,10 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (values.plain) usage("diagnostic pages produce bounded JSON and take no --plain");
   }
   if ((values["admit-read"] !== undefined || values["admit-publish"] !== undefined) && values.local !== true) usage("admission ceilings belong to the explicit local start");
+  // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.
+  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
-  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
