@@ -2544,7 +2544,9 @@ cotal service stop reviews --space <s>
 ```
 
 This preset supports Linux and an existing registered static-auth root. The executable is an
-absolute protected regular file, with argv supplied separately. There is no shell, PATH lookup,
+absolute protected regular file, with argv supplied separately. A symlink on the root, contract or
+executable path refuses, because a link could be repointed after the check, and the refusal names
+the physical path to use instead, such as `/usr/bin/python3.14` for `/usr/bin/python3`. There is no shell, PATH lookup,
 implicit installation, account switch or open/user-auth credential fallback. For a Node handler,
 select the Node executable and pass the script path in `--handler-args`. That JSON array has at
 most 64 fixed nonsecret strings and its serialized form has at most 8192 characters. The handler

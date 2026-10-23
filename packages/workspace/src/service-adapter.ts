@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, lstatSync, type Stats } from "node:fs";
+import { accessSync, constants, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { endpointToken, token } from "@cotal-ai/core";
@@ -303,7 +303,9 @@ export function serviceAdapterReadiness(input: unknown): ServiceAdapterReadiness
 function pathFacts(path: string): string {
   let entry: Stats;
   try { entry = lstatSync(path); } catch { return `${path} is missing or cannot be read`; }
-  const type = entry.isSymbolicLink() ? "a symlink" : entry.isDirectory() ? "a directory" : entry.isFile() ? "a file" : "a special file";
+  // A symlink's own mode bits grant nothing, so they are not reported.
+  if (entry.isSymbolicLink()) return `${path} is a symlink to ${readlinkSync(path)}`;
+  const type = entry.isDirectory() ? "a directory" : entry.isFile() ? "a file" : "a special file";
   const writable = (entry.mode & 0o022) !== 0 ? ", so group or others can write it" : "";
   return `${path} is ${type} owned by uid ${entry.uid} with mode ${(entry.mode & 0o7777).toString(8).padStart(4, "0")}${writable}`;
 }
@@ -331,14 +333,24 @@ export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclarati
     if (typeof path !== "string" || !isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path)) return invalid(`the ${name} option must be an absolute path with no terminal controls`);
     if (kind === "private-file") { protectedCredentialReference(path); continue; }
     const unprotected = (refused: string): never => {
+      if (lstatSync(refused, { throwIfNoEntry: false })?.isSymbolicLink()) linked(refused);
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${name} is not protected against other local writers: ${pathFacts(refused)}`, { target: { option: name, path, refused } });
+    };
+    // A link can be repointed after this check, so only a physical path is checked and pinned.
+    const linked = (link: string): never => {
+      let physical: string | undefined;
+      try { physical = realpathSync(path); } catch { physical = undefined; }
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${name} crosses a symlink, which could be repointed after this check: ${pathFacts(link)}`, {
+        target: { option: name, path, refused: link }, remedy: physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${physical}`,
+      });
     };
     try {
       const parent = kind === "directory" ? path : dirname(path);
       try { protectedLocalDirectory(parent, "the declared adapter path"); }
       catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(refusedAncestor(parent)); throw error; }
       const entry = lstatSync(path);
-      if (entry.isSymbolicLink() || (kind === "directory" ? !entry.isDirectory() : !entry.isFile())) throw new Error();
+      if (entry.isSymbolicLink()) linked(path);
+      if (kind === "directory" ? !entry.isDirectory() : !entry.isFile()) throw new Error();
       try { assertProtectedEntry("the declared adapter path", path, entry); }
       catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(path); throw error; }
       accessSync(path, constants.R_OK | (kind === "directory" ? constants.X_OK : 0));
