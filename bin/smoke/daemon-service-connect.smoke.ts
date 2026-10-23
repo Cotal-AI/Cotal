@@ -51,12 +51,12 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import {
-  composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
+  CotalEndpoint, SERVICE_AUTHORITY_MAX_BYTES, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
   writeSecretFileAtomic, type SecretStore,
 } from "@cotal-ai/core";
 import {
   deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
-  saveServiceKeys, startAuthService, cotalAuthProvider, type AuthServiceHandle,
+  saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
 import { recordMesh, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -184,7 +184,7 @@ const spaces = ["on", "off", "deny", "brk"].map((s) => `a2b2-${s}-${stamp}`);
 const accounts = await Promise.all(spaces.map((s) => createSpaceAccountAuth(broker, s)));
 const handles: AuthServiceHandle[] = [];
 let nats: ChildProcess | undefined, release: (() => void) | undefined;
-const fixture = { owner: "" };
+const fixture = { owner: "", callerUid: "", sentinelCreds: "" };
 
 try {
   const ctx = await Promise.all(spaces.map(async (space, i) => {
@@ -199,7 +199,7 @@ try {
   }));
   const port = await freePort();
   const servers = `nats://127.0.0.1:${port}`;
-  writeFileSync(join(jsDir, "server.conf"), serverConfig(broker, accounts, { transport: { kind: "plaintext" }, port, storeDir: jsDir, extraAccounts: ctx.map((c) => ({ pub: c.callout.account.pub, jwt: c.callout.account.jwt })) }));
+  writeFileSync(join(jsDir, "server.conf"), serverConfig(broker, accounts, { transport: { kind: "plaintext" }, port, storeDir: jsDir, maxPayload: SERVICE_AUTHORITY_MAX_BYTES + 1024, extraAccounts: ctx.map((c) => ({ pub: c.callout.account.pub, jwt: c.callout.account.jwt })) }));
   nats = spawn("nats-server", ["-c", join(jsDir, "server.conf")], { stdio: "ignore" });
   release = teardownOnSignal(nats, jsDir);
   for (let i = 0; i < 50 && !(await isReachable(servers)); i++) await sleep(200);
@@ -209,11 +209,15 @@ try {
   for (const c of ctx) {
     const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(c.store, c.space))!, idpOrigin, "machine-owner");
     grantActor(c.stateDir, { owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
-    if (c === ctx[0]) fixture.owner = owner;
+    if (c === ctx[0]) {
+      fixture.owner = owner;
+      fixture.callerUid = grantActor(c.stateDir, { owner, actor: "probe", scope: [], allowSubscribe: [], allowPublish: [] }).lifecycleUid!;
+    }
   }
   const svc = await Promise.all(ctx.map((c, i) => startAuthService({ context: { accountPublicKey: c.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: c.space, servers,
     store: c.store, storeIdentity: c.store.identity, stateDir: c.stateDir, publicFace: { port: 0, trustedProxy: false },
-    ...(i === 1 ? {} : { serviceEndpoints: { startup: { kind: "normal" as const } } }) })));
+    ...(i === 1 ? {} : { serviceEndpoints: { startup: { kind: "normal" as const },
+      callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: c.auth.sys.pub, signingSeed: c.auth.sys.signingSeed! }) } } }) })));
   handles.push(...svc);
 
   // The participant records each space from the bundle the real public face serves, behind a counting relay.
@@ -235,6 +239,7 @@ try {
   for (const [i, c] of ctx.entries()) {
     const face = await relay(c.space, svc[i]!.publicUrl!.replace(/\/$/, ""));
     const bundle = await (await fetch(`${svc[i]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; userAuth: MeshEntry["userAuth"]; sentinelCreds: string };
+    if (i === 0) fixture.sentinelCreds = bundle.sentinelCreds;
     const dir = userAuthStateDir(participant, c.space); mkSecretDir(dir);
     const sentinelCredsPath = join(dir, "sentinel.creds"); writeSecretFileAtomic(sentinelCredsPath, bundle.sentinelCreds);
     recordMesh({ space: c.space, server: i === 3 ? brokerPathUrl : bundle.server, root: participant, mode: "user", origin: "manual",
@@ -284,8 +289,28 @@ try {
     const pid = resultOf(reg).proposalId as string;
     const p = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", input: { proposalId: pid }, granter: operator } as never) as { record?: { revision: number } };
     const decided = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide", granter: { kind: "owner", owner },
-      input: { proposalId: pid, expectedProposalRevision: p.record?.revision ?? 0, expectedNameRevision: bound.binding?.revision ?? 0, decision: "approve", callerCeiling: [] } } as never) as { state: string; approval?: { assignment: { assignmentDigest: string } } };
+      input: { proposalId: pid, expectedProposalRevision: p.record?.revision ?? 0, expectedNameRevision: bound.binding?.revision ?? 0, decision: "approve",
+        callerCeiling: [{ endpoint: "ai.cotal.machine", command: "machine-status", instanceId: identityOf(space)!.instanceId, instanceOnly: true }] } } as never) as { state: string; approval?: { assignment: { assignmentDigest: string } } };
     return { bound, decided, pid };
+  };
+
+  const probeMachine = async () => {
+    const tokenResponse = await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } });
+    if (!tokenResponse.ok) throw new Error("fixture IdP refused the probe");
+    const idpToken = (await tokenResponse.json() as { token: string }).token;
+    const exchange = await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/exchange`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken, actor: "probe" }),
+    });
+    if (!exchange.ok) throw new Error(`fixture probe exchange refused (${exchange.status})`);
+    const token = (await exchange.json() as { token: string }).token;
+    const caller = new CotalEndpoint({ space: ON, servers, sentinelCreds: fixture.sentinelCreds, bearer: async () => token,
+      card: { name: "daemon-probe", kind: "endpoint", owner: fixture.owner, actor: "probe" }, lifecycleUid: fixture.callerUid,
+      channels: [], registerPresence: false, watchPresence: false, watchChannels: false, consume: false });
+    caller.on("warning", () => {}); caller.on("error", () => {});
+    try {
+      await caller.start();
+      return await caller.invokeService("ai.cotal.machine", "machine-status", undefined, { instanceId: identityOf(ON)!.instanceId, deadlineMs: 3000 });
+    } finally { await caller.stop(); }
   };
 
   let d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
@@ -312,6 +337,23 @@ try {
       check("C2 the private renewal record exists, mode 0600 in a 0700 directory",
         filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).every((p) => (statSync(join(daemonDir, p)).mode & 0o777) === 0o600)
         && filesUnder(daemonDir).some((p) => p.includes("service-renewal")));
+    });
+
+    await cell("C15 an explicitly granted native caller reaches the daemon's registered command", async () => {
+      const id = identityOf(ON)!;
+      const status = await cotalAuthProvider.serviceEndpointAuthority!({ store: workspaceSecretStore(participant), dir: userAuthStateDir(participant, ON, { readOnly: true }),
+        request: { v: 1, kind: "service-endpoint-authority", operation: "status", requestId: rid(), space: ON,
+          accountPublicKey: id.accountPublicKey, endpoint: id.endpoint, instanceId: id.instanceId, target: { kind: "instance" } } });
+      if (status.result.state !== "status" || status.result.status.state !== "ready") throw new Error("fixture service is not ready");
+      const witness = status.result.status.witness;
+      const granted = await host({ v: 1, kind: "service-endpoint-host", operation: "caller-grant", requestId: rid(), granter: { kind: "owner", owner: fixture.owner },
+        input: { grantee: { owner: fixture.owner, actor: "probe", lifecycleUid: fixture.callerUid },
+          service: { endpoint: id.endpoint, instanceId: id.instanceId, approvalDigest: witness.approvalDigest },
+          capabilities: [{ endpoint: id.endpoint, command: "machine-status", instanceId: id.instanceId, instanceOnly: true }], expectedPolicyRevision: 0 } });
+      check("C15 instrument: owner explicitly granted the exact instance and command", granted.state === "granted");
+      if (granted.state !== "granted") throw new Error("fixture caller grant refused");
+      const reply = await probeMachine();
+      check("C15 machine-status answers void from the registered daemon instance", reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === id.instanceId);
     });
 
     await cell("C3 a second connect shares the connection", async () => {
@@ -360,6 +402,8 @@ try {
       check("C12 never unavailable or ended while the space stands; only connected or connecting", other.length === 0, other.slice(0, 5));
       check("C12 connected for most of the window and connected at the end", connected >= samples.length * 0.8 && samples.at(-1) === "connected", { connected, n: samples.length });
       check("C12 the space still reads the instance as ready", (await instanceStatus(ON)) === "ready");
+      const reply = await probeMachine();
+      check("C12 the registered command still answers after credential renewals", reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === identityOf(ON)!.instanceId);
     });
 
     await cell("C7 outage: not connected while the door is gone, connected again after", async () => {
@@ -377,7 +421,7 @@ try {
       // The shipped binary, as `cotal daemon serve` runs it: no handler of this suite in its process.
       await d.close();
       const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "serve"], {
-        env: { PATH: process.env.PATH ?? "", HOME: home, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+        env: { PATH: process.env.PATH ?? "", HOME: home, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
       let childErr = ""; child.stderr!.on("data", (b) => { childErr += String(b); });
       const childExit = new Promise<number | null>((r) => child.once("exit", (code) => r(code)));
       try {
