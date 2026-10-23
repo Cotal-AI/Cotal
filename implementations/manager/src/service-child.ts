@@ -129,6 +129,12 @@ export function managerServicePreservedExitScope(observation: ManagerServiceObse
   return serviceMetadataDigest({ registration: observation.registration, kind: "preserved-exit", attemptId: preserved.attemptId, inventorySha256: preserved.inventorySha256, impact: { ...policy, agents } });
 }
 
+/** Whether a stop request is published for this managed manager. One that cannot be read counts,
+ *  so it goes through {@link acceptManagerServiceStop} and its refusal. */
+export function managerServiceStopRequested(service: ManagerServiceChild): boolean {
+  try { return readServiceStopRequest(service.context) !== undefined; } catch { return true; }
+}
+
 /** All guards and acceptance publication are synchronous. The caller invokes mgr.stop in the
  *  same event-loop turn, before another native lifecycle callback can change this scope. */
 export function acceptManagerServiceStop(manager: Manager, service: ManagerServiceChild): NativeServiceStopRequest {

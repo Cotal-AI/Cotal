@@ -571,7 +571,7 @@ runs no stop: the command exits 129 and the stack keeps running until `cotal dow
 systemd unit that runs `up --foreground` should set `KillMode=mixed`, so the stop signal reaches
 only `cotal up`, which runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop.
 The default `control-group` mode signals every member at the same time, and a manager signalled
-directly does not stop through its request-bound stop.
+directly stops on its own, without the request-bound stop's receipts.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
@@ -3256,7 +3256,12 @@ On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the se
 prove the seat is gone before it releases the manager lease or service registration. A stop that
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
 an orphan still holds broker rails. When the runtime refuses the stop itself, the shutdown fails at
-once and its error names the refusal as `stop failed: <message>`. After an abrupt manager death, the same logical successor
+once and its error names the refusal as `stop failed: <message>`. A manager that a controller stack
+or `service start` runs stops this way on a plain `SIGTERM` that carries no stop request, such as
+one from `kill`, a systemd stop or a system shutdown, with the default agent policy. Its log shows
+`received SIGTERM with no stop request`, it writes no stop receipt, and the next `cotal down`
+records it as already gone. It ignores a `SIGINT` that carries no stop request and logs one
+warning line, because Ctrl-C reaches it together with the CLI that publishes the request. After an abrupt manager death, the same logical successor
 terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
 records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
 process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
@@ -6475,8 +6480,8 @@ the terminal lifetime and output policy. Native auth and Linear presets use thei
 handlers through this same flow; neither endpoint readiness nor native cleanup is inferred from
 process exit. A foreground manager stops through the same request-bound native stop as
 `service stop`, keeping its agents: the SIGINT or SIGTERM the CLI receives is the confirmation.
-Ctrl-C also reaches the native child, which ignores a signal that carries no stop request and
-prints one warning line for it.
+Ctrl-C also reaches the native child, which ignores a `SIGINT` that carries no stop request and
+prints one warning line for it. A plain `SIGTERM` stops it with the default agent policy.
 Native service child boot never repairs or seeds connector packages. Background stdout/stderr
 go to owner-private logs. `logs --tail <1..1000>` reads a bounded tail; omitted earlier bytes make
 the result partial. Foreground output is not captured there. Log text is not promised to be

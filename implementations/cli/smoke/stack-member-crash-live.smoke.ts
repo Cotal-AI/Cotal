@@ -6,6 +6,8 @@
  *  1. `status` leads its Next with `cotal up --root <root>`, which restarts the stopped member.
  *  2. `ps` refuses: no manager is running for this space, and its Next names bare `cotal up`.
  *  3. `up` starts the manager again, and `ps` is answered.
+ *  4. A SIGINT with no stop request leaves that manager running. A plain SIGTERM, as `kill`, a
+ *     systemd stop or a system shutdown sends, stops it and it exits; `up` starts it again.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the manager its own `up` started. Needs `nats-server` on PATH.
@@ -36,14 +38,16 @@ const cli = (...args: string[]) => {
   return { status: r.status, out: plain(`${r.stdout}${r.stderr}`), stdout: r.stdout };
 };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-/** The running stack manager's PID, as `status --json` reports its owned instance. */
-const managerPid = (): number | undefined => {
+/** The running stack manager's owned instance, as `status --json` reports it. */
+const runningManager = (): { pid: number; instanceId: string } | undefined => {
   const r = cli("status", "--json");
   try {
-    const rows = (JSON.parse(r.stdout) as { result?: { services?: { instances?: { definition: string; observedProcess: string; pid: number | null }[] } } }).result?.services?.instances ?? [];
-    return rows.find((row) => row.definition === "stack-manager" && row.observedProcess === "running")?.pid ?? undefined;
+    const rows = (JSON.parse(r.stdout) as { result?: { services?: { instances?: { definition: string; instanceId: string; observedProcess: string; pid: number | null }[] } } }).result?.services?.instances ?? [];
+    const row = rows.find((item) => item.definition === "stack-manager" && item.observedProcess === "running");
+    return row?.pid ? { pid: row.pid, instanceId: row.instanceId } : undefined;
   } catch { return undefined; }
 };
+const managerPid = (): number | undefined => runningManager()?.pid;
 
 try {
   const created = cli("space", "create", "crash");
@@ -71,6 +75,22 @@ try {
 
   const again = cli("up");
   check("up starts the manager again", again.status === 0, again.out);
+  check("...and ps is answered", cli("ps").status === 0);
+
+  // Ctrl-C reaches the manager together with the CLI that publishes the stop request, so a SIGINT
+  // without one is ignored. A plain SIGTERM carries no request either, and the manager stops on it.
+  const signalled = runningManager();
+  check("status names the restarted manager", signalled !== undefined && alive(signalled.pid), signalled);
+  if (signalled !== undefined) process.kill(signalled.pid, "SIGINT");
+  await sleep(3000);
+  check("a SIGINT with no stop request leaves the manager running", signalled !== undefined && alive(signalled.pid));
+  if (signalled !== undefined) process.kill(signalled.pid, "SIGTERM");
+  for (let i = 0; i < 150 && signalled !== undefined && alive(signalled.pid); i++) await sleep(100);
+  check("a plain SIGTERM stops the manager and it exits", signalled !== undefined && !alive(signalled.pid));
+  const log = signalled ? cli("service", "logs", "stack-manager", "--instance", signalled.instanceId, "--tail", "40") : undefined;
+  check("...and its log names the stop it ran", log?.out.includes("received SIGTERM with no stop request; stopping with the default agent policy") === true, log?.out);
+  const afterTerm = cli("up");
+  check("up starts the manager after its SIGTERM stop", afterTerm.status === 0, afterTerm.out);
   check("...and ps is answered", cli("ps").status === 0);
 } finally {
   const down = cli("down", "--yes");
