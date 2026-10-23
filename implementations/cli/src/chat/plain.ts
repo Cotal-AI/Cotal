@@ -21,6 +21,7 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { oneLine } from "@cotal-ai/core";
+import { plainPunctuation } from "@cotal-ai/workspace";
 import type { AdmittedChatSession, SessionEvent } from "./session.js";
 import {
   addNotice,
@@ -71,7 +72,8 @@ export async function runPlain(opts: {
   let shared: ReadonlyMap<string, readonly string[]> = new Map();
   const unacked: string[] = [];
 
-  const print = (line: string): void => { output.write(`${line}\n`); };
+  // The rows are the terminal view's, so their punctuation is written in ASCII, as plain does.
+  const print = (line: string): void => { output.write(`${plainPunctuation(line)}\n`); };
   /** Print transcript entries that appeared since the last flush, then acknowledge shown messages. */
   const flush = (): void => {
     const total = state.dropped + state.transcript.length;

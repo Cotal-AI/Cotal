@@ -16,7 +16,7 @@
     {
       "name": "statusBadge",
       "path": "implementations/cli/src/ui.ts",
-      "anchor": "export function statusBadge(status: PresenceStatus): string {",
+      "anchor": "export function statusBadge(status: PresenceStatus, marks = true): string {",
       "rationale": "Shared CLI textual status renderer; its working branch names unknown progress."
     }
   ],
@@ -524,7 +524,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -535,7 +535,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -553,7 +553,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -564,7 +564,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -575,7 +575,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -586,7 +586,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -597,7 +597,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -622,7 +622,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -633,7 +633,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1586,23 +1586,23 @@
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "derived-output",
-      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activity}`",
+      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status, !ascii)}${presenceDetail(ev.presence)}${activity}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "renderer-call",
-      "anchor": "statusBadge(ev.presence.status)",
+      "anchor": "statusBadge(ev.presence.status, !ascii)",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1613,7 +1613,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1624,7 +1624,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1635,7 +1635,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1646,7 +1646,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {

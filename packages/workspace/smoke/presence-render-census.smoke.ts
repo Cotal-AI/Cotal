@@ -324,7 +324,7 @@ for (const renderer of manifest.renderers) {
   assert.ok(uses.length > 0, `renderer declaration has no scanned call sites: ${renderer.name}`);
 }
 
-const sharedStatusBadgeAnchor = 'return c.green("● working · progress unknown");';
+const sharedStatusBadgeAnchor = 'return c.green(`${mark("●")}working · progress unknown`);';
 const connectorHonestStatusAnchor = 'status === "working" ? "working · progress unknown" : status;';
 const connectorRosterProgressAnchor = 'const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;';
 const inkDetailStatusAnchor = '<Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>';

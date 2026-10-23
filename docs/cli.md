@@ -3836,7 +3836,8 @@ is registered, unregistered, or could not be read. The space's native policy dec
 is allowed, and nothing creates registry metadata.
 
 The terminal view needs a terminal for input and output; without one, `chat` refuses and names
-`--plain` and `--stdio`. `--plain` is the line flow, with a separate confirmation for each send.
+`--plain` and `--stdio`. `--plain` is the line flow, with a separate confirmation for each send,
+and it writes its punctuation in ASCII as every plain report does.
 `--stdio` runs the NDJSON participant protocol for programs: requests on stdin, records on stdout,
 diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
@@ -4113,7 +4114,9 @@ cotal console [--plain] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to watch |
 | `--plain` | off | Line stream instead of the TUI |
 
-A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. On a
+A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. The
+line stream is also what a pipe gets. On `--plain`, and under a locale that is not UTF-8, it writes
+no status marks and its punctuation in ASCII. On a
 user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
 `admin`. Inside the TUI, operator control (`D` kill, `:spawn`, `:status`, `:purge`) rides the
 same per-action instrument path as `cotal stop` and `cotal ps`, never the observer; a raw
