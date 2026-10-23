@@ -265,7 +265,8 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started");
     const view: Report = result.written.length ? { ...members, sections: [...members.sections, { blocks: [{ kind: "fields", rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] } : members;
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
-      managed ? { command: "cotal spawn", description: "Launch your default agent" } : { command: "cotal up", description: "Add the manager to this stack" },
+      // A bare spawn targets the selected space, which this up does not change when one is set.
+      managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: "cotal up", description: "Add the manager to this stack" },
       { command: "cotal down", description: "Stop every recorded member" },
     ] }] }];
     return { ...view, sections: [...view.sections, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...next] };
