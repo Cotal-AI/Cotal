@@ -465,7 +465,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's space | Space name |
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
-| `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it) |
+| `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f` |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
@@ -717,7 +717,11 @@ The journal reads earlier three-member auth/open records with an unattempted aut
 Its next write records all four roles. It neither adopts legacy processes nor converts a mode.
 
 A repair `up` on a mesh whose broker died reopens the store its record names, and refuses a
-different `--store-dir` rather than silently opening a second store.
+different `--store-dir` rather than silently opening a second store. `down` drops that record, so a
+later start without `--store-dir` reads the store its last broker served from the broker config `up`
+wrote. When that store is not the default `.cotal/nats` and still holds JetStream data while the
+default store holds none, such as after `backup restore --store-dir`, the start refuses `CONFLICT`
+(exit 2) and names it. Pass `--store-dir <dir>` to reopen it.
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit

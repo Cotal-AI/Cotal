@@ -1059,6 +1059,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         rotateSys: values["rotate-sys"],
         maxSessions,
         noManager,
+        storeDir: values["store-dir"],
       });
       if (previewRoot) console.log(c.yellow("! this preview used the invoking folder, not the inherited home store; before applying, prepare it with `cotal space create <space> --root .`"));
       return;
@@ -1086,6 +1087,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         rotateSys: values["rotate-sys"],
         maxSessions,
         noManager,
+        storeDir: values["store-dir"],
       });
     } finally {
       releaseMaintenanceLock(lock);
@@ -1167,6 +1169,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Never runs during a resume attempt, which keeps its own store checks. The reachability probe
     // here is reused as `listenerReachable` further down instead of probing twice.
     let repairProbe: boolean | undefined;
+    let repairing = false;
     if (!resumeAttempt) {
       const repairSpace = values.space ?? folderSpace();
       const repairRoot = cotalRoot();
@@ -1175,6 +1178,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       );
       if (heldForRepair) {
         repairProbe = await isReachable(server);
+        repairing = !repairProbe;
         if (!repairProbe) {
           if (values["store-dir"] !== undefined) {
             const requestedStoreDir = resolve(values["store-dir"]);
@@ -1524,6 +1528,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   }
 
+  // A repair keeps its own store rules above, and a resume or restore names its store.
+  if (!resumeAttempt && !repairing && values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   const boundListener: DetachOpts["boundListener"] = restored ? {
     serverName: restored.serverName,
@@ -2823,6 +2829,8 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // exists to remove. Before the dry-run print and before anything boots.
   if (opts.rotateSys && open)
     throw new Error("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate");
+  // Before the dry-run print and before connector preflight or any write, as the refusals above.
+  if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
 
   if (opts.dryRun) {
     // Dial-host SAN must refuse here too (S6). The real route runs assertServesDialHost after
@@ -2929,7 +2937,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   try {
     // `m.broker?.host`, not the defaulted `host`: same reason as the flag path — only a host the
     // manifest actually declared is an exposure decision worth persisting.
-    ({ pid, controlPlane, authService, deliveryResponderBound } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath, maxSessions: opts.maxSessions, noManager: effectiveNoManager, quietBoot: opts.freshTeamBoot }));
+    ({ pid, controlPlane, authService, deliveryResponderBound } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath, maxSessions: opts.maxSessions, noManager: effectiveNoManager, quietBoot: opts.freshTeamBoot, ...(opts.storeDir ? { storeDir: opts.storeDir } : {}) }));
   } catch (e) {
     if (opts.freshTeamBoot) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh broker startup did not confirm completion after its launch spec was written; the listener or control plane may have changed state and the boot was not retried", { target: { space: m.space, deploymentId, launchSpec: specPath }, changed: [{ kind: "launch-spec-written", path: specPath }], remedy: "inspect this exact run and the recorded local listener, manager and auth state before another boot" });
     console.error(c.red(`✗ ${(e as Error).message}`));
@@ -3032,6 +3040,8 @@ interface UpManifestFlags {
    *  NO manager starts on this host. The manifest's agents are booted BY its manager, so a manifest
    *  declaring agents under `--no-manager` is a contradiction refused before anything boots. */
   noManager?: boolean;
+  /** `--store-dir`: the JetStream store this boot opens instead of `.cotal/nats`. */
+  storeDir?: string;
 }
 
 /** Return a copy of the prepared manifest with CLI overrides applied to broker/space/runtime, so the
@@ -4200,6 +4210,22 @@ function validateRecorded(
     process.exit(1);
   }
   return transport;
+}
+
+/** `down` drops the record that named a custom or restored store, so a later start that names none
+ *  would open an empty second store and leave the data where it was. Each real start writes its
+ *  `store_dir` into the broker config it renders, and that file outlives `down`: while the store it
+ *  names differs and still holds JetStream data, and the default store holds none, refuse and name it. */
+function refuseUnnamedLastStore(storeDir: string): void {
+  if (existsSync(join(storeDir, "jetstream"))) return;
+  for (const conf of [join(authDir(cotalRoot()), "server.conf"), cotalPath("server-open.conf")]) {
+    if (!existsSync(conf)) continue;
+    // The core renderer writes the path as a JSON string.
+    const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
+    const last = named === undefined ? undefined : resolve(JSON.parse(named) as string);
+    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream")))
+      throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
+  }
 }
 
 /**
