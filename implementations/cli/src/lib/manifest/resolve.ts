@@ -49,8 +49,16 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
       { message: "`spaces:` is not supported in v1 (single-space) - use a scalar `space:`", path: ["spaces"], ...locate(["spaces"]) },
     ]);
 
+  // Expanding aliases can still refuse, as an alias bomb does; that is a problem in the file too.
+  let js: unknown;
+  try {
+    js = doc.toJS();
+  } catch (e) {
+    throw new ManifestError(sourcePath, [{ message: (e as Error).message.split("\n")[0] }]);
+  }
+
   // 2. Schema (strict): shape + unknown-key rejection. Map every Zod issue back to a located line.
-  const parsed = MeshManifestSchema.safeParse(doc.toJS());
+  const parsed = MeshManifestSchema.safeParse(js);
   if (!parsed.success)
     throw new ManifestError(
       sourcePath,

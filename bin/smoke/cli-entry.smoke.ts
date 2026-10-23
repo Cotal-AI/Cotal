@@ -274,6 +274,47 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check("persona create refuses a read-only catalog with PERMISSION_DENIED and leaves it as it was",
       refusedCreate.status === 2 && /PERMISSION_DENIED/.test(refusedCreate.stderr) && after.mode === "500" && after.files.join() === "default.md", { ...shown(refusedCreate), after });
   }
+  // A catalog travels with a cloned repo, so the legacy list escapes the control characters it reads
+  // from one, and the flags that write a persona refuse them.
+  const E = "\x1b]0;PWN\x07\x1b[2J";
+  const raw = /[\x07\x1b]/;
+  const hostile = (home: string) => {
+    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", ".cotal", "agents", "h.md"), `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`);
+  };
+  for (const argv of [["personas", "list"], ["personas", "list", "-v"]]) {
+    const r = cotal(argv, hostile, noSeed);
+    check(`cotal ${argv.join(" ")} escapes the catalog's control characters`,
+      r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("r\\u001b]0;PWN\\u0007R") && r.stdout.includes("d\\u001b[2JD") &&
+        (argv.length === 2 || r.stdout.includes("    body \\u001b]0;PWN\\u0007\\u001b[2JB")), shown(r));
+  }
+  for (const argv of [["persona", "create", "q", "--role"], ["persona", "create", "q", "--model"], ["personas", "new", "q", "--role"]]) {
+    const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
+    check(`cotal ${argv.join(" ")} refuses control characters`,
+      r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
+  }
+}
+
+// ── team check names each located manifest problem, without quoting a persona file ───────────────
+{
+  const head = "apiVersion: cotal/v1\nkind: Mesh\nspace: entry\nagent: claude\n";
+  const files = (manifest: string) => (home: string) => {
+    mkdirSync(join(home, "..", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", "agents", "sec.md"), "---\nname: sec\nmodel: [SECRETPERSONA42\n---\nSec.\n");
+    writeFileSync(join(home, "..", "m.yaml"), manifest);
+  };
+  const cases: [string, string, string[]][] = [
+    ["a tab indent", `${head}channels:\n\tops: {}\n`, ["m.yaml:6:1: Tabs are not allowed as indentation at line 6, column 1"]],
+    ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'Unrecognized key: "chanels"']],
+    ["an alias bomb", `${head}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, ["m.yaml: Excessive alias count indicates a resource exhaustion attack"]],
+    ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ['m.yaml:7:16: "ghost" is not declared in agents: (at channels.ops.subscribe)']],
+    ["a persona with invalid frontmatter", `${head}agents:\n  sec: agents/sec.md\nchannels:\n  ops:\n    subscribe: [sec]\n`, ["m.yaml: agent file ", "sec.md: invalid YAML frontmatter; Flow sequence in block collection must be sufficiently indented and end with a ] at line 2, column 24 (at agents.sec)"]],
+  ];
+  for (const [label, manifest, located] of cases) {
+    const r = cotal(["team", "check", "m.yaml"], files(manifest), noSeed);
+    check(`team check names ${label} by file, line and reason`,
+      r.status === 1 && located.every((part) => r.stderr.includes(part)) && r.stderr.includes("fix each named problem and run team check again") && !r.stderr.includes("SECRETPERSONA42"), shown(r));
+  }
 }
 
 // ── Unknown words, prefixes, uninstalled seeded commands ──────────────────────────────────────────

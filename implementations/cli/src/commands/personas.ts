@@ -3,6 +3,7 @@ import {
   agentFilePath,
   assertValidName,
   loadAgentFile,
+  oneLine,
   personaDir,
   type CompletionResult,
   type ParsedArgs,
@@ -137,21 +138,24 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   // `--running` is an explicit live overlay: connect, snapshot who's present, and mark each persona.
   // Fails loud if the mesh is unreachable (presentNames exits) — never a silent best-effort.
   const present = running ? await presentNames(values) : undefined;
-  const pad = Math.max(...entries.map((e) => e.name.length));
+  // A catalog travels with a cloned repo, so every value read from it is shown with its control
+  // characters escaped, as `persona` and `persona show` show them.
+  const pad = Math.max(...entries.map((e) => oneLine(e.name).length));
   for (const e of entries) {
+    const name = oneLine(e.name).padEnd(pad);
     if (e.error) {
-      console.log(`${c.red(e.name.padEnd(pad))}  ${c.red("⨯ unparseable")} ${c.dim(e.error)}`);
+      console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(e.error))}`);
       continue;
     }
     const d = e.def!;
     const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○")) : undefined;
-    const meta = [d.role && c.cyan(d.role), d.model && c.dim(`model=${d.model}`), d.owner && c.dim(`owner=${d.owner}`), live]
+    const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
-    console.log(`${c.bold(e.name.padEnd(pad))}  ${meta}`.trimEnd());
+    console.log(`${c.bold(name)}  ${meta}`.trimEnd());
     const desc = d.description ?? firstLine(d.persona);
-    if (desc) console.log(c.dim(`  ${truncate(desc, 100)}`));
-    if (verbose && d.persona) console.log(d.persona.replace(/^/gm, "    ") + "\n");
+    if (desc) console.log(c.dim(`  ${oneLine(truncate(desc, 100))}`));
+    if (verbose && d.persona) console.log(d.persona.split(/\r?\n/).map((line) => `    ${oneLine(line)}`).join("\n") + "\n");
   }
 }
 

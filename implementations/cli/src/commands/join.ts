@@ -6,7 +6,6 @@ import {
   parseJoinLink,
   resolvePeer,
   AmbiguousPeerError,
-  DEFAULT_SERVER,
   mintCreds,
   mintLifecycleUid,
   assertLifecycleToken,
@@ -127,15 +126,25 @@ export async function join(args: ParsedArgs): Promise<void> {
   // and self-mint, so a bare `cotal join` works outside the project instead of crashing credless.
   if (link || values.token || values.creds) {
     space = values.space ?? link?.space ?? resolveSpace(process.cwd());
-    server = values.server ?? link?.servers ?? DEFAULT_SERVER;
+    // The credential goes only to a broker the caller paired it with: `--server`, the link's own
+    // address, or the address the space is registered at. The default address is never assumed for it.
+    const recorded = (values.server ?? link?.servers) === undefined ? findMesh(space) : undefined;
+    const paired = values.server ?? link?.servers ?? recorded?.server;
+    if (paired === undefined) {
+      console.error(c.red(`✗ ${values.creds ? "--creds" : "--token"} needs --server <url> or a registered --space: space "${space}" is not registered here, so nothing was dialed`));
+      console.error(c.dim("  pass the broker this credential belongs to with --server <url>, or join with its link"));
+      process.exit(1);
+    }
+    server = paired;
+    if (recorded?.tlsRequired) auth.tls = true;
     try {
       await refreshRegistrationPolicy({ space, policy: findMesh(space)?.policy });
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
     }
-    // An omitted server must still match a recorded user mesh on a non-default port. Checking
-    // DEFAULT_SERVER here would miss that record and probe an unrelated broker with static creds.
+    // An omitted server must still match a recorded user mesh on a non-default port, so the check
+    // gets the caller's own server and not the one resolved from the record.
     refuseStaticCredsForKnownUserAuthOrExit(space, values.server ?? link?.servers, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One

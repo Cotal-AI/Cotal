@@ -12,6 +12,8 @@
  *   3. `--creds --lifecycle-uid <ok>` → proceeds PAST the pairing gate (fails later at the
  *      unreachable-server preflight, which is the point: the refusal is gone).
  *   4. same via COTAL_LIFECYCLE_UID env (the launcher seam).
+ *   5. `--creds` / `--token` with no `--server` go to the broker the space is registered at, and an
+ *      unregistered space is refused before any dial. The default address is never assumed.
  *
  * Run: pnpm smoke:join-creds
  */
@@ -47,6 +49,9 @@ const run = (mode: string, uid = "", env: Record<string, string> = {}): Promise<
 
 const dir = mkdtempSync(pathJoin(tmpdir(), "join-pair-"));
 const credsPath = pathJoin(dir, "x.creds");
+const cotalHome = pathJoin(dir, "cotal-home");
+process.env.COTAL_HOME = cotalHome; // sandbox the registry before the module that reads it loads
+const { recordMesh } = await import("@cotal-ai/workspace");
 writeFileSync(credsPath, "-----BEGIN NATS USER JWT-----\nplaceholder\n------END NATS USER JWT------\n");
 
 try {
@@ -83,6 +88,17 @@ try {
     const r = await run("open-env", "", { COTAL_LIFECYCLE_UID: mintLifecycleUid() });
     check("an OPEN join IGNORES an ambient COTAL_LIFECYCLE_UID (self-mints, proceeds past the gate)",
       r.code === 1 && !/applies only to an explicit/.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
+  }
+  // A credential with no --server: the registered broker, or a refusal before any dial.
+  recordMesh({ space: "jpair-rec", server: "nats://127.0.0.1:1", root: dir, mode: "auth", ts: new Date().toISOString() });
+  for (const [mode, flag] of [["creds-noserver", "--creds"], ["token-noserver", "--token"]] as const) {
+    const unregistered = await run(mode, mintLifecycleUid(), { COTAL_HOME: cotalHome, JPAIR_SPACE: "jpair-none" });
+    check(`${flag} with no --server on an unregistered space is refused before any dial`,
+      unregistered.code === 1 && unregistered.stderr.includes(`${flag} needs --server <url> or a registered --space: space "jpair-none" is not registered here, so nothing was dialed`) &&
+        !/can't reach|4222/.test(unregistered.stderr), unregistered.stderr);
+    const registered = await run(mode, mintLifecycleUid(), { COTAL_HOME: cotalHome, JPAIR_SPACE: "jpair-rec" });
+    check(`${flag} with no --server dials the broker the space is registered at`,
+      registered.code === 1 && registered.stderr.includes("nats://127.0.0.1:1 ") && !/4222/.test(registered.stderr), registered.stderr);
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

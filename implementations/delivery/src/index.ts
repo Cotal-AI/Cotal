@@ -62,7 +62,7 @@ const deliveryCommands: Command[] = [
       { name: "store", type: "string", value: "<file>", description: "append records here (default: .cotal/feedback/feedback.jsonl)" },
       { name: "space", type: "string", value: "<s>", description: "space to announce feedback into (default: beta-feedback)" },
       { name: "channel", type: "string", value: "<name>", description: "channel to multicast feedback to (default: feedback)" },
-      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the broker --space is registered at)" },
       { name: "creds", type: "string", value: "<file>", description: "scoped feedback-intake NATS cred (required)" },
       { name: "max-bytes", type: "string", value: "<n>", description: "max request body size in bytes (default: 65536)" },
       { name: "rate-limit", type: "string", value: "<n>", description: "max requests per tester per minute (default: 30)" },

@@ -2989,9 +2989,9 @@ Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `
 `--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
 must name the requested persona and keep their original bytes. They cannot be combined with
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
-including `--subscribe ""` for no channels, and accepts `--role` and `--model`. `--harness` must
-name a harness this machine knows, as `config set harness` requires, or creation refuses with
-`USAGE_INVALID` and writes nothing.
+including `--subscribe ""` for no channels, and accepts `--role` and `--model`. Both refuse control
+characters with `USAGE_INVALID`. `--harness` must name a harness this machine knows, as
+`config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
 persona is one: its file is `default.md` and its agents launch as `default_agent`.
@@ -3017,7 +3017,8 @@ Plain confirmation uses numbered choices. Scripts and JSON removal require `--ye
 The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
 `show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
-draft validation and commit fence. Only its explicit `--running` overlay connects to the mesh.
+draft validation and commit fence. Its `list` escapes control characters in the names, fields and
+bodies it prints, as `persona show` does. Only its explicit `--running` overlay connects to the mesh.
 
 ## supervise
 
@@ -4458,8 +4459,12 @@ cotal join --link <url> | --token <t>
 | `--tls` | off | Connect over TLS |
 
 An interactive presence: join a space under your own name and role, without launching an agent
-harness. A `--link` or `--token` supplies the where and the auth in one value. See
+harness. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.md) and [Identity and auth](identity-and-auth.md).
+
+A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
+keeping that registration's TLS requirement. A space not registered here is refused before
+anything is dialed. The default address is never assumed for a credential.
 
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
@@ -4672,7 +4677,8 @@ and `persona` have per-space values. A write that a variable outranks in this sh
 with a `PREFERENCE_SHADOWED` warning naming the variable. Setting a value that is already saved, or
 unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
 with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
-refused with `CONFLICT`.
+refused with `CONFLICT`. A preferences folder you cannot write is refused with `PERMISSION_DENIED`
+(exit 2), naming the folder, before anything is changed.
 
 `result.settings` (or `result.setting` for `get`) holds each key's `value`, its `winner`
 (`{source, name, value}`, where `source` is `environment`, `space`, `user` or `default`) and the
@@ -4944,6 +4950,8 @@ directory it searched from, before it reads a credential or dials a broker.
 See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
+Without `--server` it dials the broker its `--space` is registered at, and refuses an unregistered
+space before dialing.
 `--port` takes a decimal port from 1 to 65535 and is checked before the intake dials the broker.
 
 ## Plumbing
@@ -5520,6 +5528,10 @@ capabilities came from the manifest, a persona or neither. Terminal tables show 
 rows of each kind. The JSON result includes all resolved sources, merged policies,
 inherited scopes and, when requested, the channel graph, without persona bodies,
 kickoff prompts or opaque launch-option values.
+A manifest it cannot resolve is refused with `SCHEMA_INVALID` (exit 1). The refusal names each
+problem by file, line and column where the parser has them, the key path, and the reason, and
+`--json` lists every problem under `target.issues`. A problem in a referenced persona
+names that file and the parser's reason without quoting its contents.
 This file check does not prove live authorization, installed applications or launch readiness.
 These read views do not apply a boot, an additive deployment or a removal.
 

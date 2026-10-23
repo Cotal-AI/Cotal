@@ -11,7 +11,7 @@
  * Run: pnpm smoke:config-preferences
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -253,6 +253,21 @@ const ansi = /\x1b\[/;
   check("two concurrent writers lose no reported write", codes.every((code, i) => (code === 0 ? landed[i] : code === 2 && !landed[i])) && after.revision === start + landed.filter(Boolean).length, { codes, after });
   run(["config", "unset", "persona"]);
   run(["config", "unset", "editor"]);
+}
+
+// ── a preferences folder you cannot write is refused, naming it, and nothing changes ─────────────
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const dir = join(xdg, "cotal");
+  const before = fileText();
+  chmodSync(dir, 0o500);
+  try {
+    const r = run(["config", "set", "color", "always", "--json"]);
+    check("a read-only preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder",
+      r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "PERMISSION_DENIED" && r.envelope.error.message.includes(dir) && /chmod u\+w/.test(r.envelope.error.remedy ?? ""), shown(r));
+    check("and the read-only folder's preferences are unchanged", fileText() === before);
+  } finally {
+    chmodSync(dir, 0o700);
+  }
 }
 
 // ── an invalid file stops every command but help and completion, and is never reset ──────────────

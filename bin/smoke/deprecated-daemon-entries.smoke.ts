@@ -178,6 +178,16 @@ try {
     check(`the ${mode} twin's stderr is the entry's without the warning`,
       comparable(publicRun.stderr, warning) === comparable(twinRun.stderr, warning), { publicRun: publicRun.stderr.slice(-800), twinRun: twinRun.stderr.slice(-800) });
   }
+  // Without --server the intake credential goes only to the broker its space is registered at, and
+  // this sandbox registers none, so the intake refuses before it dials.
+  {
+    const creds = join(root, "intake.creds");
+    writeFileSync(creds, "placeholder\n", { mode: 0o600 });
+    const run = await runLine(["feedback-intake", "--keys", keys, "--creds", creds, "--space", SPACE, "--port", String(await freePort())]);
+    check("feedback-intake with no --server refuses an unregistered space before any dial",
+      !run.stopped && run.status === 1 && run.stderr.includes(`--creds needs --server <url> or a registered --space: space "${SPACE}" is not registered here, so nothing was dialed`) && !/Can't reach/.test(run.stderr),
+      run.stderr.slice(-800));
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure } from "./output.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
@@ -224,8 +224,21 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     const problem = spec.check(value);
     if (problem) throw new CommandFailure("refused", "USAGE_INVALID", `invalid ${key} ${JSON.stringify(value)}: ${problem}`);
   }
-  mkdirSync(globalConfigDir(), { recursive: true, mode: 0o700 });
-  const lock = acquireLock(`${preferencesPath()}.lock`, { label: "a preferences write", waitMs: 10_000 });
+  const dir = globalConfigDir();
+  let lock: ReturnType<typeof acquireLock>;
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    lock = acquireLock(`${preferencesPath()}.lock`, { label: "a preferences write", waitMs: 10_000 });
+  } catch (e) {
+    // Nothing is written before the lock is held, so a folder that cannot be written is a definite refusal.
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM" || code === "EROFS")
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences folder ${dir} cannot be ${existsSync(dir) ? "written" : "created"} (${code}); nothing was changed`, {
+        target: { path: dir },
+        remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${dir}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
+      });
+    throw e;
+  }
   try {
     const current = readPreferences();
     if (current.revision !== expectedRevision)
