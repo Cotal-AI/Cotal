@@ -8,10 +8,15 @@ export interface OfflineValues {
   handler?: string;
 }
 
-/** A workflow program's source, or the TARGET_NOT_FOUND refusal every run verb gives a file it cannot read. */
+/** A workflow program's source, or the refusal every run verb gives a file it cannot read or that
+ *  is empty. A run's source must not be empty (the manager's `run-start` schema), so validate refuses
+ *  that file as start does. */
 export function sourceOf(file: string): string {
-  try { return readFileSync(file, "utf8"); }
+  let source: string;
+  try { source = readFileSync(file, "utf8"); }
   catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the workflow source file could not be read", { target: { file } }); }
+  if (source === "") throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is empty, and a run's source must not be empty", { target: { file }, remedy: `write the program into ${file}` });
+  return source;
 }
 
 function scriptOf(file: string | undefined): SimScript {

@@ -230,6 +230,23 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   rmSync(dir, { recursive: true, force: true });
 }
 
+// An empty source file is refused by validate and by a hosted start alike, before anything is
+// checked or sent. Validate used to pass an empty file that start then broke on.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-source-bytes-"));
+  const empty = join(dir, "e.cotal.js");
+  writeFileSync(empty, "");
+  for (const [file, says] of [[empty, "is empty"]] as const) {
+    reset();
+    const validated = await runWorkflow({ values: {}, positionals: ["validate", file], raw: [] }).then(() => undefined, (e: Error) => e);
+    c(`validate refuses a source file that ${says}, SCHEMA_INVALID, exit 1`, isCommandFailure(validated) && validated.code === "SCHEMA_INVALID" && exitCode(validated.outcome, validated.code) === 1 && validated.message.includes(says), validated);
+    reset();
+    const started = await attempt(["start"], { file });
+    c(`a hosted start refuses a source file that ${says} the same way, before any connect`, isCommandFailure(started) && started.code === "SCHEMA_INVALID" && started.message.includes(says), started);
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
+
 restore();
 console.log(`run-command-usage: ${ok} ok, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
