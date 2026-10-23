@@ -287,7 +287,10 @@ released install.
 Before an upgraded generation commits, reconciliation also refreshes already installed harness
 copies through each connector's setup provider. The provider runs even when its native executable
 is unavailable: an installed integration that cannot be updated must fail, not disappear from the
-upgrade checks. A refresh failure leaves the older stamp and recovery cursor intact. The reconcile
+upgrade checks. A refresh failure leaves the older stamp and recovery cursor intact. A Claude
+plugin installation at local or project scope that its update does not reach produces a warning and lets
+the generation commit, so one project's record cannot block every command. A user-scope installation
+that does not update still fails. The reconcile
 lock stays held while the extension writer lock is released for provider loading and native refresh,
 then reacquired. A manifest change during that interval refuses the generation commit. This keeps
 ordinary first use after an npm upgrade on the same harness-refresh path as `cotal update`.

@@ -348,8 +348,12 @@ function install(name: string, scope: string, expectedVersion?: string): void {
 }
 
 /** Update existing registrations through Claude, including caches from an earlier Git marketplace.
- * Disabled installs stay disabled. Records for deleted projects cannot load and are left alone. */
-function refreshInstalls(name: string, entries: PluginEntry[], version: string): void {
+ * Disabled installs stay disabled. Records for deleted projects cannot load and are left alone. A
+ * local or project install the update does not reach (Claude Code can apply an update run in a folder
+ * to an enclosing project that has its own install) does not stop the others: it is returned as a
+ * warning naming its project and the command that removes it. A user-scope install must update. */
+function refreshInstalls(name: string, entries: PluginEntry[], version: string): string[] {
+  const warnings: string[] = [];
   for (const entry of entries) {
     const scope = entry.scope;
     if (scope !== "user" && scope !== "local" && scope !== "project")
@@ -358,13 +362,17 @@ function refreshInstalls(name: string, entries: PluginEntry[], version: string):
     if (typeof cwd !== "string") throw new Error(`${name}@${MARKETPLACE} (${scope} scope) has no project path`);
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) continue;
     if (resolvedPluginCurrent(entry, version, name)) continue;
+    const where = scope === "user" ? "user scope" : `${scope} scope, ${cwd}`;
     const update = commandIn(cwd, "plugin", "update", `${name}@${MARKETPLACE}`, "--scope", scope);
-    if (update.status !== 0) throw new Error(`plugin update failed (${name}, ${scope} scope):\n${update.output}`);
+    if (update.status !== 0) throw new Error(`plugin update failed (${name}, ${where}):\n${update.output}`);
     const current = listPlugins(cwd).find((candidate) => candidate.id === entry.id && candidate.scope === scope &&
       (scope === "user" || candidate.projectPath === entry.projectPath));
-    if (!current || !resolvedPluginCurrent(current, version, name))
-      throw new Error(`${name}@${MARKETPLACE} (${scope} scope) did not load the updated plugin ${version}`);
+    if (current && resolvedPluginCurrent(current, version, name)) continue;
+    const stale = `${name}@${MARKETPLACE} (${where}) did not load the updated plugin ${version}`;
+    if (scope === "user") throw new Error(stale);
+    warnings.push(`warning: ${stale}; to remove it, run \`claude plugin uninstall ${name}@${MARKETPLACE} --scope ${scope}\` in that directory`);
   }
+  return warnings;
 }
 
 /** Check the resolved manifest and bytes. Folder-backed installs can retain an older record version. */
@@ -564,12 +572,12 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
         if (installs.length || skillInstalls.length) writeMarketplace();
         const parts: string[] = [];
         if (installs.length) {
-          refreshInstalls("cotal", installs, version!);
-          parts.push(`cotal@${MARKETPLACE} ${version}; reload plugins or reopen Claude to load it in running sessions`);
+          const warnings = refreshInstalls("cotal", installs, version!);
+          parts.push(`cotal@${MARKETPLACE} ${version}; reload plugins or reopen Claude to load it in running sessions`, ...warnings);
         }
         if (skillInstalls.length) {
-          refreshInstalls("cotal-skills", skillInstalls, skills!.version);
-          parts.push(`cotal-skills@${MARKETPLACE} ${skills!.version}`);
+          const warnings = refreshInstalls("cotal-skills", skillInstalls, skills!.version);
+          parts.push(`cotal-skills@${MARKETPLACE} ${skills!.version}`, ...warnings);
         }
         const desktopText = app ? desktop(cotal, false) : undefined;
         if (desktopText) parts.push(desktopText);
