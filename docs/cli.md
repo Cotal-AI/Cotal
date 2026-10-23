@@ -2660,7 +2660,10 @@ cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] 
 
 Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
 activity, attention mode, harness, model and host, as its presence reports them. Infrastructure
-endpoints are hidden unless `--all` asks for them; the report says how many it hid. In a user-auth
+endpoints are hidden unless `--all` asks for them; the report says how many it hid. A `cotal chat`
+session is a participant a person drives, so it is listed with the agents and never counted as
+infrastructure. The report adds a Kind column that names it `chat session`, and its JSON row carries
+`sessionKind: "chat"`. In a user-auth
 space, `--all` shows each of your managers as a row whose id ends in `manager_<instanceId>`, the id
 `--on` takes, with its host and its runtime in the activity, such as `supervisor (tmux)`. A manager
 row reads `manager <name>`, with the name the manager was started with, or `manager <host>/<runtime>`
