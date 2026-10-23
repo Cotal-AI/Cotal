@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 647,
+    "total": 649,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 543
+    "non-render/control": 545
   },
   "renderers": [
     {
@@ -2996,6 +2996,13 @@
       "rationale": "Chat view recipient disclosure notice: \"waiting\" is the notice's color tone, not a peer's presence."
     },
     {
+      "path": "implementations/cli/src/chat/chat-view.tsx",
+      "kind": "status-token",
+      "anchor": "dNotice(latest.current, \"waiting\", ending.text)), Math.ma",
+      "class": "non-render/control",
+      "rationale": "Chat view session-ending notice: \"waiting\" is the color tone; the text is about this session's own expiry, not a peer's presence."
+    },
+    {
       "path": "implementations/cli/src/chat/controller.ts",
       "kind": "derived-output",
       "anchor": "session.setStatus(command.status, command.activity)",
@@ -3121,6 +3128,13 @@
       "anchor": "tate = addNotice(state, \"waiting\", \"not connected: only /",
       "class": "non-render/control",
       "rationale": "Plain chat offline-command notice: \"waiting\" is the color tone; the text is about this session's connection, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/plain.ts",
+      "kind": "status-token",
+      "anchor": "tate = addNotice(state, \"waiting\", ending.text); flush();",
+      "class": "non-render/control",
+      "rationale": "Plain chat session-ending notice: \"waiting\" is the color tone; the text is about this session's own expiry, not a peer's presence."
     },
     {
       "path": "implementations/cli/src/chat/session.ts",
