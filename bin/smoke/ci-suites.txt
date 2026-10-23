@@ -120,6 +120,7 @@ smoke:static-lifecycle
 smoke:manager-restart-live
 smoke:preserve-state
 smoke:ep-serve:auth
+smoke:ep-serve:guest
 smoke:ep-verbs
 smoke:ep-traits
 smoke:sub-acl:auth

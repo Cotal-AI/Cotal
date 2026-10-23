@@ -602,6 +602,7 @@
     "repro:1648": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/repro-1648.mts",
     "smoke:seat-isolation": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/isolation.smoke.ts",
     "smoke:ep-serve:auth": "tsx packages/core/smoke/endpoint-serve-auth.smoke.ts",
+    "smoke:ep-serve:guest": "tsx packages/core/smoke/endpoint-serve-guest.smoke.ts",
     "smoke:scatter-liveness": "tsx packages/core/smoke/scatter-liveness.smoke.ts",
     "smoke:scatter-pinned-probe": "tsx implementations/cli/smoke/scatter-pinned-probe.smoke.ts",
     "smoke:service-dereg": "tsx packages/core/smoke/service-deregistration.smoke.ts",
