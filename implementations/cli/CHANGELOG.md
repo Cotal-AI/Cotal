@@ -1,5 +1,25 @@
 # @cotal-ai/cli
 
+## 0.99.3
+
+### Patch Changes
+
+- 965af11: `cotal persona show default` and `cotal persona edit default` read and save the default persona that `space create`, `setup` and `up` write. Its file is `default.md` and it names its agents `default_agent`, and both commands refused it with `SCHEMA_INVALID` ("persona name must match the catalog name"), as did `cotal personas edit default`. Show and edit now accept any valid definition whose `name` is not its catalog name. `persona create` still requires the file to name the persona it creates.
+- 15effd7: An invalid `preferences.json` no longer stops `cotal help`, `cotal --help` or `cotal completion`. The docs say such a file stops every command except help and shell completion, but both exited 1 with `SCHEMA_INVALID`, so a person with a broken file could not read the help. Every other command still refuses. The refusal's next step now reads "fix or remove <path>; nothing resets it".
+- 0da5225: A connector seed that fails now says why on its failure line. With npm missing from PATH, `failed to seed connector "claude" from <path>:` ended in an empty reason, followed by the seed child's progress lines; the reason, here the failed npm install and its `spawn npm ENOENT`, now follows the colon and the progress is printed before it. A seed that fails also stops being reported as an interruption: every later command that seeds said "a previous connector seed was interrupted" after a clean failure. It now says the previous seed failed, gives the reason, and names `cotal ext seed --repair`. A seed stopped by a crash is still reported as interrupted.
+- 4da7b78: `cotal space` and `cotal space show` refuse a mesh registry record that does not parse, or is not a usable record, with `SCHEMA_INVALID` and exit 1, naming the file, as `who` and `whoami` already did. They exited 3 with `OPERATION_UNKNOWN`, which says the command may have had an effect, although both only read the registry.
+- d91e746: A controller stack now comes back after a crash. When every stack member was killed, both the
+  documented `cotal down --yes` then `cotal up` and a direct `cotal up` used to exit 4: the new
+  delivery daemon found shard 0 still leased to the killed one and refused to bind. The controller
+  `up` now waits out a delivery lease held by the credential the folder gave its previous daemon,
+  as the legacy launcher already did, and `down` keeps that credential when the delivery daemon was
+  already gone, so the next `up` can still recognise the row. Its JSON `cleanup` field then reads
+  `registration-removed-delivery-credential-kept`.
+- Updated dependencies [96325dc]
+- Updated dependencies [15effd7]
+  - @cotal-ai/core@0.99.3
+  - @cotal-ai/workspace@0.99.3
+
 ## 0.99.2
 
 ### Patch Changes
