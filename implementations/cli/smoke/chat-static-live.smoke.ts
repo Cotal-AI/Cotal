@@ -5,7 +5,8 @@
  *  1. `chat general --plain` opens a session on #general.
  *  2. `/leave general` leaves it and `/join general` returns to it: the named channel is the
  *     session's read list, and leaving does not change what the session may read.
- *  3. `/quit` retires the session and exits 0.
+ *  3. `/leave` of a channel the session never joined says it was not on it.
+ *  4. `/quit` retires the session and exits 0.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the chat child it started. Needs `nats-server` on PATH.
@@ -65,6 +66,8 @@ try {
     check("/leave of its own channel leaves it", left.includes("left #general"), left);
     const back = await say("/join general");
     check("/join returns to the channel it left", back.includes("joined #general") && !back.includes("denied"), back);
+    const ops = await say("/leave ops");
+    check("/leave of a channel it never joined says it was not on it", ops.includes("not on #ops"), ops);
     chat.stdin.write("/quit\n");
     const code = await new Promise<number | null>((r) => {
       const t = setTimeout(() => r(null), 30_000);
