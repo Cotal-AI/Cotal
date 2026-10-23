@@ -3,11 +3,15 @@
  * session cache (plan §"How it lands in today's code" → Client).
  *
  * Flow: ask the IdP for a device code, show the human a verification URL + user code, poll until
- * the sign-in is approved in a browser. What comes back — and the ONLY thing ever cached — is the
- * IdP SESSION token. The short-lived IdP JWT the bridge exchanges is fetched fresh from `/token`
- * per use ({@link fetchIdpJwt}): caching the JWT would let a revoked session keep minting mesh
- * access until the JWT expired, so instead revocation at the IdP bites at the very next fetch —
- * a 401 surfaces as a legible "run `cotal login` again", never a silent hang.
+ * the sign-in is approved in a browser. What comes back — and the ONLY thing ever persisted — is
+ * the IdP SESSION token. The short-lived IdP JWT the bridge exchanges is fetched from `/token`
+ * ({@link fetchIdpJwt}) and held in memory for at most {@link JWT_CACHE_CAP_MS} (and never past
+ * its own `exp` minus a margin), one entry per (IdP, session), concurrent callers sharing one
+ * request. Persisting the JWT would let a revoked session keep minting mesh access until the JWT
+ * expired; the bounded in-process hold means revocation at the IdP bites within a minute, and a
+ * 401 surfaces as a legible "run `cotal login` again", never a silent hang. Without the hold, a
+ * manager hosting dozens of runs posted one `/token` per authority call and tripped the IdP's
+ * per-source rate limit, failing unrelated spawns and reads with a bare HTTP 429.
  *
  * Device code, not auth-code+PKCE: it works headless (agents, SSH) and needs nothing beyond the
  * IdP's device endpoints — no OIDC provider metadata, no loopback redirect server (the plan
@@ -349,11 +353,66 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }
 }
 
-/** Fetch a fresh short-lived IdP user JWT for the cached session — the input to the bridge
- *  exchange. A 401 means the session was revoked or expired at the IdP: the error says exactly
- *  how to recover. The JWT is returned, never stored. */
-async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<{ jwt: string; response: Response }> {
+type IdpJwtResult = { jwt: string; response: Response };
+
+/** Longest an IdP JWT is reused from memory. The bound on how long a session revoked at the IdP
+ *  can still mint mesh access from a process that already held a JWT. */
+const JWT_CACHE_CAP_MS = 60_000;
+/** A held JWT is dropped this long before its own `exp`, so a reuse never hands the bridge a
+ *  token that expires in flight. */
+const JWT_CACHE_MARGIN_MS = 30_000;
+type JwtCacheEntry = { result: IdpJwtResult; until: number } | { inflight: Promise<IdpJwtResult> };
+const jwtCache = new Map<string, JwtCacheEntry>();
+
+/** When a JWT stops being reusable: the cap, or its `exp` minus the margin, whichever is sooner.
+ *  A token with no decodable `exp` is never held, because nothing bounds its lifetime. */
+function jwtCacheUntil(jwt: string, now: number): number {
+  let exp: unknown;
+  try {
+    exp = decodeJwt(jwt).exp;
+  } catch {
+    return now;
+  }
+  if (typeof exp !== "number" || !Number.isFinite(exp)) return now;
+  return Math.min(now + JWT_CACHE_CAP_MS, exp * 1000 - JWT_CACHE_MARGIN_MS);
+}
+
+/** A short-lived IdP user JWT for the cached session — the input to the bridge exchange. A 401
+ *  means the session was revoked or expired at the IdP: the error says exactly how to recover.
+ *  The JWT is held in memory within the bounds above and never written anywhere; a failure is
+ *  never held, so a rate-limited or unreachable IdP is retried on the next call. Concurrent
+ *  callers without a cancel signal share one request; a cancellable call makes its own request,
+ *  so one caller's abort rejects nobody else. */
+async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
   const base = normalizeIdpUrl(idpUrl);
+  const key = `${base}\0${sessionToken}`;
+  const now = Date.now();
+  const hit = jwtCache.get(key);
+  if (hit) {
+    if ("inflight" in hit) {
+      if (!cancel) return hit.inflight;
+    } else if (hit.until > now) return hit.result;
+    else jwtCache.delete(key);
+  }
+  const inflight = fetchIdpJwtUncached(base, sessionToken, cancel).then(
+    (result) => {
+      for (const [k, e] of jwtCache) if ("until" in e && e.until <= Date.now()) jwtCache.delete(k);
+      const until = jwtCacheUntil(result.jwt, Date.now());
+      if (until > Date.now()) jwtCache.set(key, { result, until });
+      else if (jwtCache.get(key) === entry) jwtCache.delete(key);
+      return result;
+    },
+    (e: unknown) => {
+      if (jwtCache.get(key) === entry) jwtCache.delete(key);
+      throw e;
+    },
+  );
+  const entry: JwtCacheEntry = { inflight };
+  if (!cancel) jwtCache.set(key, entry);
+  return inflight;
+}
+
+async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
   const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel);
   if (res.status === 401)
     throw new Error(
@@ -681,6 +740,7 @@ export function hasIdpSpaceCatalog(dir: string, idpUrl: string, sub: string): bo
  *  server-side session is a real leak the operator must hear about. */
 export async function revokeIdpSession(idpUrl: string, sessionToken: string): Promise<void> {
   const base = normalizeIdpUrl(idpUrl);
+  jwtCache.delete(`${base}\0${sessionToken}`); // this process stops minting from it now, not within the hold
   const res = await idpFetch(`${base}/sign-out`, {
     method: "POST",
     headers: { authorization: `Bearer ${sessionToken}`, "content-type": "application/json" },
