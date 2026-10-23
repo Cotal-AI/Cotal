@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.98.0
+
+### Patch Changes
+
+- b6e3fba: The cotal config reader now builds every refusal from one helper and tests each object position with one shared plain-object predicate, so the sections cannot drift apart. The refusal messages are unchanged.
+- c445511: An injected `SecretStore` named by a whitespace-only `COTAL_SECRET_STORE` is now refused when the manager or the delivery daemon is constructed, with the message that names the variable. `injectedSecretStoreIdentity` reads the coordinate through `parseSecretStoreIdentity`, the parser the store challenge answer goes through, so the start-time check and the delivery-admin rail agree on what a blank coordinate is. Before, a value such as two spaces passed at start and was refused later inside the challenge, in a message that did not name the variable.
+
 ## 0.97.1
 
 ### Patch Changes
