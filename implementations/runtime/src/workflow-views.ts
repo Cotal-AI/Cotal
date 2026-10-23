@@ -1,7 +1,7 @@
 import type { RunJournalRow, RunListRow, RunStatusView } from "@cotal-ai/core";
 import { oneLine, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
 
-interface OutputValues { json?: boolean; plain?: boolean; on?: string }
+interface OutputValues { json?: boolean; plain?: boolean; on?: string; local?: boolean }
 const recordedState = (state: string | undefined): Styled => ({ text: state ?? "not recorded", tone: state === "completed" ? "ok" : state === "failed" ? "failed" : state === "released" || state === "held" ? "waiting" : "hint" });
 const managerPin = (values: OutputValues) => values.on ? ` --on ${values.on}` : "";
 const runToken = (value: string | undefined) => value && /^run-[0-9a-f]{32}$/.test(value) ? value : "<run-id>";
@@ -84,6 +84,6 @@ export function runReceipt(action: string, space: string | undefined, result: un
   ];
   writeResult(presentationOf(values), { command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null, ...(runId ? { run: runId } : {}) }, result: { kind: "run-receipt", action, result, ...(answer ? { answer: { ...answer, valueGiven } } : {}) } }, () => ({ sections: [
     { title: action === "start" ? "Workflow started" : action === "resume" ? "Workflow resumed" : action === "amend" ? "Amendment recorded" : "Answer accepted", blocks: [{ kind: "fields", rows: [["Space", space ?? "not reported"], ...(runId ? [["Run", runId]] as [string, string][] : []), ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ...answerRows] }, { kind: "lines", lines: [{ text: "The native host accepted this operation. This receipt does not claim workflow completion.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show ${runToken(runId)}${managerPin(values)}`, description: "Read the recorded outcome and pending requests" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show ${runToken(runId)}${values.local ? " --local" : managerPin(values)}`, description: "Read the recorded outcome and pending requests" }] }] },
   ] }));
 }

@@ -5150,7 +5150,8 @@ live manager, an unpinned hosted verb is refused and `--on` picks one. `--local`
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
-`--by <who>`, and `start --local` requires `--admit-read` and `--admit-publish` (comma-separated
+`--by <who>` and print the same receipt as the hosted path, and `start --local` requires
+`--admit-read` and `--admit-publish` (comma-separated
 patterns or `none`), the run's channel ceiling. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
