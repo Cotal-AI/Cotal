@@ -2019,7 +2019,9 @@ refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorde
 `cotal space create <space> --root <root>`, which prepares the journal's space there again so that
 `cotal up` starts it. That is the state after an `up` that failed to start or a `space forget`, and the
 command never dials the default address instead. `status` there reads the machine, selects no space
-and probes no broker.
+and probes no broker. A legacy root after its `down`, which drops its registration, is refused the
+same way, naming the address in the broker configuration its last start rendered and the bare
+`cotal up` there that starts it at that address again.
 
 With no `--space`, `--server` or `--creds`, nothing selected and no project in the folder, a command
 that several running spaces could serve asks which one when it runs in a terminal. The answer is the

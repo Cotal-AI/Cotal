@@ -111,6 +111,7 @@ import {
   MEMBERSHIP_RW_CREDS_KIND,
   parsePositiveIntegerFlag,
   recordMesh,
+  retainedLegacyBroker,
   meshesForRoot,
   removeMesh,
   rotateSystemCreds,
@@ -190,7 +191,7 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
-import { cleanedManifestStart, retainedLegacyBroker } from "../lib/legacy-start.js";
+import { cleanedManifestStart } from "../lib/legacy-start.js";
 import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
