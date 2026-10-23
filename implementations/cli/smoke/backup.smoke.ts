@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { ArtifactFileFault, createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.js";
+import { ArtifactFileFault, createArtifactWriter, inspectBackupArtifact, stageArtifact } from "../src/lib/backup-artifact.js";
 import { backupRead } from "../src/commands/backup-read.js";
 import { down } from "../src/commands/down.js";
 import { clean } from "../src/commands/clean.js";
@@ -101,6 +101,15 @@ try {
     isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`
       && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").includes("cotal backup recover <attempt> --yes"));
   writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
+  // A path through a linked folder names the artifact create published there, and verify reads it at
+  // its real path, as restore stages it.
+  const linkParent = mkdtempSync(join(tmpdir(), "cotal-backup-cli-link-"));
+  try {
+    symlinkSync(realpathSync(root), join(linkParent, "via"));
+    const throughLink = inspectBackupArtifact(join(linkParent, "via", "artifact"), true);
+    assert.equal(throughLink.directory, realpathSync(destination), "verify through a linked folder reads the artifact at its real path");
+    assert.equal(throughLink.integrity, "matched-declared-sizes-and-sha256", "and its files match");
+  } finally { rmSync(linkParent, { recursive: true, force: true }); }
   const traversing = JSON.parse(originalManifest) as { checkpoints: string };
   traversing.checkpoints = "../checkpoints.json";
   writeFileSync(join(destination, "manifest.json"), `${JSON.stringify(traversing)}\n`);

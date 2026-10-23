@@ -1555,7 +1555,9 @@ and names that recovery.
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
 hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
 and compares its size and SHA-256. Both are read-only: no staging directory, broker, restore or
-secret upload. Reports omit snapshot bytes, configuration bodies and trust material. JSON retains
+secret upload. A path through a linked folder is read at its real path, as `backup restore` reads
+it, and the report names that path. Reports omit snapshot bytes, configuration bodies and trust
+material. JSON retains
 the declared metadata; terminal file lists are bounded and state their omissions. When a declared
 file is missing, an undeclared file is present, a declared file is not a regular file, such as a
 symbolic link or a FIFO, or a file does not match its declared size and SHA-256, the refusal names
