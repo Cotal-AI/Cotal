@@ -82,14 +82,16 @@ export function retainedStopRequest(value: ServiceInstance): NativeStopEvidence 
  *  it has removed the request and released the reservation, and the record returns to what its
  *  process shows, as after a refusal within the call. A record left `stopping` by a stopper that
  *  exited before it published a request handed the child nothing, so it also returns to what its
- *  process shows, as a stop that published nothing does within its call. Any other record, including
- *  one whose adapter confirms less, is returned unchanged. */
+ *  process shows, as a stop that published nothing does within its call. A signal stop whose
+ *  exact process still runs (see {@link resumableSignalStop}) returns to `running`. Any other record,
+ *  including one whose adapter confirms less, is returned unchanged. */
 export async function settleRetainedNativeStop(definition: ServiceDefinitionSnapshot, row: ServiceInstanceSnapshot): Promise<ServiceInstanceSnapshot> {
   const value = row.record.value, launch = definition.record.value.launch, retained = retainedStopRequest(value);
   if (value.nativeStopRequired && value.process && value.state === "stopping" && !retained) {
     const observed = observeServiceProcess(value);
     return transition(row, { state: observed === "running" ? "running" : gone(observed) ? "failed" : "unknown", readiness: "not-checked" });
   }
+  if (resumableSignalStop(value)) return transition(row, { state: "running", readiness: "not-checked" });
   if (!retained || retained.publication !== "published" || launch.type !== "adapter" || !value.process) return row;
   const declared = resolveServiceAdapter(launch.adapter, launch.options);
   if (declared.declaration.stop !== "native" || !sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision) return row;
@@ -128,6 +130,15 @@ export async function abandonRetainedNativeStop(definition: ServiceDefinitionSna
   if (abandonment.requestId !== requestId || publishedNativeStop(value) !== undefined || !gone(observeServiceProcess(value)))
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter's abandonment did not retire the request of an exited process; the record was kept", { target });
   return { row: transition(row, { state: "failed", readiness: "not-checked" }), abandonment };
+}
+
+/** A broker's kernel-exit stop or a generic process stop that its stopper left `stopping` while that
+ *  exact process still runs. Such a stop records `stopping` before it signals, so a stopper cut off
+ *  in between signalled nothing, and no exit was observed as its own either way. Under the
+ *  definition's writer lock its stopper has exited, so the record returns to `running` and the next
+ *  stop signals the process again. */
+export function resumableSignalStop(value: ServiceInstance): boolean {
+  return !value.nativeStopRequired && value.state === "stopping" && value.process !== undefined && observeServiceProcess(value) === "running";
 }
 
 /** A broker's kernel-exit stop or a generic process stop that its stopper left `stopping` when it

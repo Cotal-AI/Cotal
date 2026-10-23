@@ -688,14 +688,16 @@ removes the request, the stop reservation and a `--with-agents` shutdown intent 
 armed, records the manager `failed`, and stops the rest of the stack with a `STOP_ABANDONED` warning.
 Whether that manager stopped or released its agents' seats is not confirmed, and a seat that runs
 outside the manager process may still run. It needs `--yes` and refuses `--dry-run` and
-`--with-agents`. A `down` that exits while it stops a member, because it was killed or its terminal
-closed, leaves that member `stopping`. When that member is the manager and its request was not yet
+`--with-agents`. A `down`, or a foreground `up` running its stop, that exits while it stops a member,
+because it was killed or its terminal closed, leaves that member `stopping`. When that member is the manager and its request was not yet
 published, the manager was handed nothing: the next bare `up` or `down` returns the record to what
 its process shows, and the next stop releases the reservation that `down` took once its pid has
 exited. When it is the broker or the delivery daemon, whose stop is a signal to its recorded
 process, the refusal names the same `--abandon-stop` command once that process is gone. That
 command records the member `failed` and stops the rest of the stack with a `STOP_ABANDONED`
-warning. Whether the stop caused the exit is not confirmed. When `up`
+warning. Whether the stop caused the exit is not confirmed. Such a stop records the member `stopping`
+before it signals, so a process that still runs may never have been signalled: the next bare `up` or
+`down` returns its record to `running`, `down` signals it again and `up` reuses it. When `up`
 redefines a member because its launch options changed, the journal records the
 replacement's instance and launch request before the old instance is retired, and the new
 definition's revision before the replacement launches. After an `up` cut off in between, the next

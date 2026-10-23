@@ -10,7 +10,7 @@ import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, cano
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -256,7 +256,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : inspect(row.name) });
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : resumableSignalStop(value) ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -275,6 +275,9 @@ export async function settleRetainedStackStops(journal: StackJournal): Promise<v
     finally { hold.release(); }
   }
 }
+
+/** The step for a member stop whose process still runs after the command that sent it exited. */
+export const RESUME_REMEDY = "once the command that sent the stop has exited, `cotal down --yes` signals the process again";
 
 /** The remedy a refusal over a retained, published member stop names. */
 export const abandonRemedy = (requestId: string): string => `once its process and the down that sent the request have exited, \`cotal down --abandon-stop ${requestId} --yes\` abandons it`;
