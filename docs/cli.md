@@ -1234,7 +1234,11 @@ prepared record and stack journal at the same root name its broker address, stor
 reset keeps both, so a later `up` starts it again. A stack whose last operation is not a completed
 `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each refusal names one reason and
 the command that clears it. A space that may still run names `cotal down` from its root, or
-`cotal up` and then `cotal down --yes` when a member exited without a recorded stop.
+`cotal up` and then `cotal down --yes` when a member exited without a recorded stop. A legacy root
+has no stack journal, and its `down` drops the registration a reset selects, so no reset reaches it
+once stopped. There the step after `cotal down` is `cotal clean store --force` from its root for
+`reset store`, or `cotal clean all --force` for `reset space`, with `--store-dir <dir>` when the
+registration records a custom store.
 
 The store dry-run is a local-impact preview that exits 0. It requires a space selected that way, a
 real project `.cotal` and a root readable as one local tenant. It opens with a verdict: the apply is
