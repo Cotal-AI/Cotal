@@ -606,7 +606,13 @@ conflicting `--server` or `--open` refuses before effects. Legacy-only options r
 new JSON/plain flags. A legacy root is one with no stack journal that is neither prepared nor
 registered for the controller, such as a folder an earlier release started and a normal `down` then
 unregistered. Plain `cotal up` there starts it again on its retained launcher, with its identity,
-store and history. `space create` in such a folder refuses `CONFLICT` and names that `cotal up`.
+store and history. Its `down` drops the registration that kept the broker address, so with no
+`--server` or `--host` it starts at the address in the broker configuration its last start rendered
+there, and in open mode when that start was open and no mode is asked for, and says so in one line.
+After `clean all` that configuration is gone. A root deployed with `up -f` then keeps only its fresh
+team summary, and plain `cotal up` refuses `CONFLICT` and names `cotal up -f <manifest>` when the
+summary names another address, mode or space. `space create` in such a folder refuses `CONFLICT`
+and names that `cotal up`.
 A controller `up` checks that the space is prepared or locally started at its root before it writes
 trust, configuration, a definition, an instance or the journal; a refusal there leaves the folder as
 it was. When a completed stop and `space forget` removed that record,
@@ -1200,7 +1206,9 @@ One configurable cleanup verb; every target requires `--force`.
   minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
-  registry entry; the next `cotal up` mints a fresh identity.
+  registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
+  `cotal up` then refuses and names `cotal up -f <manifest>` when the deployment ran at another
+  address, mode or space.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
 running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). A

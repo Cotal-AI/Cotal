@@ -173,6 +173,7 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
+import { cleanedManifestStart, retainedLegacyBroker } from "../lib/legacy-start.js";
 import { controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
@@ -1122,7 +1123,21 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // on a free port, which this root's record keeps; a re-run must start from that URL, or every
     // lookup below misses its own mesh and the space claim refuses it (#3889).
     const recordedSpace = values.space ?? folderSpace();
-    const implicitServer = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace)?.server ?? DEFAULT_SERVER;
+    const registeredServer = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace)?.server;
+    // A stopped legacy root's `down` dropped the registration that kept its address, so its own files
+    // decide. With no address flag, it starts again at the address its last start rendered, and in
+    // open mode when that start was open and no mode is asked for. After `clean all` only a fresh
+    // team summary remains, and a start that would differ from it refuses, naming its manifest.
+    const implicit = !resumeAttempt && registeredServer === undefined && values.server === undefined && values.host === undefined && !values["user-auth"];
+    const retained = implicit ? retainedLegacyBroker(cotalRoot()) : undefined;
+    if (retained) {
+      if (retained.open) values.open = true;
+      console.log(c.dim(`starting this folder's stopped stack as it last ran: ${retained.server}${values.open ? ", open" : ""}`));
+    } else if (implicit) {
+      const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
+      if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${cleaned.command}` });
+    }
+    const implicitServer = registeredServer ?? retained?.server ?? DEFAULT_SERVER;
     let server = values.server ?? implicitServer;
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
