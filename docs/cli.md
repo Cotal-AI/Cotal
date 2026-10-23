@@ -4016,6 +4016,9 @@ that cannot be represented without rounding is a `USAGE_INVALID` refusal before 
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
 is the ISO time. A DM row shows its recipient's name when a message in the window came from that
 principal, and the principal otherwise. `result.items[].to` is the principal.
+A line break or other control character in a message's text shows as its `\uXXXX` escape in the
+text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
+`--json` carries the text as it was sent, in `result.items[].text`.
 
 Retained history is not every message sent. The chat stream keeps a fixed number of messages per
 sender on each channel, so a busy sender's oldest messages are discarded while other senders'
