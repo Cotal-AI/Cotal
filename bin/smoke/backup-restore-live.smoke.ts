@@ -311,6 +311,11 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     };
     assert.equal(active.state, "active");
     assert.equal(active.restore.selection, restoreArtifact === registryArtifact ? "registry" : "full", `${mode} restore journals its selection`);
+    // The receipt names the restore attempt and the cleanup that retires it, with --discard-history
+    // only for a registry restore.
+    assert.ok(restored.stdout.includes(`✓ restored the backup ${restoreArtifact === registryArtifact ? "registry" : "in full"} as restore attempt ${active.restore.attemptId}`), `${mode} up --restore names its attempt\n${restored.stdout}`);
+    const cleanupNext = restored.stdout.split("\n").find((line) => line.startsWith("next: ")) ?? "";
+    assert.ok(cleanupNext.includes(`cotal backup cleanup-fallback ${active.restore.attemptId} --yes`) && cleanupNext.includes("--discard-history") === (restoreArtifact === registryArtifact), `${mode} up --restore names the cleanup that retires it\n${restored.stdout}`);
     // A registry restore says history starts empty and names the store that holds its only copy.
     if (restoreArtifact === registryArtifact) {
       assert.match(restored.stdout, /channel settings only, so chat and DM history start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
@@ -338,6 +343,8 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const kept = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes", "--json");
       assert.equal(kept.status, 1, `${mode} cleanup-fallback without --discard-history refuses\n${kept.stdout}\n${kept.stderr}`);
       assert.match(kept.stdout, /"code":"USAGE_INVALID"/);
+      const keptPlain = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes");
+      assert.ok(keptPlain.status === 1 && keptPlain.stderr.includes("cleanup deletes it only with --discard-history; nothing was deleted") && !keptPlain.stderr.includes("Usage"), `${mode} the refusal names --discard-history without the command help\n${keptPlain.stderr}`);
       assert.ok(existsSync(previous), `${mode} cleanup-fallback without --discard-history keeps the previous store`);
       const keptByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
       assert.equal(keptByClean.status, 1, `${mode} clean restore-fallback without --discard-history refuses\n${keptByClean.stdout}\n${keptByClean.stderr}`);

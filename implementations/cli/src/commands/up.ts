@@ -226,6 +226,7 @@ import {
   rehydratePreparedRestore,
   registryRestoreNotes,
   replacePreparedDeadRestoreListener,
+  restoreNextStep,
   retainedPreviousStore,
   type PreparedRestore,
   type RestoreFlags,
@@ -1691,8 +1692,15 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       server,
       startupLock,
     );
-    if (restored?.selection === "registry" && !quietRestore)
-      for (const line of registryRestoreNotes(restored.attemptId, retainedPreviousStore(restored.root, restored.attemptId))) console.log(c.yellow(line));
+    // `backup restore` prints its own receipt; `up --restore` names the attempt and its next step here.
+    if (restored && !quietRestore) {
+      console.log(c.green(`✓ restored the backup ${restored.selection === "registry" ? "registry" : "in full"} as restore attempt ${restored.attemptId}`));
+      if (restored.selection === "registry")
+        for (const line of registryRestoreNotes(restored.attemptId, retainedPreviousStore(restored.root, restored.attemptId))) console.log(c.yellow(line));
+      const journal = readMaintenanceJournal(restored.root);
+      if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
+        console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restored.selection)}`));
+    }
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,

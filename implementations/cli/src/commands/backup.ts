@@ -105,7 +105,7 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with cotal down --preserve-state, then create the backup" });
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
-    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId) : "finish this root's current maintenance attempt first; check it with cotal status",
+    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, record.restore.selection) : "finish this root's current maintenance attempt first; check it with cotal status",
   });
 }
 

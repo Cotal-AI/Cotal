@@ -686,8 +686,11 @@ export function movedFolderRefusal(root: string, space: string, recordedStore: s
 
 /** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
  *  degraded attempt goes forward through bare `up`, which continues it. */
-export function restoreNextStep(state: string, attemptId: string): string {
+export function restoreNextStep(state: string, attemptId: string, selection?: string): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with cotal backup recover ${attemptId} --yes; preview it first with --dry-run`;
+  // A registry restore's cleanup also deletes the store that holds the only copy of the history it
+  // left out, so it runs only with --discard-history.
+  if (state === "active" && selection === "registry") return `the registry restore completed: cotal backup cleanup-fallback ${attemptId} --yes --discard-history retires its journal and deletes the previous store, the only copy of the chat and DM history it left out; preview it first with --dry-run`;
   if (state === "active") return `the restore completed: retire its journal with cotal backup cleanup-fallback ${attemptId} --yes; preview it first with --dry-run`;
   return `recover forward with bare cotal up from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
@@ -714,7 +717,7 @@ function claimedNextStep(root: string, claim: MaintenanceClaim): string {
  *  shows it and a command that refuses over that journal names it. */
 export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null } {
   const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
-  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId)
+  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, journal.restore.selection)
     : journal.state === "ready" ? readyNextStep(root, journal.source)
     : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
   return { attemptId, next };
@@ -761,13 +764,13 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
   let journal: ReturnType<typeof readMaintenanceJournal>;
   try { journal = readMaintenanceJournal(root); } catch { return undefined; }
   if (!journal || !("restore" in journal)) return undefined;
-  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId) };
+  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, journal.restore.selection) };
 }
 
 /** A root with no stopped preserved cut to restore into. Nothing was staged, moved or claimed. */
 function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
   const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root"
-    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId)
+    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal.restore.selection)
     : "this root's maintenance attempt must finish first; check it with cotal status";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
 }

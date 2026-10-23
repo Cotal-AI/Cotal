@@ -1611,13 +1611,15 @@ so its cleanup removes nothing and only retires the journal. A later `down --pre
 starts a new backup cycle. A registry restore leaves every other stream out, so its old store holds
 the only copy of that history. Its `--dry-run` warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`, and the
 cleanup refuses `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
+That refusal names the flag and does not print the command help.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
 or process kill is supplied.
 A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
 interrupted create's `backup-<uuid>`, as described above. `cotal status` shows the attempt a root
-holds under Maintenance, with its state and next step. A refusal for the wrong state names the next step
+holds under Maintenance, with its state and next step. For a registry restore that step includes
+`--discard-history`. A refusal for the wrong state names the next step
 for the recorded one. A completed `cleanup-fallback` retires the journal, so a repeated cleanup
 refuses with `TARGET_NOT_FOUND` and says the root holds no restore attempt.
 
@@ -1650,7 +1652,8 @@ target says in `missing` whether the folder that should hold the artifact (`fold
 artifact (`artifact`) is missing. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. `up --restore`
-remains as the equivalent startup form, and its terminal output is unchanged. Unlike the other
+remains as the equivalent startup form. After its startup lines it names the restore attempt and
+gives the cleanup step that retires it, with `--discard-history` for a registry restore. Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
 Two commands refuse an active restore. `down --preserve-state` begins a new cut only after
