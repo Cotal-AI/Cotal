@@ -176,7 +176,9 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     throw isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh controller team boot did not confirm its outcome; its retained intent and any started members were kept", { target: { space: plan.space, root: plan.root } });
   } finally { releaseMaintenanceLock(lock); }
   if (request.foreground && request.presentation !== "json") stackUpForegroundNotice(request.presentation, result.space);
-  writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, completeness: "partial", partial: { message: "Agent joins are not checked by this receipt." }, warnings: plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })) }, (data) => bootView(data, journal));
+  // With no agents requested, no join is left unchecked and the receipt is complete.
+  const joins = result.requestedAgents.length > 0;
+  writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, ...(joins ? { completeness: "partial" as const, partial: { message: "Agent joins are not checked by this receipt." } } : {}), warnings: plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })) }, (data) => bootView(data, journal));
   if (request.foreground) await holdForegroundStack(plan.root);
 }
 

@@ -5459,7 +5459,7 @@ controller. A root without a stack journal takes the fresh static-auth or open r
 stopped stack can resume in static-auth, open or user-auth mode. The manifest's channels seed the broker. The stack's own manager
 starts its agents from a launch spec pinned by digest. One rich, JSON or plain receipt includes
 the controller members and requested topology. Agent joins are not checked, so the receipt is
-partial. The fresh attempt and summary are launch records, not stop authority. No additive
+partial. A manifest that requests no agents leaves no join unchecked, so its receipt is `ok`. The fresh attempt and summary are launch records, not stop authority. No additive
 ownership ledger is created; `cotal down` uses the stack journal and each member's native lifecycle.
 
 Before writes it checks the selected root, auth mode, broker address, runtime, connectors and
@@ -5553,7 +5553,10 @@ requires the original registered root, broker, TLS mode and exact manager.
 The revision-32 native `slots` query checks each recorded name, principal and
 lifecycle UID. A successor, omitted slot or unconfirmed transition refuses
 before a stop. A dry-run only reads this impact; apply requires a default-cancel
-terminal confirmation or `--yes` in scripts.
+terminal confirmation or `--yes` in scripts. Every `team remove --dry-run` is `partial`, exit 4: it
+reads the manager's slots and the card revisions in order, not atomically, and the membership feed
+is display-only, so the preview does not establish what the apply will find. The apply reads the
+slots and revisions again before it acts.
 
 Under the root maintenance lock, apply records one private synced removal intent
 bound to the original creation receipt. Each necessary stop has a synced original
