@@ -1964,8 +1964,8 @@ Full instance IDs and execution hosts stay visible. Process observations and his
 are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
 endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
-legacy rows and the stored-state hint are omitted, and when the stack does not answer, Next offers
-`cotal up --root <root>`. Unreadable
+legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
+process is gone, Next offers `cotal up --root <root>` first. Unreadable
 service record families make the report partial instead of becoming empty lists. Warnings retain
 a classified cause code, such as unsupported host observation, without native diagnostic bodies. These reads
 import no provider and start, stop, adopt or repair nothing. `--all` extends broker checks; this
@@ -2793,7 +2793,9 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
-runs, so there are no managed agents to list. Bare `cotal up` adds the manager.
+runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A stack manager whose
+process died stays registered, so `ps` waits out the manager's answer deadline first, then refuses
+the same way and names bare `cotal up`, which starts it again.
 
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
