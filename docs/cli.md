@@ -568,8 +568,9 @@ The default `control-group` mode signals every member at the same time, and a ma
 directly does not stop through its request-bound stop.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
-even with a group-writable umask. `up` creates `.cotal` and the broker store owner-private (`0700`)
-too. An existing directory keeps its mode. The broker log `.cotal/nats.log` and the auth service,
+even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
+`.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
+keeps its mode. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
@@ -1020,7 +1021,7 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
 | `--abandon-stop <request-id>` | none | Controller stack, with `--yes`: abandon a member's stop that no receipt settles, then stop the stack. See the settlement rules under [up](#up) |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
-| `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
+| `--store-dir <dir>` | the recorded store, else `.cotal/nats` | With `--preserve-state`: the store to cut. The mesh record names the store the broker runs on, such as a `backup restore --store-dir` target, and a different path refuses `CONFLICT` before anything stops |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
 Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running
@@ -1393,7 +1394,7 @@ channels and history. Backup and restore of a controller-owned stack return in a
 rest of this section applies to a root without a stack journal.
 
 Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact
-store match, no recorded process that may still be running (the same test `clean` uses), and an
+store match (`--store-dir` defaults to the cut's recorded source store), no recorded process that may still be running (the same test `clean` uses), and an
 unreachable exact endpoint from the recorded cut. That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
 is still refused. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
@@ -1630,7 +1631,8 @@ against this root: take a fresh full backup after each rotation. The composed co
 immediately before store mutation and never includes secret seeds. Restore never creates fresh auth.
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
-source needs explicit `--accept-missing-source`. Quarantine and target restores use current canonical
+source needs explicit `--accept-missing-source`. Without it, the restore refuses `TARGET_NOT_FOUND`
+(exit 2), names the missing path and changes nothing. Quarantine and target restores use current canonical
 configs on isolated random-loopback brokers, never expose native snapshot consumers, and publish a
 commit-intent immediately before the normal listener starts. Archive bytes never instantiate the real
 target: after quarantine validation, every stream is re-snapshotted from the validated quarantine
@@ -1765,7 +1767,8 @@ accounts, so with one configured, group write refuses. `getent` and `getfacl` ru
 with a 2 second limit each, so the first check in a process can take a few seconds. A proven group
 holds for the life of the process. When a read is unavailable, group write refuses; install the
 `acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
-allowed. New control directories use mode 0700. An unsafe existing path refuses before the
+allowed. New control directories, the persona catalog `.cotal/agents` included, use mode 0700,
+even with a group-writable umask. An unsafe existing path refuses before the
 prepared record is written, without changing its permissions. The refusal names every unsafe path
 in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that lists each path.
 It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root

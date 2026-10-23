@@ -318,7 +318,7 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.meta) for (const [k, v] of Object.entries(def.meta)) fm[k] = v;
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writePrivateRecord(path, `---\n${frontmatter}\n---\n\n${body}`);
 }
 

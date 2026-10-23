@@ -8,7 +8,8 @@
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, and one naming a missing channels file, have refused and left the root as
  * it was. Create and a later `up` write the
- * default persona when the root has none, and leave an edited one byte-identical. A registration
+ * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
+ * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
  * legacy route, each with its reason, its remedy and exit 2, and the registration is kept. An `up` in
  * a folder other local accounts can write refuses before it writes anything, naming the folder and its
@@ -347,7 +348,11 @@ setCurrent("keep");
   const before = registryFiles();
   const fresh = join(home, "fresh");
   mkdirSync(fresh);
-  const created = await json(["space", "create", "demo"], fresh);
+  // Under a group-writable umask, which the binary inherits at spawn.
+  const previousUmask = process.umask(0o002);
+  const creating = json(["space", "create", "demo"], fresh);
+  process.umask(previousUmask);
+  const created = await creating;
   const r = created.env?.result;
   check("create prepares the space in this folder and makes its .cotal: ok, nothing registered", created.status === 0 && created.env?.outcome === "ok" && r?.kind === "space-created" && r.space === "demo" && r.root === fresh && existsSync(join(fresh, ".cotal")) && findPreparedSpace("demo")?.root === fresh && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(created));
   check("create leaves the selection as it is", getCurrent() === undefined && r?.current === false, getCurrent());
@@ -355,6 +360,10 @@ setCurrent("keep");
   check("create writes the default persona into the root's catalog and lists it with the prepared record",
     existsSync(personaFile) && r?.written?.some((w: { what: string; path: string }) => w.what === "default persona" && w.path.endsWith(join(".cotal", "agents", "default.md"))) &&
       r.written.some((w: { what: string }) => w.what === "prepared space"), r?.written);
+  if (process.platform !== "win32") {
+    const modes = [".cotal", join(".cotal", "agents")].map((p) => (statSync(join(fresh, p)).mode & 0o777).toString(8));
+    check("under umask 0002, create makes .cotal and its persona catalog 0700", modes.join(",") === "700,700", modes);
+  }
   // Recorded once create has been checked for making its .cotal, so whatever starts in it is stopped
   // with the suite.
   const sandbox = recordSmokeSandbox({ root: fresh, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });

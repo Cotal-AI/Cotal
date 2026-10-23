@@ -583,7 +583,11 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
   if (matching.length !== 1)
     throw new CommandFailure("refused", matching.length ? "TARGET_AMBIGUOUS" : "TARGET_NOT_FOUND", `down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}, and nothing was stopped`, { target: { root, spaces: matching.map((mesh) => mesh.space) } });
   const mesh = matching[0];
-  const storeDir = storeOverride ? resolveStore(storeOverride) : join(root, ".cotal", "nats");
+  // The broker runs on the store its record names, such as a restore's --store-dir target, so that
+  // is the store to cut. A record from before the field names none and keeps the default.
+  if (storeOverride !== undefined && mesh.storeDir !== undefined && resolvePath(storeOverride) !== mesh.storeDir)
+    throw new CommandFailure("refused", "CONFLICT", `the broker for "${mesh.space}" runs on the store ${mesh.storeDir}, not ${resolvePath(storeOverride)}; nothing was stopped`, { target: { root, space: mesh.space, storeDir: mesh.storeDir }, remedy: `omit --store-dir, or pass --store-dir ${mesh.storeDir}` });
+  const storeDir = storeOverride ? resolveStore(storeOverride) : mesh.storeDir ?? join(root, ".cotal", "nats");
   // The store cap the broker was started with travels with the store, so the resume re-renders it.
   const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};
   const lock = acquireMaintenanceLock(root);

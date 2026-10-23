@@ -457,15 +457,17 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const live = liveMeshProcesses(root);
   if (live.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup is offline-only; still running: ${live.join(", ")}`, { target: { root }, remedy: "stop the stack with cotal down --preserve-state, then create the backup" });
   // Refusals that need no lock come first, so a refused create leaves no maintenance state behind.
-  if (!readMaintenanceJournal(root)) throw notReady(root, undefined);
+  const journal = readMaintenanceJournal(root);
+  if (!journal) throw notReady(root, undefined);
   const destinationPath = resolve(destination);
   if (lstatSync(destinationPath, { throwIfNoEntry: false })) {
     // The partial artifact of an interrupted create is named with the command that removes it.
-    const journal = readMaintenanceJournal(root);
-    const partial = journal?.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
+    const partial = journal.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with cotal backup recover ${partial} --yes, then run this create again` : "name a directory that does not exist yet" });
   }
-  const storeDir = resolve(values["store-dir"] ?? resolve(root, ".cotal", "nats"));
+  // Omitted, the store is the cut's own source, which a restore into --store-dir put outside
+  // .cotal/nats. A named store is still checked against it.
+  const storeDir = resolve(values["store-dir"] ?? (journal.state === "ready" ? journal.source.path : resolve(root, ".cotal", "nats")));
   const attemptId = `backup-${randomUUID()}`;
   observed.attemptId = attemptId;
   const deadline = new Date(Date.now() + OPERATION_TIMEOUT_MS);

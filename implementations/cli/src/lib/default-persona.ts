@@ -62,7 +62,7 @@ export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "un
     writePrivateRecord(path, replacement);
     return "migrated";
   }
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writePrivateRecord(path, DEFAULT_AGENT);
   return "seeded";
 }

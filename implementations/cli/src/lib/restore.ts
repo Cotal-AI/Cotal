@@ -811,7 +811,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       }],
     };
     if (!sourceExists) {
-      if (!flags["accept-missing-source"]) throw new Error("preserved source is missing; pass --accept-missing-source only after verifying disaster recovery intent");
+      if (!flags["accept-missing-source"])
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved source ${journal.source.path} is missing; nothing was changed`, { target: { root, space: journal.space, source: journal.source.path }, remedy: "put the preserved store back at that path, or, once you have verified it is lost, repeat the restore with --accept-missing-source to rebuild it from this backup" });
       prepareMissingSourceRestore(lock, { attemptId, targetPath, claim });
     } else if (targetPath === journal.source.path) {
       const fallbackPath = join(dirname(targetPath), `.cotal-restore-fallback-${attemptId}`);
