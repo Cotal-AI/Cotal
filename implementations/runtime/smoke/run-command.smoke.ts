@@ -612,7 +612,11 @@ let P = "";
     refused === undefined && captured().includes("not admissible") && orphanLine.includes("rejected") && orphanLine.includes("L5004"),
     { exit: process.exitCode, orphanLine, err: refused instanceof Error ? refused.message.slice(0, 120) : "" });
   c("and the exit status is non-zero, because the check refused", process.exitCode === 1, process.exitCode);
-  c("the refusal's why names the repair the table offers", captured().includes("--discard-approvals"), captured().split("\n").find((l) => l.includes("person actually made")) ?? "");
+  // The check refuses the override by name (below), so the why names it as a commit's decision
+  // rather than telling the reader to pass it here.
+  c("the refusal's why names the repair the table offers, as a commit's override",
+    captured().includes("a migration commit under the --discard-approvals override") && !captured().includes("pass --discard-approvals"),
+    captured().split("\n").find((l) => l.includes("actually made")) ?? "");
   const filed2 = await asOperator(rid2, async ({ nc }) => listRunMigrations(await new Kvm(nc).open(recordsBucket(SPACE)), EP, rid2)).catch(() => undefined);
   c("...and the refused check filed nothing either", filed2 !== undefined && filed2.length === 0, filed2);
 
