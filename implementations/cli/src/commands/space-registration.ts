@@ -126,9 +126,12 @@ function replaceable(name: string, force: boolean, target: unknown): boolean {
     throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `start it with \`cotal up\` in its root, or forget it with \`cotal space forget ${name}\``);
   const existing = findMesh(name);
   if (!existing) return false;
+  // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
+  if (existing.origin !== "manual") {
+    const owner = existing.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started";
+    throw refuse("CONFLICT", force ? `"${name}" is ${owner}, so --force does not replace it` : `"${name}" is already registered at ${existing.server}; it is ${owner}`, target, `see it with \`cotal space show ${name}\``);
+  }
   if (!force) throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
-  if (existing.origin !== "manual")
-    throw refuse("CONFLICT", `"${name}" is ${existing.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started"}, so --force does not replace it`, target, `see it with \`cotal space show ${name}\``);
   return true;
 }
 
