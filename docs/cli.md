@@ -467,7 +467,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it) |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
-| `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
+| `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
@@ -602,7 +602,10 @@ numeric code and status without copying the server's description or changing the
 
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
-conflicting `--server` or `--open` refuses before effects. Legacy-only options refuse rather than switching launchers.
+conflicting `--server` or `--open` refuses before effects. A journal whose stack never launched a
+member pins neither, as when its first `up` was refused because another broker already answers at
+the address. The next `up` plans it as a first start, with that address or another `--server`, and
+`down` reports that nothing runs there. Legacy-only options refuse rather than switching launchers.
 `up -f`, recovery and existing legacy roots retain their native paths; those paths refuse the
 new JSON/plain flags. A legacy root is one with no stack journal that is neither prepared nor
 registered for the controller, such as a folder an earlier release started and a normal `down` then
@@ -1250,14 +1253,15 @@ cotal reset space <space> [--dry-run] [-y|--yes] [--json|--plain]
 Both routes select a space this machine started. A space with a locally started registration is
 selected by it. A controller stack that a completed `down` stopped has no registration; its
 prepared record and stack journal at the same root name its broker address, store and mode, and a
-reset keeps both, so a later `up` starts it again. A stack whose last operation is not a completed
-`down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each refusal names one reason and
-the command that clears it. A space that may still run names `cotal down` from its root, or
-`cotal up` and then `cotal down --yes` when a member exited without a recorded stop. A legacy root
-has no stack journal, and its `down` drops the registration a reset selects, so no reset reaches it
-once stopped. There the step after `cotal down` is `cotal clean store --force` from its root for
-`reset store`, or `cotal clean all --force` for `reset space`, with `--store-dir <dir>` when the
-registration records a custom store.
+reset keeps both, so a later `up` starts it again. A stack none of whose members ever started has
+no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
+operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
+refusal names one reason and the command that clears it. A space that may still run names
+`cotal down` from its root, or `cotal up` and then `cotal down --yes` when a member exited
+without a recorded stop. A legacy root has no stack journal, and its `down` drops the registration
+a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
+`cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
+`reset space`, with `--store-dir <dir>` when the registration records a custom store.
 
 The store dry-run is a local-impact preview that exits 0. It requires a space selected that way, a
 real project `.cotal` and a root readable as one local tenant. It opens with a verdict: the apply is
@@ -2025,6 +2029,10 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels` and `membershipFeed` |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `hints` | The hints, in the order the report prints them |
+
+`deliveryResponder` is `stale` when the ready row in the delivery lease belongs to a daemon that is
+gone. That includes this folder's own daemon once its recorded process has exited without releasing
+the row, as after a kill. The row expires on its own within 30 seconds.
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its

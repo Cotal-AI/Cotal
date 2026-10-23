@@ -525,11 +525,15 @@ async function readResponderAxis(selected: Selected): Promise<{ state: DeliveryR
       // `--components` surface deliberately does NOT use it: that surface must tell a missing lease
       // stream apart from a refused read, and flattening both to `unknown` would erase a
       // distinction it reports.
+      const holder = await expectedDeliveryHolder(target);
       const state = await deliveryResponderState(
         async () => { const lease = await ep.readDeliveryLease(0); leased = lease !== undefined; return lease; },
-        await expectedDeliveryHolder(target),
+        holder,
       );
-      return { state, leased };
+      // A daemon killed before it could release shard 0 leaves its ready row, which names this
+      // folder's credential, until the bucket TTL removes it. When this folder's delivery pidfile
+      // names a process that is gone, that row is the dead daemon's, the same rule `up` waits on.
+      return { state: state === "bound" && holder !== undefined && processRecord(DELIVERY_PIDFILE, { root: target.root, space: target.space }).kind === "dead" ? "stale" : state, leased };
     } finally {
       await ep.stop().catch(() => {});
     }

@@ -20,7 +20,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
-import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -188,7 +188,7 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
 
 function previewStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, withAgents: boolean): void {
   const { journal0, settlement, members, target } = stopTarget(root, values);
-  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, false);
+  if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, false);
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined;
   try { restore = scopeRefusals(journal0); }
@@ -211,7 +211,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   const abandoned = ours && typeof values["abandon-stop"] === "string" ? await abandonRetainedStackStop(ours, values["abandon-stop"]) : undefined;
   const abandonWarnings: OutputWarning[] = abandoned ? [{ code: "STOP_ABANDONED", target: { ...instanceProjection(abandoned.row), role: abandoned.role, requestId: abandoned.abandonment.requestId, receipts: abandoned.abandonment.receipts }, message: abandonNotice(abandoned.role, abandoned.abandonment) }] : [];
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
-  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents, abandonWarnings);
+  if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, withAgents, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
   if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared

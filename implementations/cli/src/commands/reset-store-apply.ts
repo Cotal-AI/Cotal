@@ -12,7 +12,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
-import { readStackJournal } from "../lib/stack-journal.js";
+import { readStackJournal, stackNeverStarted } from "../lib/stack-journal.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 
@@ -51,6 +51,8 @@ export function selectResetTarget(space: string, command: ResetCommand): ResetTa
   if (!root || !recorded || recorded.journal.space !== space)
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} needs a space this machine started; this one has no local registration and no stopped controller stack`, { target: { space }, remedy: `see the space with cotal space show ${space}` });
   const journal = recorded.journal, operation = journal.operation;
+  if (stackNeverStarted(journal))
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} found nothing to reset: no member of this root's controller stack ever started, so no broker wrote a store; nothing was removed`, { target: { space, root }, remedy: `start it with cotal up from ${root}` });
   if (operation.kind !== "down" || operation.phase !== "completed")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the controller stack's last operation is ${operation.kind} ${operation.phase}, and ${command} needs it stopped by a completed down; nothing was removed`, { target: { space, root }, remedy: `stop it with cotal down --yes from ${root}, then run cotal ${command} ${space} --dry-run` });
   if (!journal.broker)

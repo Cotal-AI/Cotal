@@ -425,6 +425,14 @@ export function recordedProcessesUnder(root: string, spaces: readonly string[]):
   return found;
 }
 
+/** No member of this stack ever launched: no member row names an instance or a replacement, and no
+ *  stack definition in its space has an instance record. No process of it runs and no broker of it
+ *  wrote a store, so its journal pins nothing for the next up and a down has nothing to stop. */
+export function stackNeverStarted(journal: StackJournal): boolean {
+  return journal.members.every((row) => row.instanceId === null && row.replacement === undefined)
+    && STACK_ROLES.every((role) => serviceInstances(journal.space, STACK_DEFINITION[role]).length === 0);
+}
+
 /** An observed process state that counts as stopped for a whole-stack stop. */
 export const processGone = (state: string) => state === "gone" || state === "previous-boot" || state === "foreign-pid";
 

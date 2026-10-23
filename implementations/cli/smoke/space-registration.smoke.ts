@@ -6,7 +6,8 @@
  * record it writes and for leaving the selection as it was. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
- * no installed provider has refused and left the root as it was. Create and a later `up` write the
+ * no installed provider, and one naming a missing channels file, have refused and left the root as
+ * it was. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
  * legacy route, each with its reason, its remedy and exit 2, and the registration is kept.
@@ -405,6 +406,11 @@ setCurrent("keep");
   check("up with a runtime no installed extension provides is DEPENDENCY_UNAVAILABLE, exit 2, naming cotal ext add, and leaves the root and registrations unchanged",
     refused(noProvider, 2, "DEPENDENCY_UNAVAILABLE") && noProvider.env?.target?.runtime === "tmux" && (noProvider.env?.error?.remedy ?? "").includes("cotal ext add @cotal-ai/tmux") &&
       cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(noProvider));
+  const missingChannels = join(fresh, "missing-channels.json");
+  const noChannels = await json(["up", "--open", "--channels", missingChannels, "--server", server], fresh);
+  check("up with a missing --channels file is USAGE_INVALID, exit 1, naming the file, and leaves the root and registrations unchanged",
+    refused(noChannels, 1, "USAGE_INVALID") && (noChannels.env?.error?.message ?? "").includes(missingChannels) &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(noChannels));
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");

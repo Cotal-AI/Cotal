@@ -27,7 +27,7 @@ import { prepareProcessService, removeStoppedInstanceRecords, settleExitedInstan
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -277,9 +277,14 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
   if (request.transport.kind !== "plaintext" && request.transport.kind !== "tls-required") throw new CommandFailure("refused", "UNSUPPORTED", "unknown broker transport");
-  const previous = readStackJournal(root);
-  if (request.expectPriorDown && (!previous || previous.sha256 !== request.expectPriorDown.journalSha256 || previous.journal.operation.id !== request.expectPriorDown.operationId))
+  const recorded = readStackJournal(root);
+  if (request.expectPriorDown && (!recorded || recorded.sha256 !== request.expectPriorDown.journalSha256 || recorded.journal.operation.id !== request.expectPriorDown.operationId))
     throw new CommandFailure("refused", "CONFLICT", "the stopped stack changed after the team boot checked it; nothing was started", { target: { root, space, expected: request.expectPriorDown.operationId } });
+  // A stack none of whose members ever launched, such as one whose first up was refused at a busy
+  // address, pins nothing: this up plans it as a first up from the request and only replaces its
+  // journal file. Broker inputs an earlier attempt recorded stay the default for any it does not name.
+  const unstarted = recorded !== undefined && stackNeverStarted(recorded.journal) ? recorded.journal : undefined;
+  const previous = unstarted ? undefined : recorded;
   // A stopped stack's broker is prepared again from its own recorded inputs. An explicit request for
   // a different store, cap or bind host refuses; none is replaced by a default.
   const recordedBroker = previous?.journal.broker;
@@ -298,9 +303,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // an empty store at a mistyped path and start the stack on it. Its identity is pinned here and
   // checked again by preparation, which never creates a pinned store, and just before the broker starts.
   const storePin = legacyStopped ? pinExistingStore(resolve(request.storeDir!), { root, space }) : undefined;
-  const brokerStore = recordedBroker?.storeDir ?? request.storeDir;
-  const brokerCap = recordedBroker ? recordedBroker.maxFileStore : request.maxFileStore;
-  const brokerHost = recordedBroker ? recordedBroker.host : request.host;
+  const brokerStore = recordedBroker?.storeDir ?? request.storeDir ?? unstarted?.broker?.storeDir;
+  const brokerCap = recordedBroker ? recordedBroker.maxFileStore : request.maxFileStore ?? unstarted?.broker?.maxFileStore;
+  const brokerHost = recordedBroker ? recordedBroker.host : request.host ?? unstarted?.broker?.host;
   // The mode is pinned by the first whole-stack up. A conflicting explicit request refuses here,
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
@@ -349,7 +354,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
   // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
   // until the next whole-stack operation settles it from its members' evidence.
-  let snapshot: StackJournalSnapshot = writeStackJournal(root, current, journal);
+  let snapshot: StackJournalSnapshot = writeStackJournal(root, current ?? recorded, journal);
   const changed: unknown[] = [];
   const settle = (phase: StackJournal["operation"]["phase"]) => {
     journal = { ...journal, operation: { ...journal.operation, phase }, updatedAt: new Date().toISOString() };
