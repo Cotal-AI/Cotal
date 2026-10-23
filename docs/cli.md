@@ -1280,7 +1280,7 @@ after a refused cut retires that seat through its retirement path.
 ```bash
 cotal clean <history|store|all> --force
 cotal clean restore-attempt --attempt <id> --force
-cotal clean restore-fallback --attempt <id> --force
+cotal clean restore-fallback --attempt <id> --force [--discard-history]
 ```
 
 | Flag | Default | Meaning |
@@ -1290,6 +1290,7 @@ cotal clean restore-fallback --attempt <id> --force
 | `--store-dir <dir>` | `.cotal/nats` | `store`/`all`: JetStream store directory |
 | `--force` | none | Required: destructive, no prompting |
 | `--attempt <id>` | none | `restore-attempt`: exact stale pre-commit attempt; `restore-fallback`: matching healthy committed restore |
+| `--discard-history` | off | `restore-fallback`: also delete a registry-only restore's old store, the only copy of the history it left out |
 
 One configurable cleanup verb; every target requires `--force`.
 
@@ -1323,7 +1324,8 @@ are always refused.
 `store` and `all` also refuse every maintenance journal state. After a healthy committed restore,
 `restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
-completed restore journal so a later `down --preserve-state` can start a new backup cycle. After an
+completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a
+registry restore it also requires `--discard-history`, as `backup cleanup-fallback` does. After an
 `--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
@@ -1430,7 +1432,7 @@ cotal backup create <dir> [--only full|registry] [--store-dir <dir>] [--json|--p
 cotal backup inspect <dir> [--json|--plain]
 cotal backup verify <dir> [--json|--plain]
 cotal backup recover <full-attempt-id> [--yes|--dry-run] [--json|--plain]
-cotal backup cleanup-fallback <full-attempt-id> [--yes|--dry-run] [--json|--plain]
+cotal backup cleanup-fallback <full-attempt-id> [--yes|--dry-run] [--discard-history] [--json|--plain]
 cotal backup restore <dir> [--only registry] [--store-dir <dir>] [--accept-missing-source] [--json|--plain]
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 ```
@@ -1498,7 +1500,9 @@ started is proven gone or the claim's deadline has passed. Commit intent forbids
 removes only its unchanged retained old-store identity; it never removes the restored target.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
-starts a new backup cycle.
+starts a new backup cycle. A registry restore leaves every other stream out, so its old store holds
+the only copy of that history. Its `--dry-run` warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`, and the
+cleanup refuses `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
@@ -1519,7 +1523,11 @@ come from the preserved cut, so no selector can rebind them. An artifact of anot
 `CONFLICT` (exit 2) and names both spaces; the preserved cut is not changed. A receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
-confirm that any seat joined. `--store-dir` names a store the restore creates, so a path that
+confirm that any seat joined. A registry restore brings back channel settings only, so chat and DM
+history start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
+names the store the restore set aside, which holds the only copy of that history. Its next step says
+that `backup cleanup-fallback` deletes that store only with `--discard-history`.
+`up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no

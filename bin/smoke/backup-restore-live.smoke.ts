@@ -278,15 +278,23 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     must("preserve again for restore", run("down", "--preserve-state"));
 
     const restoreArtifact = mode === "open" ? registryArtifact : artifact;
-    must("restore", run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space));
+    const restored = run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space);
+    must("restore", restored);
     const listed = run("channel", "--space", space);
     must("list restored registry", listed);
     assert.match(listed.stdout, /#preserved/);
     const active = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as {
       state: string;
-      restore: { attemptId: string };
+      restore: { attemptId: string; selection?: string; previousSource?: { identity: { path: string } } };
     };
     assert.equal(active.state, "active");
+    assert.equal(active.restore.selection, restoreArtifact === registryArtifact ? "registry" : "full", `${mode} restore journals its selection`);
+    // A registry restore says history starts empty and names the store that holds its only copy.
+    if (restoreArtifact === registryArtifact) {
+      assert.match(restored.stdout, /channel settings only, so chat and DM history start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
+      const previous = active.restore.previousSource?.identity.path;
+      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of that history. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
+    } else assert.doesNotMatch(restored.stdout, /history start empty/);
     must("down", run("down"));
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the
@@ -298,7 +306,23 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       );
       must("later down", run("down"));
     }
-    must("cleanup fallback", run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force"));
+    if (restoreArtifact === registryArtifact) {
+      // The previous store holds the only copy of the history the registry restore left out, so the
+      // preview warns and both cleanup commands refuse to delete it without --discard-history.
+      const previous = active.restore.previousSource!.identity.path;
+      const preview = run("backup", "cleanup-fallback", active.restore.attemptId, "--dry-run", "--json");
+      must("cleanup-fallback preview", preview);
+      assert.ok((JSON.parse(preview.stdout) as { warnings: { code: string }[] }).warnings.some((w) => w.code === "HISTORY_ONLY_IN_PREVIOUS_STORE"), `${mode} preview warns about the only copy\n${preview.stdout}`);
+      const kept = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes", "--json");
+      assert.equal(kept.status, 1, `${mode} cleanup-fallback without --discard-history refuses\n${kept.stdout}\n${kept.stderr}`);
+      assert.match(kept.stdout, /"code":"USAGE_INVALID"/);
+      assert.ok(existsSync(previous), `${mode} cleanup-fallback without --discard-history keeps the previous store`);
+      const keptByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
+      assert.equal(keptByClean.status, 1, `${mode} clean restore-fallback without --discard-history refuses\n${keptByClean.stdout}\n${keptByClean.stderr}`);
+      assert.ok(existsSync(previous), `${mode} clean restore-fallback without --discard-history keeps the previous store`);
+      must("cleanup fallback", run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history"));
+      assert.equal(existsSync(previous), false, `${mode} --discard-history deletes the previous store`);
+    } else must("cleanup fallback", run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force"));
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "fallback cleanup retires the restore journal");
   } finally {
     run("down");

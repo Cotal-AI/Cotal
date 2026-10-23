@@ -218,7 +218,9 @@ import {
   preservedSourceState,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
+  registryRestoreNotes,
   replacePreparedDeadRestoreListener,
+  retainedPreviousStore,
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
@@ -1636,6 +1638,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       server,
       startupLock,
     );
+    if (restored?.selection === "registry" && !quietRestore)
+      for (const line of registryRestoreNotes(restored.attemptId, retainedPreviousStore(restored.root, restored.attemptId))) console.log(c.yellow(line));
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,

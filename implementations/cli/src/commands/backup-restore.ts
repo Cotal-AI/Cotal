@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
-import { heldRestoreAttempt } from "../lib/restore.js";
+import { heldRestoreAttempt, registryRestoreNotes, retainedPreviousStore } from "../lib/restore.js";
 import { assertStoreDirArgument } from "../lib/store-dir.js";
 import { startRestore, type RestoreStartupResult } from "./up.js";
 
@@ -35,6 +35,11 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
       remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with cotal status before another restore",
     });
   }
+  // A registry restore leaves chat and DM history empty; its warning says so and names the store
+  // that holds the only copy of that history.
+  const registryOnly = result.selection === "registry";
+  const previousStore = registryOnly ? retainedPreviousStore(result.root, result.attemptId) : undefined;
+  const historyNotes = registryRestoreNotes(result.attemptId, previousStore);
   // The native activation throws on a degraded control plane or auth service before this point, so
   // a returned result is a healthy one. A static or open mesh has no auth service to report.
   const data = {
@@ -57,6 +62,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     // there is no per-seat outcome to report: a full restore hands retained seats to the manager's
     // resume, and a registry restore drops them from the inventory (restore.ts, staleConsent).
     seatResume: result.selection === "full" ? "requested" as const : "not-requested" as const,
+    previousStore: previousStore ?? null,
   };
   writeResult(presentationOf(values), {
     command: "backup restore",
@@ -65,7 +71,8 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     // The restore itself succeeded (outcome ok); what it does not observe is completeness, as for
     // `team boot`. `partial` here would make a successful restore exit 4.
     completeness: data.seatResume === "requested" ? "partial" : "complete",
-    warnings: data.seatResume === "requested" ? [{ code: "AGENT_READINESS_NOT_CHECKED", target: { space: result.space }, message: "Retained seats were offered to the manager's resume; whether each one joined is not checked." }] : [],
+    warnings: data.seatResume === "requested" ? [{ code: "AGENT_READINESS_NOT_CHECKED", target: { space: result.space }, message: "Retained seats were offered to the manager's resume; whether each one joined is not checked." }]
+      : registryOnly ? [{ code: "HISTORY_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}) }, message: historyNotes.join(" ") }] : [],
   }, (row): Report => ({ sections: [
     { title: "Backup restored", blocks: [
       { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Restore attempt", row.attemptId], ["Selection", row.selection], ["Store", row.store], ["Broker", row.server], ["Broker PID", String(row.brokerPid)], ["Manager", row.manager ? "started" : "not started"], ["Delivery", row.delivery ? "started" : "not started"], ["Seat resume", row.seatResume], ["Journal", "active"]] },
@@ -73,7 +80,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: `cotal status --space ${row.space}`, description: "Check the restored stack" },
-      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: "Retire the restore journal and any unchanged retained old store, after review" },
+      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: row.previousStore && registryOnly ? "Retire the restore journal; the previous store holds the only copy of the history this restore left out, so deleting it needs --discard-history" : "Retire the restore journal and any unchanged retained old store, after review" },
     ] }] },
   ] }));
 }
