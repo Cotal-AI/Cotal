@@ -3953,6 +3953,10 @@ same per-action instrument path as `cotal stop` and `cotal ps`, never the observ
 [`cotal attach`](#managed-seats) in place and returns to the console on detach. See
 [Watch a mesh](watch-a-mesh.md).
 
+Message bodies, names and other text from peers are untrusted. Both views show a control character
+in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
+a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
+
 <a id="web"></a>
 
 ## Web dashboard
