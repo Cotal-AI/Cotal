@@ -227,7 +227,7 @@ try {
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
   // A user interrupt after a wake does NOT re-drive it: an explicit Stop is a turn someone ENDED,
-  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (ackSurfaced),
+  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (batch.ack),
   // never re-armed the way a genuine failure re-arms it above.
   await pub.multicast("@Otto second look", { channel: "team", mentions: ["Otto"] });
   await waitForPrompts(7);
@@ -422,7 +422,7 @@ try {
     // with nothing pending, so no drive fires), then hold `busy` across the publish window: the
     // incoming handler buffers while busy, so the pair cannot drive its own prompt_async. The
     // human prompt that follows is the one frame that carries both — `injectIntoPrompt` is gated
-    // on driving/awaitingTurnEnd, not on busy.
+    // on driving and an open batch, not on busy.
     await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
     await sleep(300);
     await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
@@ -717,6 +717,42 @@ try {
       prompts2.length === 2 && prompts2[1]?.body.text?.includes("second turn via 2.x") === true,
       prompts2,
     );
+
+    // #3507: a native prompt typed while a driven batch is open adds nothing to it, as on 1.x. The
+    // batch's own turn end acks only that batch, and the DM that arrived behind it is driven next.
+    const promptHook = ctx2.sessionHooks.get("prompt") as unknown as (e: { sessionID: string; prompt: { text: string } }) => void;
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 3 }, data: { sessionID: SID2 } });
+    await pub2.unicast(otto2Id!, "behind the open batch");
+    await sleep(500);
+    const typedOpen = { sessionID: SID2, prompt: { text: "typed while a batch is open" } };
+    promptHook(typedOpen);
+    check("2.x: a native prompt adds nothing to an open driven batch (#3507)", typedOpen.prompt.text === "typed while a batch is open", typedOpen);
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 4 }, data: { sessionID: SID2 } });
+    for (let i = 0; i < 50 && prompts2.length < 3; i++) await sleep(100);
+    check(
+      "2.x: the turn end acks only the open batch, and the DM behind it is driven as its own turn",
+      prompts2.length === 3 && prompts2[2]?.body.text?.includes("behind the open batch") === true && !prompts2[2]?.body.text?.includes("second turn via 2.x"),
+      prompts2,
+    );
+
+    // The control: with no batch open (a native turn is running), the same hook carries what waits.
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 5 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 6 }, data: { sessionID: SID2 } });
+    await sleep(300);
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 7 }, data: { sessionID: SID2 } });
+    await sleep(200);
+    await pub2.unicast(otto2Id!, "carried by the native prompt");
+    await sleep(500);
+    const typedClosed = { sessionID: SID2, prompt: { text: "typed with no batch open" } };
+    promptHook(typedClosed);
+    check(
+      "2.x: with no batch open, a native prompt carries the waiting DM",
+      typedClosed.prompt.text.includes("carried by the native prompt") && typedClosed.prompt.text.endsWith("\n\ntyped with no batch open"),
+      typedClosed,
+    );
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 8 }, data: { sessionID: SID2 } });
+    await sleep(700);
+    check("2.x: the native turn end acks what it carried (nothing is driven again)", prompts2.length === 3, prompts2);
 
     const names1x = cotalToolSpecs(configFromEnv(), "opencode").map((s) => s.name).sort();
     const names2x = ctx2.addedTools.map((t) => t.name).sort();

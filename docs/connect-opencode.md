@@ -117,6 +117,10 @@ in-process plugin does everything.
   example after its link was down for longer than the ack wait, and the broker may then
   redeliver it. Delivery stays at-least-once: see
   [Durable transport](presence-and-delivery.md#durable-transport).
+- **One batch per turn.** On both lines, a prompt typed while a turn still carries a peer batch
+  goes out without peer messages, and what arrived meanwhile goes out once that turn ends. A prompt
+  typed when no batch is open carries the waiting messages ahead of its text, and its turn's end
+  settles them like any other batch.
 - **Quiet stays pull-only.** Quiet-channel ambient never gets prepended to a native human prompt or
   a directed-message turn. `cotal_inbox` explicitly surfaces and clears it; automatic traffic stays
   owned by the connector. Quiet-channel `@mention`s still drive a turn.
