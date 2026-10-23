@@ -247,6 +247,13 @@ function agentUnrenewableRepair(): string {
   return "native renewal skips unbounded or unreadable material; inspect the exact lifecycle and authority before choosing an explicit replacement. This diagnosis does not prove the agent is stopped or authorize a blind respawn";
 }
 
+/** The two ways out for an agent credential with no expiry: rotating the space identity retires it
+ *  with everything the space issued, and a bounded replacement ends it once the file is gone. */
+function agentUnboundedRepair(path: string, space: string): string {
+  const cmd = displayCmd();
+  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`. Or bound it: stop what uses it, remove ${path} and mint a replacement with --expires-in <seconds> or --expires-at <unix-seconds>; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
+}
+
 /** Classify every `agent` file by alias family, so a superseded incarnation is never reported as a
  *  broken fleet (#1576 ask 3).
  *
@@ -334,7 +341,7 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   const agentDir = agentCredsDir(root, space, { readOnly, onMigrated });
   if (existsSync(agentDir)) {
     for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
-      reports.push(report(basename(f), "agent", join(agentDir, f)));
+      reports.push(report(basename(f), "agent", join(agentDir, f), undefined, undefined, undefined, space));
     }
   }
   // SECOND PASS over the agent files (#1576). Supersession is a property of an alias's FAMILY, not of
@@ -343,11 +350,11 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   // classified once every member is known, and the affected rows are re-derived with that role.
   const roles = classifyAgentFamilies(reports);
   return reports.map((r) =>
-    r.kind === "agent" && r.health ? report(r.label, r.kind, r.path, undefined, undefined, { role: roles.get(r.label) ?? "sole" }) : r,
+    r.kind === "agent" && r.health ? report(r.label, r.kind, r.path, undefined, undefined, { role: roles.get(r.label) ?? "sole" }, space) : r,
   );
 }
 
-function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily): CredReport {
+function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily, space?: string): CredReport {
   let health: CredHealth;
   // A cause the operator can act on, reported in place of the generic parse finding. Its text is
   // fixed and never quotes the file.
@@ -425,8 +432,8 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
       // so it is a finding even where no renewal owner bounds it.
       r.problem = standing
         ? "unbounded standing credential (minted before the renewal slice) - a copied cred never dies"
-        : "unbounded credential (no expiry claim) - a copied cred never dies";
-      r.repair = kind === "agent" && live?.role !== "superseded" ? agentUnrenewableRepair() : repair;
+        : "unbounded credential (no expiry claim) - a copy stays valid until the space identity rotates";
+      r.repair = kind === "agent" && live?.role !== "superseded" && space !== undefined ? agentUnboundedRepair(path, space) : repair;
       break;
   }
   return r;

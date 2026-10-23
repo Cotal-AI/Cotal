@@ -4860,8 +4860,11 @@ client cannot parse is a finding even when its claims are legible, such as one w
 line endings.
 A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
 signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential,
-such as one `auth mint` wrote without `--expires-in` or `--expires-at`, stays a finding until it is
-replaced with a bounded one.
+such as one `auth mint` wrote without `--expires-in` or `--expires-at`, stays a finding until its file
+is gone. Its guidance names both ways out. Rotating the space identity (`cotal down`, `cotal reset
+space <space>`, then `cotal up`) retires it with every other credential the space issued and removes
+the file. Removing the file once nothing uses it, and minting a replacement with `--expires-in` or
+`--expires-at`, bounds it from then on; a copy made before stays valid until that rotation.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.

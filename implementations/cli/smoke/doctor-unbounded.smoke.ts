@@ -1,8 +1,9 @@
 /**
  * `cotal doctor auth` reports a local credential with no expiry claim as a finding, whatever its
  * kind. `cotal auth mint` writes one by default, and a copy of it stays valid until its signer
- * rotates, so an unbounded agent credential is listed under "Credential findings" with the native
- * replacement guidance, and the run ends failed (exit 5). A bounded agent credential beside it is
+ * rotates, so an unbounded agent credential is listed under "Credential findings" with guidance that
+ * retires it by rotating the space identity or bounds it by replacing the named file, and the run ends
+ * failed (exit 5). A bounded agent credential beside it is
  * no finding, and once the unbounded file is gone the same root reports no findings. Broker-free;
  * the doctor reads a staged static root.
  *
@@ -74,7 +75,9 @@ try {
     const bob = envelope.result.items.find((item) => item.label === "bob.creds");
     assert.equal(alice?.state, "unbounded", "fixture: alice.creds carries no expiry claim");
     assert.match(alice?.problem ?? "", /^unbounded credential \(no expiry claim\)/, "the unbounded agent credential is a finding");
-    assert.match(alice?.repair ?? "", /native renewal skips unbounded/, "its guidance is the native replacement path, not a respawn");
+    assert.match(alice?.problem ?? "", /a copy stays valid until the space identity rotates$/, "the finding says how long a copy lives");
+    assert.match(alice?.repair ?? "", new RegExp(`reset space ${SPACE}\``), "its guidance retires it by rotating the space identity");
+    assert.ok(alice?.repair?.includes(`remove ${unbounded} and mint a replacement with --expires-in <seconds> or --expires-at <unix-seconds>`), "and bounds it by replacing the named file");
     assert.equal(bob?.state, "healthy", "fixture: bob.creds is bounded and healthy");
     assert.equal(bob?.problem, null, "a bounded agent credential is no finding");
     assert.equal(envelope.result.findings, 1, "one finding");
