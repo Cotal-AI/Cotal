@@ -29,8 +29,9 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the selected space, lists common commands, and points a machine with no selected space to
-`cotal setup`. Every command generates its own help, usage, and shell completion from its declared
+the selected space, or with none selected the space prepared in the current folder, and lists common
+commands. It points a prepared space to the `cotal up` that starts it, and a machine with no space
+to `cotal setup`. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. `-v` is not a
 version flag.
 
@@ -1766,6 +1767,11 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
+A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
+included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
+`cotal space forget <space>`. `cotal space create <space> --root <dir>` then prepares it again.
+`use`, `up --space` and `space forget` also say the folder no longer exists.
+
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
 refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and
@@ -2075,8 +2081,8 @@ no `--json`, `--plain` or `--all`. It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
-state wins). That exit replaces the report's own, so a partial report followed by a clean pass exits
-0:
+state wins). An optional component that is not installed prints `not-installed`, which exits `0`.
+That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
   `status` service reachability from this host. Manager builds that do not report static
@@ -2087,8 +2093,9 @@ state wins). That exit replaces the report's own, so a partial report followed b
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
-- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded
-  once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
+- **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
+  Otherwise, the local PID record, then the `/api/meta` response at the address the dashboard
+  recorded once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
   on the `Web process` row: a service-run dashboard's own session record, found through its web
   service instance and named on the row as `service instance <id>`, or `web.session` for any other
   holder. The probe presents the readiness nonce recorded beside that address, the one credential

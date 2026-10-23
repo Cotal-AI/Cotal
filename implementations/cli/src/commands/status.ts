@@ -68,7 +68,7 @@ export const statusFlags = [
   { name: "creds", type: "string", value: "<file>", description: "named agent: use an explicit connection credential" },
   { name: "all", type: "boolean", description: "check every recorded mesh, not only the selected one" },
   { name: "verbose", short: "v", type: "boolean", description: "include installation paths, local records and detailed diagnostics" },
-  { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving; 1 absent; 2 present but not serving; 3 probe refused)" },
+  { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving, or the optional dashboard not installed; 1 absent; 2 present but not serving; 3 probe refused)" },
   jsonFlag,
   plainFlag,
 ] as const;
@@ -1283,18 +1283,20 @@ function selectedOverview(r: StatusResult): Section | undefined {
 function nextActions(r: StatusResult): Section {
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
-  if (!r.machine.connectors?.length) items.push({ command: `${cmd} setup`, description: "Set up an agent application and a space" });
-  else {
-    if (r.selected.resolved) {
-      const s = r.selected;
-      // Name what fixes the default persona alone; setup does far more than that.
-      if (s.personas.default === "missing") {
-        const fix = defaultPersonaFix({ space: s.space, root: s.root, origin: r.meshes.items.find((m) => m.space === s.space)?.origin }, cmd);
-        items.push({ command: fix.command, description: fix.cwd ? `Write the default persona; run it in ${fix.cwd}` : "Create the default persona" });
-      } else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
-      else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
-      items.push({ command: `${cmd} ps`, description: "See the agent roster" });
-    }
+  const noApplication = !r.machine.connectors?.length;
+  if (r.selected.resolved) {
+    const s = r.selected;
+    // A space that already resolves needs only the application to spawn into it.
+    if (noApplication) items.push({ command: `${cmd} setup`, description: "Set up an agent application" });
+    // Name what fixes the default persona alone; setup does far more than that.
+    else if (s.personas.default === "missing") {
+      const fix = defaultPersonaFix({ space: s.space, root: s.root, origin: r.meshes.items.find((m) => m.space === s.space)?.origin }, cmd);
+      items.push({ command: fix.command, description: fix.cwd ? `Write the default persona; run it in ${fix.cwd}` : "Create the default persona" });
+    } else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
+    else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
+    items.push({ command: `${cmd} ps`, description: "See the agent roster" });
+  } else if (noApplication) items.push({ command: `${cmd} setup`, description: r.selected.code === "not-started" ? "Set up an agent application" : "Set up an agent application and a space" });
+  if (r.selected.resolved || !noApplication) {
     items.push({ command: `${cmd} use`, description: "Choose another space" });
     if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }
@@ -1369,11 +1371,13 @@ function section(name: string): void {
  * knows about a component; a component-owned control answer says it is actually serving.  Do not
  * flatten those questions — the manager incident was exactly a live lease holder that had not
  * reached its service rail. */
-type ComponentVerdict = "serving" | "absent" | "not-serving" | "refused";
+type ComponentVerdict = "serving" | "not-installed" | "absent" | "not-serving" | "refused";
 type ComponentHealth = { name: string; verdict: ComponentVerdict; facts: string[] };
 
 const COMPONENT_EXIT: Record<ComponentVerdict, number> = {
   serving: 0,
+  // An optional component that was never installed is not a failed one.
+  "not-installed": 0,
   absent: 1,
   "not-serving": 2,
   refused: 3,
@@ -1763,6 +1767,12 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   const record = processRecord(WEB_PIDFILE, context);
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
+  if (record.kind === "absent") {
+    // An installation that cannot be read keeps the absent verdict rather than a clean zero.
+    let installed: boolean | undefined;
+    try { installed = webInstalled(); } catch { installed = undefined; }
+    if (installed === false) return { name: "web", verdict: "not-installed", facts: ["optional"] };
+  }
   if (stopped) {
     if (record.kind === "dead") facts.push("stale pidfile");
     if (record.kind === "unattributable") facts.push("unattributable pidfile");

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, findMesh, findPreparedSpace, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, setCurrent, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
 
@@ -53,7 +54,9 @@ function selectionView(s: Selection): Report {
     : { text: `selected ${s.current}${s.previous ? ` (was ${s.previous})` : ""}`, tone: "ok", mark: "✓" };
   const lines: Cell[] = [head];
   if (s.server) lines.push({ text: `  ${s.server}`, tone: "hint" });
-  if (s.preparedRoot) lines.push({ text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });
+  if (s.preparedRoot) lines.push(existsSync(s.preparedRoot)
+    ? { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" }
+    : { text: `  prepared in ${s.preparedRoot}, which no longer exists - forget it with \`cotal space forget ${s.current}\``, tone: "waiting" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }
 

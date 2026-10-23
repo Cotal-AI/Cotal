@@ -131,6 +131,8 @@ export interface MeshTargetErrorDetails {
   stackSpace?: string;
   /** For `not-started`: the Cotal home in use, when the root's stack runs under another one. */
   home?: string;
+  /** For `not-started` on a prepared space: its root no longer exists, so `up` cannot start it there. */
+  rootMissing?: boolean;
 }
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
@@ -319,7 +321,9 @@ function isGenuineSpace(root: string): boolean {
  *  have: another broker may answer there. */
 function notStarted(space: string): void {
   const prepared = findPreparedSpace(space);
-  if (prepared) throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
+  if (!prepared) return;
+  if (!existsSync(prepared.root)) throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists`, { space, root: prepared.root, rootMissing: true });
+  throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
 }
 
 /** Whether `root`'s stack journal names member instances of which this Cotal home holds no record,
