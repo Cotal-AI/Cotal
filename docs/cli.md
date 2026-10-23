@@ -3129,7 +3129,7 @@ and process start). Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWN
 
 This daemon is a different machine identity. Nothing is copied from the default daemon: it needs
 its own `login`, its own `register`, and the space owner's approval of its own instance. Without
-`--daemon-home` every command behaves exactly as before.
+`--daemon-home` every command behaves as before.
 
 `login` signs the running daemon in with device approval. The daemon runs the same sign-in as
 `cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The
