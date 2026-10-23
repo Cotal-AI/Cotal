@@ -3087,7 +3087,9 @@ to the current directory. Remote `--on` operations refuse as unsupported here.
 
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
-must name the requested persona and keep their original bytes. They cannot be combined with
+must name the requested persona and keep their original bytes. A file that names another persona is
+refused with `SCHEMA_INVALID`, naming the file's own name and the `persona create` that keeps it.
+They cannot be combined with
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
 including `--subscribe ""` for no channels, and accepts `--role` and `--model`. Both refuse control
 characters with `USAGE_INVALID`. `--harness` must name a harness this machine knows, as
