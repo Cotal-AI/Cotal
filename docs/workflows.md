@@ -261,7 +261,8 @@ files a new answer beside the accepted one, naming the answer it supersedes, and
 each amendment under the step as an `amended` line, in the order the store committed them. The last
 line is the current position, whatever clock each amender's `at` came from. The pause stays settled
 and the run keeps the answer it acted on. A step that is still open, or that settled with no answer,
-refuses an amend. The manager records the amender from the credential, as for an answer, and a
+refuses an amend. So does a step whose answer was just accepted and is not in the run's journal
+yet, and that refusal says so. The manager records the amender from the credential, as for an answer, and a
 spawned seat may amend only an answer recorded under its own name.
 
 ```bash

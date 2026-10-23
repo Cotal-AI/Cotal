@@ -5344,7 +5344,9 @@ value it filed or that none was given, any artifact and the answer id. With `--j
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
-answer refuses an amend. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
+answer refuses an amend. The run records an accepted answer a moment after `answer` returns, and an
+amend sent in between is refused with a message saying the answer is not recorded yet; amend again
+once `run show` lists it. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
 edited program against a run's journal, from this terminal under a read credential (`--local`
 only; the manager serves no run-migrate command): it prints whether the migration is admissible,
 every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It

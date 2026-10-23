@@ -50,7 +50,7 @@ import {
 } from "@cotal-ai/core";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import { CheckpointNotAmendable, openCheckpointToken, settledPauseToken, type JournalEntry } from "@cotal-ai/lang";
+import { CheckpointNotAmendable, journalEntryKeyString, openCheckpointToken, settledPauseToken, stepPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import { delay } from "./delay.js";
 
 export interface ResolveCheckpointRequest {
@@ -246,7 +246,18 @@ export async function locateAcceptedAnswer(
   req: { readonly runId: string; readonly stepKey: string; readonly takeoverId: string },
 ): Promise<AcceptedAnswer> {
   const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
-  const token = settledPauseToken(entries, req.runId, req.stepKey);
+  let token: string | undefined;
+  try {
+    token = settledPauseToken(entries, req.runId, req.stepKey);
+  } catch (e) {
+    // An accepted answer settles the pause before the driver records the step, so for that moment
+    // the journal still reads open. Telling the caller to answer would send them to a pause that
+    // already took an answer.
+    if (!(e instanceof CheckpointNotAmendable) || e.why !== "open") throw e;
+    const pending = stepPauseToken(entries.filter((x) => journalEntryKeyString(x) === req.stepKey));
+    const pause = pending === undefined ? undefined : await readCheckpointStatus(deps.kv, { endpoint: deps.endpoint, token: pending });
+    throw pause?.value.state === "resumed" ? new CheckpointNotAmendable(req.runId, req.stepKey, "unrecorded") : e;
+  }
   if (token === undefined) throw new CheckpointNotAmendable(req.runId, req.stepKey, "unanswered");
   const status = await readCheckpointStatus(deps.kv, { endpoint: deps.endpoint, token });
   const answerId = status?.value.state === "resumed" ? status.value.settledAnswerId : undefined;
