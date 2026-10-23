@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import type { FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -25,6 +26,7 @@ import {
   type Report,
   type ResolvedPreference,
 } from "@cotal-ai/workspace";
+import { personaNameProblem } from "../lib/persona-files.js";
 
 export const configFlags = [
   { name: "user", type: "boolean", description: "read or write your own defaults, with no space's values" },
@@ -113,6 +115,8 @@ export async function config(args: ParsedArgs): Promise<void> {
     const key = keyOf(rest[0]!);
     const value = sub === "set" ? rest[1]! : undefined;
     if (key === "harness" && value !== undefined) checkHarness(value);
+    // A blank persona is left to the key's own check, which names it empty.
+    if (key === "persona" && value?.trim()) checkPersona(value);
     const scope: Scope = v.space !== undefined ? { space: v.space, from: "flag" } : { space: null, from: null };
     const previous = (scope.space === null ? prefs.defaults[key] : prefs.spaces[scope.space]?.[key]) ?? null;
     const { changed, revision } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
@@ -149,7 +153,18 @@ function setting(key: PreferenceKey, scope: Scope, prefs: Preferences): Setting 
 export function checkHarness(value: string): void {
   const installed = loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name));
   const known = knownHarnesses(installed);
-  if (!known.includes(value)) throw usage(`no harness "${value}"; known harnesses: ${known.join(", ")}`);
+  if (!known.includes(value)) throw usage(`no harness ${JSON.stringify(value)}; known harnesses: ${known.join(", ")}`);
+}
+
+/** A persona default is a catalog name or a persona file path, the two forms a launch resolves (a path
+ *  is absolute, holds a slash or ends in `.md`, as `agentFilePath` decides), so a value that can be
+ *  neither is refused at the write. Whether it exists is decided at launch, in the space it runs in. */
+function checkPersona(value: string): void {
+  const path = isAbsolute(value) || /[\\/]/.test(value) || value.endsWith(".md");
+  const problem = !path
+    ? personaNameProblem(value)
+    : /[\u0000-\u001f\u007f]/u.test(value) || value !== value.trim() ? "a persona file path cannot hold control characters or surrounding spaces" : undefined;
+  if (problem) throw usage(`invalid persona ${JSON.stringify(value)}: ${problem}`);
 }
 
 /** A write that a higher layer still outranks in this shell says so, so the edit is not mistaken for

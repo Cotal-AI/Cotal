@@ -2365,7 +2365,8 @@ cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
 
 Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
-it is not limited to child processes owned by the manager.
+it is not limited to child processes owned by the manager. The Participant column holds the name
+that `endpoint describe` takes, and the role has its own column.
 
 ## who
 
@@ -2993,7 +2994,10 @@ Show and edit accept a definition whose `name` is not its catalog name. The seed
 persona is one: its file is `default.md` and its agents launch as `default_agent`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
-preferences). A successful editor exit and valid definition are required before saving. A changed
+preferences). The value runs as a shell command, so quote a path that holds spaces. With no editor
+set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
+and names the setting to fix. A successful editor exit and valid definition are required before
+saving. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
 CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
@@ -3612,8 +3616,10 @@ cotal send -r <role> "<text>"
 
 Choose one destination: `--to/-t` for a direct message, `--channel/-c` for a channel,
 or `--role/-r` for the role's native work queue. Choose one body source: a quoted positional
-argument, `--file/-f <path>`, or explicit `--stdin`. There are no implicit stdin reads. Files and
-stdin must contain nonempty UTF-8 text; their content is preserved and never printed in the receipt.
+argument, `--file/-f <path>`, or explicit `--stdin`; `--file -` reads stdin as `--stdin` does. There
+are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; their content is
+preserved and never printed in the receipt. A file that cannot be read is refused with its path,
+`TARGET_NOT_FOUND` when it does not exist.
 No destination, several destinations, several body sources or an empty message is refused.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar; a channel publication cannot name a wildcard.
@@ -4713,10 +4719,12 @@ explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access. A startup file that is a symlink, as a dotfile manager such as stow
-links it, is never written through: `install` refuses it, exit 2, names it and gives the line to
-add to the file it points to yourself. Bare `completion` warns that it is a symlink and does not
-read it. A startup file its owner made read-only is never replaced. `install`
+owner or unsafe file access. A refused directory on the way to a file is named with its reason, and
+a group- or other-writable one with `chmod go-w <path>` as the fix. A startup file that is a
+symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
+it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
+warns that it is a symlink and does not read it. A startup file its owner made read-only is never
+replaced. `install`
 still writes its stub, then fails, exit 5, and names the line to add to that file yourself.
 `uninstall` refuses it, exit 2, and changes nothing until you remove that line. On Windows, PowerShell script generation works but automatic
 profile editing remains unsupported: the guarded POSIX file writer cannot safely replace

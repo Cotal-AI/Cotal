@@ -148,7 +148,9 @@ is `0` or `false`, and a non-empty `NO_COLOR` turns it off; both beat a saved va
 shows the value that wins and every other value it outranks, so a shell export that hides a saved
 value is visible.
 
-`harness` is checked against the official connectors and the ones installed extensions provide. A
+`harness` is checked against the official connectors and the ones installed extensions provide.
+`persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
+with no control characters; whether that persona exists is checked when a launch uses it. A
 value is checked when it is written, and an unknown key or an invalid value is refused with the valid
 ones. Preferences hold no credentials. They change future commands, not agents already running.
 
