@@ -389,7 +389,8 @@ export function validateUpArguments(args: ParsedArgs): void {
  *  this account cannot write is refused here, by name, instead of as the raw error of whichever
  *  write came first. */
 function assertUpRootWritable(root: string): void {
-  const path = existsSync(join(root, ".cotal")) ? join(root, ".cotal") : root;
+  // A `.cotal` that is a file is refused by name before any command runs, so only a directory is tested here.
+  const path = statSync(join(root, ".cotal"), { throwIfNoEntry: false })?.isDirectory() ? join(root, ".cotal") : root;
   try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

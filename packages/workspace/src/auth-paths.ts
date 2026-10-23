@@ -294,6 +294,19 @@ export function findCotalRoot(start: string = process.cwd()): string {
   }
 }
 
+/** Why `<root>/.cotal` cannot hold the folder's records: it exists and is not a directory, such as a
+ *  notes file named `.cotal`. Undefined when it is a directory or absent. */
+export function cotalDirProblem(root: string): string | undefined {
+  const path = join(root, ".cotal");
+  let stat: Stats;
+  try {
+    stat = statSync(path);
+  } catch {
+    return undefined;
+  }
+  return stat.isDirectory() ? undefined : `${path} is a ${stat.isFile() ? "file" : "special file"}, not a directory, so it cannot hold this folder's Cotal records`;
+}
+
 /** {@link findCotalRoot} for a caller that must run inside a workspace that already exists, such as
  *  the delivery daemon: the same walk, but no `.cotal/` anywhere up the tree is a refusal naming the
  *  directory the walk started from. The start directory is not a root anyone set up, and reading

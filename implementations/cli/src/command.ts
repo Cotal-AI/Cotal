@@ -1,10 +1,13 @@
 import { writeSync } from "node:fs";
+import { resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  cotalDirProblem,
   cotalHomeProblem,
+  findCotalRoot,
   disableColor,
   disableInput,
   envelopeLine,
@@ -513,6 +516,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // A COTAL_HOME that cannot be a directory stops them the same way, before any command reads it.
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+    // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
+    // records, and every reader would otherwise report a different wrong cause.
+    const dirProblem = cmd.name === "version" ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
+    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     try {
       cachedPreferences();
     } catch (e) {

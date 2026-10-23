@@ -5,13 +5,16 @@
  * `usage:` line or a lowercase "refusing to clean store without --force"; and `help service nosuch`
  * refused without listing the subcommands.
  *
+ * A folder whose `.cotal` is a file refuses every command with `CONFLICT`, naming that file, before
+ * anything runs.
+ *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
  *
  * Run: pnpm smoke:usage-format
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -76,6 +79,31 @@ if (process.platform !== "win32") {
   check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
   const version = fromRemoved(["--version"]);
   check("version still answers from a removed folder", version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
+}
+
+// A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.
+{
+  const notes = mkdtempSync(join(home, "notes-"));
+  writeFileSync(join(notes, ".cotal"), "notes\n");
+  const at = (args: string[], cwd = notes) => {
+    const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
+  const named = (r: ReturnType<typeof at>) => r.status === 2 && r.stderr.includes(`${join(notes, ".cotal")} is a file, not a directory, so it cannot hold this folder's Cotal records; the command did not run`) && r.stderr.includes("rename or move that file");
+  for (const args of [["status"], ["space", "create", "notes"], ["up"], ["send", "-c", "general", "hi"], ["ps"], ["doctor", "auth"]]) {
+    const r = at(args);
+    check(`${args.join(" ")} in a folder whose .cotal is a file refuses CONFLICT, exit 2, naming it`, named(r), shown(r));
+  }
+  const json = at(["status", "--json"]);
+  const envelope = json.stdout.startsWith("{") ? JSON.parse(json.stdout) : undefined;
+  check("with --json it is one CONFLICT refusal", json.status === 2 && envelope?.outcome === "refused" && envelope.error?.code === "CONFLICT", shown(json));
+  const rooted = at(["space", "create", "notes", "--root", notes], neutral);
+  check("--root naming that folder refuses the same way", named(rooted), shown(rooted));
+  for (const args of [["--version"], ["version"]]) {
+    const version = at(args);
+    check(`${args[0]} still answers there`, version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
+  }
+  check("the file is left as it was", readFileSync(join(notes, ".cotal"), "utf8") === "notes\n");
 }
 
 finish();
