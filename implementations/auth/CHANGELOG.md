@@ -1,5 +1,31 @@
 # @cotal-ai/auth
 
+## 0.97.0
+
+### Minor Changes
+
+- ec7dbfc: The service door admits the schema closures a registration's commands reference. A registration may submit, with its cluster closures, the closure of each `inputDigest` and `outputDigest` its commands name; a submitted one is admitted only whole (its manifest at that digest, its root and every member present, and the bundle recompiling to that closure digest) and is published with the cluster artifacts, so a service registering through the door publishes its schemas the way an in-process registrant does. A registration that submits only its cluster closures is admitted as before and its persisted body and replay are unchanged. A hosted context with service endpoints publishes the canonical void closure (manifest and schema) create-only when it opens, under an effect scoped to exactly those two artifacts, so a payload-free command resolves against it whether or not its registration carried it. `@cotal-ai/core` exports `parseClosureManifest`.
+- 030fba8: `ServiceEndpointRenewal.credential()` answers `ServiceEndpointCredential`: the validated `credential` result without `renewalProof` and `renewalExpiresAt`, which never leave the source, as a copy per caller. `authorizeGuestServeGrant` takes that type; it reads no renewal field. `credential()` is a required member of the interface, so an out-of-tree implementer adds it.
+- 9c193e5: Add `credential()` to `ServiceEndpointRenewal`: the same single-flight pull as `bearer()`, answering the whole validated `credential` result (the witness, the host-authorized snapshot and the access bearer) a guest hands to `authorizeGuestServeGrant`. `bearer()` now delegates to that one pull, so concurrent `bearer()` and `credential()` calls share one request under the same persisted activate and renew ids, and an ended or closed source refuses both the same way with nothing sent. The stock source in `@cotal-ai/auth` implements it; no extra request or renewal loop is added.
+- a5b5731: The service endpoint authority's `GET` answer now carries the issuer identity a guest verifies its access bearer under: `issuer`, the exact `iss` the context mints, and `keys`, the public Ed25519 coordinates of the set `GET /jwks` publishes. `parseServiceAuthorityInfo` reads them, when answered, as a closed, bounded record, and the auth provider's `serviceEndpointInfo` returns them from the registered space's pinned authority URL, tenant path included, so a service passes `serveAuthenticityOf(info)` to `authorizeGuestServeGrant` as its authenticity, built from the door's own context. A door that predates the identity still parses, and a guest that needs it refuses to serve. Every key is checked as a canonical full-order Ed25519 point on the door, in the parser and in the seam, so a small-order key cannot make a signature no private key produced verify. The serving smoke now brands a live credential through the seam against the real door and refuses it under another key for the same kid.
+- e2fc5e1: Host service endpoints from the stock CLI. `cotal up --user-auth --service-endpoints` passes `--service-endpoints` to the auth service, which opens the service endpoint engine, the public `/service-endpoint-authority` door and the new authenticated `/service-endpoint-host` route. That route authenticates the caller's IdP token and derives the granter itself: `decide`, an `owner-request` revoke and the reads run as the proved owner on either face; `name-bind`, any other revoke and the admission operations are the operator's and are served on the loopback face under the exchange capability only, with the proved subject as the audit id. The body never carries a granter. The engine now serves the `name-read` the host contract already declared, scoped to the owner's own binding. `cotal service-endpoint approve|refuse|proposal|operation|name|name-bind` drives the route as the signed-in user: a decision reads the proposal, with the name binding that read carries, and decides at those revisions. Without the flag nothing changes: the engine stays off and both routes answer 404.
+- 1321eb8: Own-broker service caller issuance. `cotal up` retains the system-account signing seed in the root's secret store, beside the seed-free trust record, at space creation and at `--rotate-sys` (the successor's seed replaces the retired account's). An auth service started with `--service-endpoints` composes the caller payload bootstrap from that record when it names the trust record's system account and the seed derives it: each bootstrap mints one 60 s VARZ-only observer credential, and the seed never leaves the daemon. A root with no retained seed opens the engine and door without caller issuance and says why; a record for another account refuses the start. `@cotal-ai/workspace` exports `retainSystemSigningSeed`, `readSystemSigningSeed` and `systemSigningSeedKey`.
+
+### Patch Changes
+
+- 352bbe7: The service authority's published keys are checked as canonical full-order Ed25519 points on the door, in `parseServiceAuthorityInfo` and in the guest seam, so a key of small order or non-canonical encoding is refused rather than letting a signature no private key made verify. The info parser accepts a door that predates the issuer identity, answering the four account fields alone, so a newer client and an older door no longer refuse each other; `serveAuthenticityOf(info)` builds the seam's authenticity from the answer and refuses when the identity is absent. The door refuses to publish more than 16 keys.
+- Updated dependencies [624e71f]
+- Updated dependencies [ec7dbfc]
+- Updated dependencies [352bbe7]
+- Updated dependencies [030fba8]
+- Updated dependencies [9c193e5]
+- Updated dependencies [d03c223]
+- Updated dependencies [a5b5731]
+- Updated dependencies [1321eb8]
+  - @cotal-ai/core@0.97.0
+  - @cotal-ai/workspace@0.97.0
+  - @cotal-ai/lang@0.97.0
+
 ## 0.96.1
 
 ### Patch Changes

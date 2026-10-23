@@ -1,5 +1,32 @@
 # cotal-ai
 
+## 0.97.0
+
+### Minor Changes
+
+- f4529ef: Bind the daemon's existing void machine-status responder using the stock verified guest serve grant. Each serving credential is checked against the registered authority's issuer identity and the unchanged embedded contract. Flush the responder before ready, bind replacement connections, and stop responders on disconnect. Callers still need explicit exact-instance grants; the public descriptor identifies the endpoint and derived owner token and includes protocol and command schemas. No hostname, machine metadata or vitals are returned.
+
+### Patch Changes
+
+- Updated dependencies [624e71f]
+- Updated dependencies [ec7dbfc]
+- Updated dependencies [352bbe7]
+- Updated dependencies [030fba8]
+- Updated dependencies [9c193e5]
+- Updated dependencies [d03c223]
+- Updated dependencies [a5b5731]
+- Updated dependencies [e2fc5e1]
+- Updated dependencies [1321eb8]
+  - @cotal-ai/core@0.97.0
+  - @cotal-ai/auth@0.97.0
+  - @cotal-ai/cli@0.97.0
+  - @cotal-ai/workspace@0.97.0
+  - @cotal-ai/connector-core@0.97.0
+  - @cotal-ai/delivery@0.97.0
+  - @cotal-ai/manager@0.97.0
+  - @cotal-ai/runtime@0.97.0
+  - @cotal-ai/seat@0.97.0
+
 ## 0.96.1
 
 ### Patch Changes

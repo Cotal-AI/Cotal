@@ -1,5 +1,22 @@
 # @cotal-ai/workspace
 
+## 0.97.0
+
+### Minor Changes
+
+- 1321eb8: Own-broker service caller issuance. `cotal up` retains the system-account signing seed in the root's secret store, beside the seed-free trust record, at space creation and at `--rotate-sys` (the successor's seed replaces the retired account's). An auth service started with `--service-endpoints` composes the caller payload bootstrap from that record when it names the trust record's system account and the seed derives it: each bootstrap mints one 60 s VARZ-only observer credential, and the seed never leaves the daemon. A root with no retained seed opens the engine and door without caller issuance and says why; a record for another account refuses the start. `@cotal-ai/workspace` exports `retainSystemSigningSeed`, `readSystemSigningSeed` and `systemSigningSeedKey`.
+
+### Patch Changes
+
+- Updated dependencies [624e71f]
+- Updated dependencies [ec7dbfc]
+- Updated dependencies [352bbe7]
+- Updated dependencies [030fba8]
+- Updated dependencies [9c193e5]
+- Updated dependencies [d03c223]
+- Updated dependencies [a5b5731]
+  - @cotal-ai/core@0.97.0
+
 ## 0.96.1
 
 ### Patch Changes
