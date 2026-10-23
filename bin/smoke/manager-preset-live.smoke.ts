@@ -85,7 +85,7 @@ else {
   const writable = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: loose }));
   check("a roster others can write is refused", writable?.startsWith("PERMISSION_DENIED") === true, writable);
   const linked = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: link }));
-  check("a symlinked roster is refused", linked?.startsWith("DEPENDENCY_UNAVAILABLE") === true, linked);
+  check("a symlinked roster is refused as a link", linked?.startsWith("PERMISSION_DENIED") === true && linked.includes("crosses a symlink"), linked);
   const missing = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: join(rosters, "missing.yaml") }));
   check("a missing roster is refused", missing?.startsWith("DEPENDENCY_UNAVAILABLE") === true, missing);
 

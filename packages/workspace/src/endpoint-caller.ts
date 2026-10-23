@@ -47,7 +47,10 @@ export function standaloneCallerIntent(input: unknown): StandaloneCallerIntent {
   if (value.schemaVersion !== 1 || value.kind !== "endpoint-caller-issuance-intent" || value.owner !== DEV_OWNER || value.phase !== "local-intent-only" || value.secretIncluded !== false) throw new CommandFailure("refused", "SCHEMA_INVALID", "the caller intent has an unsupported local contract; no caller or completion was inferred");
   const requestId = text(value.requestId, 36), createdAt = text(value.createdAt, 100);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId) || !Number.isFinite(Date.parse(createdAt))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the local caller request identity or timestamp is invalid");
-  const output = text(value.output, 4096), space = text(value.space, 200), endpoint = endpointToken(text(value.endpoint, 253));
+  const output = text(value.output, 4096), space = text(value.space, 200), endpoint = text(value.endpoint, 253);
+  // The record keeps the dotted endpoint name that describe and invoke compare and grant against.
+  try { endpointToken(endpoint); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local caller intent does not name an endpoint; no caller was read from it", { remedy: "issue a new caller with cotal auth mint <name> --endpoint <endpoint> --out <new-private-file>" }); }
   if (!isAbsolute(output) || !Array.isArray(value.channels) || value.channels.length > 8192 || !(value.expiresInSeconds === null || Number.isSafeInteger(value.expiresInSeconds) && Number(value.expiresInSeconds) > 0)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the local caller path, channels or requested expiry is invalid");
   const channels = value.channels.map((channel) => assertValidChannel(text(channel, 1024)));
   const identity = text(value.identity, 64), lifecycleUid = assertLifecycleToken(text(value.lifecycleUid, 200));

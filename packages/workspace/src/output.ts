@@ -125,9 +125,9 @@ export class CommandFailure extends Error {
     outcome: Exclude<Outcome, "ok" | "no-op">,
     code: ErrorCode,
     message: string,
-    opts: { remedy?: string; native?: NativeCause; target?: unknown; changed?: readonly unknown[] } = {},
+    opts: { remedy?: string; native?: NativeCause; target?: unknown; changed?: readonly unknown[]; cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
     const problem = outcomeCodeProblem(outcome, code);
     if (problem) throw new Error(`internal error: ${problem}`);
     this.name = "CommandFailure";
@@ -180,7 +180,7 @@ export function inOperationSpace(failure: CommandFailure, space: string | undefi
   const target = failure.target;
   if (space === undefined || target !== null && (typeof target !== "object" || Array.isArray(target) || Object.hasOwn(target, "space"))) return failure;
   const fields = target === null ? {} : target as Record<string, unknown>;
-  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields } });
+  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields }, cause: failure.cause });
   placed.stack = failure.stack;
   return placed;
 }

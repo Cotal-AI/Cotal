@@ -361,6 +361,25 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews", { space: "s" }), unknown, "only a refusal gains the caller-file remedy");
 }
 
+// --- a paired caller's issuance intent reads back as `auth mint --endpoint` wrote it --------------
+// The mint writes the record `standaloneCallerIntent` returns, and describe and invoke read the file
+// back through it. It used to return the endpoint's wire token, which that second read refused.
+{
+  const { randomUUID } = await import("node:crypto");
+  const { mintLifecycleUid, newIdentity } = await import("@cotal-ai/core");
+  const { standaloneCallerIntent } = await import("@cotal-ai/workspace");
+  const written = standaloneCallerIntent({
+    schemaVersion: 1, kind: "endpoint-caller-issuance-intent", requestId: randomUUID(), createdAt: new Date(0).toISOString(), space: "s",
+    endpoint: "com.example.reviews", identity: newIdentity().id, owner: "local", lifecycleUid: mintLifecycleUid(), output: "/private/caller.creds",
+    channels: [], expiresInSeconds: null, phase: "local-intent-only", secretIncluded: false,
+    scope: { source: "fresh-native-resolution", supportedMode: "untargeted-synchronous-ephemeral", owner: "local", responder: { instanceId: mintLifecycleUid(), epoch: 0 }, instancePinned: false,
+      commands: [{ command: "echo", class: "ephemeral", capability: "echo", inputDigest: "sha256:in", outputDigest: "sha256:out" }] },
+  });
+  assert.equal(written.endpoint, "com.example.reviews", "the written intent keeps the dotted endpoint name");
+  assert.deepEqual(standaloneCallerIntent(JSON.parse(JSON.stringify(written))), written, "the written intent reads back unchanged");
+  assert.throws(() => standaloneCallerIntent({ ...written, endpoint: "com_example_reviews" }), (e: unknown) => isCommandFailure(e) && e.code === "SCHEMA_INVALID" && e.remedy !== undefined, "an intent that records the endpoint's wire token is refused with a remedy");
+}
+
 // --- the caller remedy names the space the refused call resolved, not the current one -------------
 // `endpoint invoke` reaches this refusal only after a static-auth broker answers and a served
 // endpoint is described, so this cell runs without either: it takes the space from the selection
