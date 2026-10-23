@@ -64,9 +64,14 @@ function surface(command: string): unknown {
 
 /** Translate a backend-agnostic {@link Tab} into a cmux layout JSON string — the one place that
  *  knows cmux's layout shape. One pane → a bare terminal; several → a split (`direction` + `split`
- *  ratio). These panes run under a login shell. */
-function cmuxLayout(label: string, tab: Tab): string {
-  const nodes = tab.panes.map((p) => surface(paneCommand(p, true).command));
+ *  ratio). These panes run under a login shell. Each launch script's directory is pushed onto
+ *  `dirs` as it is written, so a caller whose tab does not open can remove every one. */
+function cmuxLayout(label: string, tab: Tab, dirs: string[]): string {
+  const nodes = tab.panes.map((p) => {
+    const launch = paneCommand(p, true);
+    dirs.push(launch.dir);
+    return surface(launch.command);
+  });
   if (nodes.length === 1 && !tab.split) return JSON.stringify(nodes[0]);
   if (!tab.split)
     throw new Error(`cmux layout "${label}": ${nodes.length} panes need a split (direction + ratio)`);
@@ -198,7 +203,17 @@ export const cmuxTerminalProvider: TerminalLayout = {
   kind: "terminal",
   name: "cmux",
   available: () => cmux.available(),
-  open: (label, tab, opts) => cmux.openWorkspace(label, cmuxLayout(label, tab), opts),
+  open: (label, tab, opts) => {
+    // Nothing runs the launch scripts of a tab that does not open (a later pane refused, a missing
+    // split, a failed cmux command), so remove each one already written.
+    const dirs: string[] = [];
+    try {
+      return cmux.openWorkspace(label, cmuxLayout(label, tab, dirs), opts);
+    } catch (err) {
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+      throw err;
+    }
+  },
   close: (ref) => cmux.closeWorkspace(ref),
   refs: (label) => cmux.workspaceRefs(label),
 };

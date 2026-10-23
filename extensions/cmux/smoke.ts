@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, statSync, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SpawnRefused } from "@cotal-ai/core";
-import { CmuxRuntime, paneCommand } from "./src/runtime.js";
+import { CmuxRuntime, cmuxTerminalProvider, paneCommand } from "./src/runtime.js";
 import { waitForWorkspaceExit } from "./src/driver.js";
 
 // The cmux launcher contract is POSIX by construction: a bash script written 0o600 inside a
@@ -146,6 +146,28 @@ process.stdout.write("OK");
       refusal instanceof SpawnRefused && refusal.message === 'cmux: refusing to render unsafe env var name "$(touch MARKER)X"',
     );
     ok("the refused spawn opened no tab and wrote no launch script", !existsSync(state) && paneDirs() === paneDirsBefore);
+
+    let layoutRefusal: unknown;
+    try {
+      cmuxTerminalProvider.open(
+        "cotal-env-name-layout",
+        {
+          panes: [
+            { command: "/bin/true", env: { SAFE: SECRET } },
+            { command: "/bin/true", env: { "9SECOND": "1" } },
+          ],
+          split: { direction: "vertical", ratio: 0.5 },
+        },
+        { focus: false },
+      );
+    } catch (err) {
+      layoutRefusal = err;
+    }
+    ok(
+      "a layout refuses a later pane's env name that is not an identifier",
+      (layoutRefusal as Error | undefined)?.message === 'cmux: refusing to render unsafe env var name "9SECOND"',
+    );
+    ok("the refused layout opened no tab and left no earlier pane's launch script", !existsSync(state) && paneDirs() === paneDirsBefore);
   } finally {
     if (previousBin === undefined) delete process.env.CMUX_BUNDLED_CLI_PATH;
     else process.env.CMUX_BUNDLED_CLI_PATH = previousBin;
