@@ -9,7 +9,7 @@
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, deliveryCredsKey, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf,
+  CommandFailure, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf,
   releaseMaintenanceLock, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
   recordOperationSpace, stackHomeRemedy, stackRunsUnderOtherHome,
@@ -30,6 +30,21 @@ interface Member { role: StackRole; definition: ServiceDefinitionSnapshot; insta
 export function controllerStackRecorded(root: string): boolean {
   return readStackJournal(canonicalRoot(root)) !== undefined;
 }
+
+/** The root of the controller stack this machine started for `space` in a folder other than `root`,
+ *  or undefined. `cotal down` stops only the stack of the folder it runs in, so a refusal names it. */
+export function stackRootElsewhere(space: string, root: string): string | undefined {
+  try {
+    const mesh = findMesh(space);
+    return mesh && mesh.origin === "up" && canonicalRoot(mesh.root) !== canonicalRoot(root) && controllerStackRecorded(mesh.root) ? mesh.root : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
+export const sameDown = (values: ParsedArgs["values"]): string =>
+  ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
 
 export function validateStackDownArguments(root: string, values: ParsedArgs["values"]): void {
   const preserve = values["preserve-state"] === true;

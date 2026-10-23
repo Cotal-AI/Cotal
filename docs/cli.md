@@ -947,8 +947,10 @@ line and its remedy without the command help.
 
 A bare `down` stops only the stack of the folder it runs in. In a folder whose root holds no
 stack, when the space named by `--space`, or else the selected space, is a controller stack rooted
-in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. The refusal
-names that space and its root, and its next step runs the same `down` from that root.
+in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. A folder whose
+own `.cotal` holds no stack, such as one a failed start left, answers for itself unless `--space`
+names another folder's stack. The refusal names that space and its root, and its next step runs
+the same `down` from that root.
 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
