@@ -401,9 +401,13 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
         }
         return tx.grantInteractive(grantRow);
       });
-      const result = { kind: "actor-grant", grant: publicActor({ ...row, kind: "interactive" }), fullOptionExplicit: values.full === true };
+      // A re-grant writes the row again and rotates its lifecycle even when no field changed, so the
+      // receipt says what the earlier row held relative to this one.
+      const fields = (r: Pick<ActorRow, "scope" | "allowSubscribe" | "allowPublish" | "role" | "label" | "parent">) => JSON.stringify([r.scope, r.allowSubscribe, r.allowPublish, r.role ?? null, r.label ?? null, r.parent ?? null]);
+      const previous = current === undefined ? "none" as const : fields(current) === fields(row) ? "unchanged" as const : "replaced" as const;
+      const result = { kind: "actor-grant", grant: publicActor({ ...row, kind: "interactive" }), fullOptionExplicit: values.full === true, previous, previousLifecycleRetired: retired };
       writeResult(presentationOf(args.values), { command, target: { space, owner: row.owner, actor: row.actor }, result }, (data) => ({ sections: [
-        { title: "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
+        { title: data.previous === "unchanged" ? "Actor grant stored unchanged" : "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Earlier grant", data.previous === "none" ? "none" : data.previous === "unchanged" ? "the same fields" : "replaced"], ...(data.previousLifecycleRetired ? [["Earlier lifecycle", "retired, so a bearer issued under it no longer works"] as [string, string]] : []), ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
       ] }));
       return;
     }
