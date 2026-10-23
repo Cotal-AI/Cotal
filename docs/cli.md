@@ -5265,7 +5265,12 @@ Bare `completion` reads local integration files. It reports the script version, 
 and recorded ownership separately. It does not inspect or load the running shell. An unreadable
 file or ownership record produces a warning and a partial result, exit 4. The warning names the
 file and why. A record wired into another startup file, as an install under another `ZDOTDIR` leaves
-one, names that file and the `ZDOTDIR` to read it with. A relative `ZDOTDIR`
+one, names that file and the `ZDOTDIR` to read it with. A folder above the files that is a symlink,
+owned by another user, or group- or other-writable is named once, with the `chmod go-w` that fixes
+it when one does. The files under it are not opened, and one that does not exist is reported missing,
+so a report with nothing installed stays complete, exit 0. Next offers that `chmod` first, offers
+`install` and `uninstall` only when nothing stops them, and offers `uninstall` only when something is
+installed. A relative `ZDOTDIR`
 is resolved from the current directory for this report, as zsh resolves it.
 
 In zsh, initialize its completion system with `autoload -Uz compinit && compinit` before

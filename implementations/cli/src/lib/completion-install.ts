@@ -50,15 +50,23 @@ interface Gap { path: string; problem: string; chmod?: string }
 const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : quote(path);
 const modeOf = (info: Stats) => `mode ${(info.mode & 0o777).toString(8).padStart(4, "0")}`;
 
+/** The chmod commands that fix `gaps`, one per mode. */
+const chmodsFor = (gaps: Gap[]) => [...new Set(gaps.map((gap) => gap.chmod))].map((mode) => `chmod ${mode} ${gaps.filter((gap) => gap.chmod === mode).map((gap) => shellPath(gap.path)).join(" ")}`);
 /** One refusal naming every unsafe path with its reason, so a single change fixes them all. */
 function unsafe(gaps: Gap[]): CommandFailure {
-  const chmods = [...new Set(gaps.map((gap) => gap.chmod))].map((mode) => `chmod ${mode} ${gaps.filter((gap) => gap.chmod === mode).map((gap) => shellPath(gap.path)).join(" ")}`);
   return new CommandFailure("refused", "PERMISSION_DENIED", `${gaps.map((gap) => `${gap.path} ${gap.problem}`).join("; ")}; custom shell wiring was not changed`, {
     target: gaps.length === 1 ? { path: gaps[0]!.path } : { path: gaps[0]!.path, paths: gaps.map((gap) => gap.path) },
     remedy: gaps.every((gap) => gap.chmod)
-      ? `${chmods.join("; ")} and run the command again, or wire completion yourself from cotal completion script <shell>`
+      ? `${chmodsFor(gaps).join("; ")} and run the command again, or wire completion yourself from cotal completion script <shell>`
       : "wire completion yourself from cotal completion script <shell>",
   });
+}
+/** The unsafe folders above `path`, named with their reasons, and the chmod that fixes them when one
+ *  does. Bare `completion` names them once for every file under them, which it does not open. */
+export function completionUnsafeFolders(path: string): { problem: string; chmod?: string } | undefined {
+  const gaps = parentGaps(dirname(path));
+  if (!gaps.length) return undefined;
+  return { problem: gaps.map((gap) => `${gap.path} ${gap.problem}`).join("; "), ...(gaps.every((gap) => gap.chmod) ? { chmod: chmodsFor(gaps).join("; ") } : {}) };
 }
 /** Every unsafe folder from `path` up to the root, deepest first. The walk ends at a missing folder,
  *  which `create` makes private when nothing above it was refused. */
@@ -104,8 +112,12 @@ function pathGaps(path: string, privateFile = false, link = true): Gap[] {
   return [...(gap ? [gap] : []), ...parentGaps(dirname(path))];
 }
 function read(path: string, privateFile = false): Snapshot | undefined {
-  // A file under an unsafe folder is not opened. It is named with that folder instead.
-  if (parentGaps(dirname(path)).length) throw unsafe(pathGaps(path, privateFile));
+  // A file under an unsafe folder is not opened. It is named with that folder instead, and one that is
+  // not there is missing, since nothing would be read.
+  if (parentGaps(dirname(path)).length) {
+    try { lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; }
+    throw unsafe(pathGaps(path, privateFile));
+  }
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {

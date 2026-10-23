@@ -224,6 +224,33 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("running its one chmod lets install wire the rc", chmod === `chmod go-w ${rc} ${folder}` && fixed?.status === 0 && installed.status === 0 && readFileSync(rc, "utf8").includes(join(folder, "completion.bash")), { chmod, install: shown(installed) });
 }
 
+// ── a group-writable config folder with nothing installed is one named warning and a complete report ─
+// It used to be exit 4 for absent files, with an unnamed ownership line per shell and a Next that refused.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const s = sandbox("/bin/bash");
+  mkdirSync(s.xdg);
+  chmodSync(s.xdg, 0o775);
+  const report = s.run(["completion", "--json"]);
+  const env = report.stdout.startsWith("{") ? JSON.parse(report.stdout) as { outcome: string; warnings: { code: string; message: string }[]; result: { shells: { shell: string; state: string; ownership: string }[] } } : undefined;
+  const fix = `chmod go-w ${s.xdg}`;
+  check("absent files under a group-writable config folder are missing and the report is complete, exit 0",
+    report.status === 0 && env?.outcome === "ok" && ["bash", "zsh", "fish"].every((shell) => env.result.shells.some((row) => row.shell === shell && row.state === "missing" && row.ownership === "unrecorded")), shown(report));
+  check("the folder is one warning naming it, its mode and the chmod that fixes it",
+    env?.warnings.length === 1 && env.warnings[0]!.code === "COMPLETION_FOLDER_UNSAFE" && env.warnings[0]!.message === `${s.xdg} is writable by group or others (mode 0775); completion does not open the bash, zsh and fish completion files under it, and install and uninstall refuse there; ${fix} fixes it`, env?.warnings);
+  const text = s.run(["completion"]);
+  const next = text.stdout.slice(text.stdout.indexOf("Next"));
+  check("Next offers the chmod first, then install, and no uninstall with nothing installed",
+    text.status === 0 && next.trimStart().startsWith(`Next\n  ${fix} `) && /cotal completion install bash/.test(next) && !/cotal completion uninstall/.test(next) && text.stderr.split("\n").filter((line) => line.startsWith("!")).length === 1, shown(text));
+  chmodSync(s.xdg, 0o700);
+  check("the install Next offers then works", s.run(["completion", "install", "bash"]).status === 0);
+  chmodSync(s.xdg, 0o775);
+  const installed = s.run(["completion"]);
+  const installedNext = installed.stdout.slice(installed.stdout.indexOf("Next"));
+  check("with files under the folder the report is partial, and Next offers the chmod and no install or uninstall that would refuse",
+    installed.status === 4 && installedNext.includes(fix) && !/cotal completion (?:un)?install/.test(installedNext) && /fix the folder the warning names/.test(installed.stderr), shown(installed));
+  chmodSync(s.xdg, 0o700);
+}
+
 // ── install refuses before it writes ────────────────────────────────────────────────────────────────
 {
   const s = sandbox("/bin/zsh");

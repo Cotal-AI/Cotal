@@ -14,7 +14,7 @@ import { metadataPositionals } from "../lib/command-path.js";
 import { fileCompletion, spaceCompletion } from "../lib/completion.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
 import { commandSurface } from "../ext-loader.js";
-import { changeCompletion, completionOwnership, completionPaths as stubPaths, completionSourceLine, readCompletionText } from "../lib/completion-install.js";
+import { changeCompletion, completionOwnership, completionPaths as stubPaths, completionSourceLine, completionUnsafeFolders, readCompletionText } from "../lib/completion-install.js";
 import { SCRIPTS, LOAD_NOW } from "../lib/completion-scripts.js";
 
 /**
@@ -153,9 +153,11 @@ export async function completion(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof completionFlags>;
   const presentation = presentationOf(values);
   if (sub === undefined) {
-    const { status, unread } = completionStatus();
-    const partial = unread.length ? { completeness: "partial" as const, warnings: unread, partial: { message: `completion could not read ${unread.length === 1 ? "one file" : `${unread.length} files`}`, remedy: "review each named file without overwriting custom startup content" } } : {};
-    return writeResult(presentation, { command: "completion", target: null, result: status, ...partial }, statusView);
+    const { status, unread, unsafe } = completionStatus();
+    const count = unread.length + unsafe.reduce((sum, folder) => sum + folder.unopened, 0);
+    const warnings = [...unsafe.map(folderWarning), ...unread];
+    const partial = count ? { completeness: "partial" as const, warnings, partial: { message: `completion could not read ${count === 1 ? "one file" : `${count} files`}`, remedy: unread.length ? "review each named file without overwriting custom startup content" : "fix the folder the warning names, then run cotal completion again" } } : warnings.length ? { warnings } : {};
+    return writeResult(presentation, { command: "completion", target: null, result: status, ...partial }, (result) => statusView(result, unsafe));
   }
   if (sub === "script") { process.stdout.write(SCRIPTS[shell!]!); return; }
   const sh = shell ?? currentShell();
@@ -192,6 +194,16 @@ export interface ShellCompletion {
   readonly legacyWiring: boolean;
 }
 
+/** Unsafe folders above some shells' completion files: named once, with the chmod that fixes them
+ *  when one does, and how many existing files under them were not opened. */
+interface UnsafeFolder { readonly problem: string; readonly chmod?: string; readonly shells: Set<string>; unopened: number }
+
+const folderWarning = (folder: UnsafeFolder): OutputWarning => ({
+  code: "COMPLETION_FOLDER_UNSAFE",
+  target: { shells: [...folder.shells] },
+  message: `${folder.problem}; completion does not open the ${[...folder.shells].join(", ").replace(/, (?=[^,]*$)/, " and ")} completion files under it, and install and uninstall refuse there${folder.chmod ? `; ${folder.chmod} fixes it` : ""}`,
+});
+
 export interface CompletionStatus {
   /** The shell `$SHELL` names, when it is one Cotal completes. */
   readonly shell: string | null;
@@ -215,13 +227,28 @@ function readText(path: string): string | undefined | NodeJS.ErrnoException {
   }
 }
 
-/** Each shell's stub against the script this binary prints, and a warning for each file it could
- *  not read. Reads local files only. */
-export function completionStatus(): { status: CompletionStatus; unread: OutputWarning[] } {
+/** Each shell's stub against the script this binary prints, a warning for each file it could not
+ *  read, and each unsafe folder above them. Reads local files only. */
+export function completionStatus(): { status: CompletionStatus; unread: OutputWarning[]; unsafe: UnsafeFolder[] } {
   const unread: OutputWarning[] = [];
+  const unsafe = new Map<string, UnsafeFolder>();
+  /** The unsafe folders above `path`, noted once for every shell under them. A check that cannot run
+   *  here is left to the read, which reports it. */
+  const unsafeAbove = (shell: string, path: string): UnsafeFolder | undefined => {
+    let found;
+    try { found = completionUnsafeFolders(path); } catch { return undefined; }
+    if (!found) return undefined;
+    const folder = unsafe.get(found.problem) ?? { ...found, shells: new Set<string>(), unopened: 0 };
+    unsafe.set(found.problem, folder);
+    folder.shells.add(shell);
+    return folder;
+  };
   const read = (shell: string, path: string): string | undefined | null => {
+    const folder = unsafeAbove(shell, path);
     const text = readText(path);
     if (typeof text !== "object") return text;
+    // The folder's warning says why, so a file under it is counted there instead of named again.
+    if (folder) { folder.unopened++; return null; }
     const reason = isCommandFailure(text) ? text.message : text.code ?? text.message;
     // A refusal that already names the file, such as a symlink's, is not prefixed with it again.
     unread.push({ code: "COMPLETION_UNREADABLE", target: { shell }, message: reason.startsWith(path) ? reason : `${path} could not be read: ${reason}` });
@@ -237,14 +264,19 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
     let ownership: ShellCompletion["ownership"];
     try { ownership = completionOwnership(shell, paths); }
     // The refusal names the record or folder and why, so it is passed on rather than a generic sentence.
-    catch (error) { ownership = "unreadable"; unread.push({ code: "COMPLETION_OWNERSHIP_UNREADABLE", target: { shell }, message: isCommandFailure(error) ? `${error.message}${error.remedy ? `; ${error.remedy}` : ""}` : `the completion ownership record beside ${paths.stub} could not be read safely` }); }
+    catch (error) {
+      ownership = "unreadable";
+      const folder = unsafeAbove(shell, paths.stub);
+      if (folder) folder.unopened++;
+      else unread.push({ code: "COMPLETION_OWNERSHIP_UNREADABLE", target: { shell }, message: isCommandFailure(error) ? `${error.message}${error.remedy ? `; ${error.remedy}` : ""}` : `the completion ownership record beside ${paths.stub} could not be read safely` });
+    }
     if (!paths.rc) return { shell, stub: paths.stub, state, wiredIn: content === undefined || content === null ? null : dirname(paths.stub), ownership, legacyWiring: false };
     const rc = read(shell, paths.rc);
     const legacyWiring = typeof rc === "string" && new RegExp(`cotal[ \t]+completion[ \t]+${shell}(?:[ \t;|)]|$)`, "m").test(rc);
     return { shell, stub: paths.stub, state, wiredIn: rc && holdsSourceLine(rc, paths.stub, shell) ? paths.rc : null, ownership, legacyWiring };
   });
   const detected = currentShell();
-  return { status: { shell: Object.hasOwn(SCRIPTS, detected) ? detected : null, shells }, unread };
+  return { status: { shell: Object.hasOwn(SCRIPTS, detected) ? detected : null, shells }, unread, unsafe: [...unsafe.values()] };
 }
 
 const STATE: Record<ShellCompletion["state"], Styled> = {
@@ -265,8 +297,13 @@ function completionCell(shell: ShellCompletion): Styled {
   return { ...STATE[shell.state], mark: shell.state === "unreadable" || shell.state === "differs" ? "●" : "○" };
 }
 
-function statusView(status: CompletionStatus): Report {
+function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = []): Report {
   const selected = status.shells.find((shell) => shell.shell === status.shell);
+  // An unsafe folder or unreadable record makes install and uninstall refuse, so the fix comes first and
+  // they are offered only once nothing stops them. Uninstall is offered only when something is installed.
+  const blocking = selected ? unsafe.filter((folder) => folder.shells.has(selected.shell)) : [];
+  const changeable = selected?.ownership !== "unreadable" && blocking.every((folder) => folder.chmod);
+  const installed = !selected || selected.state !== "missing" || selected.wiredIn !== null || selected.ownership === "managed" || selected.ownership === "modified";
   const dangling = status.shells.filter((shell) => shell.state === "missing" && shell.wiredIn !== null);
   return {
     sections: [
@@ -287,14 +324,15 @@ function statusView(status: CompletionStatus): Report {
       ] },
       { title: "Next", blocks: [{ kind: "commands", items: [
         // A modified integration refuses a plain install or uninstall, so it is offered only with --force.
+        ...blocking.flatMap((folder) => folder.chmod ? [{ command: folder.chmod, description: "Remove group and other write access, so completion can read and change its files there" }] : []),
         ...status.shells.filter((shell) => shell.ownership === "modified" && shell !== selected).map((shell) => ({ command: `cotal completion install ${shell.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" })),
-        selected?.ownership === "modified"
+        ...!changeable ? [] : [selected?.ownership === "modified"
           ? { command: `cotal completion install ${selected.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" }
-          : { command: `cotal completion install ${selected?.shell ?? "<shell>"}`, description: "Install or refresh the managed integration" },
+          : { command: `cotal completion install ${selected?.shell ?? "<shell>"}`, description: "Install or refresh the managed integration" }],
         { command: `cotal completion script ${selected?.shell ?? "<shell>"}`, description: "Print the script for manual setup" },
-        selected?.ownership === "modified"
+        ...!changeable || !installed ? [] : [selected?.ownership === "modified"
           ? { command: `cotal completion uninstall ${selected.shell} --force`, description: "Remove the modified owned integration; text outside the cotal markers is kept" }
-          : { command: `cotal completion uninstall ${selected?.shell ?? "<shell>"}`, description: "Remove only unchanged recorded material" },
+          : { command: `cotal completion uninstall ${selected?.shell ?? "<shell>"}`, description: "Remove only unchanged recorded material" }],
       ] }] },
     ],
   };
