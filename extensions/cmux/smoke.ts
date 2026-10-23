@@ -5,9 +5,10 @@
  * returned `bash <path>` command. Exercises paneCommand directly, so it needs no cmux CLI and runs in
  * CI. Run: pnpm smoke:cmux
  */
-import { existsSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { SpawnRefused } from "@cotal-ai/core";
 import { CmuxRuntime, paneCommand } from "./src/runtime.js";
 import { waitForWorkspaceExit } from "./src/driver.js";
 
@@ -130,6 +131,21 @@ process.stdout.write("OK");
     await handle.waitForExit!();
     ok("cmux stop -> waitForExit proves workspace disappearance", handle.status() === "exited");
     ok("stub workspace was closed", !existsSync(state));
+
+    // The stub never runs a launch script, so the spawn above left its pane dir behind.
+    const paneDirs = () => readdirSync(stubDir).filter((n) => n.startsWith("cotal-pane-")).length;
+    const paneDirsBefore = paneDirs();
+    let refusal: unknown;
+    try {
+      new CmuxRuntime().spawn("env-name-agent", { command: "/bin/true", args: [], env: { "$(touch MARKER)X": "1" } }, "/tmp");
+    } catch (err) {
+      refusal = err;
+    }
+    ok(
+      "spawn refuses an env name that is not an identifier",
+      refusal instanceof SpawnRefused && refusal.message === 'cmux: refusing to render unsafe env var name "$(touch MARKER)X"',
+    );
+    ok("the refused spawn opened no tab and wrote no launch script", !existsSync(state) && paneDirs() === paneDirsBefore);
   } finally {
     if (previousBin === undefined) delete process.env.CMUX_BUNDLED_CLI_PATH;
     else process.env.CMUX_BUNDLED_CLI_PATH = previousBin;

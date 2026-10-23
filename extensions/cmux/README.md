@@ -19,7 +19,8 @@ Library composition roots can instead `import "@cotal-ai/cmux"` directly.
 
 Each agent's env is written to an owner-only launch script, which keeps it off the tab's command,
 and the script removes its directory before it starts the agent. When it cannot remove the directory,
-the agent does not start.
+the agent does not start. An env name that is not a shell identifier is refused before the script is
+written.
 
 Lifecycle waits poll cmux's exact workspace inventory. Closing the workspace authoritatively tears
 down its terminal and child; an unreachable app fails the wait closed. cmux does not expose child
