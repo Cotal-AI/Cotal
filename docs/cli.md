@@ -2358,7 +2358,8 @@ cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
 
 Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
-it is not limited to child processes owned by the manager.
+it is not limited to child processes owned by the manager. The Participant column holds the name
+that `endpoint describe` takes, and the role has its own column.
 
 ## who
 
