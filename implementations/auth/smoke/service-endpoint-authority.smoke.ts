@@ -368,6 +368,11 @@ try {
   c.check("L11 name-read over the route: the bound owner reads its binding at its revision; another owner reads absent",
     lNameA.status === 200 && lNameA.body.state === "present" && lNameA.body.record?.value?.owner === ownerA && lNameA.body.record?.revision === l1.body.binding?.revision
     && lNameB.status === 200 && lNameB.body.state === "absent", { lNameA, lNameB });
+  const lOtherB = await hostRoute(pub, { idpToken: tokenB, request: hostReq("proposal-read", { proposalId: otherProposal }) });
+  const lOtherOp = await propRead(otherProposal);
+  c.check("L12 a proposal read over the route names its endpoint's binding only when that binding is the reader's: B's proposal under A's name reads nameBinding null; the operator reads it",
+    lOtherB.status === 200 && lOtherB.body.state === "present" && lOtherB.body.record?.value?.owner === ownerB && lOtherB.body.record?.value?.nameBinding === null
+    && lOtherOp.state === "present" && (lOtherOp.record.value as { nameBinding: { owner: string } | null }).nameBinding?.owner === ownerA, { b: lOtherB.body.record?.value?.nameBinding, op: (lOtherOp as { record?: { value: unknown } }).record?.value });
   const parsed = (values: Record<string, string | boolean | undefined>) => authServiceConfiguration({ values: { space, server: "nats://127.0.0.1:1", ...values }, positionals: [], raw: [], positionalIndices: [] } as unknown as ParsedArgs);
   c.check("L10 --service-endpoints turns the engine on; its absence leaves it off", parsed({ "service-endpoints": true }).serviceEndpoints === true && parsed({}).serviceEndpoints === false);
 } finally {

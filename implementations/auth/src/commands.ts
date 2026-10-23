@@ -319,11 +319,20 @@ const SERVICE_ENDPOINT_USAGE = "service-endpoint <approve <proposalId> | refuse 
  *  that moved in between is a conflict the host reports, never a decision on something else. */
 async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise<void> {
   const [sub, subject, ...extra] = args.positionals;
-  const values = args.values as { owner?: string; claim?: string; "caller-ceiling"?: string };
+  const values = args.values as { owner?: string; claim?: string; "caller-ceiling"?: string; "request-id"?: string };
   const { dir, space } = actorState(target);
   const presentation = presentationOf(args.values);
-  const request = <K extends ServiceHostOperation>(operation: K, input: ServiceHostInputs[K]): ServiceHostRouteRequest<K> =>
-    ({ v: 1, kind: "service-endpoint-host", requestId: randomBytes(16).toString("hex"), operation, input });
+  const replayId = values["request-id"];
+  if (replayId !== undefined && !/^[0-9a-f]{32}$/.test(replayId)) throw new CommandFailure("refused", "USAGE_INVALID", "--request-id is the 32 lowercase hex characters an earlier run printed");
+  // A read is always a fresh request; a decision or a binding takes --request-id so the identical
+  // request can be sent again (the host replays it), and prints the id it used otherwise.
+  let usedRequestId: string | undefined;
+  const request = <K extends ServiceHostOperation>(operation: K, input: ServiceHostInputs[K]): ServiceHostRouteRequest<K> => {
+    const effectful = operation === "decide" || operation === "name-bind";
+    const requestId = effectful && replayId !== undefined ? replayId : randomBytes(16).toString("hex");
+    if (effectful) usedRequestId = requestId;
+    return { v: 1, kind: "service-endpoint-host", requestId, operation, input };
+  };
   const post = (r: ServiceHostRouteRequest) => postServiceEndpointHost(dir, space, r, `service-endpoint ${sub}`);
   const usage = () => new CommandFailure("refused", "USAGE_INVALID", SERVICE_ENDPOINT_USAGE);
   await legibly(async () => {
@@ -352,10 +361,11 @@ async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise
       }
       default: throw usage();
     }
-    writeResult(presentation, { command: "service-endpoint", target: { space }, result: { kind: "service-endpoint-host", request: sub, subject, answer } }, (result) => ({
+    writeResult(presentation, { command: "service-endpoint", target: { space }, result: { kind: "service-endpoint-host", request: sub, subject, ...(usedRequestId !== undefined ? { requestId: usedRequestId } : {}), answer } }, (result) => ({
       space,
       sections: [{ title: `Service endpoint ${result.request}`, blocks: [
-        { kind: "fields" as const, rows: [["Space", space], ["Subject", result.subject], ["State", String((result.answer as { state: string }).state)]] as [string, string][] },
+        { kind: "fields" as const, rows: [["Space", space], ["Subject", result.subject], ["State", String((result.answer as { state: string }).state)],
+          ...(result.requestId !== undefined ? [["Request id", result.requestId]] : [])] as [string, string][] },
         { kind: "lines" as const, lines: [{ text: JSON.stringify(result.answer), tone: "hint" as const }] },
       ] }],
     }));
@@ -652,7 +662,7 @@ const authCommands: Command[] = [
     name: "service-endpoint",
     group: "Identity",
     summary: "decide and inspect service endpoint registrations on this space's auth service - approve or refuse a proposal as its owner; bind a name as the operator",
-    usage: "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--space <s>] [--json|--plain]",
+    usage: "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json|--plain]",
     positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint>>",
     outputs: ["json", "plain"],
     flags: [
@@ -660,6 +670,7 @@ const authCommands: Command[] = [
       { name: "owner", type: "string", value: "<u_…>", description: "name-bind: the derived owner token the name is bound to" },
       { name: "claim", type: "string", value: "<ref>", description: "name-bind: your claim reference for the namespace (the host verifies no domain control)" },
       { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: the capability ceiling callers of this service may be granted (default: none)" },
+      { name: "request-id", type: "string", value: "<hex32>", description: "approve, refuse, name-bind: send the identical request again under the id an earlier run printed; the host replays its answer" },
     ],
     run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
   },

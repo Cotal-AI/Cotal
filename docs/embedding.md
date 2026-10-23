@@ -1387,10 +1387,12 @@ four caller-policy operations and the three reads (`proposal-read`, `operation-r
 `unavailable` while it is not ready. The host authenticates no caller: the embedder must
 authenticate the operator or owner granter it passes. The stock service does that on
 `POST /service-endpoint-host`: the body is `{ idpToken, request }` with no granter, and the route
-verifies the token and derives the granter. A decision, an `owner-request` revoke and the reads run
-as the proved owner on either face; `name-bind`, any other revoke and the admission operations are
-the operator's, served on the loopback face under the exchange capability only, with the proved
-subject as the audit id. `cotal service-endpoint` drives that route as the signed-in user
+verifies the token and derives the granter. A decision, an `owner-request` revoke, the four
+caller-policy operations and the reads run as the proved owner on either face; `name-bind`, any
+other revoke and the admission operations are the operator's, served on the loopback face under the
+exchange capability only, with the proved subject as the audit id (the admission operations have no
+engine handler yet and answer `unsupported`). Mint requestIds unpredictably: they share one
+space-wide namespace. `cotal service-endpoint` drives that route as the signed-in user
 ([docs/cli.md](cli.md#service-endpoint)). Register admission is reachable only through the public
 route below. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
 the endpoint's name binding once, with your `claimReference`, and only the identical request recovers

@@ -2105,7 +2105,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       const name = await nameOf(ctx, p.endpoint);
       return { state: "present", record: { value: { proposalId: p.proposalId, proposalDigest: p.proposalDigest, owner: p.owner, endpoint: p.endpoint, instanceId: p.instanceId,
         state: p.state.state, createdAt: seconds(p.createdAtMs), expiresAt: seconds(p.expiresAtMs), clusterDigests: [...p.clusterDigests], commands: structuredClone(p.commands),
-        nameBinding: name ?? null, decision: p.state.state === "approving" ? { operationId: p.state.operationId, assignmentDigest: p.state.assignmentDigest } : null }, revision: prop.revision } };
+        nameBinding: name !== undefined && (req.granter.kind === "operator" || name.owner === p.owner) ? name : null, decision: p.state.state === "approving" ? { operationId: p.state.operationId, assignmentDigest: p.state.assignmentDigest } : null }, revision: prop.revision } };
     } catch (err) { if (err instanceof Held) return denied("unavailable"); throw err; }
   }
 
