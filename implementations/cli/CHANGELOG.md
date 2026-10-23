@@ -1,5 +1,34 @@
 # @cotal-ai/cli
 
+## 0.100.2
+
+### Patch Changes
+
+- 7c055cf: `cotal config set persona <name>` now warns `PERSONA_NOT_FOUND`, naming the catalog, when the catalog of the space a command there uses does not hold that persona or file. The value is still saved, since the file may be created later. A name that breaks the persona name rule is still refused.
+- 8d81c12: `cotal persona create --on <manager>` on a static space no longer records the CLI's one-call caller as the persona's owner, which no later call could match, so the receipt's own `persona show --on` Next was refused. On a static space the manager now records an owner only for one of its own seats, and any other caller defines an operator-owned file, as a local `persona create` writes it. A peer joined with its own credentials is such a caller too. When the manager writes the file into this root's catalog, the receipt's `Local files` line names it instead of saying `unchanged`, and JSON `localFilesChanged` is true. For a one-call caller the Next offers `cotal p show <name>`, and a `persona show --on` that is answered not-found names that command when this root holds the file.
+- 713a9a9: `cotal backup restore` of an artifact whose file is missing, undeclared or not its declared size and SHA-256 now refuses `SCHEMA_INVALID` (exit 1) and names the file and the fault, as `cotal backup verify` does for the same check. It exited 3 `OPERATION_UNKNOWN` with a Next about the maintenance journal, though the check runs before any transition and the preserved cut is not changed.
+- 48240a5: `cotal backup restore` of a full artifact taken under another trust state, such as another machine's or a reset root's, now refuses `CONFLICT` (exit 2) and says the artifact restores only into a root that still holds the trust state it was taken under. It exited 3 `OPERATION_UNKNOWN` with a misleading Next, though nothing had changed. `cotal backup create`, `inspect` and `verify` now show a `Restores into` row for such an artifact, and their JSON carries `trustBound`.
+- bb4145f: `cotal telemetry <level>` now reports `ok` when the run creates the settings file, even at the default level. With no `telemetry.json`, `cotal telemetry regular` or `on`, also under `COTAL_TELEMETRY=minimal`, created the file and reported a `no-op`.
+- Updated dependencies [8d81c12]
+- Updated dependencies [bb4145f]
+  - @cotal-ai/core@0.100.2
+  - @cotal-ai/workspace@0.100.2
+
+## 0.100.1
+
+### Patch Changes
+
+- 8bb8900: Concurrent `cotal channel set` writes on different fields of one channel no longer drop one of them. A channel registry write now lands on the revision it read, and a write that loses the race to another writer reads the entry again and merges again, so each confirmed field stays saved. A write that keeps losing refuses with `CONFLICT` and saves nothing, where before each writer printed `Channel saved` even when another writer overwrote its field. `channel defaults` and the runtime's channel writes use the same path.
+- 4bce73e: `cotal up` in a project whose `.cotal` this account cannot write, and `cotal persona edit` with a
+  `TMPDIR` that is missing, not a folder or not writable, now refuse with exit 2 and name the folder
+  and a next step, before anything is started or written. They used to end `OPERATION_UNKNOWN` (exit 3)
+  with a raw `EACCES` or `ENOENT` and the name of an internal file.
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
 ## 0.100.0
 
 ### Patch Changes

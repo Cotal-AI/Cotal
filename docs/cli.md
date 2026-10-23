@@ -1486,7 +1486,10 @@ the declared metadata; terminal file lists are bounded and state their omissions
 file is missing, an undeclared file is present, or a file does not match its declared size and
 SHA-256, the refusal names that file and the fault, and its JSON target carries `file` and `fault`.
 A directory with no `manifest.json` is refused as an incomplete artifact, the kind an interrupted
-`backup create` leaves, with the fault `manifest-missing`.
+`backup create` leaves, with the fault `manifest-missing`. A full artifact of an authenticated space
+restores only into a root that still holds the trust state it was taken under, so it cannot move to
+another machine or a fresh root. `backup create`, `backup inspect` and `backup verify` say so in a
+`Restores into` row, and their JSON carries `trustBound`.
 
 File integrity is not a signature or a restore proof. Matching a manifest does not authenticate
 its author, verify snapshot semantics or prove existing trust will accept a restore. The guarded
@@ -1520,7 +1523,10 @@ process and whether the manager, delivery and auth service started. The restore 
 artifact's own selection, and `--only registry` narrows a full artifact to the registry. Any other
 `--only` value is refused, because the restore could not honor it. The space, broker and runtime
 come from the preserved cut, so no selector can rebind them. An artifact of another space refuses
-`CONFLICT` (exit 2) and names both spaces; the preserved cut is not changed. A receipt means the
+`CONFLICT` (exit 2) and names both spaces, and a full artifact taken under another trust state
+refuses `CONFLICT` the same way. An artifact file that is missing, undeclared or not its declared
+size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backup verify` does. In
+each case the preserved cut is not changed. A receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
 confirm that any seat joined. A registry restore brings back channel settings only, so chat and DM
@@ -2679,6 +2685,8 @@ This reads one protected native handle artifact or a bounded array of artifacts 
 `--space`, it shows unverified public scope, holder and declared expiry claims. Signatures,
 issuer authority, parent links, holder currency and revocation remain not checked. No broker
 is contacted or credential issued. Signature bytes and original signed artifacts are never printed.
+A handle is a signed JSON grant, so a file that is not JSON, such as a NATS credential file, refuses
+`SCHEMA_INVALID` and says what it is.
 The human report shows at most 50 scope rows and names omissions; JSON retains public metadata.
 
 An explicit `--space` selects online inspection on a registered static-auth space whose root
@@ -3177,8 +3185,9 @@ or seeding connectors. `--space` and `--server` select the same root used by lau
 space has an offline catalog before it is started. Failed target resolution never falls back
 to the current directory: a `--server` that no registration names reads the project in this
 folder, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing. With
-no space selected and no project here, the refusal says so. Remote `--on` operations refuse as
-unsupported here.
+no space selected and no project here, the refusal says so. With `--on <manager>`, list, show and
+create work on that manager's catalog instead, and edit and remove refuse there, as
+[Personas on an exact manager](#personas-on-an-exact-manager) describes.
 
 A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
 which rule it broke.
@@ -4627,7 +4636,10 @@ refused and writes nothing. A re-grant **replaces the whole row**, not the one f
 every field out: the new scope plus the row's current read set, post set, role and label
 (`cotal actor list` shows what a row holds). Under `--full`, a field left off does not stay as it
 was: it reverts to the wide default in the table above. A re-grant retires the current interactive lifecycle through the running auth
-service before it rotates the row, so copied bearers cannot cross an authorization update. If that
+service before it rotates the row, so copied bearers cannot cross an authorization update. The
+receipt names the earlier grant as none, the same fields (titled `Actor grant stored unchanged`) or
+replaced, and says when its lifecycle was retired; JSON carries `previous` and
+`previousLifecycleRetired`. If that
 retirement cannot be confirmed, the row is left unchanged and the command fails with the recovery
 action. `revoke` uses the same retirement before deleting the row, which lets a later grant create a
 real successor instead of colliding with a live predecessor. `supervise` is separate from `spawn` and `admin`: it only makes a signed-in
@@ -4926,9 +4938,10 @@ and `persona` have per-space values. `set --space` takes a space registered or p
 machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
 `unset --space` takes any name, so a value left for a space you removed can go. A write that a
 variable outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming the
-variable. A variable whose value `config set`
-would refuse still wins, and `config`, `config get` and `status` name it in a `PREFERENCE_INVALID`
-warning with the reason. Setting a value that is already saved, or
+variable. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
+warning naming the catalog. A variable whose value `config set` would refuse still wins, and
+`config`, `config get` and `status` name it in a `PREFERENCE_INVALID` warning with the reason.
+Setting a value that is already saved, or
 unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
 with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
 refused with `CONFLICT`. A preferences folder you cannot write is refused with `PERMISSION_DENIED`
@@ -6551,11 +6564,12 @@ and is labeled accordingly. Output backpressure pauses the reader instead of gro
 without bounds. Ctrl-C, termination and closed output end the view, not the service.
 
 `auth retire <full-lifecycle-uid> [--space <space>] [--yes]` validates the native UID and resolves
-the selected auth target, then refuses `UNSUPPORTED` (exit 2): the registered auth endpoint accepts
-retirement only from the requester's own current serve identity and gate, which this CLI does not
-have. It neither borrows a manager identity nor substitutes the interactive or managed loopback
-host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal names
-the lever that works, rotating the space identity, which stops every credential the space issued
+the selected auth target. A lifecycle UID is 26 to 32 lowercase letters and digits, and
+`cotal ps --wide` shows each seat's. The CLI then refuses `UNSUPPORTED` (exit 2): the registered auth
+endpoint accepts retirement only from the requester's own current serve identity and gate, which this
+CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
+loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal
+names the lever that works, rotating the space identity, which stops every credential the space issued
 (see [auth mint](#auth-mint)).
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
@@ -6615,3 +6629,11 @@ is not delivery, a spawned agent or task completion. Finite JSON/plain receipts 
 and answering manager, epoch and original request, without printing the creation input body. Rich results offer
 follow-up show or spawn commands with the original exact manager pin; a suggested launch still
 requires the caller's native spawn authority.
+When the manager writes the file into this root's catalog, the receipt's `Local files` line names
+it and JSON `localFilesChanged` is true. On a static space the manager records an owner only for
+one of its own seats. The CLI mints a new caller for each call, so its card is operator-owned, as a
+local `persona create` writes it, and the manager does not show it over `--on`. The receipt then
+offers `cotal p show <name>` for a file in this root, and a `show --on` that the manager answers
+not-found names that command when this root's catalog holds the file. A peer joined with its own
+credentials is not one of the manager's seats either, so on a static space it cannot redefine or
+read over `--on` what it defines.

@@ -3,8 +3,9 @@
  * the effective values with their sources and shadowed values, `get`, `set` and `unset` for the user
  * and for one space, the refusals (a set for a space this machine does not know among them), the named
  * environment tiers, the selected space, an invalid file stopping every command but help and completion
- * without being reset, a linked file stopping them the same way, a stale write refused, two
- * concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
+ * without being reset, a linked file stopping them the same way, a stale write refused, a persona the
+ * space's catalog does not hold saved with a warning that names the catalog, two concurrent writers
+ * both landing, and the consumers outside `spawn`: color, the `personas edit`
  * editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
@@ -12,7 +13,7 @@
  * Run: pnpm smoke:config-preferences
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -200,6 +201,30 @@ const ansi = /\x1b\[/;
   rmSync(join(cotalHome, "current-mesh"));
   run(["config", "unset", "persona"]);
   run(["config", "unset", "persona", "--space", "demo"]);
+}
+
+// ── a persona the space's catalog does not hold is saved, with a warning naming the catalog ──────
+{
+  const catProject = join(home, "cat-project");
+  mkdirSync(catProject);
+  const created = run(["space", "create", "cat"], {}, catProject);
+  check("fixture: a prepared space with its own catalog", created.status === 0, shown(created));
+  const catalog = join(realpathSync(catProject), ".cotal", "agents");
+  const warned = (r: ReturnType<typeof run>) => r.envelope?.warnings.find((w) => w.code === "PERSONA_NOT_FOUND");
+  const ghost = run(["config", "set", "persona", "ghost", "--space", "cat", "--json"]);
+  check("a name the catalog does not hold is saved, with PERSONA_NOT_FOUND naming the catalog",
+    ghost.status === 0 && ghost.envelope?.outcome === "ok" && saved().spaces.cat?.persona === "ghost" && warned(ghost)?.message === `no persona "ghost" in space cat's catalog ${catalog}; the preference was saved, and a launch there needs that file`,
+    ghost.envelope);
+  const ghostText = run(["config", "set", "persona", "ghost2", "--space", "cat"]);
+  check("the text report says so on stderr", ghostText.status === 0 && ghostText.stderr.includes(`no persona "ghost2" in space cat's catalog ${catalog}`), shown(ghostText));
+  writeFileSync(join(catalog, "real.md"), "---\nname: real\n---\nhi\n");
+  const real = run(["config", "set", "persona", "real", "--space", "cat", "--json"]);
+  check("a name the catalog holds raises no warning", real.status === 0 && warned(real) === undefined, real.envelope);
+  const path = run(["config", "set", "persona", "./nosuch.md", "--space", "cat", "--json"]);
+  check("a persona file path that is missing names the file", path.status === 0 && warned(path)?.message.startsWith(`no persona file ${join(realpathSync(catProject), "nosuch.md")};`) === true, path.envelope);
+  const broken = run(["config", "set", "persona", "bad name", "--space", "cat", "--json"]);
+  check("a name that breaks the persona name rule is still refused", broken.status === 1 && broken.envelope?.error?.code === "USAGE_INVALID", broken.envelope);
+  run(["config", "unset", "persona", "--space", "cat"]);
 }
 
 // ── consumers: color, the editor, the detach key ─────────────────────────────────────────────────

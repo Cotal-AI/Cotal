@@ -81,7 +81,14 @@ function write(settings: TelemetrySettings): TelemetrySettings {
 
 /** The settings file, created at `regular` with a fresh install id when there is none. */
 export function readTelemetrySettings(): TelemetrySettings {
-  return readFile() ?? write({ v: 1, level: "regular", installId: randomUUID(), createdAt: new Date().toISOString() });
+  return readOrCreate().settings;
+}
+
+/** {@link readTelemetrySettings}, saying whether this read created the file. */
+function readOrCreate(): { settings: TelemetrySettings; created: boolean } {
+  const found = readFile();
+  if (found) return { settings: found, created: false };
+  return { settings: write({ v: 1, level: "regular", installId: randomUUID(), createdAt: new Date().toISOString() }), created: true };
 }
 
 export function setTelemetryLevel(level: TelemetryLevel): TelemetrySettings {
@@ -110,12 +117,12 @@ export function telemetryLevelFromEnv(env: NodeJS.ProcessEnv): { level: Telemetr
   return { level: named, source: "COTAL_TELEMETRY" };
 }
 
-/** The level in force and where it comes from, with the settings file that holds the install id.
- *  The file is neither read nor created when the environment forces `off`, so a machine that opts
- *  out by environment keeps no install id. */
-export function effectiveTelemetry(env: NodeJS.ProcessEnv): { level: TelemetryLevel; source: TelemetrySource; settings?: TelemetrySettings } {
+/** The level in force and where it comes from, with the settings file that holds the install id
+ *  and whether this read created that file. The file is neither read nor created when the
+ *  environment forces `off`, so a machine that opts out by environment keeps no install id. */
+export function effectiveTelemetry(env: NodeJS.ProcessEnv): { level: TelemetryLevel; source: TelemetrySource; settings?: TelemetrySettings; created?: boolean } {
   const forced = telemetryLevelFromEnv(env);
   if (forced?.level === "off") return forced;
-  const settings = readTelemetrySettings();
-  return forced ? { ...forced, settings } : { level: settings.level, source: "file", settings };
+  const { settings, created } = readOrCreate();
+  return forced ? { ...forced, settings, created } : { level: settings.level, source: "file", settings, created };
 }

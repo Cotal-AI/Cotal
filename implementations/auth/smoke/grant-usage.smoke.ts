@@ -4,12 +4,14 @@
  * ACL flags refuses once with USAGE_INVALID (exit 1) and names every missing input, never exit 5,
  * and that holds with no space to resolve. With complete flags on a space whose root holds no
  * user-auth ledger, the capability refusal (UNSUPPORTED, exit 2) comes only after usage passed.
- * Broker-free; the mesh registry and the prepared spaces are private to this run.
+ * `auth handle inspect` on a NATS credential file says it is not a handle and echoes none of it, and
+ * `auth retire` names the lifecycle UID format and where to find one. Broker-free; the mesh
+ * registry and the prepared spaces are private to this run.
  *
  * Run: pnpm smoke:grant-usage
  */
 import { strict as nodeAssert } from "node:assert";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
@@ -110,6 +112,30 @@ try {
     assert.equal(failure.code, "UNSUPPORTED", `${cmd.name} grant with full flags: the capability refusal (${failure.message})`);
     assert.equal(exitCode(failure.outcome, failure.code), 2, `${cmd.name} grant with full flags: exit code`);
   }
+
+  // 5. handle inspect says a NATS credential file is not a handle, and what a handle is.
+  {
+    const creds = join(bare, "agent.creds");
+    writeFileSync(creds, "-----BEGIN NATS USER JWT-----\neyJhbGciOiJlZDI1NTE5LW5rZXkifQ.e30.c2ln\n------END NATS USER JWT------\n", { mode: 0o600 });
+    const handle = await failureOf("run", authCommand, bare, {}, ["handle", "inspect", creds]);
+    assert.equal(handle.code, "SCHEMA_INVALID", `auth handle inspect on a credential file: code (${handle.message})`);
+    assert.match(handle.message, /^this is a NATS credential file, not a capability handle, which is a signed JSON grant/, "auth handle inspect: says what the file is");
+    assert.match(handle.remedy ?? "", /passed with --creds/, "auth handle inspect: says where a credential file goes");
+    assert.doesNotMatch(`${handle.message} ${handle.remedy}`, /eyJhbGci/, "auth handle inspect: the credential is not echoed");
+    const text = join(bare, "notes.txt");
+    writeFileSync(text, "not json\n", { mode: 0o600 });
+    const other = await failureOf("run", authCommand, bare, {}, ["handle", "inspect", text]);
+    assert.equal(other.code, "SCHEMA_INVALID", `auth handle inspect on a text file: code (${other.message})`);
+    assert.match(other.message, /^this file is not a capability handle: a handle is a signed JSON grant/, "auth handle inspect on a text file: says what a handle is");
+  }
+
+  // 6. retire names the lifecycle UID format and where to find one.
+  {
+    const retire = await failureOf("validate", authCommand, bare, {}, ["retire", "x"]);
+    assertUsage(retire, "auth retire x");
+    assert.match(retire.message, /26 to 32 lowercase letters and digits/, "auth retire: names the UID format");
+    assert.equal(retire.remedy, "`cotal ps --wide` shows each seat's lifecycle uid", "auth retire: says where a UID is shown");
+  }
 } finally {
   process.chdir(startCwd);
   if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -117,5 +143,5 @@ try {
   rmSync(base, { recursive: true, force: true });
 }
 
-console.log("grant-usage smoke: OK - actor and auth grant usage refuse with exit 1 before any target or authority is read and name every missing input; complete flags then meet the capability refusal");
+console.log("grant-usage smoke: OK - actor and auth grant usage refuse with exit 1 before any target or authority is read and name every missing input; complete flags then meet the capability refusal; handle inspect says a credential file is not a handle, and retire names the UID format");
 emitSentinel({ passed: cells(), failed: 0 });

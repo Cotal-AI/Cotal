@@ -82,7 +82,7 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
@@ -387,12 +387,18 @@ async function validateManifest(
       // on a 30-day cadence, "you rotated after taking this backup" is the common case, not an exotic
       // one. Without this the operator sees an opaque fingerprint mismatch on the artifact they were
       // counting on during a disaster.
+      // Checked before any transition, as the space is above: a refusal, not an unknown outcome.
       const sameAccount = manifest.authority?.account !== undefined && manifest.authority.account === currentAuthority.account;
-      throw new Error(
+      throw new CommandFailure("refused", "CONFLICT",
         sameAccount
-          ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain. Restore it into a root holding that chain, or use a backup taken after the rotation."
-          : "backup authority fingerprint does not match current trust state",
-      );
+          ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain; the preserved cut was not changed"
+          : "backup authority fingerprint does not match current trust state: this full artifact was taken under another trust state, such as another machine's or a reset root's; the preserved cut was not changed",
+        {
+          target: { space: ready.space },
+          remedy: sameAccount
+            ? "restore it into a root holding that chain, or use a backup taken after the rotation"
+            : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root",
+        });
     }
   }
 }
@@ -807,7 +813,17 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // The journal is ready with no live claim, and the artifact/target are proven disjoint from
     // the attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
-    const artifact = stageArtifact(artifactPath, stageParent);
+    // Staging checks each artifact file before any transition, so a file fault leaves the preserved
+    // cut unchanged: the same refusal `backup verify` gives for that file.
+    let artifact: StagedArtifact;
+    try { artifact = stageArtifact(artifactPath, stageParent); }
+    catch (error) {
+      if (!(error instanceof ArtifactFileFault)) throw error;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored and the preserved cut was not changed`, {
+        target: { directory: artifactPath, file: error.file, fault: error.fault },
+        remedy: "this copy cannot be restored as it is: check another copy of the same artifact with cotal backup verify and restore that one, or restore a newer backup",
+      });
+    }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
     const checkpoints = readStagedCheckpoints(artifact);

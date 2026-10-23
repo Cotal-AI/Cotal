@@ -204,6 +204,19 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("the bare report prints the level, its source and the URL, and sends nothing", status2.status === 0 && status2.sent.length === 0 && /regular/.test(status2.stdout) && /settings file/.test(status2.stdout) && status2.stdout.includes(url), shown(status2));
 }
 
+// ---- the run that creates the settings file changed it, even at the default level ----
+for (const { level, extra, name } of [
+  { level: "regular", extra: {}, name: "cotal telemetry regular" },
+  { level: "on", extra: {}, name: "cotal telemetry on" },
+  { level: "regular", extra: { COTAL_TELEMETRY: "minimal" }, name: "cotal telemetry regular under COTAL_TELEMETRY=minimal" },
+]) {
+  const s = sandbox();
+  const first = await s.run(["telemetry", level, "--json"], extra);
+  check(`${name} with no settings file creates it at regular and reports ok, not no-op`, first.status === 0 && first.envelope?.outcome === "ok" && existsSync(s.settingsPath) && s.settings().level === "regular", shown(first));
+  const again = await s.run(["telemetry", level, "--json"], extra);
+  check(`…and ${name} again is a no-op`, again.status === 0 && again.envelope?.outcome === "no-op", shown(again));
+}
+
 // ---- refusals: a bad COTAL_TELEMETRY and a malformed settings file ----
 {
   const s = sandbox();
