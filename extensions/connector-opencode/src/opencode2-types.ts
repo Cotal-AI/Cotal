@@ -8,7 +8,7 @@
  * everything OpenCode 2.x may hand it.
  */
 
-/** One event off `ctx.event.subscribe`. Same shape as `GET /api/event` (measurements.md). */
+/** One event off `ctx.event.subscribe`. Same shape as `GET /api/event`. */
 export interface OpenCode2Event {
   id?: string;
   type: string;
