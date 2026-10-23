@@ -528,6 +528,11 @@ left as it is. A controller stack lists the write under `result.written` and in 
 retained launcher prints the path it wrote. If the write fails, the stack stays up and the failure
 is a warning. A controller recovery or restore leaves the persona to the next `up`.
 
+When `up` starts a broker, except for a resume or restore, it writes the space's default delivery
+class into the channel registry if none is saved: `durable` for an authenticated space, `live` for
+an open one. Saved channel defaults that do not decode are replaced the same way, and `up` prints a
+warning with their decode error.
+
 A space name belongs to one registered mesh. `up` refuses a name that another live mesh holds. It
 takes over a name whose broker is not running, and when that registration belonged to another root
 it prints that root and its broker address. It refuses instead when that root holds a restore or a
@@ -3772,6 +3777,9 @@ cotal channel remove <name> [--purge] [--yes]
 
 `channel` has the shorthand `ch`; `remove` also accepts `rm`. The inventory shows configured
 metadata, not every channel with traffic. `show` includes inherited replay and delivery settings.
+A saved entry that does not decode, such as a raw put that is not JSON, is ignored like an absent
+one. The inventory leaves it out and names it in a warning with its decode error. `show` and
+`defaults` warn about the entries they read, and `--json` lists them under `registry.undecodable`.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census.

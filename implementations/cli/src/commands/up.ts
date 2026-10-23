@@ -3892,12 +3892,15 @@ async function postStart(
   // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
   // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
   // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
-  await ensureDefaultDeliveryClass({
+  const deliveryClass = setup ? "durable" : "live";
+  const { replaced } = await ensureDefaultDeliveryClass({
     servers: server,
     space,
     creds: setup?.creds,
-    deliveryClass: setup ? "durable" : "live",
+    deliveryClass,
   });
+  if (replaced !== undefined)
+    console.error(c.yellow(`! the channel defaults of "${space}" did not decode and were replaced with delivery class ${deliveryClass}: ${oneLine(replaced)}`));
 }
 
 /** A resume or restore skips `postStart` because the preserved store already holds every canonical

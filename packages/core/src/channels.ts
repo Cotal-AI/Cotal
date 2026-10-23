@@ -22,6 +22,12 @@ export interface ChannelRegistryFile {
   channels?: Record<string, ChannelConfig>;
 }
 
+/** What {@link readChannelRegistry} read: the decoded registry, plus every key whose value did not
+ *  decode, with its decode error. Those keys are absent from `defaults` and `channels`. */
+export interface ChannelRegistryRead extends ChannelRegistryFile {
+  undecodable: { key: string; error: string }[];
+}
+
 /** Length caps on the model-facing registry text — unbounded text would stuff every agent's
  *  context and bloat the KV, so a write past these throws rather than clamps. */
 export const MAX_CHANNEL_DESCRIPTION = 200;
@@ -152,9 +158,15 @@ export async function writeChannelDefaults(kv: KV, patch: ChannelDefaults): Prom
   await kv.put(CHANNEL_DEFAULTS_KEY, JSON.stringify(merged));
 }
 
-async function decode(kv: KV, key: string): Promise<ChannelConfig | ChannelDefaults | undefined> {
+/** The live entry under `key`, or undefined if unset or deleted. */
+async function liveEntry(kv: KV, key: string): Promise<KvEntry | undefined> {
   const e = await kv.get(key);
-  if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
+  return !e || e.operation === "DEL" || e.operation === "PURGE" ? undefined : e;
+}
+
+async function decode(kv: KV, key: string): Promise<ChannelConfig | ChannelDefaults | undefined> {
+  const e = await liveEntry(kv, key);
+  if (!e) return undefined;
   try {
     return decodeChannelEntry(e);
   } catch {
@@ -212,20 +224,30 @@ export async function seedChannelRegistry(opts: {
  *  `defaults.deliveryClass` MUST be on the wire so the effective default is discoverable, never
  *  inferred from the `?? "durable"` resolution fallback). Clobber-safe and idempotent: an explicit
  *  value already in the registry (e.g. seeded from a `channels.json` default) wins, so a re-up never
- *  overrides an operator's choice. Returns true if it wrote. Called by `cotal up` with the profile
- *  class — local/self-hosted (auth, daemon present) ⇒ `durable`, open/dev (no daemon) ⇒ `live`. */
+ *  overrides an operator's choice. Defaults that do not decode are no choice any reader applies, so
+ *  they are replaced, and `replaced` carries their decode error for the caller to report. `wrote` is
+ *  true if it wrote. Called by `cotal up` with the profile class — local/self-hosted (auth, daemon
+ *  present) ⇒ `durable`, open/dev (no daemon) ⇒ `live`. */
 export async function ensureDefaultDeliveryClass(opts: {
   servers: string;
   space: string;
   creds?: string;
   deliveryClass: DeliveryClass;
-}): Promise<boolean> {
+}): Promise<{ wrote: boolean; replaced?: string }> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: true });
-    if ((await readChannelDefaults(kv))?.deliveryClass !== undefined) return false;
+    const e = await liveEntry(kv, CHANNEL_DEFAULTS_KEY);
+    let replaced: string | undefined;
+    if (e) {
+      try {
+        if (decodeChannelEntry(e).deliveryClass !== undefined) return { wrote: false };
+      } catch (err) {
+        replaced = (err as Error).message;
+      }
+    }
     await writeChannelDefaults(kv, channelDeliveryDefaultPatch(opts.deliveryClass));
-    return true;
+    return { wrote: true, ...(replaced === undefined ? {} : { replaced }) };
   } finally {
     await nc.drain();
   }
@@ -255,8 +277,8 @@ export async function deleteChannels(opts: {
 }
 
 /** Connect, read the whole registry (defaults + every channel entry) into a
- *  {@link ChannelRegistryFile}, disconnect. The read side of {@link seedChannelRegistry},
- *  used by `cotal channels list`. */
+ *  {@link ChannelRegistryRead}, disconnect. The read side of {@link seedChannelRegistry},
+ *  used by `cotal channel`. A key whose value does not decode is returned in `undecodable`. */
 export async function readChannelRegistry(opts: {
   servers: string;
   space: string;
@@ -269,7 +291,7 @@ export async function readChannelRegistry(opts: {
    *  that holds the bare `$JS.API.DIRECT.GET` row on the registry stream (the `operator` profile) and
    *  no CONSUMER.DELETE there: the default scan's consumer outlives the read by five minutes (#4091). */
   directGet?: boolean;
-}): Promise<ChannelRegistryFile> {
+}): Promise<ChannelRegistryRead> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // Read-only: never CREATE the bucket — a scoped read cred (operator) has no STREAM.CREATE, and a
@@ -278,6 +300,7 @@ export async function readChannelRegistry(opts: {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
     const channels: Record<string, ChannelConfig> = {};
     let defaults: ChannelDefaults | undefined;
+    const undecodable: ChannelRegistryRead["undecodable"] = [];
     try {
       // ONE pass: this was a `keys()` scan plus a per-key `get()`, so one round trip per channel.
       // A Direct Get to a missing stream has no responder, so its 404 comes from STREAM.INFO first.
@@ -285,27 +308,31 @@ export async function readChannelRegistry(opts: {
         ? (await kv.status(), (await lastKvEntries(kv)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE"))
         : await liveKvEntries(kv);
       for (const e of entries) {
-        if (e.key === CHANNEL_DEFAULTS_KEY) {
-          try { defaults = decodeChannelEntry(e); } catch { /* garbled defaults — treat as unset */ }
+        let value: ChannelConfig | ChannelDefaults;
+        try {
+          value = decodeChannelEntry(e);
+        } catch (err) {
+          undecodable.push({ key: e.key, error: (err as Error).message });
           continue;
         }
-        let cfg: ChannelConfig | undefined;
-        try { cfg = decodeChannelEntry(e); } catch { /* skip undecodable */ }
+        if (e.key === CHANNEL_DEFAULTS_KEY) {
+          defaults = value;
+          continue;
+        }
         // Channel tokens such as `__proto__` are valid. Define an own data property instead of
         // invoking Object.prototype setters, while preserving the reader's normal-object shape.
-        if (cfg)
-          Object.defineProperty(channels, e.key, {
-            value: cfg,
-            enumerable: true,
-            configurable: true,
-            writable: true,
-          });
+        Object.defineProperty(channels, e.key, {
+          value,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
     } catch (e) {
       // No channel bucket yet ⇒ empty registry, not an error (and not an over-privileged auto-create).
       if ((e as { code?: number }).code !== 404 && !/not found/i.test((e as Error).message)) throw e;
     }
-    return { defaults, channels };
+    return { defaults, channels, undecodable };
   } finally {
     await nc.drain();
   }

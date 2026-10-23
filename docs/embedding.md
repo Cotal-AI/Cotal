@@ -300,7 +300,7 @@ the subject-token sanitizer. Endpoint names still use the separate DNS-label gra
 | `createSpaceAccountAuth(broker, space)` | mint one space's own data account, signed by that broker's operator: the add-a-tenant primitive. |
 | `createSpaceAuth(space)` | the one-space convenience: broker trust + one account in a single composed bundle. |
 | `setupSpaceStreams({ servers, space, creds })` | create the space's JetStream streams. |
-| `ensureDefaultDeliveryClass({ servers, space, creds?, deliveryClass })` | write the space's default delivery class at creation so it is wire-discoverable (SPEC section 4). |
+| `ensureDefaultDeliveryClass({ servers, space, creds?, deliveryClass })` | write the space's default delivery class at creation so it is wire-discoverable (SPEC section 4). Saved defaults that do not decode are replaced. Returns `{ wrote, replaced? }`, where `replaced` is their decode error. |
 | `serverConfig(broker, spaces, { storeDir, maxFileStore?, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required, `maxFileStore` caps JetStream file storage in bytes (omitted, nats-server's dynamic default applies), and `extraAccounts` preloads the auth-callout account. |
 | `mintCreds(auth, identity, profile, opts?)` | mint a scoped cred for any `Profile`. |
 | `mintMembershipObserverCreds`, `mintConnectionEvictorCreds` | mint the membership/eviction scoped creds. |

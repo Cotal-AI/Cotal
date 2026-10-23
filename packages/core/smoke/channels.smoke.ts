@@ -1,7 +1,8 @@
 /**
  * Channel-registry test (open mode — no auth). Spins up its OWN nats-server and verifies the
  * registry + replay mechanism end-to-end:
- *   - registry round-trip: seed → read, effective-replay precedence, merge-on-write, validation;
+ *   - registry round-trip: seed → read, effective-replay precedence, merge-on-write, validation,
+ *     undecodable entries reported;
  *   - replay on join: a replay channel backfills history (as `historical`), a no-replay one doesn't;
  *   - the tail drop: pre-join history on a no-replay channel is suppressed (not leaked live);
  *   - dynamic join/leave: consumers.update mid-session, idempotent re-join, can't-leave-last;
@@ -18,7 +19,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream } from "@nats-io/jetstream";
 import {
   CotalEndpoint, seedChannelRegistry, readChannelRegistry, effectiveReplay, effectiveDeliveryClass,
-  ensureDefaultDeliveryClass, validateChannelConfig, mintLifecycleUid,
+  ensureDefaultDeliveryClass, validateChannelConfig, mintLifecycleUid, openChannelRegistry, CHANNEL_DEFAULTS_KEY,
   isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -94,12 +95,33 @@ try {
 
   // ---- default delivery class written at space creation (SPEC §4: on the wire, not inferred) ----
   const dcSpace = `${space}-dc`;
-  check("writes default deliveryClass when unset", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "durable" })) === true);
+  const firstWrite = await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "durable" });
+  check("writes default deliveryClass when unset", firstWrite.wrote && firstWrite.replaced === undefined);
   const dcReg = await readChannelRegistry({ servers, space: dcSpace });
   check("default deliveryClass is discoverable on the wire", dcReg.defaults?.deliveryClass === "durable" && effectiveDeliveryClass(undefined, dcReg.defaults) === "durable");
-  check("idempotent re-write is a no-op", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "durable" })) === false);
-  check("clobber-safe: an existing class wins over the profile default", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "live" })) === false
+  check("idempotent re-write is a no-op", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "durable" })).wrote === false);
+  check("clobber-safe: an existing class wins over the profile default", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "live" })).wrote === false
     && (await readChannelRegistry({ servers, space: dcSpace })).defaults?.deliveryClass === "durable");
+
+  // ---- an entry that does not decode is reported, not read as absent ----
+  {
+    const nc = await connect({ servers });
+    const kv = await openChannelRegistry(nc, dcSpace);
+    await kv.put("garbled", "not json");
+    await kv.put(CHANNEL_DEFAULTS_KEY, "not json");
+    await nc.close();
+  }
+  for (const directGet of [false, true]) {
+    const read = await readChannelRegistry({ servers, space: dcSpace, directGet });
+    check(`undecodable channel and defaults are reported with their decode error (directGet ${directGet})`,
+      read.defaults === undefined && !Object.hasOwn(read.channels ?? {}, "garbled")
+        && read.undecodable.map(({ key }) => key).sort().join() === "=defaults,garbled"
+        && read.undecodable.every(({ error }) => /not valid JSON/.test(error)), read.undecodable);
+  }
+  const replacedDefaults = await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "live" });
+  check("undecodable defaults are replaced and their decode error is returned",
+    replacedDefaults.wrote && /not valid JSON/.test(replacedDefaults.replaced ?? "")
+      && (await readChannelRegistry({ servers, space: dcSpace })).defaults?.deliveryClass === "live", replacedDefaults);
 
   // ---- replay on join ----
   const A = new CotalEndpoint({ space, servers, card: { name: "A", kind: "agent", id: "A_pub" }, channels: ["log", "chat", "general", "incident"], lifecycleUid: mintLifecycleUid() });

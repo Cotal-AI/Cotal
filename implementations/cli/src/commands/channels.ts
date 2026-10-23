@@ -1,8 +1,8 @@
 import * as prompts from "../lib/prompts.js";
 import {
-  assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
+  assertValidChannel, CHANNEL_DEFAULTS_KEY, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
   isConcreteChannel, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
-  type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
+  type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
   CommandFailure, jsonFlag, loadMeshes, plainFlag, presentationOf, targetFlags, writeResult,
@@ -106,7 +106,13 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
     const registry = await readChannelRegistry({ ...options, directGet: !connection.bearer });
-    writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, registryView);
+    // Each view warns about the undecodable entries it reads: list reads all, show its channel and
+    // the defaults, defaults only the defaults.
+    const warnings = registry.undecodable
+      .filter(({ key }) => action === "list" || key === CHANNEL_DEFAULTS_KEY || key === name)
+      .map(({ key, error }) => ({ code: "CHANNEL_ENTRY_UNDECODABLE", target: { space: connection.space, key },
+        message: key === CHANNEL_DEFAULTS_KEY ? `the saved channel defaults did not decode and are ignored, so the built-in defaults apply: ${error}` : `the saved entry for #${key} did not decode and is ignored: ${error}` }));
+    writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" }, warnings }, registryView);
     return;
   }
   if (action === "remove" && !await confirmRemoval(name!, connection.space, values, presentation)) {
@@ -146,12 +152,13 @@ function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegist
   ];
 }
 
-function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryFile }): Report {
+function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }): Report {
   const { registry, name } = result;
   if (result.action === "show") {
     const config = Object.hasOwn(registry.channels ?? {}, name!) ? registry.channels![name!] : undefined;
+    const metadata = config ? "configured" : registry.undecodable.some(({ key }) => key === name) ? "saved entry did not decode" : "no saved entry";
     return { sections: [
-      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }] },
+      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", metadata], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }] },
       ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: `cotal history ${name}`, description: "Read retained messages within your grant" }] }] },
     ] };
