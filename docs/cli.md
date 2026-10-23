@@ -942,7 +942,12 @@ A member whose recorded process is already gone is recorded as stopped without l
 or credential, so a second `down --yes` stops nothing and is a no-op. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
 stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
-manager keeps running, then run `cotal down`. Controller roots refuse
+manager keeps running, then run `cotal down`. When the broker's process runs but does not answer,
+as a suspended one does, the manager read waits out its bound and `down` refuses
+`TARGET_UNAVAILABLE`, exit 2, naming the broker's pid, and stops nothing. The broker stops last and
+is never force killed, so `down` does not signal it. Resume a suspended broker with
+`kill -CONT <pid>` and run `cotal down` again; end one that stays unresponsive, then take the route
+above. Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help.

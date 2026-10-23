@@ -14,7 +14,9 @@
  *     next step to another `--server`; its `down` stops nothing, `reset space` finds nothing to reset,
  *     and its next `up` starts at another address. Once it ran, a third space's broker at that
  *     address makes its bare `up` name stopping that space, and it keeps the address.
- *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
+ *  4. Orphan manager. With the broker suspended under a live manager, `down` refuses
+ *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing. With the broker
+ *     killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
  *     is kept as it is. The legacy name and the broker stop name their stack members. Under umask
@@ -305,6 +307,11 @@ try {
     const seat = { ...env, COTAL_NAME: "settle-seat", COTAL_ID: "settle-seat", COTAL_LIFECYCLE_UID: uid, COTAL_SPACE: space, COTAL_ACCEPTED_TOKEN: "settle-token" };
     const rejected = cliAs(seat, root, "down", "--yes", "--json");
     check("a live broker's refusal of a managed seat's credential is kept, not reported as a registry mismatch, and nothing stops", rejected.status !== 0 && rejected.env?.error?.message === "Authorization Violation" && broker !== null && alive(broker) && manager !== null && alive(manager), shown(rejected));
+    // A suspended broker takes the connection and sends nothing, so the manager read times out.
+    if (broker !== null) process.kill(broker, "SIGSTOP");
+    const hung = cli(root, "down", "--yes", "--json");
+    if (broker !== null) process.kill(broker, "SIGCONT");
+    check("down with a suspended broker refuses naming its pid and kill -CONT, and stops nothing", hung.status === 2 && hung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(hung.env.error.message.includes(`pid ${broker}`)) && Boolean(hung.env.error.remedy?.includes(`kill -CONT ${broker}`)) && broker !== null && alive(broker) && manager !== null && alive(manager), shown(hung));
     if (broker !== null) process.kill(broker, "SIGKILL");
     await until(() => gone(space, "stack-broker"), 10_000);
     const blocked = cli(root, "down", "--yes", "--json");

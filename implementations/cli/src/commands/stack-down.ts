@@ -9,7 +9,7 @@
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, isConnectRefusal, oneLine, presentationOf,
+  CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, isConnectRefusal, oneLine, presentationOf, readNatsInfoGreeting,
   releaseMaintenanceLock, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
   recordOperationSpace,
@@ -71,13 +71,20 @@ function readMembers(journal: StackJournal): Member[] {
 
 /** A live manager's agent impact is read through the broker on an authenticated stack. When the
  *  stack's broker is gone that read cannot succeed, so the refusal names the command that brings
- *  the broker back while keeping the live manager. */
+ *  the broker back while keeping the live manager. A broker whose process runs but sends no
+ *  greeting, as a suspended one does, is named with its pid; the broker stops last, so it is not
+ *  signalled here. */
 async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
   try { return await prepareNativeServiceStop(manager.definition, manager.instance, withAgents); }
   catch (caught) {
     // The read connects through the broker, so a gone broker surfaces as the connect refusal.
     const error = isConnectRefusal(caught) ? caught.failure() : caught;
-    if (members.some((member) => member.role === "broker" && member.live) || !isCommandFailure(error)) throw caught;
+    const broker = members.find((member) => member.role === "broker" && member.live);
+    const pid = broker?.instance.record.value.process?.pid;
+    if (pid !== undefined && isCommandFailure(error) && !await readNatsInfoGreeting(journal.server, 2000)) {
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker runs as pid ${pid} but does not answer at ${journal.server}, so the live manager's agent impact cannot be read; no member was stopped`, { target: { root: journal.root, space: journal.space, broker: broker!.instance.name, pid, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `if pid ${pid} is suspended, resume it with kill -CONT ${pid} and run cotal down again; if it stays unresponsive, end it with kill -KILL ${pid}, then run cotal up --space ${journal.space} to restart the broker while the manager keeps running, then run cotal down` });
+    }
+    if (broker || !isCommandFailure(error)) throw caught;
     throw new CommandFailure("refused", error.code, "the stack's broker is not running, so the live manager's agent impact cannot be read; no member was stopped", { target: { root: journal.root, space: journal.space, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `run cotal up --space ${journal.space} to restart the broker from its recorded inputs while the manager keeps running, then run cotal down` });
   }
 }
