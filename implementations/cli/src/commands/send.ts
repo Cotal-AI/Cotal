@@ -10,6 +10,7 @@ import {
   effectiveDeliveryClass,
   effectiveReplay,
   readChannelRegistry,
+  channelBucket,
   AmbiguousPeerError,
   type FlagSpec,
   type FlagValues,
@@ -19,7 +20,7 @@ import {
 } from "@cotal-ai/core";
 import { CLI_USER_ACTOR, CommandFailure, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
-import { openTransient } from "../lib/transient.js";
+import { batchedRead, openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
@@ -198,10 +199,10 @@ export async function send(args: ParsedArgs): Promise<void> {
     let registered: string[] = [];
     if (input.mode === "msg") {
       try {
-        // One Direct Get with a static or open credential, as the transient endpoint reads: the
-        // default scan's consumer outlives the send by five minutes (#4091). A user bearer has no
-        // Direct Get row, so it keeps the scan.
-        const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }), directGet: !connection.bearer });
+        // One Direct Get where the credential may, as the transient endpoint reads: the default scan's
+        // consumer outlives the send by five minutes (#4091). A user bearer, or a credential with no
+        // Direct Get row, keeps the scan.
+        const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }), directGet: batchedRead(connection, channelBucket(space)) });
         registered = Object.keys(registry.channels ?? {});
         const config = Object.hasOwn(registry.channels ?? {}, input.target) ? registry.channels![input.target] : undefined;
         policy = { registered: config !== undefined, replay: effectiveReplay(config, registry.defaults), window: config?.replayWindow ?? registry.defaults?.replayWindow ?? null, delivery: effectiveDeliveryClass(config, registry.defaults) };

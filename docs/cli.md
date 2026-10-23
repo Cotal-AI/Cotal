@@ -3865,17 +3865,18 @@ The sending principal comes from the selected space's credentials or user login.
 is the OS login and host, not `COTAL_NAME`. A one-shot sender never registers as a participant.
 The broker and native channel policy still decide which publications are authorized.
 
-The transient endpoint never joins the roster and binds no inbox. With a static or open-mesh
-credential it reads the roster and the channel registry once when it connects and binds no watch
-consumer, so it leaves nothing on the broker when it exits. On a user-auth mesh it runs on your user
-bearer, which has no batched read of those buckets, so it watches them instead, and each watch's
-consumer stays on the broker for five minutes after the send exits. A sustained send rate there can
-reach the broker's limit of 1000 consumers per stream, and the broker refuses further sends until
-the old consumers expire. A channel send also reads that channel's policy, with one Direct Get on a
-static or open mesh and with one more scan consumer on a user-auth mesh. A `--creds` credential
-that may not read the roster and the channel registry that way, such as one from `cotal auth mint`,
-refuses with `PERMISSION_DENIED` (exit 2) before anything is sent, and the remedy says to run
-without `--creds`.
+The transient endpoint never joins the roster and binds no inbox. With the static credential this
+machine records for the space, or on an open mesh, it reads the roster and the channel registry once
+when it connects and binds no watch consumer, so it leaves nothing on the broker when it exits. On a
+user-auth mesh it runs on your user bearer, which has no batched read of those buckets, so it watches
+them instead, and each watch's consumer stays on the broker for five minutes after the send exits.
+A `--creds` credential reads once when its own grant allows the batched read, and watches otherwise,
+as an agent credential from `cotal auth mint` does. A sustained send rate on a watch can reach the
+broker's limit of 1000 consumers per stream, and the broker refuses further sends until the old
+consumers expire. A channel send also reads that channel's policy, with one Direct Get where the
+credential allows it and with one more scan consumer otherwise. A `--creds` credential that may not
+read the roster and the channel registry at all refuses with `PERMISSION_DENIED` (exit 2) before
+anything is sent, and the remedy says to run without `--creds`.
 
 A recipient can still answer a `send --to` or `send --role` with `cotal_dm` or from a `chat`
 session. On a static or open mesh every send has its own principal under the same display name, so
@@ -4127,8 +4128,9 @@ that loses the race reads the entry again and merges again. A write that keeps l
 writers refuses with `CONFLICT` (exit 2) and saves nothing. Two writers setting the same field leave
 the value of whichever wrote last.
 
-With a static or open-mesh credential, `list` reads the registry with one Direct Get and leaves no
-consumer on the broker. On a user-auth mesh your login has no Direct Get row on the registry, so
+With the static credential this machine records for the space, or on an open mesh, `list` reads the
+registry with one Direct Get and leaves no consumer on the broker. On a user-auth mesh your login has
+no Direct Get row on the registry, and neither has an agent credential passed with `--creds`, so
 `list` scans it with a consumer that stays on the broker for five minutes after the command exits.
 
 
