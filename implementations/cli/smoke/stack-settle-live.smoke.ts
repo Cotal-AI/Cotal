@@ -6,7 +6,8 @@
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
  *  2. Broker crash after start. The next `up` restarts the broker from its records. After a manager
- *     crash, the next `up` relaunches the manager over the pidfile the killed process left.
+ *     crash, the next `up` relaunches the manager over the pidfile the killed process left. Once
+ *     delivery is killed, `status` reads its ready row as stale instead of bound.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
  *     launches nothing; once the port is free the same `up` starts. A second space whose first `up`
  *     finds that stack's broker answering refuses CONFLICT; its `down` stops nothing, `reset space`
@@ -197,6 +198,15 @@ try {
     track(space);
     const manager = pidOf(space, "stack-manager");
     check("up after a manager crash relaunches the manager over the pidfile its process left", crashedManager !== null && relaunched.status === 0 && relaunched.env?.outcome === "ok" && manager !== null && manager !== crashedManager && alive(manager), { ...shown(relaunched), crashedManager, manager });
+    // A killed delivery daemon cannot release shard 0, so its ready row, which names this folder's
+    // credential, outlives it until the bucket TTL. Status reads that row as the dead daemon's.
+    const responder = () => (cli(root, "status", "--json").env?.result?.selected as { deliveryResponder?: string } | undefined)?.deliveryResponder;
+    const liveResponder = responder();
+    const killedDelivery = pidOf(space, "stack-delivery");
+    if (killedDelivery !== null) process.kill(killedDelivery, "SIGKILL");
+    await until(() => gone(space, "stack-delivery"), 10_000);
+    const deadResponder = responder();
+    check("status reads the live daemon's ready row as bound and a killed daemon's as stale", killedDelivery !== null && liveResponder === "bound" && deadResponder === "stale", { killedDelivery, liveResponder, deadResponder });
     const finalDown = cli(root, "down", "--yes", "--json");
     check("down --yes stops the repaired stack", finalDown.status === 0 && (replacement === null || !alive(replacement)), shown(finalDown));
   }

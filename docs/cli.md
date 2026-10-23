@@ -2021,6 +2021,10 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `hints` | The hints, in the order the report prints them |
 
+`deliveryResponder` is `stale` when the ready row in the delivery lease belongs to a daemon that is
+gone. That includes this folder's own daemon once its recorded process has exited without releasing
+the row, as after a kill. The row expires on its own within 30 seconds.
+
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
 delivery responder row says the responder is not used and suggests no command. A part it cannot read is named on its row and as a warning, and the run is
