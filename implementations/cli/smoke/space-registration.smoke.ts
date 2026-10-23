@@ -464,6 +464,19 @@ setCurrent("keep");
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
+  // The stopped stack keeps its recorded address and broker inputs. Another --server, or a --host it
+  // did not record, refuses before anything is written, naming the recorded value and the bare up
+  // that starts the stack there.
+  const recordedRoot = realpathSync(fresh), journalBefore = readFileSync(stackJournalPath(fresh), "utf8");
+  const moved = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
+  check("up --server naming another address is CONFLICT, exit 2, naming the recorded address and bare cotal up from the root",
+    refused(moved, 2, "CONFLICT") && (moved.env?.error?.message ?? "").includes(`recorded at ${server}`) &&
+      moved.env?.error?.remedy === `run bare cotal up from ${recordedRoot} to start it at ${server}`, shown(moved));
+  const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.1", "--server", server], fresh);
+  check("up --host naming an unrecorded bind host is CONFLICT, exit 2, naming it, its recorded value and bare cotal up",
+    refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.1 (recorded: none)") &&
+      (bound.env?.error?.remedy ?? "").includes(`run bare cotal up from ${recordedRoot}`), shown(bound));
+  check("neither refusal changed the stack journal", readFileSync(stackJournalPath(fresh), "utf8") === journalBefore);
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");

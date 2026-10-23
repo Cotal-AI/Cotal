@@ -265,7 +265,7 @@ const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
 
 /** `cotal up` flags — colocated with the command (like `spawnFlags`) so its completion can read them. */
 export const upFlags: FlagSpec[] = [
-  { name: "server", type: "string", value: "<url>", description: "listen URL override" },
+  { name: "server", type: "string", value: "<url>", description: "listen URL; a stack's first up records it and later ups keep it" },
   { name: "host", type: "string", value: "<host>", description: "bind host override (an IP/hostname, not a URL; the URL is --server)" },
   { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
   { name: "root", type: "string", value: "<dir>", description: "use this existing prepared local root instead of the current folder" },
