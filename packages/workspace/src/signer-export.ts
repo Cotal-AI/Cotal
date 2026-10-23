@@ -20,8 +20,9 @@ export function validateSignerExportInput(values: SignerExportInput): void {
   if (typeof values.out !== "string" || !values.out.trim() || /[\u0000-\u001f\u007f]/u.test(values.out)) throw new CommandFailure("refused", "USAGE_INVALID", "auth signer requires --out <private-file> without terminal controls; signing material is never printed");
   if (values.force !== undefined && typeof values.force !== "boolean") throw new CommandFailure("refused", "USAGE_INVALID", "signer --force is a boolean replacement decision");
 }
-function exportTarget(cwd: string, space?: string): { root: string; space: string } {
-  try { const selected = resolveMeshTarget(cwd, { space, readOnly: true }); return { root: selected.root, space: selected.space }; }
+/** `open` is true only for a registration that records the space as open, never for missing trust. */
+function exportTarget(cwd: string, space?: string): { root: string; space: string; open?: boolean } {
+  try { const selected = resolveMeshTarget(cwd, { space, readOnly: true }); return { root: selected.root, space: selected.space, open: selected.mode === "open" && selected.origin !== undefined }; }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.root && error.details.space) return { root: error.details.root, space: error.details.space };
@@ -58,6 +59,7 @@ export async function exportSpaceSigner(values: SignerExportInput, cwd = process
       auth = await getSpaceAuth(workspaceSecretStore(target.root), target.space);
       cwdAuth = canonicalRoot(currentRoot) === canonicalRoot(target.root) ? auth : await getSoleSpaceAuth(workspaceSecretStore(currentRoot), authDir(currentRoot));
     } catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the selected trust chain or current-folder authority could not be established; no signer was exported"); }
+    if (target.open) throw new CommandFailure("refused", "UNSUPPORTED", "this space is open: it issues no credentials, so it has no signing authority to export; nothing was written", { target: { space: target.space }, remedy: "connect to it without credentials" });
     if (!auth) throw new CommandFailure("refused", "AUTH_REQUIRED", "this machine holds no validated static signing trust for the selected space; a cached login cannot replace it");
     if (cwdAuth && (cwdAuth.space !== auth.space || cwdAuth.account.pub !== auth.account.pub)) throw new CommandFailure("refused", "CONFLICT", "the selected root and current folder hold different account authorities; no signer was exported", { target: { space: target.space }, remedy: "run the export from the intended authority root" });
     if (existing) replacementIsSigner(existing, auth);

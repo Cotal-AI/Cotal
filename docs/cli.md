@@ -2805,7 +2805,8 @@ cotal auth signer --out <private-file> [--space <space>] [--force] [--json|--pla
 This exports the selected space's existing data-account signer through the native stripped-signer
 format. It does not create a caller, rotate a key, start a service or export the operator root.
 A cached login is not signing authority. The selected root must hold validated static trust;
-conflicting current-folder and selected-root account authorities refuse before publication.
+conflicting current-folder and selected-root account authorities refuse before publication. A space
+registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
 
 `--out` is required. Its parent must exist and pass the protected physical-directory checks.
 Managed `.cotal` and workstation state are not valid explicit export destinations. The file is private, and secret contents
@@ -4593,7 +4594,8 @@ cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>
 
 The fixed-profile forms use the existing native static credential profiles. No generic host
 profile is exposed.
-Open and per-user-auth spaces refuse; a cached login does not replace signing authority. The
+A space registered as open refuses `UNSUPPORTED`, since it authenticates no one and issues no
+credentials. Per-user-auth spaces refuse too; a cached login does not replace signing authority. The
 resolved root supplies the persona ACL, signer and default storage together. A root that cannot be
 resolved refuses with its next step, such as `cotal up`. Conflicting current-folder and
 selected-root accounts refuse before issuance.
