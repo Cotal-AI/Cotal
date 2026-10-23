@@ -1235,6 +1235,15 @@ export class CotalEndpoint extends EventEmitter {
    *  deferral is safe. */
   private static readonly RESIDENT_SWAP_DEFER_MS = 250;
 
+  /** How long a delivery-admin request read after a reload waits for the resident swap's reconnect.
+   *  nats.js drops a publish made while the connection is down when it redials, so a reply sent
+   *  during the swap is lost and its caller waits out its whole request timeout. Past this bound the
+   *  request is answered anyway, as it was before the gate. */
+  private static readonly RESIDENT_SWAP_GATE_MS = 5_000;
+
+  /** The resident swap a reload scheduled, until its connection is back or the gate's bound ends. */
+  private residentSwap?: Promise<void>;
+
   /** The daemon-side deadline for the WHOLE prove-then-adopt transaction (source fetch + preflight +
    *  commit), kept strictly BELOW the manager's delivery-admin request bound so a slow or hung hosted
    *  store returns a structured component failure rather than an ambiguous client timeout, and a late
@@ -1445,10 +1454,30 @@ export class CotalEndpoint extends EventEmitter {
    *  still open, or a slow co-component proof would let `nc.reconnect()` reconnect the admin rail
    *  before the reply flushes and silently strand it. The short deferral lets the reply flush on the
    *  still-live old cred first. Best-effort — the proof was the preflight; a transient swap failure is
-   *  retried by the 75% timer and the broker's own expiry-close, both presenting the adopted candidate. */
+   *  retried by the 75% timer and the broker's own expiry-close, both presenting the adopted candidate.
+   *  Until the swapped connection is back, {@link residentSwap} holds the delivery-admin requests that
+   *  arrive after this reply. */
   private scheduleResidentSwap(): void {
     if (this.stopped) return;
-    setTimeout(() => { void this.swapConnectionOntoFreshCreds(); }, CotalEndpoint.RESIDENT_SWAP_DEFER_MS).unref?.();
+    const swap: Promise<void> = new Promise<void>((resolve) => { setTimeout(resolve, CotalEndpoint.RESIDENT_SWAP_DEFER_MS).unref?.(); })
+      .then(async () => {
+        const back = this.transportBack(CotalEndpoint.RESIDENT_SWAP_GATE_MS);
+        await this.swapConnectionOntoFreshCreds();
+        await back;
+      })
+      .finally(() => { if (this.residentSwap === swap) this.residentSwap = undefined; });
+    this.residentSwap = swap;
+  }
+
+  /** Resolve when this endpoint reports its transport connected again, or after `ms`. */
+  private transportBack(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); this.off("transport", seen); resolve(); };
+      const seen = (state: TransportState) => { if (state.connected) done(); };
+      const timer = setTimeout(done, ms);
+      timer.unref?.();
+      this.on("transport", seen);
+    });
   }
 
   private armCredsRefresh(delayMs: number): void {
@@ -5633,6 +5662,10 @@ export class CotalEndpoint extends EventEmitter {
    *  feed's rw connection, and reply with proof (identities + the adopted JWT windows) — or a
    *  structured failure (e.g. the file was never re-signed), never a silent partial. */
   private async handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> {
+    // A reload's resident swap reconnects the connection every reply here rides. A caller's next
+    // request, such as a manager's eviction right after its reload, is answered once that
+    // connection is back, not while it is down.
+    await this.residentSwap;
     // FENCE: same reason as the runtime rail above.
     if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     if (req.op === "reloadCreds") {

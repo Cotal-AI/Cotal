@@ -15,7 +15,8 @@
  *     is kept as it is. The legacy name and the broker stop name their stack members. Under umask
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
  *     makes `reset space --dry-run` name it and its repair. A `down` after every member crashed
- *     exits 0, and the reset preview then names `cotal up` and `cotal down`.
+ *     exits 0 and keeps the delivery credential, and the reset preview then names `cotal up` and
+ *     `cotal down`. That `up` waits out the killed daemon's lease and starts delivery.
  *  5. An unconfirmed native manager stop. The manager is frozen when its stop request is published,
  *     so the first `down` reports the stop unknown and the manager record stays `stopping` under that
  *     request. While the manager runs, `down` refuses `LIFECYCLE_BLOCKED` naming the instance and the
@@ -284,6 +285,15 @@ try {
     const unreceipted = cli(root, "reset", "store", space, "--dry-run", "--json");
     const verdict = unreceipted.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
     check("reset store --dry-run after crashes refuses in its verdict and names cotal up then cotal down", unreceipted.status === 0 && verdict?.offered === false && Boolean(verdict.remedy?.includes("cotal up")) && Boolean(verdict.remedy?.includes("cotal down")), shown(unreceipted));
+    // The killed daemon never released shard 0. That down kept its credential, so the repair up
+    // recognises the row as the dead daemon's, waits out its TTL and starts delivery.
+    check("down --yes after a delivery crash keeps the delivery credential", settled.env?.result?.cleanup === "registration-removed-delivery-credential-kept", settled.env?.result?.cleanup);
+    const recovered = cli(root, "up");
+    track(space);
+    const delivery = pidOf(space, "stack-delivery");
+    check("up after the crash and down waits out the dead daemon's lease and starts delivery", recovered.status === 0 && recovered.stderr.includes("shard 0 is still leased to this folder's previous delivery daemon") && delivery !== null && alive(delivery), shown(recovered));
+    const recoveredDown = cli(root, "down", "--yes", "--json");
+    check("down --yes stops the recovered stack and removes the credential", recoveredDown.status === 0 && recoveredDown.env?.result?.cleanup === "delivery-credential-and-registration-removed", shown(recoveredDown));
   }
 
   // 5. A native manager stop that was submitted and never confirmed (B2-1). The manager is frozen

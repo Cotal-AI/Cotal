@@ -248,6 +248,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   settle("applying");
   const changed: unknown[] = [];
   let failure: CommandFailure | undefined;
+  let deliveryCredentialKept = false;
   for (const member of members) {
     const role = member.role;
     const holds = serviceDefinitionStore(journal.space).pin(member.definition);
@@ -286,8 +287,15 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (!failure) {
     // Shared cleanup only after the whole recorded set is confirmed stopped. An open stack never
     // had a delivery credential, so none is removed or claimed removed. Each step is idempotent.
+    // A delivery daemon that was already gone never released shard 0, and its credential is how
+    // the next up recognises that row as this folder's dead daemon's and waits it out, so it stays
+    // until that up replaces it.
     try {
-      if (journal.mode !== "open") await workspaceSecretStore(root).delete(deliveryCredsKey(journal.space, { injected: false, root }));
+      if (journal.mode !== "open") {
+        const store = workspaceSecretStore(root), key = deliveryCredsKey(journal.space, { injected: false, root });
+        if (journal.members.find((row) => row.role === "delivery")?.state === "already-stopped") deliveryCredentialKept = await store.get(key) !== undefined;
+        else await store.delete(key);
+      }
       removeMeshesByRoot(root);
       // The stopped stack stays a prepared local space at its own root, so the next bare up
       // restarts the same recorded members instead of needing a new registration.
@@ -297,7 +305,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     }
   }
   settle(failure ? (failure.outcome === "unknown" ? "unknown" : failure.outcome === "partial" ? "partial" : failure.outcome === "failed" ? "failed" : "refused") : "completed");
-  writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(settled || abandoned ? { warnings: [...abandonWarnings, ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [])] } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
+  writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(settled || abandoned ? { warnings: [...abandonWarnings, ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [])] } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
     { kind: "lines", lines: ["A returned native manager stop and an observed broker exit are not proof of authority, lease, store or descendant cleanup. A member already gone was recorded without a signal. The stack journal and the saved definitions remain; the next bare cotal up reuses them."] },
   ] }] }));

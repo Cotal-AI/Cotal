@@ -131,6 +131,12 @@ watch is bound. Its lease turns ready earlier than that, so a renewal owner can 
 is done. The refusal says the daemon has not finished starting and adopts nothing. The next renewal
 pass or the daemon's own 75% re-read adopts the re-signed credentials.
 
+After an adoption the daemon reconnects with the new credentials 250ms after its reply. A
+delivery-admin request it reads in the meantime is answered once that reconnect completes, or
+after 5s. A reply sent while the connection is down would be lost, and its caller, such as a
+manager evicting its predecessor right after its boot renewal, would wait out its whole 15s request
+timeout.
+
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
 without taking the single-flight lease because another daemon holds it, or because a crashed
 holder's lease has not expired yet. A lease write the credential is not allowed to make is reported
