@@ -343,6 +343,9 @@ setCurrent("keep");
   const prefsDir = join(home, ".config", "cotal"), prefsFile = join(prefsDir, "preferences.json");
   const saved = () => (JSON.parse(readFileSync(prefsFile, "utf8")) as { spaces: Record<string, Record<string, string>> }).spaces;
   const setUp: number[] = [];
+  // These are open spaces, so the open broker serves them before they are added.
+  const { setupSpaceStreams } = await import("@cotal-ai/core");
+  for (const space of ["withprefs", "shownprefs", "badprefs", "lockedprefs"]) await setupSpaceStreams({ servers: LIVE, space });
   for (const name of ["withprefs", "shownprefs", "badprefs", "lockedprefs"]) setUp.push((await json(["space", "add", name, "--server", LIVE, "--root", root])).status ?? -1);
   for (const [name, key, value] of [["withprefs", "persona", "rev"], ["withprefs", "harness", "opencode"], ["shownprefs", "persona", "rev"], ["badprefs", "persona", "rev"], ["lockedprefs", "persona", "rev"]])
     setUp.push((await json(["config", "set", key!, value!, "--space", name!])).status ?? -1);
