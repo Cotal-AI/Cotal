@@ -312,10 +312,10 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  * because there is only one place the sentence is written.
  *
  * `kind` says whether asking again can help. `transient` is a broker that did not answer in time or
- * could not be reached, or a view exchange that failed for any reason but a sign-out (see
- * {@link userViewAuthOrThrow}): a caller that keeps going retries it. Every other refusal is
- * `permanent` (missing seed, refused credentials, a user-auth mesh offered static creds), and a
- * caller that keeps going must stop and say the sentence rather than retry it.
+ * could not be reached, a user-auth service that did not answer, or a view exchange that failed for
+ * any reason but a sign-out (see {@link userViewAuthOrThrow}): a caller that keeps going retries it.
+ * Every other refusal is `permanent` (missing seed, refused credentials, a user-auth mesh offered
+ * static creds), and a caller that keeps going must stop and say the sentence rather than retry it.
  */
 export type ConnectRefusalKind = "transient" | "permanent";
 
@@ -665,8 +665,12 @@ export async function connectUserControlOrThrow(flags: ResolveFlags): Promise<Co
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root
  *  supplied — never imported here), exchange this machine's login session for a bearer, and hand
  *  back bearer + sentinel. The provider owns the failure copy for its own steps (not logged in,
- *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper only
+ *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper
  *  throws it as a {@link ConnectRefusal}, so each caller keeps its own disposition.
+ *
+ *  A service that did not answer is a `transient` refusal, as an unreachable broker is: `cotal
+ *  attach` exchanges the base bearer again on every reconnect, and the service may answer the next
+ *  time. Every other failure is `permanent`.
  *
  *  Takes a resolved target only — never a Profile. Callers that know the mesh is user-mode must
  *  enter via {@link connectUserControlOrExit} (no role) or the user branch of {@link connectOrExit}
@@ -676,7 +680,8 @@ async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
   try {
     return await userConnect(target);
   } catch (e) {
-    throw new ConnectRefusal(`✗ ${e instanceof Error ? e.message : String(e)}`, undefined, { cause: e, code: credentialCode(e) });
+    const kind = (e as { code?: unknown } | undefined)?.code === "unavailable" ? "transient" : "permanent";
+    throw new ConnectRefusal(`✗ ${e instanceof Error ? e.message : String(e)}`, undefined, { cause: e, kind, code: credentialCode(e) });
   }
 }
 

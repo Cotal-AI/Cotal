@@ -2778,8 +2778,8 @@ exits non-zero with the manager's own message, and a reconnect that finds the se
 (despawned, or its agent exited while the link was down) exits cleanly with `seat <name> is gone`.
 It stops the same way on a refusal the CLI raises itself, such as a broker that denies the request.
 A local connect refusal that retrying cannot fix, such as a static-auth mesh whose seed is now
-missing, also exits non-zero with the refusal's own sentence. A broker that is still unreachable
-keeps the loop trying in silence.
+missing, also exits non-zero with the refusal's own sentence. A broker that is still unreachable,
+or a user-auth service that does not answer, keeps the loop trying in silence.
 A refusal that could still pass, such as a manager at its session ceiling, is relayed in the
 manager's own words while the loop keeps trying, once per refusal rather than once per attempt.
 Pressing the detach key ends the view with `Detached`. A remote terminal-session end, including

@@ -757,20 +757,23 @@ try {
   // attach` mints that view again on every re-establishment, after the base bearer exchange, and
   // neither an exchange that did not answer nor one the auth service refused (its refusals include a
   // pinned manager that is not live, as during a manager restart) means asking again cannot help.
+  // Neither does a base bearer exchange that did not answer, as on a loaded host.
   // The CLI's broker link runs through a TCP proxy this cell severs and heals, and its exchanges
-  // through an HTTP proxy that, for the manager-caller view only, drops the request or forwards it
-  // pinned to an absent instance, which the real auth service refuses with 401.
+  // through an HTTP proxy that drops the CLI's first base exchange after the link dies and, for the
+  // manager-caller view, drops the request or forwards it pinned to an absent instance, which the
+  // real auth service refuses with 401.
   {
     const serviceInfo = loadAuthServiceInfo(hostDir)!;
     const absentInstance = `${"z".repeat(4)}${state.instanceId.slice(4)}`;
     let managerCaller: "forward" | "drop" | "refuse" = "forward";
-    let dropped = 0, refused = 0;
+    let dropped = 0, refused = 0, baseDrops = 0, baseDropped = 0;
     const exchangeProxy = createServer((req, res) => {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
       req.on("end", () => {
         let parsed: Record<string, unknown> | undefined;
         try { parsed = JSON.parse(body) as Record<string, unknown>; } catch { /* not an exchange body */ }
+        if (parsed?.actor === "cli" && parsed.view === undefined && baseDrops > 0) { baseDrops--; baseDropped++; req.socket.destroy(); return; }
         const isManagerCaller = parsed?.view === "manager-caller";
         if (isManagerCaller && managerCaller === "drop") { dropped++; req.socket.destroy(); return; }
         const sent = isManagerCaller && managerCaller === "refuse" ? JSON.stringify({ ...parsed, managerInstanceId: absentInstance }) : body;
@@ -826,11 +829,13 @@ try {
       await settle(() => /attached to attachseat/.test(out), 60_000);
       cell("attach over the healable link opens a session", /attached to attachseat/.test(out) && running(), out.slice(-800));
       managerCaller = "drop";
+      baseDrops = 1;
       await severLink();
       await settle(() => /connection lost, reconnecting/.test(out), 60_000);
       cell("...and says it is reconnecting when its link dies", /connection lost, reconnecting/.test(out) && running(), out.slice(-800));
       await healLink();
       await settle(() => dropped >= 2, 60_000);
+      cell("a reconnect whose base bearer exchange does not answer keeps the attach running and tries again", baseDropped === 1 && dropped >= 1 && running(), { baseDropped, dropped, exit: attach.exitCode, out: out.slice(-800) });
       cell("a reconnect whose manager-caller exchange does not answer keeps the attach running and tries again", dropped >= 2 && running(), { dropped, exit: attach.exitCode, out: out.slice(-800) });
       managerCaller = "refuse";
       await settle(() => refused >= 2, 90_000);
