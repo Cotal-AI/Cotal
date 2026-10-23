@@ -3076,14 +3076,17 @@ a paired caller file takes no instance pin.
 
 ```bash
 cotal ps [--json | --plain] [--on <instance>] [--wide] [--slots] [--space <s>]
-cotal stop --name <n> [--on <instance>] [--space <s>]
-cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
+cotal stop <name> [--force] [--on <instance>] [--space <s>]
+cotal stop --self [--force]
+cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
-| `--name <n>` | none | Managed agent to stop / attach (required) |
+| `<name>` / `--name <n>` | none | Managed agent to stop or attach, named positionally or with `--name`. `stop` needs one unless `--self` is given. `attach` without one lists your agents to choose from on a terminal, and refuses `USAGE_INVALID` where it cannot ask |
+| `--self` (`stop`) | off | Stop only the verified managed seat running this command (see [Stopping an agent](#stopping-an-agent)) |
+| `--force` (`stop`) | off | Request the native hard despawn (`graceful:false`); it does not bypass authority |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. On a user-auth mesh it also takes a manager's name, its host, or the `<host>/<runtime>` an unnamed manager shows as (its runtime alone when its presence names no host), when only one of your live managers matches it; otherwise it refuses as `TARGET_AMBIGUOUS` or `TARGET_NOT_FOUND`, lists your live managers and gives the command again on each. On a static or open mesh a manager's presence does not carry its instance id, so a name is refused as `USAGE_INVALID` and the Next asks for the instance id. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
 | `--wide` (`ps`) | off | Print each seat as a labeled record that adds the operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
 | `--json` / `-j` (`ps`) | off | One JSON document (see below). Mutually exclusive with `--wide` and `--plain` |
