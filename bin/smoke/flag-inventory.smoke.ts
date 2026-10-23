@@ -249,7 +249,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   login: { flags: ["client-id:string", "idp:string", "plain:boolean"], positionals: false },
-  logout: { flags: ["idp:string", "json:boolean:j", "plain:boolean"], positionals: false },
+  logout: { flags: ["idp:string", "json:boolean:j", "local:boolean", "plain:boolean"], positionals: false },
   // Account metadata, actor grants (the actor ledger's flags), credential mint (`--endpoint` mints an
   // endpoint caller), signer export and `retire --yes`, which refuses until its native path exists.
   // `--full` (2026-10): a grant takes the wide ACL defaults only when asked; without it the grant
