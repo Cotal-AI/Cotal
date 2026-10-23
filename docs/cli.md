@@ -5702,9 +5702,11 @@ patterns and durable channels, not task dependencies or permission grants. Missi
 membership is explicit, never an empty complete graph. Long identities wrap without clipping.
 
 The authenticated observer remains narrowed to channel traffic. Its DM view refuses instead of
-broadening credentials or inventing a private conversation identity. Open-space DM observations
+broadening credentials or inventing a private conversation identity, and with `--json` its `error`
+record names the space and the reason. Open-space DM observations
 retain native sender and target IDs. Use `--json` for versioned view records or `--plain` for line-oriented reports outside a
-terminal. Both use the same bounded observer lifecycle and shared view model.
+terminal. Both use the same bounded observer lifecycle and shared view model. A line-oriented
+roster, channels, waiting or topology view prints its report again each time that report changes.
 
 
 ### Authority
