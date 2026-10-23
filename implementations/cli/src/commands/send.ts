@@ -1,6 +1,7 @@
 import { hostname, userInfo } from "node:os";
 import { closeSync, fstatSync, openSync, read } from "node:fs";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   resolvePeer,
   assertValidName,
@@ -175,10 +176,18 @@ async function bodyRest(body: Body, limit: number): Promise<{ text: string } | {
 const readInto = promisify(read);
 
 /** Read `fd` into `bytes` from `at` until it is full or the input ends; returns how many it holds.
- *  The reads are asynchronous, so a slow writer never stalls a connection that is already open. */
+ *  The reads are asynchronous, so a slow writer never stalls a connection that is already open.
+ *  Loading `node:process` opens a piped stdin as a nonblocking stream, so a read that finds the
+ *  pipe empty fails with EAGAIN; it waits a moment and reads again. */
 async function fill(fd: number, bytes: Buffer, at: number): Promise<number> {
   while (at < bytes.length) {
-    const { bytesRead } = await readInto(fd, bytes, at, bytes.length - at, null);
+    let bytesRead: number;
+    try { ({ bytesRead } = await readInto(fd, bytes, at, bytes.length - at, null)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EAGAIN") throw error;
+      await delay(10);
+      continue;
+    }
     if (bytesRead === 0) break;
     at += bytesRead;
   }

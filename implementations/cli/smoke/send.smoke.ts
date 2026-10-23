@@ -22,6 +22,7 @@ import { execFile, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -51,7 +52,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 64;
+const EXPECTED = 66;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -448,6 +449,29 @@ try {
   const huge = await run(["send", "-c", "general", "--file", hugeFile, "--json"]);
   check("a 3 GiB `--file` is refused UNSUPPORTED, exit 2, with its size, without reading it whole",
     huge.code === 2 && huge.stdout.includes('"code":"UNSUPPORTED"') && huge.stdout.includes(`the message is ${3 * 2 ** 30} bytes`) && huge.stdout.includes("1048576-byte message limit; nothing was sent"), huge);
+  // A piped stdin is nonblocking, so a read that found the pipe empty before its writer was done
+  // used to fail as unreadable. A pipe has no size, so an endless one names the limit alone.
+  const piped = (args: string[], feed: (stdin: Writable) => void) =>
+    new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+      const child = execFile(process.execPath, ["--import", tsx, cli, ...args], { cwd: operatorShell, env: isolatedEnv },
+        (err, stdout, stderr) => resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr }));
+      child.stdin!.on("error", () => {});
+      feed(child.stdin!);
+    });
+  const late = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
+    stdin.write("first half, ");
+    setTimeout(() => stdin.end("second half after a pause"), 5_000);
+  });
+  check("`cotal send --stdin` waits for a writer that pauses, then stores the message",
+    late.code === 0 && late.stdout.includes('"outcome":"ok"') && late.stdout.includes('"bodySource":"stdin"'), late);
+  const endless = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
+    const chunk = "z".repeat(64 * 1024);
+    const more = () => { while (!stdin.destroyed && stdin.write(chunk)); };
+    stdin.on("drain", more);
+    more();
+  });
+  check("an endless piped `--stdin` is refused UNSUPPORTED, exit 2, naming the limit",
+    endless.code === 2 && endless.stdout.includes('"code":"UNSUPPORTED"') && endless.stdout.includes("the message is longer than this broker's 1048576-byte message limit; nothing was sent"), endless);
 
   // The admin credential for the `deliver pending` reads below is minted before bob stops, so no
   // setup sits inside the retained-card window that the by-name read depends on.
