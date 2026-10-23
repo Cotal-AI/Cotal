@@ -3674,6 +3674,14 @@ The terminal view needs a terminal for input and output; without one, `chat` ref
 diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 
+In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
+question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
+`#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
+name without `@`, is refused with that list of forms, and the numbered list opens. In the list, an
+empty line keeps the current recipient. `:multi` starts a message of several lines, which a line
+holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
+starts with `/`.
+
 A direct message to an agent the roster shows offline is stored, and the view adds a notice that
 the agent receives it when it reconnects, as [`send`](#send) warns. `--stdio` carries that roster
 status as `recipientStatusAtSend` in the stored result.

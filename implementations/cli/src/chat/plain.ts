@@ -6,7 +6,8 @@
  *
  * Interaction, one line at a time:
  *   - a line starting with `/` is a slash command (`//text` sends text that begins with `/`);
- *   - `:to` opens the numbered recipient choice;
+ *   - `:to` opens the numbered recipient choice, and `:to <target>` sets the recipient directly (a
+ *     target that does not parse is named and the choice opens);
  *   - any other line becomes the draft and is echoed back for confirmation: `y` sends, anything else
  *     (including empty) keeps it as the draft and sends nothing;
  *   - a multi-line message is entered with `:multi` and ended with a line holding only `.`;
@@ -197,7 +198,15 @@ export async function runPlain(opts: {
         mode = { kind: "compose" };
         return;
       case "compose": {
-        if (line === ":to") return startPick();
+        const to = /^:to(?:\s+(.*))?$/.exec(line);
+        if (to) {
+          const target = to[1]?.trim();
+          if (!target) return startPick();
+          const parsed = parseRecipient(target);
+          if (parsed.ok) return choose(parsed.recipient);
+          state = addNotice(state, "failed", parsed.error);
+          return startPick();
+        }
         if (line === ":multi") { mode = { kind: "multi", lines: [] }; return; }
         if (line.startsWith("/") && !line.startsWith("//")) {
           const parsed = parseSlash(line);
