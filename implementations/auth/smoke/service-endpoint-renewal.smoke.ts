@@ -12,7 +12,8 @@
  *     each pull's bearer is unexpired;
  *  L3 a new source over the same store (a restart) reuses both ids: no index growth;
  *  L4 concurrent pulls share one dispatch, `bearer()` and `credential()` together: one POST, the
- *     same bearer, the whole validated credential result, and still one renew intent;
+ *     same bearer, the validated credential result without its renewal material, a copy per
+ *     caller, and still one renew intent;
  *  L5 an outage (the door is unreachable) is `unavailable`, retried with the same renew id, and
  *     recovers to `current` once the door is back;
  *  L6 a revoked assignment ends the source: `ended approval-revoked`, and a later `bearer()` or
@@ -239,12 +240,17 @@ try {
     const posts1 = doorPosts;
     const renewsBefore = await count(ep, one.instanceId, "renew");
     const [b, cred, b2, cred2] = await Promise.all([s1!.bearer(), s1!.credential(), s1!.bearer(), s1!.credential()]);
-    tokensSeen.push(b, b2, cred.accessBearer, cred2.accessBearer, cred.renewalProof);
+    tokensSeen.push(b, b2, cred.accessBearer, cred2.accessBearer);
     const rec = await recordOf(one.witness);
-    c.check("L4 concurrent bearer() and credential() share 1 POST and the same bearer", doorPosts === posts1 + 1 && b === cred.accessBearer && b2 === b && cred2 === cred, { posts: doorPosts - posts1 });
-    c.check("L4 credential() is the validated result: state credential, the witness, the persisted material, an unexpired expiry",
+    c.check("L4 concurrent bearer() and credential() share 1 POST and the same bearer", doorPosts === posts1 + 1 && b === cred.accessBearer && b2 === b && cred2.accessBearer === cred.accessBearer, { posts: doorPosts - posts1 });
+    c.check("L4 credential() is the validated result: state credential, the witness, the persisted bearer, an unexpired expiry",
       cred.state === "credential" && serviceWitnessDigest(cred.witness) === serviceWitnessDigest(one.witness) && rec?.material?.accessBearer === cred.accessBearer
-      && rec?.material?.renewalProof === cred.renewalProof && cred.accessExpiresAt > nowS(), { state: cred.state, exp: cred.accessExpiresAt - nowS() });
+      && cred.accessExpiresAt > nowS(), { state: cred.state, exp: cred.accessExpiresAt - nowS() });
+    const credText = JSON.stringify(cred);
+    c.check("L4 credential() carries no renewal material: no renewalProof or renewalExpiresAt field, and the stored proof is not in it",
+      !("renewalProof" in cred) && !("renewalExpiresAt" in cred) && !credText.includes(rec?.material?.renewalProof ?? "\u0000"), Object.keys(cred));
+    (cred2.witness as { instanceId: string }).instanceId = "tampered";
+    c.check("L4 each credential() caller gets its own copy: editing one does not change another", cred2 !== cred && (cred.witness as { instanceId: string }).instanceId !== "tampered");
     c.check("L4 credential() went through the same persisted renew id: still 1 renew intent", await count(ep, one.instanceId, "renew") === renewsBefore && renewsBefore === 1);
     c.check("L4 the credential's bearer connects through the native service callout", await dialOk(cred.accessBearer));
   });
@@ -424,7 +430,7 @@ try {
     await epx.stop();
   });
 
-  await cell("L9 no token outside bearer()", async () => {
+  await cell("L9 no token outside bearer() and credential()", async () => {
     const records = [...clientStore.values.entries()].filter(([k]) => k.includes("/service-renewal/")).map(([, v]) => JSON.parse(v) as Record<string, any>);
     const outside = records.map(({ material: _m, ...rest }) => JSON.stringify(rest)).join("\n");
     c.check("L9 records hold no token outside their material field", records.length >= 5 && !tokensSeen.some((t) => outside.includes(t)) && !jwtLike.test(outside), records.length);

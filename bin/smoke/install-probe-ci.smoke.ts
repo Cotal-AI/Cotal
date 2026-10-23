@@ -1,6 +1,7 @@
 /**
  * The package-shape probe runs during preparation, before native lifecycle qualification.
- * The publication job retains its registry closure gate and GitHub Release step.
+ * The publication job cuts one GitHub Release per version, and a job of its own then checks that the
+ * published CLI installs.
  * This file reads the workflow text and checks structural invariants.
  *
  * Run: pnpm smoke:install-probe-ci
@@ -71,16 +72,25 @@ check(
   "build must come before probe",
 );
 
+// The maintained action pushes the per-package tags and creates no releases; a later step cuts one
+// release for the version once the action reports a publication.
 const publishBody = csJobs.get("publish") ?? "";
 check(
-  "the maintained publisher creates the GitHub Release",
-  /uses: changesets\/action\/publish@/.test(publishBody) && /create-github-releases: true/.test(publishBody),
+  "the publisher cuts one GitHub Release per version after a publication",
+  /uses: changesets\/action\/publish@/.test(publishBody) &&
+    /create-github-releases: false/.test(publishBody) &&
+    /if: steps\.publish\.outputs\.published == 'true'/.test(publishBody) &&
+    publishBody.indexOf("gh release create") > publishBody.indexOf("changesets/action/publish@"),
   publishBody.slice(0, 200),
 );
+// The install check is a job of its own after publish, so it stays out of the publish queue.
+const verifyBody = csJobs.get("verify-install") ?? "";
 check(
   "a successful publication is followed by a fresh install check",
-  /if: steps\.publish\.outputs\.published == 'true'/.test(publishBody) &&
-    publishBody.indexOf("verify-release-installable.mjs") > publishBody.indexOf("changesets/action/publish@"),
+  /^\s+published: \$\{\{ steps\.publish\.outputs\.published \}\}\s*$/m.test(publishBody) &&
+    /^\s+needs: publish\s*$/m.test(verifyBody) &&
+    /if: needs\.publish\.outputs\.published == 'true'/.test(verifyBody) &&
+    /verify-release-installable\.mjs/.test(verifyBody),
   "the install observation must follow publication",
 );
 

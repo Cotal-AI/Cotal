@@ -1713,9 +1713,14 @@ completed after the proof, an unread, unknown or inconsistent record, or a `held
 503 with no protocol echo, because the request may already be bound.
 
 Register compiles the submitted closures in memory. Each cluster digest names a submitted manifest
-whose root names a submitted cluster document, each verified against its content digest, and every
-artifact must belong to a declared closure. The proposal's commands are exactly those documents'
-declarations; a journal-class command, or one declaring a governed trait (`ai.cotal.guarded`,
+whose root names a submitted cluster document, each verified against its content digest. The schema
+closures the commands reference (each `inputDigest` and `outputDigest`) MAY be submitted with them;
+a submitted one is admitted only whole: its manifest at that digest, its root and every member
+present, and the bundle recompiling to that closure digest. Every artifact must belong to a declared
+cluster closure or to a referenced schema closure. A schema closure that is not submitted is not
+refused: the host publishes the canonical void closure itself when it opens service endpoints, and
+any other schema closure is the registrant's to publish. The proposal's commands are exactly those
+documents' declarations; a journal-class command, or one declaring a governed trait (`ai.cotal.guarded`,
 `ai.cotal.priced`), is refused as `unsupported-runtime`, in the proposal phase and the registration
 phase alike. A native control endpoint name (`auth`, `delivery`, `manager`) is refused as
 `permission-denied` before any effect and binds nothing. The engine requestId is the first 32 lowercase hex

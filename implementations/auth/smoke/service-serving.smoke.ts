@@ -20,7 +20,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { KvWatchInclude, Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
-  EpEnvelopeError, GOVERNED_TRAIT_URNS, VOID_SCHEMA_DIGEST, authorizeGuestServeGrant, contractArtifactCanonicalBytes, contractDigest, contractStoreContext, endpointRegistrationBarrier,
+  EpEnvelopeError, GOVERNED_TRAIT_URNS, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, VOID_SCHEMA_DIGEST, authorizeGuestServeGrant, contractArtifactCanonicalBytes, contractDigest, contractRefToHex, contractStoreContext, endpointRegistrationBarrier, fetchContractArtifact,
   serveAuthenticityOf, type GuestServeAuthenticity,
   endpointToken, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, publishContractArtifact, RECORD_KINDS, recordSpecKey,
   recordStatusKey, recordsBucket, registerServiceInstance, serviceAuthorityRequestDigest, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
@@ -230,6 +230,14 @@ try {
     return nc;
   };
   const natkeys = async () => { const out: string[] = []; for await (const k of await authKv.keys("natkey.*")) out.push(k); return new Set(out); };
+
+  // ---- H0: the host owns the canonical void closure ----
+  const voidClosure = singleDocumentClosure(VOID_SCHEMA);
+  const voidManifestBytes = await fetchContractArtifact(store, contractRefToHex(VOID_SCHEMA_DIGEST));
+  const voidSchemaBytes = await fetchContractArtifact(store, contractRefToHex(VOID_SCHEMA_ARTIFACT_DIGEST));
+  c.check("H0 a hosted context with service endpoints publishes the canonical void closure at open: manifest and schema readable at their digests",
+    voidManifestBytes !== undefined && contractDigest(JSON.parse(dec.decode(voidManifestBytes))) === VOID_SCHEMA_DIGEST && (JSON.parse(dec.decode(voidManifestBytes)) as { root: string }).root === voidClosure.manifest.root
+    && voidSchemaBytes !== undefined && contractDigest(JSON.parse(dec.decode(voidSchemaBytes))) === VOID_SCHEMA_ARTIFACT_DIGEST, { manifest: voidManifestBytes !== undefined, schema: voidSchemaBytes !== undefined });
 
   // ---- A: service one, the whole path ----
   const ordersEp = "org.example.orders", billingEp = "org.example.billing";
