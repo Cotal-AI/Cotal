@@ -385,8 +385,10 @@ try {
   try {
     // The manager's spawn rail needs a connector inventory: seed the built-ins into this sandbox
     // config (the documented checkout opt-in), or boot reports "no connector available" and the
-    // detached spawn finds no responder on the class rail.
-    cliInEnv(fgRoot, { ...fgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    // detached spawn finds no responder on the class rail. The seed installs through npm, so a host
+    // without npm on PATH fails here, by name, rather than at the spawn.
+    const fgSeed = cliInEnv(fgRoot, { ...fgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    ok("the checkout connector seed succeeds", fgSeed.status === 0, plain(fgSeed.stderr));
     fgUp = spawnProc(TSX, [CLI, "up", "--foreground", "--server", fgServer], { cwd: fgRoot, env: fgEnv, stdio: ["ignore", "pipe", "pipe"] });
     let fgOutText = "";
     fgUp.stdout?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
@@ -451,7 +453,8 @@ try {
   };
   let rgUp: ChildProcess | undefined;
   try {
-    cliInEnv(rgRoot, { ...rgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    const rgSeed = cliInEnv(rgRoot, { ...rgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    ok("the refusal rig's checkout connector seed succeeds", rgSeed.status === 0, plain(rgSeed.stderr));
     rgUp = spawnProc(TSX, [CLI, "up", "--foreground", "--server", `nats://127.0.0.1:${rgPort}`], { cwd: rgRoot, env: rgEnv, stdio: ["ignore", "pipe", "pipe"] });
     let rgOutText = "";
     rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
