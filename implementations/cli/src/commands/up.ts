@@ -340,6 +340,9 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
   if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
+  // The broker reads an explicit channels file only once it is being prepared, so a file it would
+  // refuse is named here, before the stack journal or anything else is written.
+  if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
   if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: cotal down, then cotal up --rotate-sys" });
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else {
@@ -3968,14 +3971,20 @@ async function recreateMemoryBuckets(server: string, space: string, setup?: { cr
  *  path that's missing is a hard error; the default `.cotal/channels.json` is optional (absent
  *  ⇒ nothing to seed). */
 function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
-  const path = explicit ? resolve(explicit) : cotalPath("channels.json");
-  if (!existsSync(path)) {
-    if (explicit) {
-      throw new Error(`channels file not found: ${path}`);
-    }
-    return undefined;
-  }
+  if (explicit) return readChannelsFile(resolve(explicit));
+  const path = cotalPath("channels.json");
+  if (!existsSync(path)) return undefined;
   return JSON.parse(readFileSync(path, "utf8")) as ChannelRegistryFile;
+}
+
+/** Read and parse an explicit `--channels` file. One that is missing, unreadable or not JSON is a
+ *  usage refusal that names its path. */
+function readChannelsFile(path: string): ChannelRegistryFile {
+  let text: string;
+  try { text = readFileSync(path, "utf8"); }
+  catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: "name an existing channels file with --channels <path>, or omit --channels" }); }
+  try { return JSON.parse(text) as ChannelRegistryFile; }
+  catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy: "fix the file, or omit --channels" }); }
 }
 
 /**
