@@ -202,6 +202,34 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
   }
 }
 
+/**
+ * Admit one live dispatch: the checks it passes after every replay verdict has been served and
+ * before its entry is begun. Every path that dispatches calls this, {@link enterStep} for an effect
+ * and {@link performScope} for a scope that dispatches, so a rule about admitting a dispatch cannot
+ * reach one path and miss another.
+ */
+function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerdict): void {
+  // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
+  // this side: work already in flight is another matter, and the handler owns it.
+  if (frame.signal.cancelled) {
+    throw new Cancelled(frame.signal.reason ?? "cancelled");
+  }
+
+  // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
+  // driver holds its run under an absolute work horizon and may be asked to hand it back, and
+  // neither is a fact about the program, so the place to stop is here, where no entry has been
+  // written and no handler dispatched. One step later would mean a pending entry for work nobody
+  // performed; inside the handler would mean settling a failure for work that really happened.
+  // Replays are deliberately unaffected: replaying a recorded prefix performs nothing, and a run
+  // that stopped mid-journal has to be able to walk back to where it stopped.
+  const stop = host.options.shouldStop?.();
+  if (stop !== undefined) {
+    throw new RunReleased(stop);
+  }
+
+  countEffect(host, verdict);
+}
+
 /** A live step: its entry is begun (or recovered) and its handler context is ready. */
 type LiveStep = {
   readonly key: StepKey;
@@ -255,25 +283,7 @@ async function enterStep(
       break;
   }
 
-  // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
-  // this side: work already in flight is another matter, and the handler owns it.
-  if (frame.signal.cancelled) {
-    throw new Cancelled(frame.signal.reason ?? "cancelled");
-  }
-
-  // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
-  // driver holds its run under an absolute work horizon and may be asked to hand it back, and
-  // neither is a fact about the program, so the place to stop is here, where no entry has been
-  // written and no handler dispatched. One step later would mean a pending entry for work nobody
-  // performed; inside the handler would mean settling a failure for work that really happened.
-  // Replays above are deliberately unaffected: replaying a recorded prefix performs nothing, and
-  // a run that stopped mid-journal has to be able to walk back to where it stopped.
-  const stop = host.options.shouldStop?.();
-  if (stop !== undefined) {
-    throw new RunReleased(stop);
-  }
-
-  countEffect(host, verdict);
+  admitDispatch(host, frame, verdict);
 
   // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
   // moved, which is exactly why it read as correct: the whole point of writing the id down is
@@ -1463,13 +1473,8 @@ export async function performScope(
   const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
-  // A conclave's open is real work against the world, so the host's stop and the ceiling apply to
-  // it as they do to an effect (see {@link performEffect}).
-  if (dispatches) {
-    const stop = host.options.shouldStop?.();
-    if (stop !== undefined) throw new RunReleased(stop);
-    countEffect(host, verdict);
-  }
+  // A conclave's open is real work against the world, so it is admitted as an effect is.
+  if (dispatches) admitDispatch(host, frame, verdict);
   if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a
