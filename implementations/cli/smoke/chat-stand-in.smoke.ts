@@ -260,5 +260,21 @@ if (mode === "plain" || mode === "stdio") {
     await run;
   }
 
+  console.log("8. /history on an open mesh reads the channel itself; the other modes ask the delivery daemon");
+  {
+    const reads: string[] = [];
+    const page = { items: [], complete: true };
+    const endpoint = Object.assign(new EventEmitter(), {
+      channelHistoryPage: async () => { reads.push("channelHistoryPage"); return page; },
+      readHistory: async () => { reads.push("readHistory"); return page; },
+    }) as unknown as CotalEndpoint;
+    const retire = async (): Promise<CloseReport> => ({ retirement: "retired", connectionClosed: "confirmed", message: "" });
+    const open = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "open" }, retire }).history("general", 50);
+    check("an open session's /history reads the channel's stream, which needs no delivery daemon", open.outcome === "ok" && reads.join() === "channelHistoryPage", { open, reads });
+    reads.length = 0;
+    const admitted = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire }).history("general", 50);
+    check("a static session's /history still reads through the delivery daemon", admitted.outcome === "ok" && reads.join() === "readHistory", { admitted, reads });
+  }
+
   finish();
 }

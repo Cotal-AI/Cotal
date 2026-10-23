@@ -340,7 +340,10 @@ export class NativeChatSession implements AdmittedChatSession {
     // daemon formats (`readHistory: ... - not permitted` / `... - refused`); other failures are
     // `failed` (a read has no effect to be unknown about).
     try {
-      const page = await this.inputs.endpoint.readHistory(channel, { limit });
+      // An open mesh runs no delivery daemon, so an open session reads the channel itself under its
+      // own lifecycle, as `cotal history` does.
+      const ep = this.inputs.endpoint;
+      const page = this.inputs.identity.mode === "open" ? await ep.channelHistoryPage(channel, { limit }) : await ep.readHistory(channel, { limit });
       return {
         outcome: "ok",
         value: {
