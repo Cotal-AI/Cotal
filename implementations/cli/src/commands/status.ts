@@ -34,6 +34,7 @@ import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
+import { brokerStoreWrite, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
@@ -188,6 +189,8 @@ export interface StatusResult {
   /** This folder's maintenance journal: a preserved cut, a restore or a resume, with the full attempt
    *  a recovery command names. Null when the root holds none; older inputs may omit it. */
   maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
+  /** A store write failure the selected space's running local broker logged; older inputs may omit it. */
+  store?: StoreWriteObservation;
   hints: string[];
 }
 
@@ -271,7 +274,8 @@ export async function status(args: ParsedArgs): Promise<void> {
   const services = readOwnedServices(selected, gaps);
   const bootAttempts = readBootAttempts(root, gaps);
   const maintenance = readMaintenance(root, gaps);
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, hints };
+  const store = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), hints };
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
   const context = { preferences: cachedPreferences(), space: selected.ok ? selected.target.space : undefined };
@@ -1284,6 +1288,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ["Broker", s.server ?? stateCell("address unavailable", "failed")],
     ["Connection", connectionCell(s)],
     ...(responder ? [["Delivery responder", stateCell(responder.text, responder.tone)] as [string, Cell]] : []),
+    ...(r.store?.state === "write-failed" ? [["Store", stateCell(`write failed at ${r.store.at}: ${r.store.cause}${r.store.path ? ` · ${r.store.path}` : ""}`, "failed")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
     ["Project", s.root],
     ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application not set"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
@@ -1344,6 +1349,9 @@ function nextActions(r: StatusResult): Section {
   if (r.selected.resolved && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable") && r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space)
     items.unshift({ command: `${cmd} up --root ${r.selected.root}`, description: "Restart this stack's stopped members from its recorded inputs" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
+  // The broker keeps a store write error until it restarts, so messages sent meanwhile may be lost.
+  if (r.store?.state === "write-failed")
+    items.unshift({ command: `${cmd} down`, description: `Free space on the disk that holds ${r.store.path ?? "the broker's store"} first; then ${cmd} up starts the broker again` });
   return { title: "Next", blocks: [{ kind: "commands", items }, ...r.hints.map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 

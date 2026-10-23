@@ -689,6 +689,11 @@ export function removeStoppedInstanceRecords(space: string, name: string): void 
 export function readServiceLog(space: string, id: string, tail: number) {
   const path = serviceLogPath(space, id);
   if (!path) return { lines: [] as string[], omittedBytes: 0, path: null };
+  return readOwnedLogTail(path, tail);
+}
+
+/** The last `tail` lines of an owned private log file, from at most its last 1 MiB. */
+export function readOwnedLogTail(path: string, tail: number) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { lines: [] as string[], omittedBytes: 0, path }; throw error; }

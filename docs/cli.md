@@ -2172,7 +2172,17 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `meshes` | `current`, `unreadable` (the registry directory, a record or the current-mesh pointer that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
 | `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels` and `membershipFeed` |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
+| `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause` and `path`; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
+
+`store` covers only a broker whose log is on this machine: a controller stack's `stack-broker`
+instance, or the broker a legacy root records in `.cotal/nats.pid` with its log `.cotal/nats.log`.
+nats-server reports a stream's write error natively only through `healthz`, which needs a
+system-account user, so `status` reads a bounded tail of that log instead and keeps only lines tagged
+with the running broker's process ID since its last start. When the broker logged a store write
+failure, such as a full disk, the selected space shows a `Store` row with its time, cause and file.
+The broker keeps that error until it restarts, so messages sent meanwhile are not stored. The first
+Next is `cotal down`, to run once space is freed, after which `cotal up` starts the broker again.
 
 `deliveryResponder` is `stale` when the ready row in the delivery lease belongs to a daemon that is
 gone. That includes this folder's own daemon once its recorded process has exited without releasing
@@ -3838,7 +3848,11 @@ refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel 
 the space or this identity may not post to it. The remedy lists the channels this identity may post
 to, read from the grant ledger as `cotal whoami` reads it. When the ledger is on another machine it
 says so and lists the space's registered channels instead. Any other unconfirmed publish outcome is
-unknown and never retried automatically.
+unknown and never retried automatically. A broker that cannot write its store sends no
+acknowledgement at all, so when such a publish times out and the space's broker log on this machine
+records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
+says the message was probably not stored. Its Next frees space and restarts the broker before the
+message is sent again.
 The command sends once and exits. It does not wait for an answer, retain an inbox
 or transfer replies to a later chat session.
 
