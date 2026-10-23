@@ -6,7 +6,8 @@
  * refused without listing the subcommands.
  *
  * A folder whose `.cotal` is a file refuses every command with `CONFLICT`, naming that file, before
- * anything runs.
+ * anything runs. A removed working folder refuses every command but help and version the same way,
+ * `up`, `down` and `backup create` included, which crashed with Node's stack trace.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
@@ -79,6 +80,17 @@ if (process.platform !== "win32") {
   check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
   const version = fromRemoved(["--version"]);
   check("version still answers from a removed folder", version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
+  // A command whose own checks read the folder before it runs, such as up's, refuses the same way
+  // instead of crashing with Node's stack trace.
+  for (const args of [["up"], ["down", "--yes"], ["down", "--dry-run"], ["backup", "create", "bk"]]) {
+    const r = fromRemoved(args);
+    check(`${args.join(" ")} from a removed folder refuses the same way, with no stack trace`, usageShape(r, /this folder no longer exists/) && !/uv_cwd|\n\s+at /.test(r.stderr), shown(r));
+  }
+  const upJson = fromRemoved(["up", "--json"]);
+  const upEnvelope = upJson.stdout.startsWith("{") ? JSON.parse(upJson.stdout) : undefined;
+  check("up --json from a removed folder is a USAGE_INVALID refusal", upJson.status === 1 && upEnvelope?.outcome === "refused" && upEnvelope.error?.code === "USAGE_INVALID", shown(upJson));
+  const upHelp = fromRemoved(["up", "--help"]);
+  check("up --help still answers from a removed folder", upHelp.status === 0 && /cotal up/.test(upHelp.stdout + upHelp.stderr), shown(upHelp));
 }
 
 // A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.

@@ -311,6 +311,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
   const canonical = canonicalSubcommand(cmd, parsed);
+  refuseRemovedFolder(cmd, canonical);
   try {
     cmd.validate?.(canonical);
   } catch (error) {
@@ -319,6 +320,19 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     throw error;
   }
   return canonical;
+}
+
+/** A working folder removed before this process read it fails every cwd read the command makes, and
+ *  Node caches the first read that succeeds. One read refuses that case before the command's own
+ *  checks, such as `up`'s, or any effect. Help, version and completion never read the folder. */
+function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs): void {
+  if (cmd.name.startsWith("__") || ["help", "version", "completion"].includes(cmd.name)) return;
+  try {
+    process.cwd();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+  }
 }
 
 /** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
@@ -498,17 +512,6 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     parsed = parseOrExit(cmd, rest);
   }
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
-  // A working folder removed before this process read it fails every cwd read the command makes, and
-  // Node caches the first read that succeeds. One read here refuses that case before any effect.
-  // Help, version and completion never read the folder.
-  if (!cmd.name.startsWith("__") && !["help", "version", "completion"].includes(cmd.name)) {
-    try {
-      process.cwd();
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
-    }
-  }
   // A preferences file that does not validate stops every command except help and shell completion,
   // as a broken config file does, so nothing runs on a default the person did not mean. `--help` on a
   // command has already returned above.
