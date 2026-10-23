@@ -30,7 +30,6 @@ export type TeamValues = FlagValues<typeof teamFlags>;
  *  An unreadable record cannot become a suggested target or trigger a provider. */
 export function teamComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, teamFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((mesh) => ({ value: mesh.space })), directive: "nofiles" };
   if (argv.at(-1)?.startsWith("-")) return { items: teamFlags.map((item) => ({ value: `--${item.name}`, description: item.description })), directive: "nofiles" };
   const positionals = positionalsForCompletion(argv, teamFlags);
   if (positionals.length <= 1) return { items: ["show", "check", "boot", "deploy", "remove"].map((value) => ({ value })), directive: "nofiles" };

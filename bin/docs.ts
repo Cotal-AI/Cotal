@@ -5,7 +5,7 @@
  * Registered here, in the composition root, because the CLI package must not depend on an extension.
  * The bundle is imported inside `run` through its narrow subpath, so no other command loads it.
  */
-import { registry, type Command, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Command, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type Cell, type Report } from "@cotal-ai/workspace";
 
 const searchFlag = { name: "search", type: "string", value: "<query>", description: "show the sections that best match a query" } as const;
@@ -106,6 +106,13 @@ function searchView(r: DocsSearchResult): Report {
   };
 }
 
+/** Complete the page name from the bundled index. Its module loads only on this <TAB>, as in `run`. */
+async function docsComplete(argv: string[]): Promise<CompletionResult> {
+  if (argv.slice(0, -1).some((word) => word === "--search" || !word.startsWith("-"))) return { items: [], directive: "nofiles" };
+  const index = (await import("@cotal-ai/connector-core/docs")).docsIndex();
+  return { items: [...index.pages, ...index.sources].map((page) => ({ value: page.slug, description: page.title })), directive: "nofiles" };
+}
+
 const docsCommand: Command = {
   kind: "command",
   name: "docs",
@@ -118,6 +125,7 @@ const docsCommand: Command = {
   examples: ["cotal docs", "cotal docs architecture", "cotal docs --search allowSubscribe", "cotal docs spec --refresh"],
   reads: true,
   run: docs,
+  complete: docsComplete,
 };
 
 registry.register(docsCommand);

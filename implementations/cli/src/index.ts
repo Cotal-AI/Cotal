@@ -22,15 +22,15 @@ import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
-import { watch, watchFlags, validateWatchArguments } from "./commands/watch.js";
+import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
 import { persona, personaComplete, personaFlags } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
-import { config, configFlags } from "./commands/config.js";
+import { config, configComplete, configFlags, configSubcommands } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
 import { mint } from "./commands/mint.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
-import { history, historyFlags, validateHistoryArguments } from "./commands/history.js";
+import { history, historyComplete, historyFlags, historySubcommands, validateHistoryArguments } from "./commands/history.js";
 import { clean, cleanComplete } from "./commands/clean.js";
 import { reset, resetComplete, resetFlags, validateResetArguments } from "./commands/reset.js";
 import { feedback, feedbackFlags, validateFeedbackArguments } from "./commands/feedback.js";
@@ -123,16 +123,13 @@ const baseCommands: Command[] = [
     summary: "your preferences - the defaults your commands use, and where each value comes from",
     usage: "cotal config [--user | --space <name>] [--json|--plain] | config get <key> | config set <key> <value> | config unset <key>",
     positionals: "[get <key> | set <key> <value> | unset <key>]",
-    subcommands: [
-      { name: "get", summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
-      { name: "set", summary: "save a value for you, or for one space with --space", usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
-      { name: "unset", summary: "remove a saved value", usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
-    ],
+    subcommands: configSubcommands,
     flags: configFlags,
     outputs: ["json", "plain"],
     examples: ["cotal config", "cotal config get harness", "cotal config set harness opencode", "cotal config set persona reviewer --space demo", "cotal config unset color"],
     reads: true,
     run: config,
+    complete: configComplete,
   },
   {
     kind: "command",
@@ -547,9 +544,10 @@ const baseCommands: Command[] = [
     outputs: ["json", "ndjson", "plain"],
     examples: ["cotal history general", "cotal history --since 2h --grep deploy", "cotal history general --follow --json", "cotal history clear --yes"],
     reads: true,
-    subcommands: [{ name: "clear", summary: "confirm and purge all retained channel history in the selected space", usage: "clear [--dms] [--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false }],
+    subcommands: historySubcommands,
     validate: validateHistoryArguments,
     run: history,
+    complete: historyComplete,
   },
   {
     kind: "command",
@@ -830,6 +828,7 @@ const baseCommands: Command[] = [
     reads: true,
     examples: ["cotal watch", "cotal watch --view events", "cotal watch --plain"],
     run: watch,
+    complete: watchComplete,
   },
   {
     kind: "command",

@@ -1,5 +1,5 @@
 import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, loadMeshes, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section } from "@cotal-ai/workspace";
+import { jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
 import { askManager, onFlag, readFailure, refuseWithoutLiveManager, resolveControlTarget } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
@@ -16,7 +16,6 @@ export const modelsFlags = [
 
 export function modelsComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, modelsFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "harness") return { items: extensionNames("connector").map((name) => ({ value: name })), directive: "nofiles" };
   if (flag?.name === "creds") return { items: [], directive: "default" };
   return { items: [], directive: "nofiles" };

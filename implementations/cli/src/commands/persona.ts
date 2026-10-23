@@ -3,7 +3,7 @@ import * as prompts from "../lib/prompts.js";
 import { assertValidChannel, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
-  loadMeshes, loadPreparedSpaces, writeResult, type Presentation, type Report,
+  writeResult, type Presentation, type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -185,7 +185,6 @@ function receipt(presentation: Presentation, catalog: PersonaCatalog, name: stri
 export function personaComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, personaFlags);
   if (flag?.name === "file" || flag?.name === "from") return { items: [], directive: "default" };
-  if (flag?.name === "space") return { items: [...loadMeshes(), ...loadPreparedSpaces()].map(item => ({ value: item.space })), directive: "nofiles" };
   if (flag) return { items: [], directive: "nofiles" };
   const words = positionalsForCompletion(argv, personaFlags);
   if (completedFlagValue(argv, personaFlags, "on") !== undefined) return { items: words.length <= 1 ? ["show", "create"].map(value => ({ value })) : [], directive: "nofiles" };

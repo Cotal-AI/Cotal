@@ -5160,8 +5160,13 @@ cotal completion script powershell | Out-String | Invoke-Expression
 ```
 
 `completion script` writes raw shell code and takes no `--json` or `--plain`. Generation is
-offline. The stable hidden `__complete` entry reads registered command specifications and local
-persona files. It does not contact the mesh or refresh extensions.
+offline. The stable hidden `__complete` entry reads registered command specifications, the spaces
+registered or prepared on this machine, the extension manifest, the bundled docs index and local
+persona files. It does not contact the mesh or refresh extensions. Every `--space` offers the spaces
+`cotal use` offers. `config` offers its keys, and `config set color` and `config set harness` the
+values a write accepts. `docs` offers its pages, `watch --view` its views and `space add --mode` its
+modes. A channel name for `send -c`, `history` or `channel show`, `members`, `set` and `remove` comes
+from the channels the target space's personas declare, because the broker keeps the others.
 
 `install` and `uninstall` take a shell name or detect it from `SHELL`. Pass `powershell`
 explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX hosts:

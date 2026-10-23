@@ -11,6 +11,7 @@ import {
 } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
+import { spaceCompletion } from "../lib/completion.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
 import { commandSurface } from "../ext-loader.js";
 import { changeCompletion, completionOwnership, completionPaths as stubPaths, completionSourceLine, readCompletionText } from "../lib/completion-install.js";
@@ -102,7 +103,9 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     emit(flags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), "nofiles");
     return;
   }
-  if (!cmd?.complete) {
+  // Every `--space` names a space, so one rule completes it for every command, as `use` does.
+  const completer = context?.valueFlag?.name === "space" && !word.startsWith("-") ? spaceCompletion : cmd?.complete;
+  if (!completer) {
     const cursor = context?.positionals.find((item) => item.index === argv.length - 1);
     const children = parent?.subcommands?.filter((item) => !item.hidden);
     if (cursor && children?.length) emit(children.map((item) => ({ value: item.name, description: item.summary })), "nofiles");
@@ -111,7 +114,7 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     return;
   }
   try {
-    const res = await cmd.complete(argv);
+    const res = await completer(argv);
     emit(res.items, res.directive ?? "nofiles");
   } catch (e) {
     // No fallback: a completer that can't produce its authoritative set (e.g. a malformed agent

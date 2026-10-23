@@ -1,4 +1,4 @@
-import { CotalEndpoint, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import {
   brokerAddressForDisplay,
   CommandFailure,
@@ -26,6 +26,9 @@ import { credentialEnded } from "../lib/connect.js";
 import { shownTime } from "../lib/shown-time.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
+import { declaredFrom } from "./send.js";
+import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { listDeclaredChannels } from "../lib/personas.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
@@ -37,6 +40,19 @@ const fromFlag = { name: "from", type: "string", value: "<name>", description: "
 const grepFlag = { name: "grep", type: "string", value: "<text>", description: "keep messages whose text contains this, case-insensitive (filters the window)" } as const;
 const followFlag = { name: "follow", type: "boolean", description: "keep listening and print each new message (NDJSON with --json)" } as const;
 export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+
+export const historySubcommands = [
+  { name: "clear", summary: "confirm and purge all retained channel history in the selected space", usage: "clear [--dms] [--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+] as const satisfies readonly Subcommand[];
+
+/** Complete `clear` and the channels the target space's personas declare, as `send -c` offers, then
+ *  the flags. */
+export function historyComplete(argv: string[]): CompletionResult {
+  if (completingFlagValue(argv, historyFlags)) return { items: [], directive: "nofiles" };
+  if (positionalsForCompletion(argv, historyFlags).length === 1)
+    return { items: [...historySubcommands.map((sub) => ({ value: sub.name, description: sub.summary })), ...declaredFrom(argv, listDeclaredChannels).map((value) => ({ value }))], directive: "nofiles" };
+  return { items: historyFlags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), directive: "nofiles" };
+}
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 1000;

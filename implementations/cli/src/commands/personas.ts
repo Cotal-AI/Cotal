@@ -8,7 +8,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
+import { targetFlags } from "@cotal-ai/workspace";
 import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, serializePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames } from "../lib/personas.js";
@@ -92,7 +92,6 @@ export function personasComplete(argv: string[]): CompletionResult {
     { name: "force", type: "boolean" },
   ] as const;
   const flag = completingFlagValue(argv, flags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "from" || flag?.name === "creds") return { items: [], directive: "default" };
 
   const positionals = positionalsForCompletion(argv, flags);

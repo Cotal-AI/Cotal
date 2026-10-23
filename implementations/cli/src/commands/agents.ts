@@ -5,7 +5,6 @@ import {
   divergentCwdAnchor,
   isWorkspaceTargetError,
   jsonFlag,
-  loadMeshes,
   oneLine,
   renderReport,
   terminalWidth,
@@ -77,7 +76,6 @@ export const inputFlags = [
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, attachFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "creds") return { items: [], directive: "default" };
   if (flag?.name === "name") return { items: [], directive: "nofiles" };
   if (argv.length <= 1)
