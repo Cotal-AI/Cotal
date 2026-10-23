@@ -17,6 +17,7 @@ import { serviceUnitActionFor } from "../lib/service-unit-action.js";
 import { followServiceJournal, readServiceJournal } from "../lib/service-journal.js";
 import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { yesRequired } from "../lib/confirmation-required.js";
 import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { stackMemberFor } from "../lib/stack-journal.js";
@@ -151,7 +152,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   }
   if (mode === "uninstall") {
     if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "native service removal currently needs the supported Linux user manager; no unit or private store was touched", { target });
-    if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", "native uninstall requires --yes outside an interactive terminal", { target });
+    if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", yesRequired("native uninstall", presentation === "json"), { target });
     if (!values.yes) {
       const answer = await prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -260,7 +261,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", `${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with cotal svc ${mode} ${name} --yes, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", yesRequired(mode, presentation === "json"), { target, remedy: `confirm with cotal svc ${mode} ${name} --yes, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   const nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined;
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;
