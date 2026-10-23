@@ -1283,18 +1283,20 @@ function selectedOverview(r: StatusResult): Section | undefined {
 function nextActions(r: StatusResult): Section {
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
-  if (!r.machine.connectors?.length) items.push({ command: `${cmd} setup`, description: "Set up an agent application and a space" });
-  else {
-    if (r.selected.resolved) {
-      const s = r.selected;
-      // Name what fixes the default persona alone; setup does far more than that.
-      if (s.personas.default === "missing") {
-        const fix = defaultPersonaFix({ space: s.space, root: s.root, origin: r.meshes.items.find((m) => m.space === s.space)?.origin }, cmd);
-        items.push({ command: fix.command, description: fix.cwd ? `Write the default persona; run it in ${fix.cwd}` : "Create the default persona" });
-      } else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
-      else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
-      items.push({ command: `${cmd} ps`, description: "See the agent roster" });
-    }
+  const noApplication = !r.machine.connectors?.length;
+  if (r.selected.resolved) {
+    const s = r.selected;
+    // A space that already resolves needs only the application to spawn into it.
+    if (noApplication) items.push({ command: `${cmd} setup`, description: "Set up an agent application" });
+    // Name what fixes the default persona alone; setup does far more than that.
+    else if (s.personas.default === "missing") {
+      const fix = defaultPersonaFix({ space: s.space, root: s.root, origin: r.meshes.items.find((m) => m.space === s.space)?.origin }, cmd);
+      items.push({ command: fix.command, description: fix.cwd ? `Write the default persona; run it in ${fix.cwd}` : "Create the default persona" });
+    } else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
+    else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
+    items.push({ command: `${cmd} ps`, description: "See the agent roster" });
+  } else if (noApplication) items.push({ command: `${cmd} setup`, description: r.selected.code === "not-started" ? "Set up an agent application" : "Set up an agent application and a space" });
+  if (r.selected.resolved || !noApplication) {
     items.push({ command: `${cmd} use`, description: "Choose another space" });
     if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }

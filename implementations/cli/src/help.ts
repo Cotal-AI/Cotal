@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, displayWidth, findPreparedSpace, getCurrent, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, getCurrent, preparedSpaceAt, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -154,15 +154,22 @@ export function printEntry(commands: readonly Command[]): void {
   });
   let space: string | undefined;
   let context: string | undefined;
+  // The `up` that starts a prepared space: no other command works on it until it runs.
+  let start: string | undefined;
   let unreadable = false;
   try {
-    space = getCurrent();
+    const selected = getCurrent();
+    const root = findCotalRoot(process.cwd());
+    // With nothing selected, commands run here target the space prepared in this folder.
+    const here = selected ? undefined : preparedSpaceAt(root);
+    space = selected ?? here?.space;
     if (space) {
-      const mesh = readMesh(space);
-      const prepared = mesh === undefined ? findPreparedSpace(space) : undefined;
+      const mesh = selected ? readMesh(space) : undefined;
+      const prepared = here ?? (mesh === undefined ? findPreparedSpace(space) : undefined);
       const preferences = cachedPreferences();
       const harness = resolvePreference("harness", { space, preferences }).value;
-      context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
+      context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
+      if (prepared) start = canonicalRoot(prepared.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${prepared.root}`;
     }
   } catch {
     unreadable = true;
@@ -173,7 +180,7 @@ export function printEntry(commands: readonly Command[]): void {
   else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: "Set up a local space, or connect to a self-hosted one.", tone: "hint" }] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
-    ["spawn", "cotal spawn", "Open your default agent"],
+    start ? ["up", start, "Start this space"] : ["spawn", "cotal spawn", "Open your default agent"],
     ["setup", "cotal setup", "Review setup and defaults"],
     ["use", "cotal use", "Choose another space"],
   ] : [["setup", "cotal setup", "Choose your application and prepare a space"]]));

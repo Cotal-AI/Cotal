@@ -29,8 +29,9 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the selected space, lists common commands, and points a machine with no selected space to
-`cotal setup`. Every command generates its own help, usage, and shell completion from its declared
+the selected space, or with none selected the space prepared in the current folder, and lists common
+commands. It points a prepared space to the `cotal up` that starts it, and a machine with no space
+to `cotal setup`. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. `-v` is not a
 version flag.
 

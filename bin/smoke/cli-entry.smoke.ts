@@ -19,8 +19,9 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
+import { spaceSegment } from "@cotal-ai/workspace";
 import "@cotal-ai/cli";
 import "@cotal-ai/manager";
 import "@cotal-ai/delivery";
@@ -104,6 +105,25 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const ghost = cotal([], (home) => writeFileSync(join(home, "current-mesh"), "ghost\n"));
   local("bare cotal with a selected space writes nothing", ghost);
   check("the entry screen names the selected space, and says when it is not recorded here", ghost.stdout.startsWith("ghost · not recorded · "), shown(ghost));
+  // A prepared space starts with `up`; spawn refuses on it until then.
+  const prepare = (cotalHome: string, space: string, root: string): void => {
+    mkdirSync(join(cotalHome, "prepared"), { recursive: true });
+    writeFileSync(join(cotalHome, "prepared", `${spaceSegment(space)}.json`), JSON.stringify({ space, root, ts: "2026-10-23T00:00:00.000Z" }));
+  };
+  const elsewhere = cotal([], (home) => {
+    prepare(home, "planned", join(dirname(home), "project"));
+    writeFileSync(join(home, "current-mesh"), "planned\n");
+  });
+  local("bare cotal with a prepared space selected writes nothing", elsewhere);
+  check("a selected prepared space is started from its folder",
+    elsewhere.stdout.startsWith("planned · prepared · ") && /^Start here\n  cotal up --root \S+\/project +Start this space$/m.test(elsewhere.stdout) && !elsewhere.stdout.includes("cotal spawn"), shown(elsewhere));
+  const here = cotal([], (home) => {
+    mkdirSync(join(dirname(home), ".cotal"));
+    prepare(home, "planned", dirname(home));
+  });
+  local("bare cotal in a prepared folder writes nothing", here);
+  check("the space prepared in this folder is named and started here, with nothing selected",
+    here.stdout.startsWith("planned · prepared here · ") && /^Start here\n  cotal up +Start this space$/m.test(here.stdout) && !here.stdout.includes("No space is selected"), shown(here));
 }
 
 // ── Help ───────────────────────────────────────────────────────────────────────────────────────────
