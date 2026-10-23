@@ -642,6 +642,14 @@ try {
   // under its original admission, never an auto-revival by `run answer`.
   const runRecoveredCli = async (args: string[]) => {
     try {
+      // Each call holds the 10s standing family, so a call that outlasts it under load lets it
+      // expire and the manager re-dials on its own. The next call waits for that recovery rather
+      // than starting on a closed service connection.
+      const recovered = await until(async () => {
+        const s = (await probeHeld(activeRunId)).standing;
+        return ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].every((k) => s[k]?.live) && s.debt === null && s.serveConnClosed === false;
+      }, 45_000);
+      assert.ok(recovered, "standing duties and the service connection must be live before a recovery call");
       const boundary = await witnessOp("PREPARE_RECOVERY", activeRunId);
       assert.equal(boundary.prepared, true, boundary.error ?? "service reconnect and subscription flush must finish before the recovery call");
       assert.equal(boundary.inFlight, 0, "no renewal may race the recovery call");
@@ -708,7 +716,8 @@ try {
     }
     assert.ok((recAfter?.status?.value.epoch ?? 0) > (recBefore?.status?.value.epoch ?? 0), "resume must fence with a new epoch");
     const j = await runRecoveredCli(["journal", activeRunId]);
-    assert.ok(j.stdout.includes("/sleep") || j.stdout.includes("sleep"), "resumed run must keep its native journal");
+    assert.ok(j.stdout.includes("/sleep") || j.stdout.includes("sleep"),
+      `resumed run must keep its native journal (journal exit=${j.code} err=${j.stderr.trim().split("\n")[0]?.slice(0, 200)})`);
   });
 
   await cell("6. Resumed run (same run id) completes; the checkpoint answer is recorded once (before or after resume)", async () => {

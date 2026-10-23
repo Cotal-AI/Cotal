@@ -370,7 +370,7 @@ function standingMeta() {
     sessionLedger: m.sessionLedgerCreds,
   };
   const now = Math.floor(Date.now() / 1000);
-  const out: Record<string, unknown> = { debt: m.remoteRenewalDebt?.reason ?? null };
+  const out: Record<string, unknown> = { debt: m.remoteRenewalDebt?.reason ?? null, serveConnClosed: m.serviceServe ? m.serviceServe.nc.isClosed() : null };
   for (const [k, v] of Object.entries(held)) {
     if (typeof v !== "string") { out[k] = null; continue; }
     const c = credsClaims(v);
