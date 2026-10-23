@@ -17,8 +17,6 @@
  * at the depth it was declared at, so there is nothing for the check to refuse.
  */
 
-import { RESERVED_NAMES } from "../primitives.js";
-
 export type AnyNode = Record<string, unknown> & { type: string };
 
 export interface Binding {
@@ -512,6 +510,3 @@ export function analyze(program: AnyNode): Analysis {
   w.block(program, root, 0);
   return { bindingOf: w.bindingOf, bindings: w.bindings };
 }
-
-/** The free names a program may reference without declaring. Read from the language's own table. */
-export const FREE_NAMES: ReadonlySet<string> = RESERVED_NAMES;
