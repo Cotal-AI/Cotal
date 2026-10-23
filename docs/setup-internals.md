@@ -217,10 +217,12 @@ writes its child marker, so a refusal on those paths leaves none of them behind.
 
 For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal-ai`
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan
-(`cotalOnPath()`, not an exec probe, since `cotal --version` is not a real command). The
-interactive prompt defaults to yes, the non-interactive path (`--yes` or no TTY) takes the
-default, and a failed install is non-fatal (warn plus manual command). It is offered only in the
-rich presentation, so `--json` and `--plain` keep stdout for the result. The same `self-exec.ts`
+(`cotalOnPath()`). `displayCmd()` runs the same scan for every user-facing hint, so the scan only
+resolves files. The `cotal --version` exec probe stays in `verifiedCotalExecutables()`, which the
+refusal of an older cotal (below) uses to name a newer executable. The interactive prompt defaults
+to yes, the non-interactive path (`--yes` or no TTY) takes the default, and a failed install is
+non-fatal (warn plus manual command). It is offered only in the rich presentation, so `--json` and
+`--plain` keep stdout for the result. The same `self-exec.ts`
 exposes `displayCmd()`, the prefix (`cotal` / `npx cotal-ai` / `pnpm cotal`) used in setup's next
 command so it matches how you ran it.
 
