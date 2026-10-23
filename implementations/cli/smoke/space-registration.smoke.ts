@@ -177,6 +177,7 @@ setCurrent("keep");
   check("a broker that does not answer is TARGET_UNAVAILABLE, exit 2", refused(dead, 2, "TARGET_UNAVAILABLE"), shown(dead));
   const wantsAuth = await json(["space", "add", "o2", "--server", AUTH_LIVE, "--mode", "open", "--root", root]);
   check("an open claim on a broker that requires auth is CONFLICT", refused(wantsAuth, 2, "CONFLICT"), shown(wantsAuth));
+  check("its refusal and the copy cost it names are one line", (wantsAuth.env?.error?.message ?? "").includes("signing seed") && !(wantsAuth.env?.error?.message ?? "").includes("\n"), wantsAuth.env?.error?.message);
   const noTrust = await json(["space", "add", "a2", "--server", AUTH_LIVE, "--mode", "auth", "--root", root]);
   check("an auth claim with no trust under --root is DEPENDENCY_UNAVAILABLE", refused(noTrust, 2, "DEPENDENCY_UNAVAILABLE"), shown(noTrust));
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
@@ -350,6 +351,9 @@ setCurrent("keep");
   saveBrokerAuth(authDir(accountRoot), brokerAuth);
   saveSpaceAccountAuth(authDir(accountRoot), await createSpaceAccountAuth(brokerAuth, "held"));
   check("a folder whose .cotal holds another space's account is CONFLICT", refused(await json(["space", "create", "other", "--root", accountRoot]), 2, "CONFLICT"));
+  const heldElsewhere = await json(["space", "add", "alias", "--server", AUTH_LIVE, "--root", accountRoot]);
+  check("an auth broker whose --root holds another space's trust is refused naming that space first",
+    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
   check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
   check("a --root that is not a directory is USAGE_INVALID", refused(await json(["space", "create", "other", "--root", join(home, "absent")]), 1, "USAGE_INVALID"));
   check("create takes exactly one name", refused(await json(["space", "create"], spare), 1, "USAGE_INVALID") && refused(await json(["space", "create", "a", "b"], spare), 1, "USAGE_INVALID"));
