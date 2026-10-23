@@ -3863,9 +3863,11 @@ role sends include the broker's stored sequence. Storage does not confirm delive
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
 `<agent> is offline. The message is stored and delivered when <agent> reconnects; a new agent spawned as <agent> does not receive it.`
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
-`--verbose/-v` to show the actual sending principal. An unregistered channel is labeled; its native
-space policy still controls publication and no registry metadata is created. Unreadable metadata
-stays not checked. A message over the broker's message limit, envelope included, refuses
+`--verbose/-v` to show the actual sending principal. A post to an unregistered channel warns
+`CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
+and lists the space's registered channels, so a mistyped name stands out. It reads that count as
+`cotal history` lists channels. Its native space policy still controls publication and no registry
+metadata is created. Metadata or a count it cannot read stays not checked. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A channel post the broker
 refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
 the space or this identity may not post to it. The remedy lists the channels this identity may post
