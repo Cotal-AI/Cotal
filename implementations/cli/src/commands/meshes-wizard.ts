@@ -61,6 +61,9 @@ export interface WizardIO {
   confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean>;
 }
 
+/** What Ctrl-C or Esc in a guided registration says: nothing is written until the last question. */
+const CANCELLED = "Cancelled. Nothing was registered.";
+
 /** The real terminal, via clack. Cancellation (Ctrl-C / Esc) exits here rather than returning a
  *  sentinel the wizard body would have to thread through every branch. */
 export function clackIO(): WizardIO {
@@ -74,13 +77,13 @@ export function clackIO(): WizardIO {
       const s = p.spinner();
       return { start: (m) => s.start(m), stop: (m) => s.stop(m) };
     },
-    text: async (opts) => abortIfCancel(await p.text(opts as never)),
+    text: async (opts) => abortIfCancel(await p.text(opts as never), CANCELLED),
     select: async <T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }) =>
-      abortIfCancel(await p.select<T>(opts as never)) as T,
+      abortIfCancel(await p.select<T>(opts as never), CANCELLED) as T,
     // `initialValue` is a per-call decision, not a house style: an ordinary "register this?"
     // may default yes, but a consent to an unencrypted transport must not be given by pressing
     // Enter. Callers that omit it keep the old default.
-    confirm: async (opts) => abortIfCancel(await p.confirm({ initialValue: true, ...opts })),
+    confirm: async (opts) => abortIfCancel(await p.confirm({ initialValue: true, ...opts }), CANCELLED),
   };
 }
 
