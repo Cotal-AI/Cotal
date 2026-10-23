@@ -148,7 +148,12 @@ export class NativeChatSession implements AdmittedChatSession {
   /** Why the session ended itself, when it could not continue. */
   private lost: string | undefined;
   private readonly onMessage = (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta);
-  private readonly onConnection = (s: { connected: boolean }) => this.setState(s.connected ? "connected" : "disconnected");
+  /** The endpoint drops its connection during a reconnect this session asked for. That outage was
+   *  reported when the reconnect started, so the state stays reconnecting until it is back. */
+  private readonly onConnection = (s: { connected: boolean }) => {
+    if (s.connected) this.setState("connected");
+    else if (this.state !== "reconnecting") this.setState("disconnected");
+  };
   private readonly onPresence = (ev: { type: "join" | "update" | "offline"; presence: Presence }) =>
     this.emit({ type: "presence", row: rowOf(ev.presence), change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
   private readonly onError = () => { /* surfaced through call results; never thrown at the UI */ };
