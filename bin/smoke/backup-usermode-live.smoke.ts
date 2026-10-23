@@ -301,7 +301,7 @@ try {
     // the artifact's authority fingerprint can no longer match the current trust state.
     writeFileSync(ownerSecretPath, JSON.stringify({ ver: 1, secretB64: Buffer.alloc(32, 7).toString("base64") }, null, 2));
     const drifted = await cotal(["up", "--restore", artifact, "--detach", "--server", SERVER, "--space", SPACE]);
-    check("owner-secret drift refuses the restore", drifted.status !== 0, drifted.out);
+    check("owner-secret drift refuses the restore with exit 2, not an unknown outcome", drifted.status === 2, drifted.out);
     check("…naming the authority-fingerprint mismatch",
       /authority fingerprint does not match current trust state/.test(drifted.out), drifted.out);
     check("…leaving the ready journal byte-identical", readFileSync(journalPath, "utf8") === journalBefore);

@@ -104,6 +104,7 @@
   "cli:__service-manager--launch-request": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--launch-sha256": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--max-sessions": "internal:native service child that service start execs under controller custody",
+  "cli:__service-manager--name": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--resume-attempt": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--resume-commit-file": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--resume-commit-sha256": "internal:native service child that service start execs under controller custody",
@@ -159,6 +160,7 @@
   "cli:__daemon-manager--console-port": "internal:hidden twin of the deprecated supervise entry that up launches without the warning",
   "cli:__daemon-manager--launch": "internal:hidden twin of the deprecated supervise entry that up launches without the warning",
   "cli:__daemon-manager--max-sessions": "internal:hidden twin of the deprecated supervise entry that up launches without the warning",
+  "cli:__daemon-manager--name": "internal:hidden twin of the deprecated supervise entry that up launches without the warning",
   "cli:__daemon-manager--resume-attempt": "internal:hidden twin of the deprecated supervise entry that up launches without the warning",
   "cli:__daemon-manager--resume-commit-file": "internal:hidden twin of the deprecated supervise entry that up launches without the warning",
   "cli:__daemon-manager--resume-commit-sha256": "internal:hidden twin of the deprecated supervise entry that up launches without the warning",
@@ -288,6 +290,7 @@
   "cli:backup restore": "current:backup restore",
   "cli:backup verify": "current:backup verify",
   "cli:backup--accept-missing-source": "current:backup restore --accept-missing-source",
+  "cli:backup--discard-history": "current:backup cleanup-fallback --discard-history",
   "cli:backup--dry-run": [
    "current:backup recover --dry-run",
    "current:backup cleanup-fallback --dry-run"
@@ -366,6 +369,7 @@
    "current:backup recover"
   ],
   "cli:clean--creds": "current:history clear",
+  "cli:clean--discard-history": "current:backup cleanup-fallback --discard-history",
   "cli:clean--dms": "current:history clear --dms",
   "cli:clean--force": [
    "current:reset store --yes",
@@ -1049,6 +1053,7 @@
   "cli:supervise--execution": "pending:service add manager --execution",
   "cli:supervise--launch": "pending:service start manager",
   "cli:supervise--max-sessions": "pending:service start manager",
+  "cli:supervise--name": "current:service add --preset",
   "cli:supervise--resume-attempt": "pending:service start manager",
   "cli:supervise--resume-commit-file": "internal:protected resume commit handoff that up passes to the manager it starts",
   "cli:supervise--resume-commit-sha256": "internal:protected resume commit handoff that up passes to the manager it starts",
@@ -1108,6 +1113,7 @@
   "cli:up--json": "current:up --json",
   "cli:up--max-file-store": "current:up --max-file-store",
   "cli:up--max-sessions": "current:up --max-sessions",
+  "cli:up--manager-name": "current:up --manager-name",
   "cli:up--no-manager": "current:up --no-manager",
   "cli:up--open": "current:up --open",
   "cli:up--plain": "current:up --plain",

@@ -309,6 +309,16 @@ function assertArtifactProtected(artifact: string, manifest: BackupManifest): vo
   protectedLocalEntries(artifact, ["manifest.json", ...manifest.files.map((file) => file.path)], "the backup artifact");
 }
 
+/** Whether an artifact restores only into a root that still holds the trust state it was taken
+ *  under: a full artifact of an authenticated space commits to that root's trust chain, so it cannot
+ *  move to another machine or a fresh root. */
+export function isTrustBound(selection: string, mode: string): boolean {
+  return selection === "full" && mode !== "open";
+}
+
+/** The receipt line for a trust-bound artifact. */
+export const TRUST_BOUND_TEXT = "only a root that still holds the trust state it was taken under, not another machine or a fresh root";
+
 /** Inspect manifest bytes, or hash every named file, without staging, starting a broker or restoring. */
 export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
   const artifact = resolve(artifactPath);
@@ -334,6 +344,7 @@ export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
     space: manifest.space, selection: manifest.selection, mode: manifest.mode,
     sourcePath: manifest.source.path, sourceGeneration: manifest.source.generation,
     authorityRecorded: manifest.authority !== undefined, authorityValidated: false,
+    trustBound: isTrustBound(manifest.selection, manifest.mode),
     integrity: verify ? "matched-declared-sizes-and-sha256" as const : "not-checked" as const,
     manifestSha256: createHash("sha256").update(bytes).digest("hex"),
     fileCount: manifest.files.length, bytesDeclared: manifest.files.reduce((total, file) => total + BigInt(file.size), 0n).toString(),

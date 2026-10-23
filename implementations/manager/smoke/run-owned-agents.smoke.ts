@@ -451,10 +451,13 @@ try {
     if (!condition) console.error(`    ${JSON.stringify(detail).replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[redacted]").slice(0, 1500)}`);
   };
   const namesBoth = (text: unknown, remedy: string) => typeof text === "string" && text.includes(state.instanceId) && text.includes(stateB.instanceId) && text.includes(remedy);
+  // The CLI lists both managers, and its Next gives the command again with `--on` for each. The two
+  // share a host and a runtime, so each is picked by its instance id.
+  const rerunsBoth = (text: unknown) => typeof text === "string" && [state.instanceId, stateB.instanceId].every((id) => text.includes(`--on ${id}`));
   const unpinnedModels = await cli(["models", "--space", space, "--harness", "u4-seat"]);
-  cell("#3959 unpinned `cotal models` refuses two live managers, lists both and names --on", unpinnedModels.code === 2 && /^Request refused$/m.test(unpinnedModels.stderr) && namesBoth(unpinnedModels.stderr, "--on <instanceId>"), unpinnedModels);
+  cell("#3959 unpinned `cotal models` refuses two live managers, lists both and names --on", unpinnedModels.code === 2 && /^Request refused$/m.test(unpinnedModels.stderr) && rerunsBoth(unpinnedModels.stderr), unpinnedModels);
   const unpinnedRuns = await cli(["run", "ps", "--space", space]);
-  cell("#3959 unpinned `cotal run ps` refuses two live managers, lists both and names --on", unpinnedRuns.code === 2 && /^Request refused$/m.test(unpinnedRuns.stderr) && namesBoth(unpinnedRuns.stderr, "--on <instanceId>"), unpinnedRuns);
+  cell("#3959 unpinned `cotal run ps` refuses two live managers, lists both and names --on", unpinnedRuns.code === 2 && /^Request refused$/m.test(unpinnedRuns.stderr) && rerunsBoth(unpinnedRuns.stderr), unpinnedRuns);
   let before = { a: { ...onA }, b: { ...onB } };
   const pinnedModels = await cli(["models", "--space", space, "--harness", "u4-seat", "--on", stateB.instanceId]);
   cell("#3959 `cotal models --on <instance>` succeeds against the named instance", pinnedModels.code === 0 && onB.models === before.b.models + 1 && onA.models === before.a.models, { pinnedModels, before, onA, onB });

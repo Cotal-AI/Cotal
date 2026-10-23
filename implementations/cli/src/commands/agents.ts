@@ -30,7 +30,8 @@ import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c, presenceFacts } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, resolveControlTarget, onInstance, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
+import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { stackManagerAbsent } from "../lib/stack-journal.js";
@@ -316,7 +317,7 @@ export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: s
 /** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
  *  instance to address, or exits with an error that says WHICH case the miss was. */
 async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Promise<string | undefined> {
-  const on = onInstanceOrExit(v.on, verb);
+  const on = await managerPin(v, verb);
   if (on !== undefined) return on;
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
@@ -610,7 +611,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts", { remedy: "pass one of them" });
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
-  const census = await readSeats(v, command, onInstance(v.on, "cotal ps"));
+  const census = await readSeats(v, command, await managerPin(v, "cotal ps"));
   const view = (result: PsResult): Report => psView(result, wide, census.rowsOf);
   writeResult(
     presentation,
@@ -630,7 +631,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
 export async function agentStatus(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0]!;
   const values = args.values as FlagValues<typeof psFlags>;
-  const census = await readSeats(values, "ps", onInstance(values.on, "cotal status"));
+  const census = await readSeats(values, "ps", await managerPin(values, "cotal status"));
   const rows = census.items.map((value): AgentRow => {
     if (!value || typeof value !== "object") throw new CommandFailure("failed", "OPERATION_FAILED", "a manager returned an invalid agent record", { target: census.target });
     const row = value as Partial<AgentRow>;
@@ -1551,7 +1552,7 @@ export async function attachSeat(
 }
 
 async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ name: string; on: string; expectedTarget: NonNullable<ManagerPin["expectedTarget"]> } | undefined> {
-  const census = await readSeats(values, "ps", onInstance(values.on, "cotal attach"));
+  const census = await readSeats(values, "ps", await managerPin(values, "cotal attach"));
   const choices = census.items.map((value) => {
     const row = value as Partial<AgentRow> | null;
     if (!row || typeof row.name !== "string" || typeof row.id !== "string" || typeof row.lifecycleUid !== "string")

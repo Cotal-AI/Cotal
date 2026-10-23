@@ -1,4 +1,4 @@
-import { realpathSync, statSync, type Stats } from "node:fs";
+import { accessSync, constants, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
 
@@ -19,10 +19,11 @@ function controlDirectory(path: string): string | undefined {
 
 /** Check an explicit `--store-dir` before anything is written. Its nearest existing part must be a
  *  directory, so a regular file there is a usage refusal that names it, and that directory's chain
- *  is held to the project-root rule for other local writers. A non-empty directory is accepted,
- *  because it may be an existing store. A control directory, or a path in one, is refused unless it
- *  is `root`'s own default store: its files would mix with credentials and records, or with another
- *  root's store, and no reset could remove it alone. */
+ *  is held to the project-root rule for other local writers. A path still to create needs that
+ *  directory to be writable by this account. A non-empty directory is accepted, because it may be
+ *  an existing store. A control directory, or a path in one, is refused unless it is `root`'s own
+ *  default store: its files would mix with credentials and records, or with another root's store,
+ *  and no reset could remove it alone. */
 export function assertStoreDirArgument(value: string, root: string): void {
   const path = resolve(value);
   let existing = path, stat = statIfPresent(existing);
@@ -40,4 +41,7 @@ export function assertStoreDirArgument(value: string, root: string): void {
   if (!stat.isDirectory())
     throw new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: "name a directory, or a path to create in one, with --store-dir" });
   protectedLocalDirectory(realpathSync.native(existing), "the --store-dir path");
+  if (existing === path) return;
+  try { accessSync(existing, constants.W_OK | constants.X_OK); }
+  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy: "name a store directory this account can create, or create it with the right owner first" }); }
 }

@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { MeshLaunchSpec, ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, MANAGER_PIDFILE, answerServiceObservations, assertRecordIdentity, canonicalLocalProcessPath,
+  CommandFailure, MANAGER_PIDFILE, answerServiceObservations, assertManagerName, assertRecordIdentity, canonicalLocalProcessPath,
   consumeManagerShutdownIntent, protectedCredentialReference, protectedLocalDirectory, publishServiceIdentity,
   publishServiceStopReceipt, readLocalRecordSource, readServiceIdentity,
   readServiceStopReceipts, readServiceStopRequest, resolveNativeServiceTarget,
@@ -57,6 +57,7 @@ export function managerServiceChild(args: ParsedArgs): ManagerServiceChild {
     if (value !== undefined && (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < minimum || Number(value) > maximum)) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires valid explicit ports and a positive session ceiling");
   }
   if (values["console-host"] !== undefined && (typeof values["console-host"] !== "string" || !values["console-host"] || values["console-host"].length > 253 || /[\u0000- \u007f]/u.test(values["console-host"]))) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires a bounded explicit console host without controls");
+  if (values.name !== undefined) assertManagerName(String(values.name));
   let launchSpec: MeshLaunchSpec | undefined;
   if (values.launch !== undefined || values["launch-sha256"] !== undefined) {
     if (typeof values.launch !== "string" || typeof values["launch-sha256"] !== "string") throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires both its private launch spec and full digest");

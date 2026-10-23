@@ -3,11 +3,16 @@
  * remove can clear. The manager preset is saved for a space that is prepared and not started, so
  * its launch plan cannot resolve a broker. The start must refuse with the target's own code and
  * record the instance as failed with no process; a second start, a stop and a removal must then
- * succeed or refuse on that same cause, never on the retained instance.
+ * succeed or refuse on that same cause, never on the retained instance. A second record makes the
+ * bare forms ambiguous until `remove --instance` clears one.
  *
  * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started and no service
  * process is launched. The named `down <service>` form runs the same stop path as `service stop`
  * and is not driven here.
+ *
+ * A process definition whose envRefs read a variable the environment does not set refuses its start
+ * before anything launches, naming that variable and the child variable it feeds, and `service show`
+ * lists the references by name.
  *
  * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
  * before a child in two isolated homes: with the account only in the child's home and only in the
@@ -75,6 +80,31 @@ check("the second start reuses the same instance", second.envelope?.target?.inst
 const stopped = run(["service", "stop", "mymgr", "--space", "b1", "--yes"]);
 check("stop finds nothing to stop: a no-op, exit 0", stopped.status === 0 && stopped.envelope?.outcome === "no-op", shown(stopped));
 
+// Two records of one process service make the bare forms ambiguous. The refusal names each record
+// with its state and the command that clears a stopped one, and clearing one frees the bare form.
+const workerFile = join(home, "worker.json");
+writeFileSync(workerFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: process.execPath, args: ["-e", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 } }));
+const workerAdded = run(["service", "add", "worker", "--file", workerFile, "--space", "b1"]);
+const firstWorker = run(["service", "start", "worker", "--space", "b1"]);
+const secondWorker = run(["service", "start", "worker", "--new-instance", "--space", "b1"]);
+const [one, two] = [firstWorker, secondWorker].map((r) => r.envelope?.target?.instanceId);
+check("rig: two starts of a process service leave two records with no process", workerAdded.status === 0 && typeof one === "string" && typeof two === "string" && one !== two, { added: shown(workerAdded), first: shown(firstWorker), second: shown(secondWorker) });
+const ambiguous = run(["service", "status", "worker", "--space", "b1"]);
+const ambiguousNext = ambiguous.envelope?.error?.remedy ?? "";
+check("a bare status with two records is TARGET_AMBIGUOUS, exit 2, naming each with its state",
+  ambiguous.status === 2 && ambiguous.envelope?.error?.code === "TARGET_AMBIGUOUS" && [one, two].every((id) => new RegExp(`${id} \\(\\w+\\)`).test(ambiguousNext)), shown(ambiguous));
+check("its Next names the remove --instance command for each stopped record", [one, two].every((id) => ambiguousNext.includes(`cotal service remove worker --instance ${id} --space b1 --yes`)), ambiguous.envelope?.error);
+const unconfirmed = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1"]);
+check("remove --instance in a script needs --yes: USAGE_INVALID, exit 1", unconfirmed.status === 1 && unconfirmed.envelope?.error?.code === "USAGE_INVALID", shown(unconfirmed));
+const cleared = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1", "--yes"]);
+check("remove --instance forgets that stopped record, exit 0", cleared.status === 0 && cleared.envelope?.result?.kind === "service-instance-record-removed" && cleared.envelope.result.instanceId === two, shown(cleared));
+const again = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1", "--yes"]);
+check("the same ID again is TARGET_NOT_FOUND, exit 2", again.status === 2 && again.envelope?.error?.code === "TARGET_NOT_FOUND", shown(again));
+const single = run(["service", "status", "worker", "--space", "b1"]);
+check("the bare status reads the one record left", single.envelope?.error?.code !== "TARGET_AMBIGUOUS" && single.envelope?.target?.instanceId === one, shown(single));
+const workerRemoved = run(["service", "remove", "worker", "--space", "b1", "--yes"]);
+check("rig: the worker definition and its record are removed", workerRemoved.status === 0, shown(workerRemoved));
+
 const removed = run(["service", "remove", "mymgr", "--space", "b1", "--yes"]);
 check("remove forgets the definition and its failed instance, exit 0", removed.status === 0 && removed.envelope?.outcome === "ok", shown(removed));
 
@@ -82,6 +112,21 @@ const listed = run(["service", "--space", "b1"]);
 const instances = listed.envelope?.result?.instances;
 const definitions = listed.envelope?.result?.definitions;
 check("no definition or instance record remains", Array.isArray(instances) && instances.length === 0 && Array.isArray(definitions) && definitions.length === 0, listed.envelope?.result);
+
+// A process service whose envRefs read a variable this environment does not set.
+const envDefinition = join(home, "env.json");
+writeFileSync(envDefinition, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exit 0"], cwd: root }, readiness: { type: "process", timeoutMs: 3000 }, envRefs: { REVIEWS_TOKEN: "SMOKE_UNSET_REVIEWS_TOKEN" } }));
+delete (env as NodeJS.ProcessEnv).SMOKE_UNSET_REVIEWS_TOKEN;
+const envAdded = run(["service", "add", "envsvc", "--file", envDefinition, "--space", "b1"]);
+check("rig: a process definition with an envRefs entry is saved", envAdded.status === 0 && envAdded.envelope?.outcome === "ok", shown(envAdded));
+const unset = run(["service", "start", "envsvc", "--space", "b1"]);
+check("a start without the referenced variable refuses DEPENDENCY_UNAVAILABLE, exit 2, naming it and the child variable, with a remedy that sets it",
+  unset.status === 2 && unset.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && /does not set SMOKE_UNSET_REVIEWS_TOKEN \(passed to the service as REVIEWS_TOKEN\)/.test(unset.envelope.error.message) &&
+    (unset.envelope.error.remedy ?? "").includes("set SMOKE_UNSET_REVIEWS_TOKEN"), shown(unset));
+const shownText = spawnSync(process.execPath, [BIN, "service", "show", "envsvc", "--space", "b1"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+check("service show lists the reference by name", shownText.status === 0 && /Environment references:\s+REVIEWS_TOKEN from SMOKE_UNSET_REVIEWS_TOKEN/.test(shownText.stdout), { status: shownText.status, stdout: shownText.stdout.slice(0, 900) });
+const envRemoved = run(["service", "remove", "envsvc", "--space", "b1", "--yes"]);
+check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemoved));
 
 // A Linear service whose envRefs give the child HOME from SERVICE_HOME. With COTAL_HOME unset, each
 // process reads the Cotal home under its own HOME: the controller's is `a`, the child's `b`.

@@ -1,10 +1,12 @@
 /**
  * `cotal config` and the preferences it saves, driven through the built binary in a fresh sandbox:
  * the effective values with their sources and shadowed values, `get`, `set` and `unset` for the user
- * and for one space, the refusals, the named environment tiers, the selected space, an invalid file
- * stopping every command but help and completion without being reset, a linked file stopping them
- * the same way, a stale write refused, two
- * concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
+ * and for one space, the refusals (a read, set or unset for a space this machine does not know among
+ * them), a value left for a removed space, the named environment tiers, the selected space, an invalid
+ * file stopping every command but help and completion without being reset, a linked file stopping
+ * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a stale write
+ * refused, a persona the space's catalog does not hold saved with a warning that names the catalog,
+ * two concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
  * editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
@@ -12,7 +14,7 @@
  * Run: pnpm smoke:config-preferences
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -84,6 +86,10 @@ const ansi = /\x1b\[/;
   check("get names the winner and the default it shadows", get.status === 0 && s?.value === "opencode" && s.winner?.source === "user" && s.shadowed.length === 1 && s.shadowed[0]!.source === "default" && s.shadowed[0]!.value === "claude", s);
   const again = run(["config", "set", "harness", "opencode", "--json"]);
   check("setting the same value again is a no-op, exit 0, and writes nothing", again.status === 0 && again.envelope?.outcome === "no-op" && saved().revision === 1, shown(again));
+  // A per-space value is saved only for a space this machine knows, so prepare demo first.
+  mkdirSync(join(home, "demo"), { recursive: true });
+  const prepared = run(["space", "create", "demo", "--root", join(home, "demo"), "--json"]);
+  check("setup: demo is prepared", prepared.status === 0 && prepared.envelope?.outcome === "ok", shown(prepared));
   const plainSet = run(["config", "set", "persona", "reviewer", "--space", "demo", "--plain"]);
   check("--space saves a personal value for one space", plainSet.status === 0 && /persona = reviewer in space demo/.test(plainSet.stdout) && saved().spaces.demo?.persona === "reviewer" && saved().revision === 2, shown(plainSet));
   run(["config", "set", "persona", "mine"]);
@@ -109,6 +115,7 @@ const ansi = /\x1b\[/;
     ["an empty persona", ["config", "set", "persona", " "], /invalid persona " ": it cannot be empty/],
     ["a harness no connector provides, naming the known ones", ["config", "set", "harness", "nosuch"], /no harness "nosuch"; known harnesses: .*claude.*opencode/],
     ["color saved for one space", ["config", "set", "color", "never", "--space", "demo"], /color has no per-space value/],
+    ["color saved for a space this machine does not know still names the key", ["config", "set", "color", "never", "--space", "nope"], /color has no per-space value/],
     ["--user with --space", ["config", "get", "harness", "--user", "--space", "demo"], /--user and --space choose different scopes/],
     ["a space name with a space in it", ["config", "--space", "a b"], /"a b" is not a space name/],
     ["get without a key", ["config", "get"], /usage: cotal config get <key>/],
@@ -123,6 +130,12 @@ const ansi = /\x1b\[/;
   }
   const both = run(["config", "--json", "--plain"]);
   check("--json with --plain is refused", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
+  // A value saved for a space that is neither registered nor prepared would never apply.
+  const unknown = run(["config", "set", "persona", "rev", "--space", "nope", "--json"]);
+  check("set for a space that is neither registered nor prepared is refused, naming the known spaces, and writes nothing",
+    unknown.status === 2 && unknown.envelope?.outcome === "refused" && unknown.envelope.error?.code === "TARGET_NOT_FOUND" && /no space named "nope" is registered or prepared here; known spaces: demo$/.test(unknown.envelope.error.message) && fileText() === before, shown(unknown));
+  const unknownUnset = run(["config", "unset", "persona", "--space", "nope", "--json"]);
+  check("unset for an unknown space stays open, so a value left for a gone space can go", unknownUnset.status === 0 && unknownUnset.envelope?.outcome === "no-op" && fileText() === before, shown(unknownUnset));
   // A persona's harness pin takes the same check as the harness preference.
   const pinned = run(["persona", "create", "pinned", "--prompt", "hi", "--subscribe", "", "--harness", "nosuch", "--json"], {}, project);
   check("persona create --harness refuses a harness no connector provides, writing no file",
@@ -189,6 +202,30 @@ const ansi = /\x1b\[/;
   rmSync(join(cotalHome, "current-mesh"));
   run(["config", "unset", "persona"]);
   run(["config", "unset", "persona", "--space", "demo"]);
+}
+
+// ── a persona the space's catalog does not hold is saved, with a warning naming the catalog ──────
+{
+  const catProject = join(home, "cat-project");
+  mkdirSync(catProject);
+  const created = run(["space", "create", "cat"], {}, catProject);
+  check("fixture: a prepared space with its own catalog", created.status === 0, shown(created));
+  const catalog = join(realpathSync(catProject), ".cotal", "agents");
+  const warned = (r: ReturnType<typeof run>) => r.envelope?.warnings.find((w) => w.code === "PERSONA_NOT_FOUND");
+  const ghost = run(["config", "set", "persona", "ghost", "--space", "cat", "--json"]);
+  check("a name the catalog does not hold is saved, with PERSONA_NOT_FOUND naming the catalog",
+    ghost.status === 0 && ghost.envelope?.outcome === "ok" && saved().spaces.cat?.persona === "ghost" && warned(ghost)?.message === `no persona "ghost" in space cat's catalog ${catalog}; the preference was saved, and a launch there needs that file`,
+    ghost.envelope);
+  const ghostText = run(["config", "set", "persona", "ghost2", "--space", "cat"]);
+  check("the text report says so on stderr", ghostText.status === 0 && ghostText.stderr.includes(`no persona "ghost2" in space cat's catalog ${catalog}`), shown(ghostText));
+  writeFileSync(join(catalog, "real.md"), "---\nname: real\n---\nhi\n");
+  const real = run(["config", "set", "persona", "real", "--space", "cat", "--json"]);
+  check("a name the catalog holds raises no warning", real.status === 0 && warned(real) === undefined, real.envelope);
+  const path = run(["config", "set", "persona", "./nosuch.md", "--space", "cat", "--json"]);
+  check("a persona file path that is missing names the file", path.status === 0 && warned(path)?.message.startsWith(`no persona file ${join(realpathSync(catProject), "nosuch.md")};`) === true, path.envelope);
+  const broken = run(["config", "set", "persona", "bad name", "--space", "cat", "--json"]);
+  check("a name that breaks the persona name rule is still refused", broken.status === 1 && broken.envelope?.error?.code === "USAGE_INVALID", broken.envelope);
+  run(["config", "unset", "persona", "--space", "cat"]);
 }
 
 // ── consumers: color, the editor, the detach key ─────────────────────────────────────────────────
@@ -335,6 +372,23 @@ if (process.platform !== "win32") {
   }
   rmSync(file);
   check("removing the file restores the defaults", run(["config", "--json"]).status === 0);
+}
+
+// ── a COTAL_HOME that is not a directory stops every command but help and completion ─────────────
+{
+  const notHome = join(home, "not-a-home");
+  writeFileSync(notHome, "a file\n");
+  for (const [name, value] of [["a file", notHome], ["a path under a file", join(notHome, "sub")]] as const) {
+    const r = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: value });
+    check(`a COTAL_HOME that is ${name} is refused with SCHEMA_INVALID, naming it, and the command does not run`,
+      r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "SCHEMA_INVALID" && r.envelope.error.message.includes(`COTAL_HOME ${value} is not a directory`) &&
+        /point COTAL_HOME at a directory, or unset it/.test(r.envelope.error.remedy ?? ""), shown(r));
+  }
+  const status = run(["status"], { COTAL_HOME: notHome });
+  check("status there gives the same refusal, not the raw read error", status.status === 1 && /COTAL_HOME .* is not a directory/.test(status.stderr) && !/ENOTDIR/.test(status.stdout + status.stderr), shown(status));
+  const help = run(["help"], { COTAL_HOME: notHome });
+  check("help still works", help.status === 0 && help.stdout !== "", shown(help));
+  check("and the file is left as it was", readFileSync(notHome, "utf8") === "a file\n");
 }
 
 finish();

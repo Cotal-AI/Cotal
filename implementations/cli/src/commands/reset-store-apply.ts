@@ -5,7 +5,7 @@ import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
   canonicalRoot, CommandFailure, findMesh, findPreparedSpace, loadMeshes, localMeshesForRoot, oneLine,
-  presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report,
+  presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Block, type Report,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses, removeLocalState, safeStoreCleanupPath } from "./clean.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -13,6 +13,7 @@ import { instanceProjection, serviceInstances } from "../lib/service-instances.j
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { readStackJournal, stackNeverStarted } from "../lib/stack-journal.js";
+import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 
@@ -35,6 +36,41 @@ export interface ResetTarget {
 }
 
 export type ResetCommand = "reset store" | "reset space";
+
+/** What the broker kept in a space's store, all of which a store reset removes. They are named, not
+ *  listed: a stopped broker is the only reader of its store. */
+export const STORE_CONTENTS = ["workflow runs and their journals", "channel history", "stored messages", "every other record the broker kept there"];
+
+/** {@link STORE_CONTENTS} as one phrase. */
+export const storeContentsText = (items: readonly string[]) => `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+
+/** The runs the stack journal's last down recorded, or undefined when it holds no down with them. */
+export function runsAtLastDown(root: string): StackRuns | undefined {
+  try {
+    const operation = readStackJournal(root)?.journal.operation;
+    return operation?.kind === "down" ? operation.runs : undefined;
+  } catch { return undefined; }
+}
+
+/** How many recorded runs were waiting for an answer, as one clause. */
+function runCounts(runs: Extract<StackRuns, { read: true }>): string {
+  const listed = runs.runs.length + runs.omitted;
+  const waiting = runs.runs.filter((row) => row.waiting?.length).length;
+  return `${listed} workflow run${listed === 1 ? "" : "s"} that had not finished, ${waiting} of them waiting for an answer, and ${runs.finished} finished run${runs.finished === 1 ? "" : "s"}`;
+}
+
+/** The recorded runs as report blocks, for the preview and the receipt. `remedy` names how to read
+ *  them live when nothing usable was recorded. */
+export function storeRunBlocks(runs: StackRuns | undefined, remedy: string | undefined): Block[] {
+  if (runs === undefined) return [{ kind: "lines", lines: [{ text: `No run list was recorded: the last down predates it or did not stop this stack.${remedy ? ` ${remedy}` : ""}`, tone: "waiting" }] }];
+  if (!runs.read) return [{ kind: "lines", lines: [{ text: `The last down, at ${runs.observedAt}, could not read the runs: ${runs.reason}.${remedy ? ` ${remedy}` : ""}`, tone: "waiting" }] }];
+  const rows = runs.runs.flatMap((row) => (row.waiting === null ? [{ step: "not read", asks: "" }] : row.waiting.length ? row.waiting : [{ step: "none", asks: "" }]).map((wait, index) => ({ run: index ? "" : row.runId, state: index ? "" : row.state, step: wait.step, asks: wait.asks })));
+  return [
+    { kind: "lines", lines: [`As of the last down, at ${runs.observedAt}, the store held ${runCounts(runs)}.`] },
+    ...(rows.length ? [{ kind: "table" as const, columns: [{ key: "run", label: "Run" }, { key: "state", label: "State" }, { key: "step", label: "Waiting step" }, { key: "asks", label: "Request" }], rows }] : []),
+    ...(runs.omitted ? [{ kind: "lines" as const, lines: [`${runs.omitted} more unfinished run${runs.omitted === 1 ? " is" : "s are"} not listed.`] }] : []),
+  ];
+}
 
 export function selectResetTarget(space: string, command: ResetCommand): ResetTarget {
   let entry: ReturnType<typeof findMesh>, prepared: ReturnType<typeof findPreparedSpace>;
@@ -166,8 +202,9 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
   if (root === canonicalRoot(homedir()) || selected.storeDir !== undefined && !isAbsolute(selected.storeDir))
     throw new CommandFailure("refused", "CONFLICT", "the selected root or custom store path is not a safe absolute project target", { target });
   const expected = await assertResetEligible(selected, "reset store");
+  const recordedRuns = runsAtLastDown(root);
   if (!yes) {
-    const answer = await prompts.confirm({ message: `Delete only the stopped store at ${oneLine(expected.path)} for ${oneLine(space)} on ${oneLine(brokerAddressForDisplay(selected.server) ?? "the recorded broker")}? Trust, credentials and registration stay.`, initialValue: false });
+    const answer = await prompts.confirm({ message: `Delete only the stopped store at ${oneLine(expected.path)} for ${oneLine(space)} on ${oneLine(brokerAddressForDisplay(selected.server) ?? "the recorded broker")}? Its ${storeContentsText(STORE_CONTENTS)} go with it${recordedRuns?.read ? ` (as of the last down: ${runCounts(recordedRuns)})` : ""}. Trust, credentials and registration stay.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
       writeResult(presentation, { command: "reset", target, result: { kind: "reset-store", confirmed: false, deleted: false }, noOp: true }, (): Report => ({ sections: [{ title: "Store kept", blocks: [{ kind: "lines", lines: ["No store path was removed."] }] }] }));
       return;
@@ -199,8 +236,8 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
   if (failure) throw failure;
   const paths = removed ?? [];
   const records = selected.source === "registration" ? "kept" : "none; the prepared record and stack journal stay";
-  writeResult(presentation, { command: "reset", target, result: { kind: "reset-store", space, removedPaths: paths, trustRemoved: false, credentialsRemoved: false, registrationRemoved: false, selectedBy: selected.source }, ...(paths.length ? {} : { noOp: true }) }, (data): Report => ({ sections: [{ title: data.removedPaths.length ? "Store removed" : "Store already absent", blocks: [
-    { kind: "fields", rows: [["Space", data.space], ["Store path", expected.path], ["Trust and credentials", "kept"], ["Registration", records]] },
+  writeResult(presentation, { command: "reset", target, result: { kind: "reset-store", space, removedPaths: paths, removedContents: paths.length ? STORE_CONTENTS : [], removedRuns: paths.length ? recordedRuns ?? null : null, trustRemoved: false, credentialsRemoved: false, registrationRemoved: false, selectedBy: selected.source }, ...(paths.length ? {} : { noOp: true }) }, (data): Report => ({ sections: [{ title: data.removedPaths.length ? "Store removed" : "Store already absent", blocks: [
+    { kind: "fields", rows: [["Space", data.space], ["Store path", expected.path], ...(data.removedContents.length ? [["Removed with it", storeContentsText(data.removedContents)]] as [string, string][] : []), ["Trust and credentials", "kept"], ["Registration", records]] },
     { kind: "lines", lines: data.removedPaths.length ? data.removedPaths : ["No store directory existed at the pinned path."] },
-  ] }, { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: `Start ${space} again on an empty store, from ${root}` }] }] }] }));
+  ] }, ...(data.removedPaths.length ? [{ title: "Workflow runs removed", blocks: storeRunBlocks(recordedRuns, undefined) }] : []), { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: `Start ${space} again on an empty store, from ${root}` }] }] }] }));
 }

@@ -157,9 +157,11 @@ export function assertValidChannel(channel: string): string {
       return;
     }
     if (s === "*") return;
+    // The wildcard segments are named only to a segment that holds one, so a refusal never offers
+    // `*` or `>` to a name that did not try a wildcard.
     if (!/^[A-Za-z0-9_-]+$/.test(s))
       throw new Error(
-        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-]), '*', or '>' - ` +
+        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-])${/[*>]/.test(s) ? ", '*', or '>'" : ""} - ` +
           `policy channel names can't contain characters the wire layer would rewrite`,
       );
   });

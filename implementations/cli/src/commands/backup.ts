@@ -38,7 +38,7 @@ import {
   type MaintenanceReadyRecord,
   type ProcessOwner,
 } from "@cotal-ai/workspace";
-import { createArtifactWriter, snapshotFileName, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
+import { createArtifactWriter, isTrustBound, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
 import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
 import { refuseControllerCut } from "../lib/stack-journal.js";
@@ -59,6 +59,7 @@ const OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 export const backupFlags: FlagSpec[] = [jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "recover/cleanup-fallback: confirm only the exact reviewed restore attempt" },
   { name: "dry-run", type: "boolean", description: "recover/cleanup-fallback: read the original journal and paths without a lock or write" },
+  { name: "discard-history", type: "boolean", description: "cleanup-fallback: also delete a registry-only restore's previous store, the only copy of the history it left out" },
   { name: "only", type: "string", value: "<full|registry>", description: "create: artifact selection (default full; registry is the only partial); restore: only registry, to restore just the registry (default follows the artifact)" },
   { name: "store-dir", type: "string", value: "<dir>", description: "create: preserved source store; restore: restore target (default .cotal/nats)" },
   { name: "accept-missing-source", type: "boolean", description: "restore: explicit disaster consent when the inode-bound preserved source is absent" },
@@ -386,6 +387,8 @@ interface BackupCreateResult {
   readonly fileCount: number;
   readonly attemptId: string;
   readonly sourceGeneration: string;
+  /** Whether it restores only into a root that still holds the trust state it was taken under. */
+  readonly trustBound: boolean;
   readonly restored: false;
 }
 interface BackupObservation {
@@ -424,7 +427,7 @@ export function validateBackupArguments(args: ParsedArgs): void {
   // recover also takes an interrupted backup create's own attempt; cleanup-fallback only a restore's.
   const attempt = new RegExp(`^(${mode === "recover" ? "restore|backup" : "restore"})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, "i");
   if (maintenance && !attempt.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", mode === "recover" ? "name the full attempt id, restore-<uuid> or backup-<uuid>; a prefix, path or backup directory is refused" : "name the full restore attempt id, restore-<uuid>; a prefix, path or backup directory is refused", { remedy: "cotal status shows the attempt this root holds, under Maintenance" });
-  const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run"] : [])]);
+  const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run", ...(mode === "cleanup-fallback" ? ["discard-history"] : [])] : [])]);
   if (Object.keys(args.values).some((flag) => !allowed.has(flag))) throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
   if (mode === "create") selection(args.values.only as string | undefined);
   // The native restore accepts only a registry narrowing and otherwise follows the artifact's own
@@ -467,7 +470,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
 
 function backupCreateView(result: BackupCreateResult & { cleanupConfirmed: boolean }): Report {
   return { sections: [{ title: "Private backup artifact published", blocks: [
-    { kind: "fields", rows: [["Artifact", result.directory], ["Space", result.space], ["Selection", result.selection], ["Created", result.createdAt], ["Streams", String(result.streamCount)], ["Files", String(result.fileCount)], ["Original attempt", result.attemptId], ["Source generation", result.sourceGeneration], ["Maintenance cleanup", result.cleanupConfirmed ? "native cleanup completed" : { text: "not confirmed", tone: "waiting" }], ["Restore", { text: "not attempted or proved", tone: "waiting" }]] },
+    { kind: "fields", rows: [["Artifact", result.directory], ["Space", result.space], ["Selection", result.selection], ...(result.trustBound ? [["Restores into", TRUST_BOUND_TEXT] as [string, string]] : []), ["Created", result.createdAt], ["Streams", String(result.streamCount)], ["Files", String(result.fileCount)], ["Original attempt", result.attemptId], ["Source generation", result.sourceGeneration], ["Maintenance cleanup", result.cleanupConfirmed ? "native cleanup completed" : { text: "not confirmed", tone: "waiting" }], ["Restore", { text: "not attempted or proved", tone: "waiting" }]] },
     { kind: "lines", lines: [{ text: "The artifact's completion manifest was published from the native preserved cut. Creation does not prove restoration or future authority continuity. Snapshot bytes, checkpoint contents and credentials remain private and are not printed or uploaded.", tone: "hint" }] },
   ] }] };
 }
@@ -616,7 +619,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       streams,
       checkpoints: checkpointName,
     }, files);
-    observed.published = { kind: "backup-created", directory: writer.directory, space: ready.space, selection: selected, createdAt: published.createdAt, streamCount: streams.length, fileCount: files.length, attemptId, sourceGeneration: ready.source.generation, restored: false };
+    observed.published = { kind: "backup-created", directory: writer.directory, space: ready.space, selection: selected, createdAt: published.createdAt, streamCount: streams.length, fileCount: files.length, attemptId, sourceGeneration: ready.source.generation, trustBound: isTrustBound(selected, ready.mode), restored: false };
   } finally {
     // Ownership is surrendered ONLY once every owned resource is proven stopped and removed (or
     // published). Any cleanup failure keeps the claim so retry/stale-recovery finishes it — attempt

@@ -2,24 +2,24 @@ import { hostname, userInfo } from "node:os";
 import { readFileSync } from "node:fs";
 import {
   resolvePeer,
-  assertValidChannel,
   assertValidRole,
-  isConcreteChannel,
   isPublishPermissionDenied,
   resolveAuthProvider,
   effectiveDeliveryClass,
   effectiveReplay,
   readChannelRegistry,
   AmbiguousPeerError,
+  CotalEndpoint,
   type FlagSpec,
   type FlagValues,
   type Presence,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { brokerStoreWrite } from "../lib/broker-store-health.js";
 import { mentionsIn } from "../lib/mentions.js";
@@ -89,14 +89,15 @@ export function sendArguments(args: ParsedArgs): SendInput {
     throw new CommandFailure("refused", "USAGE_INVALID", 'a lone "-" is not read as stdin; send stdin with --stdin or --file -', { remedy: again("--stdin") });
   if (args.positionals.length === 1 && !args.positionals[0]?.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "the message is empty", { remedy: again('"<message>"') });
+  // A channel or role name the subject rules refuse gets their reason, which names what is at fault.
   try {
     if (destination.mode === "msg") {
-      assertValidChannel(destination.target);
-      if (!isConcreteChannel(destination.target)) throw new Error("wildcard publication");
+      const problem = concreteChannelProblem(destination.target);
+      if (problem) throw new Error(problem);
     } else if (destination.mode === "ask") assertValidRole(destination.target);
     else if (/[\/\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("not an agent address");
-  } catch {
-    throw new CommandFailure("refused", "USAGE_INVALID", destination.mode === "msg" ? "name one concrete channel, without wildcards" : destination.mode === "ask" ? "name one native role token" : "use an agent name or full instance id, not a roster label");
+  } catch (error) {
+    throw new CommandFailure("refused", "USAGE_INVALID", destination.mode === "dm" ? "use an agent name or full instance id, not a roster label" : (error as Error).message);
   }
   if (values["reply-to"] !== undefined && (destination.mode !== "dm" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");
@@ -174,6 +175,40 @@ async function channelDenied(channel: string, target: { space: string }, connect
   return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; the broker refused the message, so it was not stored`, { target: { ...target, post: post ?? null }, remedy });
 }
 
+/** The warning for a post to a channel with no registry entry. Whether the channel already holds
+ *  retained messages tells a new channel, often a typo, from one in use, so it is read before the
+ *  post. When that read is not possible here, the warning says it did not check. */
+async function unregisteredChannel(values: Values, channel: string, target: object, registered: readonly string[]): Promise<OutputWarning> {
+  const earlier = await earlierMessages(values, channel);
+  const names = [...registered].sort();
+  const known = names.length ? `Registered channels: ${names.map((name) => `#${name}`).join(", ")}.` : "This space registers no channels.";
+  const said = earlier === false ? `#${channel} has no channel metadata and no earlier message, so this message starts it. Check the name if you meant another channel.`
+    : earlier ? `Unregistered channel: #${channel} already has messages; publication uses the native space policy and does not create channel metadata.`
+    : "Unregistered channel: publication uses the native space policy and does not create channel metadata. Whether it has earlier messages was not checked.";
+  return { code: "CHANNEL_UNREGISTERED", target: { ...target, earlierMessages: earlier, registered: names }, message: `${said} ${known}` };
+}
+
+/** Whether a channel holds retained messages, read as `cotal history` lists channels: through a
+ *  short-lived observer endpoint, because the sender's operator credential reads no channel. Null
+ *  when that read is not possible here. */
+async function earlierMessages(values: Values, channel: string): Promise<boolean | null> {
+  let reader: CotalEndpoint | undefined;
+  try {
+    const conn = await connectOrThrow(values, "observer");
+    reader = new CotalEndpoint({
+      space: conn.space, servers: conn.server, ...endpointAuth(conn), ...(conn.mode === "user" ? { lifecycleUid: conn.epCaller?.uid } : {}),
+      channels: [], consume: false, registerPresence: false, watchPresence: false, card: { name: "send", kind: "endpoint" },
+    });
+    reader.on("error", () => {});
+    await reader.start();
+    return (await reader.listChannels()).some((row) => row.channel === channel && row.messages > 0);
+  } catch {
+    return null;
+  } finally {
+    await reader?.stop().catch(() => {});
+  }
+}
+
 /** Read the explicit body once, send once, close the transient sender, then print one receipt. */
 export async function send(args: ParsedArgs): Promise<void> {
   const input = sendArguments(args);
@@ -206,7 +241,7 @@ export async function send(args: ParsedArgs): Promise<void> {
         registered = Object.keys(registry.channels ?? {});
         const config = Object.hasOwn(registry.channels ?? {}, input.target) ? registry.channels![input.target] : undefined;
         policy = { registered: config !== undefined, replay: effectiveReplay(config, registry.defaults), window: config?.replayWindow ?? registry.defaults?.replayWindow ?? null, delivery: effectiveDeliveryClass(config, registry.defaults) };
-        if (!policy.registered) warnings.push({ code: "CHANNEL_UNREGISTERED", target, message: "Unregistered channel: publication uses the native space policy and does not create channel metadata." });
+        if (!policy.registered) warnings.push(await unregisteredChannel(values, input.target, target, registered));
       } catch {
         warnings.push({ code: "CHANNEL_METADATA_NOT_CHECKED", target, message: "Channel metadata could not be read. Only the native publish result establishes whether the post was accepted for storage." });
       }

@@ -283,7 +283,9 @@ export interface AuthProvider extends Extension {
    * request carries only its digest; the host picks the lifecycle UID, authors the ledger grant,
    * pre-creates the durables, and returns the stable non-secret metadata plus the space sentinel.
    * Optional so a provider with no hosted storage composition fails loud at the caller rather than
-   * letting a local grant masquerade as a host-owned one.
+   * letting a local grant masquerade as a host-owned one. A host that refuses the enrollment rejects
+   * as an `EpEnvelopeError` whose outcome is `not-executed`; any other failure carries no outcome,
+   * because the host may have enrolled the agent before it failed.
    */
   enrollRemoteManagedAgent?(opts: {
     store: SecretStore;

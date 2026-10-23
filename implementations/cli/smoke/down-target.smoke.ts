@@ -13,7 +13,8 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -50,6 +51,7 @@ let down!: typeof import("../src/commands/down.js").down;
 let setInstalledExtensionsEnabled!: typeof import("../src/ext-loader.js").setInstalledExtensionsEnabled;
 let stopLocalProcess!: typeof import("../src/lib/local-process-stop.js").stopLocalProcess;
 let webProcess!: typeof import("../../web/src/web.js").webProcess;
+let writeStackJournal!: typeof import("../src/lib/stack-journal.js").writeStackJournal;
 try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
@@ -59,6 +61,7 @@ try {
   ({ setInstalledExtensionsEnabled } = await import("../src/ext-loader.js"));
   ({ stopLocalProcess } = await import("../src/lib/local-process-stop.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
+  ({ writeStackJournal } = await import("../src/lib/stack-journal.js"));
 } catch (e) { cleanScratch(e); }
 
 let pass = 0;
@@ -424,6 +427,22 @@ try {
       /no saved service definition resolves this name/.test(namedManager.warning),
     namedManager,
   );
+
+  // An empty manager pidfile records no pid, so nothing is signalled and no manager could have reaped
+  // its agents. Bare down clears the husk and must not print the legacy spare warning (#3553).
+  const huskRoot = mkdtempSync(join(tmpdir(), "cotal-empty-manager-pidfile-"));
+  mkdirSync(join(huskRoot, ".cotal"), { recursive: true });
+  const huskPidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: huskRoot, space: "main" });
+  writeFileSync(huskPidPath, "", { mode: 0o600 });
+  recordMesh({ space: "main", server: "nats://127.0.0.1:1", root: huskRoot, mode: "open", origin: "up", ts: "2026-07-27T00:00:00.000Z" });
+  const husk = await bareDownIn(huskRoot);
+  check(
+    "bare down over an empty manager pidfile clears it without the legacy spare warning",
+    husk.error === undefined && !husk.exitCode && /manager had an empty pidfile/.test(husk.out) &&
+      !/manager version could not be verified/.test(husk.out) && !existsSync(huskPidPath),
+    husk,
+  );
+  rmSync(huskRoot, { recursive: true, force: true });
 
   // A pinned record can become ESRCH-dead before the manager policy hook runs. That path performs
   // no signal and therefore needs neither spare capability nor destructive intent. It must clear the
@@ -807,6 +826,44 @@ try {
   }
   rmSync(stoppedRoot, { recursive: true, force: true });
   rmSync(neverRoot, { recursive: true, force: true });
+
+  // `--space` naming a controller stack another folder holds is refused with that folder and the
+  // same down to run there: from a folder with its own stack, and from one whose `.cotal` a failed
+  // start left with no stack. Nothing is started, so the journals name no member instance.
+  {
+    const ts = new Date().toISOString();
+    const stackAt = (space: string) => {
+      const dir = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-stack-${space}-`)));
+      mkdirSync(join(dir, ".cotal"), { recursive: true, mode: 0o700 });
+      writeStackJournal(dir, undefined, {
+        schemaVersion: 1, kind: "cotal-stack-controller", root: dir, space, server: "nats://127.0.0.1:1", mode: "open",
+        members: (["broker", "auth", "delivery", "manager"] as const).map((role) => ({ role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const })),
+        operation: { id: randomUUID(), kind: "up", phase: "completed", recordedAt: ts, withAgents: false }, updatedAt: ts,
+      });
+      recordMesh({ space, server: "nats://127.0.0.1:1", root: dir, mode: "open", origin: "up", ts });
+      return dir;
+    };
+    const sa = stackAt("sa"), sb = stackAt("sb");
+    const elsewhere = `--space sb names a controller stack rooted at ${sb}`;
+    for (const [flag, again] of [["yes", "cotal down --yes"], ["dry-run", "cotal down --dry-run"]] as const) {
+      const r = await bareDownIn(sa, { space: "sb", [flag]: true });
+      check(`down --${flag} --space sb in another stack's folder refuses CONFLICT, naming sb's root, this folder's stack, and \`${again}\` from sb's root`,
+        r.error?.code === "CONFLICT" && Boolean(r.error.message?.includes(elsewhere)) && Boolean(r.error.message?.includes("this folder's stack is sa")) && r.error.remedy === `run \`${again}\` from ${sb}`, r);
+    }
+    const unknown = await bareDownIn(sa, { space: "nosuch", yes: true });
+    check("a --space no local stack holds names this folder's stack and the step to stop it",
+      unknown.error?.code === "CONFLICT" && Boolean(unknown.error.message?.includes("--space nosuch is not this folder's stack")) && Boolean(unknown.error.remedy?.includes("drop --space to stop sa here")), unknown);
+    const leftover = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-leftover-")));
+    mkdirSync(join(leftover, ".cotal"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(leftover, ".cotal", "server-open.conf"), "# rendered by a start that failed\n", { mode: 0o600 });
+    const fromLeftover = await bareDownIn(leftover, { space: "sb", yes: true });
+    check("down --yes --space sb in a folder whose .cotal holds no stack refuses TARGET_NOT_FOUND, naming sb's root and the down to run there",
+      fromLeftover.error?.code === "TARGET_NOT_FOUND" && Boolean(fromLeftover.error.message?.includes(elsewhere)) && fromLeftover.error.remedy === `run \`cotal down --yes\` from ${sb}`, fromLeftover);
+    const own = await bareDownIn(leftover);
+    check("a bare down there still answers for the folder's own root", own.error === undefined && own.exitCode === 0 && /is not running/.test(own.out), own);
+    removeMesh("sa"); removeMesh("sb");
+    for (const dir of [sa, sb, leftover]) rmSync(dir, { recursive: true, force: true });
+  }
 
   console.log(`\ndown-target smoke: ${pass} checks passed`);
 } finally {

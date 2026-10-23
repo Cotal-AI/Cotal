@@ -1,5 +1,19 @@
 # @cotal-ai/auth
 
+## 0.100.2
+
+### Patch Changes
+
+- 6b27db6: An actor grant receipt now names the earlier grant as none, the same fields or replaced, and says when its lifecycle was retired. A re-grant with the same fields is titled `Actor grant stored unchanged`; JSON carries `previous` and `previousLifecycleRetired`. Before, every grant read "Actor grant stored", so a repeat could not be told from a change.
+- c771bd9: `cotal auth handle inspect` on a NATS credential file now says it is a credential file and not a capability handle, which is a signed JSON grant, and that a credential file is passed with `--creds`. It said "local record input is not valid UTF-8 JSON", which was wrong for a UTF-8 file and did not say what a handle is. Neither message echoes the file.
+- c91e708: `cotal auth retire` with a malformed lifecycle UID now names the format, 26 to 32 lowercase letters and digits, and points to `cotal ps --wide`, which shows each seat's UID.
+- f6d6e2a: `cotal service-endpoint name <endpoint>` now prints the host's answer. Before, the client's result parser did not accept name-read results, so every run failed with "service host result: unsupported operation result", for a bound name and an unbound one alike.
+- Updated dependencies [8d81c12]
+- Updated dependencies [bb4145f]
+  - @cotal-ai/core@0.100.2
+  - @cotal-ai/workspace@0.100.2
+  - @cotal-ai/lang@0.100.2
+
 ## 0.100.1
 
 ### Patch Changes

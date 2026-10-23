@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.100.2
+
+### Patch Changes
+
+- 678a8c6: The `persona` section of the CLI docs no longer says remote `--on` operations refuse. List, show and create work on one manager's catalog with `--on`, and edit and remove refuse there, as the exact-manager section describes.
+
 ## 0.100.1
 
 No changes in this release.

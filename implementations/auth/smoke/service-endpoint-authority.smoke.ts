@@ -428,6 +428,13 @@ try {
     m5bad === "USAGE_INVALID" && m5badRead.state === "present" && (m5badRead.record.value as { state: string }).state === "proposed"
     && m5expected.length > 0 && Array.isArray(m5ceiling) && m5ceiling.every((cap) => cap.endpoint === m5view?.endpoint && cap.instanceId === m5view?.instanceId && cap.instanceOnly === true)
     && JSON.stringify(m5ceiling.map((cap) => cap.command).sort()) === JSON.stringify(m5expected), { m5bad, m5, m5expected });
+  // The name read: the bound owner reads its binding, and an unbound name reads absent.
+  let m6: Awaited<ReturnType<typeof serviceEndpointHostCall>> | string, m6none: Awaited<ReturnType<typeof serviceEndpointHostCall>> | string;
+  try { m6 = await serviceEndpointHostCall(clientDir, space, ["name", "org.example.route"], {}); } catch (e) { m6 = e instanceof Error ? e.message : String(e); }
+  try { m6none = await serviceEndpointHostCall(clientDir, space, ["name", "org.example.unbound"], {}); } catch (e) { m6none = e instanceof Error ? e.message : String(e); }
+  c.check("M6 the name command reads a bound name's binding at its revision, and an unbound name reads absent",
+    typeof m6 !== "string" && m6.answer.state === "present" && (m6.answer as { record?: { value?: { owner?: string }; revision?: number } }).record?.value?.owner === ownerA
+    && typeof m6none !== "string" && m6none.answer.state === "absent", { m6, m6none });
   // A lost answer: a proxy in front of the loopback face forwards the proposal read and drops the
   // connection on the decide, so the decision is recorded but never reaches the host.
   const mReg2 = await viaProvider("a", register(rid()));

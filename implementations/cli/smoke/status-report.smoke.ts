@@ -3,16 +3,18 @@
  * sandbox per case: one envelope whose result the report is drawn from, the agreed section order with
  * the hints last and no roster, only the selected registration checked unless `--all` asks for each,
  * a part it cannot read named on its row and reported partial (exit 4) rather than complete, and the
- * usage refusals. Broker-free: every registration points at a closed port. The live rows are in
+ * usage refusals, and the nats-server it would run named, with one on PATH below the broker floor
+ * refused by `up` before any broker starts. Broker-free: every registration points at a closed port. The live rows are in
  * `smoke:delivery-responder-visibility`, `smoke:component-health`, `smoke:ps-user-mode` and
  * `smoke:up-tls-routes`.
  *
  * Run: pnpm smoke:status-report
  */
 import { spawnSync } from "node:child_process";
+import { connect } from "node:net";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { acquireMaintenanceLock, beginMaintenanceCut, findMesh, recordMesh, releaseMaintenanceLock, renderReport, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
@@ -38,7 +40,7 @@ type Envelope = {
   command: string;
   result: {
     kind: string;
-    machine: { nats: string };
+    machine: { nats: string; natsServer: { path: string; version: string | null } | null; natsProblem: string | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
@@ -114,7 +116,11 @@ if (!brokerDisplayOnly) {
   );
   check("the report names no roster", !/roster/i.test(plain.stdout) && !/roster/i.test(verbose.stdout), plain.stdout);
   // The NATS row is in the verbose Machine section; the default view says Broker executable.
-  check("the NATS row says where nats-server comes from in words", /^ {2}NATS: +(nats-server on PATH|bundled nats-server|missing)$/m.test(verbose.stdout) && ["path", "bundled", "missing"].includes(env?.result?.machine?.nats ?? ""), { nats: env?.result?.machine?.nats, out: verbose.stdout.slice(0, 400) });
+  const machine = env?.result?.machine;
+  const natsRow = verbose.stdout.split("\n").find((line) => /^ {2}NATS: /.test(line))?.replace(/^ {2}NATS: +/, "");
+  const version = machine?.natsServer?.version ? `nats-server ${machine.natsServer.version}` : "nats-server, version not reported";
+  const expected = machine?.nats === "missing" ? "missing" : machine?.natsProblem ?? (machine?.nats === "path" ? `${version} on PATH at ${machine.natsServer?.path}` : `bundled ${version} at ${machine?.natsServer?.path}`);
+  check("the NATS row names the nats-server it would run, where it came from and its version", natsRow === expected && ["path", "bundled", "missing"].includes(machine?.nats ?? ""), { machine, natsRow });
   check("each hint in the result is printed under Next", (env?.result?.hints ?? []).every((hint) => plain.stdout.split("\nNext\n")[1]?.includes(ascii(hint))), { hints: env?.result?.hints, out: plain.stdout });
   check("no report line ends in padding", [plain.stdout, verbose.stdout].every((out) => out.split("\n").every((line) => !line.endsWith(" "))), plain.stdout);
 }
@@ -317,6 +323,29 @@ if (!brokerDisplayOnly) {
   check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk", shown(failed));
   const plain = run(["status", ...server, "--plain"]);
   check("the report shows a Store row and leads Next with down", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +Free space on the disk that holds \/store\/msgs\/1\.blk first/.test(plain.stdout), plain.stdout);
+}
+
+// ── a nats-server on PATH below the broker floor ─────────────────────────────────────────────────
+if (process.platform !== "win32") {
+  const { home, run } = sandbox();
+  const bin = join(home, "old-bin"), old = join(bin, "nats-server"), project = join(home, "project");
+  mkdirSync(bin);
+  mkdirSync(project);
+  writeFileSync(old, '#!/bin/sh\n[ "$1" = --version ] && { echo "nats-server: v2.2.0"; exit 0; }\nexit 1\n', { mode: 0o755 });
+  const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  const named = /the nats-server on PATH at \S+\/old-bin\/nats-server reports version 2\.2\.0, and this stack needs nats-server 2\.12 or newer/;
+  const json = run(["status", "--space", "nosuch", "--json"], onPath);
+  const machine = json.envelope?.result?.machine;
+  check("status names the old nats-server on PATH, its version and why up refuses it", json.status === 0 && machine?.nats === "path" && machine.natsServer?.path === old && machine.natsServer.version === "2.2.0" && named.test(machine.natsProblem ?? ""), machine);
+  const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
+  check("the Broker executable row says so", new RegExp(`^ {2}Broker executable: +${named.source}$`, "m").test(plain.stdout), shown(plain));
+  const port = await freePort();
+  const created = run(["space", "create", "gate", "--root", project, "--json"], onPath);
+  check("space create prepares the project", created.status === 0, shown(created));
+  const up = spawnSync(process.execPath, [BIN, "up", "--space", "gate", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: project, env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...onPath }, encoding: "utf8", timeout: 120_000 });
+  const refusal = JSON.parse(up.stdout || "{}") as { outcome?: string; error?: { code?: string; message?: string; remedy?: string } };
+  check("up refuses it DEPENDENCY_UNAVAILABLE, exit 2, naming its path and version", up.status === 2 && refusal.outcome === "refused" && refusal.error?.code === "DEPENDENCY_UNAVAILABLE" && named.test(refusal.error.message ?? "") && /take it off PATH so cotal uses its bundled nats-server/.test(refusal.error.remedy ?? ""), { status: up.status, error: up.error?.message, stdout: (up.stdout ?? "").slice(0, 900), stderr: (up.stderr ?? "").slice(0, 600) });
+  check("and no broker answers at its address", !(await new Promise<boolean>((done) => { const socket = connect(port, "127.0.0.1"); socket.once("connect", () => { socket.destroy(); done(true); }); socket.once("error", () => done(false)); })), port);
 }
 
 

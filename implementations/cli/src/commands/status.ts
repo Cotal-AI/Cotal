@@ -51,6 +51,7 @@ import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team
 import { preservedSourceState, restoreNextStep } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { natsServerLabel } from "../lib/nats-bin.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -142,6 +143,8 @@ export interface StatusResult {
     platform: string;
     install: CliProvenance;
     nats: MachineStatus["nats"];
+    natsServer: MachineStatus["natsServer"];
+    natsProblem: MachineStatus["natsProblem"];
     integrations: { name: string; state: "ok" | "warn" | "error" | "off"; text: string }[];
     connectors: { name: string; requires: string[]; missing: string[] }[] | null;
     defaults: { harness: string | null; persona: string | null } | null;
@@ -432,6 +435,8 @@ async function readMachine(selected: Selected, gaps: Gaps): Promise<StatusResult
     platform: `${process.platform === "darwin" ? "macOS" : process.platform === "win32" ? "Windows" : process.platform === "linux" ? "Linux" : process.platform} ${process.arch}`,
     install: cliProvenance(),
     nats: m.nats,
+    natsServer: m.natsServer,
+    natsProblem: m.natsProblem,
     integrations,
     defaults,
     connectors: connectors?.map((h) => ({ name: h.name, requires: [...h.requires], missing: h.missing })) ?? null,
@@ -1074,11 +1079,17 @@ function skillsCell(s: StatusResult["machine"]["skills"]): Cell {
   return cell(`${s.retired ? `${s.behind} to reconcile (${s.retired} retired)` : `${s.behind}/${s.total} out of date`} · ${remedy}`, "waiting");
 }
 
+/** The nats-server a broker start would run, or why it refuses the one it found. */
+function brokerExecutable(m: StatusResult["machine"]): string {
+  if (m.natsProblem) return m.natsProblem;
+  return natsServerLabel({ ...m.natsServer!, source: m.nats === "path" ? "path" : "bundled" });
+}
+
 function machineSection(m: StatusResult["machine"]): Section {
   const tone = { ok: "ok", warn: "waiting", error: "failed", off: "hint" } as const;
   const rows: [string, Cell][] = [
     ["cotal-ai", cell(`v${m.version} (${m.install.kind === "source" ? "source checkout" : m.install.kind}: ${m.install.root})`, "ok")],
-    ["NATS", m.nats === "missing" ? cell("missing", "failed") : cell(m.nats === "path" ? "nats-server on PATH" : "bundled nats-server", "ok")],
+    ["NATS", m.nats === "missing" ? cell("missing", "failed") : cell(brokerExecutable(m), m.natsProblem ? "failed" : "ok")],
     ...m.integrations.map((r): [string, Cell] => [r.name, cell(r.text, tone[r.state])]),
   ];
   if (m.connectors === null) rows.push(["Connectors", cell("unreadable - see the warning below", "failed")]);
@@ -1238,7 +1249,7 @@ function machineOverview(r: StatusResult): Section {
     if (m.integrations.some((item) => item.name.toLowerCase().includes(connector.name.toLowerCase()))) continue;
     rows.push([connector.name, stateCell(connector.missing.length ? `${connector.missing.join(", ")} not on PATH` : connector.requires.length ? "available on PATH" : "in-process", connector.missing.length ? "waiting" : "ok")]);
   }
-  rows.push(["Broker executable", stateCell(m.nats === "missing" ? "not installed" : m.nats === "path" ? "available on PATH" : "bundled", m.nats === "missing" ? "waiting" : "ok")]);
+  rows.push(["Broker executable", stateCell(m.nats === "missing" ? "not installed" : brokerExecutable(m), m.nats === "missing" ? "waiting" : m.natsProblem ? "failed" : "ok")]);
   rows.push(["Agent skills", skillsCell(m.skills)]);
   rows.push(["Dashboard", stateCell(m.web.installed === null ? "installation could not be read" : m.web.installed ? "installed" : "not installed · optional", m.web.installed === null ? "failed" : m.web.installed ? "ok" : "hint")]);
   if (r.extensions.items === null) rows.push(["Extensions", stateCell("manifest could not be read", "failed")]);
@@ -1696,7 +1707,6 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
   if (processVerdict(record) === "refused") {
     if (record.kind === "unattributable") facts.push("unattributable pidfile");
     if (record.kind === "unknown") facts.push("pid liveness unestablishable");
-    facts.push("static reconciliation not reported by this manager build");
     return { name: "manager", verdict: "refused", facts };
   }
   if (record.kind === "dead") facts.push("stale pidfile");
@@ -1708,7 +1718,6 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
       // A bare probe of an authenticated broker reports an Authorization Violation that describes
       // our own missing credential, not the manager's health. `refused` (not absent): the pass
       // could not read this component's control surface, which is exactly what that verdict means.
-      facts.push("static reconciliation not reported by this manager build");
       facts.push(`probe needs the signed-in login: ${credential.reason}`);
       return { name: "manager", verdict: "refused", facts };
     }
@@ -1762,7 +1771,6 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     // `ps` grades a user-mode manager by.
     return { name: "manager", verdict: lease || credential.kind === "user" ? "serving" : "not-serving", facts };
   } catch (e) {
-    facts.push("static reconciliation not reported by this manager build");
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
     // The lease and PID answer whether that missing service belongs to an extant component (not
     // serving) or an absent one; any other failed probe remains a refusal.
