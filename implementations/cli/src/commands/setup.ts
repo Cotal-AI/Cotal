@@ -56,6 +56,7 @@ import type { ManagedLaunchResult } from "./spawn.js";
 import type { SetupStackStartResult } from "./setup-start.js";
 import { runtimeProviders } from "./runtimes.js";
 import { onInstance } from "../lib/control.js";
+import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 
 const ONBOARD_VERSION = "2";
@@ -578,7 +579,9 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   const actions = actionRunner(narrate, opts.interactive, log);
   if (candidate.missing.length === 0) {
     const provider = await connectorSetupProvider(candidate.connector);
-    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv() }, provider));
+    const entry = findMesh(inputs.space);
+    const signedIn = provider?.connector && entry?.mode === "user" ? await signedInSpace(entry) : undefined;
+    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), ...(signedIn ? { signedIn } : {}) }, provider));
     // Recheck inside each selected action so lost readiness is a recorded failure, never a skipped step.
     const share = await connectorSetupProvider(candidate.connector);
     if (share?.mcpServers) await actions.run(candidate.value, actionStep(share.mcpServers, connectorShareInput(candidate.connector), share));

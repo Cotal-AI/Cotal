@@ -50,6 +50,14 @@ const LOCAL =
   "Cotal connector is also available, use this one unless the person asks for the hosted one: a " +
   "conversation uses one Cotal path. ";
 
+/** What Desktop chat's local server tells the model instead. Desktop chat supplies no native session,
+ *  so this server cannot join a signed-in space. */
+const DESKTOP =
+  "This is the Cotal server on this computer. It joins the person's local Cotal mesh. It cannot join a " +
+  "signed-in Cotal space, such as one on Cotal Cloud, from this chat: for one, use the space's hosted Cotal " +
+  "connector, which the person adds under Settings > Connectors > Add custom connector with the URL " +
+  "cotal_connect names. A conversation uses one Cotal path. ";
+
 /** How a Claude Code conversation hears messages through its native hooks module. */
 const CODE_LISTENING =
   "This plugin's native hooks module delivers Cotal-attributed incoming messages. " +
@@ -120,7 +128,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
             },
           },
         }
-      : { instructions: `${LOCAL}${GATEWAY_INSTRUCTIONS}` }),
+      : { instructions: `${DESKTOP}${GATEWAY_INSTRUCTIONS}` }),
   });
   let ending: Promise<void> | undefined;
   const end = () =>
