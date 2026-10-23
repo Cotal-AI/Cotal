@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
-import { agentFilePath, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { agentFilePath, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import {
+  COLOR_VALUES,
   CommandFailure,
   PREFERENCE_KEYS,
   isCommandFailure,
@@ -33,6 +34,7 @@ import {
   type Report,
   type ResolvedPreference,
 } from "@cotal-ai/workspace";
+import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { personaCatalog, personaNameProblem } from "../lib/persona-files.js";
 
 export const configFlags = [
@@ -42,6 +44,22 @@ export const configFlags = [
   jsonFlag,
   plainFlag,
 ] as const satisfies readonly FlagSpec[];
+
+export const configSubcommands = [
+  { name: "get", summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
+  { name: "set", summary: "save a value for you, or for one space with --space", usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+  { name: "unset", summary: "remove a saved value", usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+] as const satisfies readonly Subcommand[];
+
+/** Complete the subcommand, the key, and a value from the closed sets a write checks: color's and the
+ *  known harnesses. The dispatcher completes `--space`. */
+export function configComplete(argv: string[]): CompletionResult {
+  const words = completingFlagValue(argv, configFlags) ? [] : positionalsForCompletion(argv, configFlags);
+  if (words.length === 1) return { items: configSubcommands.map((sub) => ({ value: sub.name, description: sub.summary })), directive: "nofiles" };
+  if (words.length === 2 && configSubcommands.some((sub) => sub.name === words[0])) return { items: PREFERENCE_KEYS.map((key) => ({ value: key, description: preferenceInfo(key).about })), directive: "nofiles" };
+  if (words.length === 3 && words[0] === "set") return { items: (words[1] === "color" ? [...COLOR_VALUES] : words[1] === "harness" ? harnessNames() : []).map((value) => ({ value })), directive: "nofiles" };
+  return { items: [], directive: "nofiles" };
+}
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
 
@@ -182,9 +200,13 @@ export function checkHarness(value: string): void {
 }
 
 function harnessProblem(value: string): string | undefined {
-  const installed = loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name));
-  const known = knownHarnesses(installed);
+  const known = harnessNames();
   return known.includes(value) ? undefined : `no harness ${JSON.stringify(value)}; known harnesses: ${known.join(", ")}`;
+}
+
+/** The harnesses this workstation knows: the official connectors and the installed ones. */
+function harnessNames(): string[] {
+  return knownHarnesses(loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name)));
 }
 
 /** A persona default is a catalog name or a persona file path, the two forms a launch resolves (a path

@@ -18,7 +18,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
@@ -305,7 +305,6 @@ export async function send(args: ParsedArgs): Promise<void> {
 export function sendComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, sendFlags);
   if (flag?.name === "creds" || flag?.name === "file") return { items: [], directive: "default" };
-  if (flag?.name === "space") return { items: loadMeshes().map((mesh) => ({ value: mesh.space })), directive: "nofiles" };
   if (flag?.name === "channel") return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "role") return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };

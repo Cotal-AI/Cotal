@@ -1,5 +1,12 @@
-import type { FlagSpec } from "@cotal-ai/core";
+import type { CompletionResult, FlagSpec } from "@cotal-ai/core";
+import { loadMeshes, loadPreparedSpaces } from "@cotal-ai/workspace";
 import { metadataPositionals } from "./command-path.js";
+
+/** The spaces registered or prepared on this machine, the names every `--space` takes. */
+export function spaceCompletion(): CompletionResult {
+  const spaces = new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)]);
+  return { items: [...spaces].map((value) => ({ value })), directive: "nofiles" };
+}
 
 /** The string flag whose value is currently being completed, if the cursor is in one. */
 export function completingFlagValue(argv: string[], flags: readonly FlagSpec[]): FlagSpec | undefined {
