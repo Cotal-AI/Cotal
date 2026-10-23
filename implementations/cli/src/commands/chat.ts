@@ -21,7 +21,7 @@ import { openRoutingChatSession } from "../chat/open-session.js";
 import { openStaticChatSession } from "../chat/static-session.js";
 import { openUserChatSession } from "../chat/user-session.js";
 import { closeSummary, type Recipient } from "../chat/view.js";
-import type { AdmittedChatSession, CloseReport } from "../chat/session.js";
+import type { AdmittedChatSession, CloseReport, RosterView } from "../chat/session.js";
 
 export const chatFlags = [
   spaceFlag, serverFlag, { ...credsFlag, description: "an explicit credential file (not available for chat yet)" }, plainFlag,
@@ -164,6 +164,29 @@ async function discloseChannel(target: MeshTarget, channel: string): Promise<str
   }
 }
 
+/** How long a new session waits for its roster before it checks whether its name is already in use. */
+const ROSTER_MS = 2_000;
+
+/** A warning when another live participant already carries this session's label, which a direct
+ *  message by that name could then not single out. Read once the roster is current, or after
+ *  {@link ROSTER_MS}. */
+export async function sharedNameWarning(session: AdmittedChatSession): Promise<string | undefined> {
+  const self = session.identity();
+  const deadline = Date.now() + ROSTER_MS;
+  let roster: RosterView | undefined;
+  for (;;) {
+    const read = await session.roster();
+    if (read.outcome !== "ok") return undefined;
+    roster = read.value;
+    if (roster.view === "current" || Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const others = roster.rows.filter((row) => row.id !== self.principal && row.status !== "offline" && row.name.toLowerCase() === self.label.toLowerCase());
+  if (!others.length) return undefined;
+  const who = others.map((row) => `${row.id} (${row.sessionKind === "chat" ? "chat session" : row.kind})`).join(", ");
+  return `the name "${self.label}" is already in use here by ${who}; a direct message to "${self.label}" refuses as ambiguous while both are present, so pass another --name to be reached by name`;
+}
+
 /** Resolve the recorded mesh `--space`/`--server` select, once. Disclose the named channel, or
  *  check the target reachable when none is named. */
 async function prepareChat(values: Values, channel: string | undefined): Promise<{ target: MeshTarget; notice?: string }> {
@@ -200,6 +223,9 @@ export async function chat(args: ParsedArgs): Promise<void> {
     signals.release();
     throw e;
   }
+  // Signals are still held, so one that arrives during this read is handled below.
+  const shared = await sharedNameWarning(session);
+  if (shared) process.stderr.write(`cotal chat: ${shared}\n`);
   const during = signals.caught();
   if (during !== undefined) {
     // Interrupted while admitting: close what was admitted before a front end starts.
@@ -213,7 +239,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
   let close: CloseReport | undefined;
   try {
     // The front end installs its signal handling before it first yields, so releasing here leaves no gap.
-    const running = start({ session, initialRecipient, notice });
+    const running = start({ session, initialRecipient, notice: [notice, shared].filter(Boolean).join("; ") || undefined });
     signals.release();
     close = await running;
   } catch (e) {

@@ -365,6 +365,24 @@ try {
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);
   check("`cotal send -t` to an absent agent says TARGET_NOT_FOUND and no matching participant", missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes("no matching participant"), missing.stderr);
 
+  // Two participants sharing a name used to be listed by id alone, with nothing saying which is which.
+  const twinProvisioner = provisioner;
+  const twins = await Promise.all([{ kind: "agent" as const }, { kind: "endpoint" as const, meta: { sessionKind: "chat" } }].map(async (card) => {
+    const identity = newIdentity();
+    const lifecycleUid = mintLifecycleUid();
+    const creds = await provisionAgent(twinProvisioner, auth, identity, { lifecycleUid, subscribe: [], allowSubscribe: [] });
+    const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid, card: { name: "twin", id: identity.id, ...card }, channels: [], heartbeatMs: 500, ttlMs: 10_000 });
+    ep.on("error", () => {});
+    await ep.start();
+    return ep;
+  }));
+  await wait(500);
+  const twin = await run(["send", "-t", "twin", "x", "--json"]);
+  const twinRemedy = /"remedy":"([^"]*)"/.exec(twin.stdout)?.[1] ?? "";
+  check("a name two participants share refuses with each full identity labelled by its kind and start time",
+    twin.code === 2 && twin.stdout.includes('"code":"TARGET_AMBIGUOUS"') && twins.every((ep) => twinRemedy.includes(ep.card.id)) && /\(agent, started [^)]+\)/.test(twinRemedy) && /\(chat session, started [^)]+\)/.test(twinRemedy), twin);
+  for (const ep of twins) await ep.stop();
+
   // A lone `-` used to be published as the text "-": stdin is read only when asked for. An empty
   // quoted body used to be told to choose one body, with a remedy for another destination.
   const dash = await run(["send", "-c", "general", "-", "--json"]);
