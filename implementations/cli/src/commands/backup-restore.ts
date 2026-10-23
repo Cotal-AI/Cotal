@@ -3,6 +3,7 @@ import type { ParsedArgs } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
 import { heldRestoreAttempt } from "../lib/restore.js";
+import { assertStoreDirArgument } from "../lib/store-dir.js";
 import { startRestore, type RestoreStartupResult } from "./up.js";
 
 /** `backup restore <dir>`: the guarded native restore through `up --restore`'s own authority. It
@@ -13,6 +14,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
   const values = args.values as { only?: string; "store-dir"?: string; "accept-missing-source"?: boolean; json?: boolean; plain?: boolean };
   const directory = resolve(args.positionals[1]!);
   const target = { directory };
+  if (values["store-dir"] !== undefined) assertStoreDirArgument(values["store-dir"]);
   let result: RestoreStartupResult;
   try {
     result = await startRestore({

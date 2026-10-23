@@ -175,8 +175,9 @@ refused(() => assertProtectedEntry("the path", "/home/dev/Projects", stat(FILE |
   /: \/home\/dev\/Projects is group-writable and the private-group proof is unavailable: getfacl failed or exceeded its output limit$/,
   "chmod g-w /home/dev/Projects, or install acl", "a failed getfacl");
 
-// 5. The same rule on real paths. Each refusal is the leaf, so this machine's ancestors are never read.
-//    These paths belong to the real caller, and no group on them is proven.
+// 5. The same rule on real paths. The walk reads the whole chain, so the temporary directory and its
+//    ancestors must themselves be protected. These paths belong to the real caller, and no group on
+//    them is proven.
 const local: ProtectedPathPolicy = { uid: process.getuid!(), privateGroupGap: unproven.privateGroupGap, extendedAcl: noAcl };
 const dir = mkdtempSync(join(tmpdir(), "cotal-protected-paths-"));
 try {
@@ -192,6 +193,19 @@ try {
   refused(() => protectedLocalDirectory(grouped, undefined, local),
     `the path is not protected against other local writers: ${grouped} is group-writable and the private-group proof is unavailable: getent is not installed`,
     `chmod g-w ${shellPath(grouped)}`, "a real group-writable directory without a proof");
+  // The whole chain is read, so one refusal names a folder and its parent together, with one command.
+  const inner = join(grouped, "inner");
+  mkdirSync(inner);
+  chmodSync(inner, 0o770);
+  refused(() => protectedLocalDirectory(inner, "the project root", local),
+    `the project root is not protected against other local writers: ${inner} and ${grouped} are group-writable and the private-group proof is unavailable: getent is not installed`,
+    `chmod g-w ${shellPath(inner)} ${shellPath(grouped)}`, "a real group-writable folder under a group-writable parent");
+  const mixed = join(open, "inner");
+  mkdirSync(mixed);
+  chmodSync(mixed, 0o770);
+  refused(() => protectedLocalDirectory(mixed, "the project root", local),
+    `the project root is not protected against other local writers: ${mixed} is group-writable and the private-group proof is unavailable: getent is not installed; ${open} is writable by every local account`,
+    `chmod g-w ${shellPath(mixed)}; chmod o-w ${shellPath(open)}`, "a group-writable folder under a world-writable parent");
   const link = join(dir, "link");
   symlinkSync(grouped, link);
   refused(() => protectedLocalDirectory(link, "the path", local), /: .*\/link is a symbolic link$/,

@@ -304,6 +304,21 @@ function contains(parent: string, child: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${separator}`) && !isAbsolute(path));
 }
 
+/** An explicit `--store-dir` names the directory a restore creates and owns for its rollback, so it
+ *  must not exist yet and its parent must. Either mistake is a usage refusal before anything is
+ *  staged. The preserved source itself is the same-path restore. */
+function assertNewStorePath(target: string, source: string): void {
+  const present = (path: string) => {
+    try { lstatSync(path); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  };
+  const remedy = "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it";
+  if (!present(dirname(target)))
+    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${dirname(target)} does not exist; nothing was restored`, { target: { storeDir: target }, remedy });
+  if (target !== source && present(target))
+    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy });
+}
+
 function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string): void {
   const canonicalTarget = canonicalFuturePath(target);
   if (canonicalTarget !== source && (contains(source, canonicalTarget) || contains(canonicalTarget, source)))
@@ -720,6 +735,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (contains(stageParent, artifactPath) || contains(artifactPath, stageParent))
       throw new Error("restore artifact must not overlap the maintenance attempt directory");
     targetPath = resolve(flags["store-dir"] ?? (controller ? journal.source.path : join(root, ".cotal", "nats")));
+    if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
     assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
     // The journal is ready with no live claim, and the artifact/target are proven disjoint from
     // the attempts directory: any attempts-dir content is dead-attempt residue.

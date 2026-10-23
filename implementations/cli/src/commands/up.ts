@@ -59,6 +59,7 @@ import {
   CommandFailure,
   commandFailureReport,
   isCommandFailure,
+  protectedLocalDirectory,
   jsonFlag,
   plainFlag,
   renderReport,
@@ -188,6 +189,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
+import { assertStoreDirArgument } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -264,7 +266,7 @@ const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
 
 /** `cotal up` flags — colocated with the command (like `spawnFlags`) so its completion can read them. */
 export const upFlags: FlagSpec[] = [
-  { name: "server", type: "string", value: "<url>", description: "listen URL override" },
+  { name: "server", type: "string", value: "<url>", description: "listen URL; a stack's first up records it and later ups keep it" },
   { name: "host", type: "string", value: "<host>", description: "bind host override (an IP/hostname, not a URL; the URL is --server)" },
   { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
   { name: "root", type: "string", value: "<dir>", description: "use this existing prepared local root instead of the current folder" },
@@ -336,6 +338,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
   parsePositiveIntegerFlag("--max-file-store", args.values["max-file-store"] as string | undefined);
+  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"]);
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
@@ -566,6 +569,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __ordinaryResumeAttempt?: string;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
+  // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
+  // before anything is written: a stack started there could not be stopped from it.
+  protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
   if (values.restore) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");

@@ -461,7 +461,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--server <url>` | auto (free local port) | Listen URL override: one `nats://` or `tls://` URL with a host, without credentials, path, query or fragment. Any other value refuses `USAGE_INVALID` before anything is written. A controller stack's broker also needs one IP literal that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials |
+| `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with a host, without credentials, path, query or fragment. Any other value refuses `USAGE_INVALID` before anything is written. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. A different `--store-dir`, `--max-file-store` or `--host` refuses the same way, naming each recorded value. A controller stack's broker also needs one IP literal that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials |
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's space | Space name |
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
@@ -571,6 +571,12 @@ through a symlink, then renamed into place. The pid record and identity pin of a
 instance are published the same way. A file Cotal writes in place under `~/.cotal` or a
 project's `.cotal`, such as a generated configuration, a credential, a process marker, a persona,
 a seat record or one of those logs, is never written through a symlink.
+
+An explicit `--store-dir` on `up`, `up --restore` or `backup restore` must name a directory or a
+path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it. The
+existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
+writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
+is written. A non-empty directory is accepted, since it may hold an existing store.
 A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
 that is not a regular file is refused and left unchanged. A private directory is set to `0700`
 through its path, which follows a symlink; this step does not refuse a symlinked `~/.cotal` or
@@ -605,7 +611,10 @@ when a completed stop removed its mesh registration. Bare `up` reuses that addre
 conflicting `--server` or `--open` refuses before effects. A journal whose stack never launched a
 member pins neither, as when its first `up` was refused because another broker already answers at
 the address. The next `up` plans it as a first start, with that address or another `--server`, and
-`down` reports that nothing runs there. Legacy-only options refuse rather than switching launchers.
+`down` reports that nothing runs there. That refusal names the address and any space this machine
+registered there. Its next step for a first start is another `--server` or stopping that space. For a
+stack that ran, it is stopping that space and running bare `cotal up`, because the stack keeps its
+address. Legacy-only options refuse rather than switching launchers.
 `up -f`, recovery and existing legacy roots retain their native paths; those paths refuse the
 new JSON/plain flags. A legacy root is one with no stack journal that is neither prepared nor
 registered for the controller, such as a folder an earlier release started and a normal `down` then
@@ -1415,7 +1424,9 @@ come from the preserved cut, so no selector can rebind them. An artifact of anot
 `CONFLICT` (exit 2) and names both spaces; the preserved cut is not changed. A receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
-confirm that any seat joined. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
+confirm that any seat joined. `--store-dir` names a store the restore creates, so a path that
+already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
+is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
 state from the attempt, and `up --restore` refuses the same way. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
@@ -1703,9 +1714,11 @@ with a 2 second limit each, so the first check in a process can take a few secon
 holds for the life of the process. When a read is unavailable, group write refuses; install the
 `acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
 allowed. New control directories use mode 0700. An unsafe existing path refuses before the
-prepared record is written, without changing its permissions. The refusal names the path, the
-reason and a remedy such as `chmod g-w <path>`. It starts nothing and leaves the
-selection as it is. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
+prepared record is written, without changing its permissions. The refusal names every unsafe path
+in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that lists each path.
+It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
+it starts in, before it writes anything, so it never starts a stack that `down` would refuse to
+stop from that root. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
 space's root, and the home folder, whose `.cotal` holds this machine's own records. `space` lists
 prepared spaces under their own heading, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,

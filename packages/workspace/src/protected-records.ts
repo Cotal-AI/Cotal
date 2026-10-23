@@ -254,43 +254,70 @@ type EntryStat = Pick<Stats, "uid" | "gid" | "mode" | "isDirectory" | "isSymboli
 
 const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
 
-/** Refuse an existing entry that another local account could replace or write. Root or the caller
- *  must own it. Group write needs the caller's proven user private group and no extended ACL, whose
- *  named entries the group bits only mask. World write is never accepted. An `ancestor` walk also
- *  accepts a root-owned sticky directory such as /tmp. `what` names the path the caller checks,
- *  for the refusal. These are POSIX owner, mode and link checks, so the Windows model skips them. */
-export function assertProtectedEntry(what: string, path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy } = {}): void {
-  if (localRecordAccess() === "windows-acl") return;
-  const refuse = (reason: string, remedy: string): never => { throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${path} ${reason}`, { remedy, target: { path } }); };
-  const physical = "use a physical path owned by you or root, without symlinks";
-  if (stat.isSymbolicLink()) refuse("is a symbolic link", physical);
-  if (stat.uid !== 0 && stat.uid !== (options.policy?.uid ?? process.getuid!())) refuse("is owned by another account", physical);
-  if (options.ancestor && stat.isDirectory() && stat.uid === 0 && (stat.mode & 0o1000) !== 0) return;
-  if ((stat.mode & 0o002) !== 0) refuse("is writable by every local account", `chmod o-w ${shellPath(path)}`);
-  if ((stat.mode & 0o020) === 0) return;
+/** One entry another local account could replace or write, and the kind of change that fixes it. */
+type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "g-w-or-acl" };
+
+/** Why an existing entry is not protected against other local writers, or nothing when it is. Root
+ *  or the caller must own it. Group write needs the caller's proven user private group and no
+ *  extended ACL, whose named entries the group bits only mask. World write is never accepted. An
+ *  `ancestor` walk also accepts a root-owned sticky directory such as /tmp. */
+function protectionGap(path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy }): ProtectionGap | undefined {
+  const gap = (reason: string, fix: ProtectionGap["fix"]): ProtectionGap => ({ path, reason, fix });
+  if (stat.isSymbolicLink()) return gap("is a symbolic link", "physical");
+  if (stat.uid !== 0 && stat.uid !== (options.policy?.uid ?? process.getuid!())) return gap("is owned by another account", "physical");
+  if (options.ancestor && stat.isDirectory() && stat.uid === 0 && (stat.mode & 0o1000) !== 0) return undefined;
+  if ((stat.mode & 0o002) !== 0) return gap("is writable by every local account", "o-w");
+  if ((stat.mode & 0o020) === 0) return undefined;
   const policy = options.policy ?? systemPolicy();
-  const groupWrite = `chmod g-w ${shellPath(path)}`;
-  const gap = stat.uid === policy.uid ? policy.privateGroupGap(stat.gid) : "it is not owned by you";
-  if (gap) refuse(`is group-writable and ${gap}`, groupWrite);
+  const group = stat.uid === policy.uid ? policy.privateGroupGap(stat.gid) : "it is not owned by you";
+  if (group) return gap(`is group-writable and ${group}`, "g-w");
   let acl: string;
   try { acl = policy.extendedAcl(path); }
-  catch (error) { return refuse(`is group-writable and the private-group proof is unavailable: ${(error as Error).message}`, `${groupWrite}, or install acl`); }
-  if (acl !== "") refuse("is group-writable and has an extended ACL", groupWrite);
+  catch (error) { return gap(`is group-writable and the private-group proof is unavailable: ${(error as Error).message}`, "g-w-or-acl"); }
+  return acl === "" ? undefined : gap("is group-writable and has an extended ACL", "g-w");
 }
 
-/** Verify an existing physical directory chain before using a protected private output path.
- *  `what` names the path for the refusal, such as "the project root". */
+/** One refusal naming every gap, so a single change fixes them all. Paths that share a reason are
+ *  listed together, and each kind of fix is one command over its paths. */
+function protectionRefusal(what: string, gaps: readonly ProtectionGap[]): CommandFailure {
+  const reasons = [...new Set(gaps.map((gap) => gap.reason))].map((reason) => {
+    const paths = gaps.filter((gap) => gap.reason === reason).map((gap) => gap.path);
+    return paths.length === 1 ? `${paths[0]} ${reason}` : `${paths.slice(0, -1).join(", ")} and ${paths.at(-1)} ${reason.replace(/^is /, "are ")}`;
+  });
+  const remedies = [...new Set(gaps.map((gap) => gap.fix))].map((fix) => {
+    const paths = gaps.filter((gap) => gap.fix === fix).map((gap) => shellPath(gap.path)).join(" ");
+    return fix === "physical" ? "use a physical path owned by you or root, without symlinks" : fix === "o-w" ? `chmod o-w ${paths}` : fix === "g-w" ? `chmod g-w ${paths}` : `chmod g-w ${paths}, or install acl`;
+  });
+  const path = gaps[0]!.path;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${reasons.join("; ")}`, { remedy: remedies.join("; "), target: gaps.length === 1 ? { path } : { path, paths: gaps.map((gap) => gap.path) } });
+}
+
+/** Refuse an existing entry that another local account could replace or write; see
+ *  {@link protectionGap} for the rule. `what` names the path the caller checks, for the refusal.
+ *  These are POSIX owner, mode and link checks, so the Windows model skips them. */
+export function assertProtectedEntry(what: string, path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy } = {}): void {
+  if (localRecordAccess() === "windows-acl") return;
+  const gap = protectionGap(path, stat, options);
+  if (gap) throw protectionRefusal(what, [gap]);
+}
+
+/** Verify an existing physical directory chain before using a protected private output path. The
+ *  whole chain is read, and one refusal names every entry in it that is not protected. `what` names
+ *  the path for the refusal, such as "the project root". */
 export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
-  requireLocalRecordAccess();
+  const posix = requireLocalRecordAccess() === "posix";
+  const gaps: ProtectionGap[] = [];
   let parent = path;
   for (;;) {
     const directory = lstatSync(parent);
     if (!directory.isDirectory() && !directory.isSymbolicLink()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${parent} is not a directory`, { target: { path: parent } });
-    assertProtectedEntry(what, parent, directory, { ancestor: true, policy });
+    const gap = posix ? protectionGap(parent, directory, { ancestor: true, policy }) : undefined;
+    if (gap) gaps.push(gap);
     const next = dirname(parent);
     if (next === parent) break;
     parent = next;
   }
+  if (gaps.length) throw protectionRefusal(what, gaps);
 }
 
 export function protectedCredentialReference(path: string): void {

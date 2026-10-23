@@ -10,8 +10,10 @@
  *     delivery is killed, `status` reads its ready row as stale instead of bound.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
  *     launches nothing; once the port is free the same `up` starts. A second space whose first `up`
- *     finds that stack's broker answering refuses CONFLICT; its `down` stops nothing, `reset space`
- *     finds nothing to reset, and its next `up` starts at another address.
+ *     finds that stack's broker answering refuses CONFLICT naming the address and that space, with a
+ *     next step to another `--server`; its `down` stops nothing, `reset space` finds nothing to reset,
+ *     and its next `up` starts at another address. Once it ran, a third space's broker at that
+ *     address makes its bare `up` name stopping that space, and it keeps the address.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -232,15 +234,29 @@ try {
     const other = "heldport";
     const second = prepare(other);
     const blocked = cli(second, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
-    check("a first up where another stack's broker answers refuses CONFLICT, exit 2", blocked.status === 2 && blocked.env?.error?.code === "CONFLICT" && blocked.env.error.message.includes("something already answers"), shown(blocked));
+    check("a first up where another stack's broker answers refuses CONFLICT, exit 2, naming the address and its space", blocked.status === 2 && blocked.env?.error?.code === "CONFLICT" && blocked.env.error.message.includes(`something already answers at the stack's broker address nats://127.0.0.1:${port}, where space ${space} is registered`), shown(blocked));
+    check("its next step is another --server, or stopping that space", Boolean(blocked.env?.error?.remedy?.includes("cotal up --server nats://127.0.0.1:<port>") && blocked.env.error.remedy.includes(`stop space ${space} with cotal down from `)), shown(blocked));
     const nothing = cli(second, "down", "--yes", "--json");
     check("down of that never-started stack stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
     const reset = cli(second, "reset", "space", other, "--dry-run", "--json");
     check("reset space finds nothing to reset there and names cotal up", reset.status === 2 && reset.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(reset.env.error.remedy?.includes("cotal up")), shown(reset));
-    const moved = cli(second, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    const movedPort = await freePort();
+    const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
     track(other);
     check("its next up starts at another address", moved.status === 0, shown(moved));
     check("down --yes stops the moved stack", cli(second, "down", "--yes", "--json").status === 0);
+    // Once it ran, it keeps that address, so a broker another space started there must stop first.
+    const third = "takenport";
+    const taker = prepare(third);
+    const took = cli(taker, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
+    track(third);
+    const keeps = cli(second, "up", "--no-manager", "--json");
+    check("a stack that ran names stopping the space at its address and keeps that address", took.status === 0 && keeps.status === 2 && keeps.env?.error?.code === "CONFLICT" && keeps.env.error.message.includes(`where space ${third} is registered`) && Boolean(keeps.env.error.remedy?.startsWith(`stop space ${third} with cotal down from `) && keeps.env.error.remedy.endsWith("; this stack keeps its recorded address")), { took: shown(took), keeps: shown(keeps) });
+    check("down --yes stops the space that took the address", cli(taker, "down", "--yes", "--json").status === 0);
+    const back = cli(second, "up", "--no-manager", "--json");
+    track(other);
+    check("bare up then starts the moved stack at its recorded address", back.status === 0, shown(back));
+    check("down --yes stops the moved stack again", cli(second, "down", "--yes", "--json").status === 0);
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", stopped.status === 0, shown(stopped));
   }

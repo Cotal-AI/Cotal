@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
@@ -250,6 +250,20 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     );
     assert.notEqual(nestedTarget.status, 0);
     assert.match(nestedTarget.stderr, /target must not overlap the backup artifact/);
+    // An explicit store that already exists, or whose parent is missing, is a usage refusal before
+    // anything is staged, and the preserved cut stays as it was.
+    const cutState = readMaintenanceJournal(root)?.state;
+    const existingStore = join(root, "existing-store");
+    mkdirSync(existingStore);
+    for (const [label, storeDir, named] of [["existing", existingStore, existingStore], ["parentless", join(root, "missing-parent", "store"), join(root, "missing-parent")]] as const) {
+      const refused = run("backup", "restore", artifact, "--store-dir", storeDir, "--json");
+      const envelope = JSON.parse(refused.stdout) as { error?: { code?: string; message?: string } };
+      assert.equal(refused.status, 1, `${mode} ${label} --store-dir\n${refused.stdout}${refused.stderr}`);
+      assert.equal(envelope.error?.code, "USAGE_INVALID");
+      assert.ok(envelope.error?.message?.includes(named), envelope.error?.message);
+      assert.equal(readMaintenanceJournal(root)?.state, cutState, `${mode} ${label} --store-dir left the preserved cut unchanged`);
+    }
+    rmSync(existingStore, { recursive: true });
     if (mode === "open") {
       const occupied = await occupy(port);
       const blocked = run("up", "--detach", "--server", server, "--space", space);

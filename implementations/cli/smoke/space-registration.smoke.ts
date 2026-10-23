@@ -10,7 +10,9 @@
  * it was. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
- * legacy route, each with its reason, its remedy and exit 2, and the registration is kept.
+ * legacy route, each with its reason, its remedy and exit 2, and the registration is kept. An `up` in
+ * a folder other local accounts can write refuses before it writes anything, naming the folder and its
+ * parent with one remedy.
  *
  * Needs `nats-server` on PATH.
  *
@@ -18,7 +20,7 @@
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -321,6 +323,25 @@ setCurrent("keep");
   check("forgetting the selected space clears the selection and says so", human.status === 0 && getCurrent() === undefined && /forgot keep/.test(human.stdout) && /no space is selected now/.test(human.stdout), shown(human));
 }
 
+// ── A root other local accounts can write ──────────────────────────────────────────────────────────────
+// `space create` refuses such a root, so `up` refuses it too, before anything is written: a stack it
+// started there could not be stopped from it. World write refuses on every host, and one refusal names
+// the folder and its parent. The folder has its own `.cotal`, so a `.cotal` in an ancestor such as the
+// temporary directory does not become its root.
+{
+  const exposed = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-exposed-")));
+  const parent = join(exposed, "shared"), folder = join(parent, "proj");
+  mkdirSync(join(folder, ".cotal"), { recursive: true });
+  chmodSync(parent, 0o777);
+  chmodSync(folder, 0o777);
+  const before = registryFiles();
+  const up = await json(["up", "--open", "--server", LIVE], folder);
+  check("up in a folder other accounts can write is PERMISSION_DENIED, exit 2, naming it and its parent with one remedy, and writes nothing",
+    refused(up, 2, "PERMISSION_DENIED") && (up.env?.error?.message ?? "").includes(`${folder} and ${parent} are writable by every local account`) &&
+      up.env?.error?.remedy === `chmod o-w ${folder} ${parent}` && readdirSync(join(folder, ".cotal")).length === 0 && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(up));
+  rmSync(exposed, { recursive: true, force: true });
+}
+
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
   const before = registryFiles();
@@ -450,6 +471,19 @@ setCurrent("keep");
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
+  // The stopped stack keeps its recorded address and broker inputs. Another --server, or a --host it
+  // did not record, refuses before anything is written, naming the recorded value and the bare up
+  // that starts the stack there.
+  const recordedRoot = realpathSync(fresh), journalBefore = readFileSync(stackJournalPath(fresh), "utf8");
+  const moved = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
+  check("up --server naming another address is CONFLICT, exit 2, naming the recorded address and bare cotal up from the root",
+    refused(moved, 2, "CONFLICT") && (moved.env?.error?.message ?? "").includes(`recorded at ${server}`) &&
+      moved.env?.error?.remedy === `run bare cotal up from ${recordedRoot} to start it at ${server}`, shown(moved));
+  const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.1", "--server", server], fresh);
+  check("up --host naming an unrecorded bind host is CONFLICT, exit 2, naming it, its recorded value and bare cotal up",
+    refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.1 (recorded: none)") &&
+      (bound.env?.error?.remedy ?? "").includes(`run bare cotal up from ${recordedRoot}`), shown(bound));
+  check("neither refusal changed the stack journal", readFileSync(stackJournalPath(fresh), "utf8") === journalBefore);
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");
@@ -591,6 +625,34 @@ setCurrent("keep");
     }
     removeMesh(space);
   }
+}
+
+// ── An explicit --store-dir, checked before anything is written ────────────────────────────────────────
+// A regular file, or a path under one, is a usage refusal that names it, on up and on backup restore.
+// A directory other local accounts can write in the store's existing path refuses as a project root
+// does; world write refuses on every host. None of them writes a stack journal.
+{
+  const storeRoot = projectRoot("store-checks");
+  const file = join(home, "store-file");
+  writeFileSync(file, "x");
+  const exposed = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-store-")));
+  // Called through the module so this section adds no import to the file's shared import line.
+  (await import("node:fs")).chmodSync(exposed, 0o777);
+  const asFile = await json(["up", "--server", DEAD, "--store-dir", file], storeRoot);
+  check("up --store-dir naming a regular file is USAGE_INVALID, exit 1, naming it as not a directory",
+    refused(asFile, 1, "USAGE_INVALID") && (asFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`), shown(asFile));
+  const underFile = await json(["up", "--server", DEAD, "--store-dir", join(file, "sub")], storeRoot);
+  check("up --store-dir under a regular file names that file",
+    refused(underFile, 1, "USAGE_INVALID") && (underFile.env?.error?.message ?? "").includes(`${file}, in the --store-dir path ${join(file, "sub")}, is not a directory`), shown(underFile));
+  const restoreFile = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", file], storeRoot);
+  check("backup restore --store-dir naming a regular file is the same USAGE_INVALID, exit 1",
+    refused(restoreFile, 1, "USAGE_INVALID") && (restoreFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`), shown(restoreFile));
+  const writable = await json(["up", "--server", DEAD, "--store-dir", join(exposed, "store")], storeRoot);
+  check("up --store-dir in a directory every account can write is PERMISSION_DENIED, exit 2, naming it with its chmod",
+    refused(writable, 2, "PERMISSION_DENIED") && (writable.env?.error?.message ?? "").includes(`${exposed} is writable by every local account`) &&
+      writable.env?.error?.remedy === `chmod o-w ${exposed}` && !existsSync(join(exposed, "store")), shown(writable));
+  check("no store refusal wrote a stack journal", !existsSync(stackJournalPath(storeRoot)));
+  rmSync(exposed, { recursive: true, force: true });
 }
 
 finish();

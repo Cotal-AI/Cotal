@@ -4,6 +4,7 @@ import { basename, join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
+  isCommandFailure,
   localRecordName,
   presentationOf,
   abortMaintenanceCut,
@@ -319,7 +320,7 @@ function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
   if (maintenance && (maintenance.state !== "active" || maintenance.space !== mesh.space)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack retains a maintenance transition; ordinary bare down did not bypass it", { target: { ...scoped, state: maintenance.state } });
   let ledgers: ReturnType<typeof listLedgerFiles>;
   try { ledgers = listLedgerFiles(root, { requireReadable: true }); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the root's additive ledger directory could not be inspected; bare down did not infer that it owns every resource", { target: scoped }); }
+  catch (error) { if (isCommandFailure(error)) throw error; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the root's additive ledger directory could not be inspected; bare down did not infer that it owns every resource", { target: scoped }); }
   if (ledgers.valid.length || ledgers.refused.length)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "additive ownership ledgers or unreadable ledger records remain under this root; bare down did not adopt or stop their resources", { target: { ...scoped, deploymentIds: ledgers.valid.map(({ ledger }) => ledger.runId), unreadable: ledgers.refused.map(({ path }) => path) }, remedy: [
       ...ledgers.valid.map(({ ledger }) => `run \`cotal down --run ${ledger.runId}\` to tear down additive deployment ${ledger.runId}`),
@@ -328,12 +329,12 @@ function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
     ].join("; ") });
   let additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
   try { additiveAttempts = listAdditiveTeamAttempts(root); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive attempt inventory could not be read; bare down did not infer an empty resource set", { target: scoped }); }
+  catch (error) { if (isCommandFailure(error)) throw error; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive attempt inventory could not be read; bare down did not infer an empty resource set", { target: scoped }); }
   if (retainedAdditiveTeamAttempts(additiveAttempts).length || additiveAttempts.refused.length)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt or returned additive deployment remains under this root; legacy bare down did not adopt its resources", { target: { ...scoped, deploymentIds: retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) } });
   let attempts: ReturnType<typeof listFreshTeamAttempts>, summaries: ReturnType<typeof listFreshTeamSummaries>;
   try { attempts = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "fresh boot attempt or summary records could not be read; bare down did not infer stop authority", { target: scoped }); }
+  catch (error) { if (isCommandFailure(error)) throw error; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "fresh boot attempt or summary records could not be read; bare down did not infer stop authority", { target: scoped }); }
   const returned = new Map(summaries.valid.map((summary) => [summary.deploymentId, summary]));
   const unsettled = attempts.valid.filter((attempt) => !freshTeamAttemptSettled(attempt, returned.get(attempt.deploymentId)));
   if (unsettled.length || attempts.refused.length || summaries.refused.length)
