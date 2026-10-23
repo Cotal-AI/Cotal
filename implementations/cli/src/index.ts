@@ -27,6 +27,7 @@ import { persona, personaComplete, personaFlags } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
 import { config, configFlags } from "./commands/config.js";
+import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
 import { mint } from "./commands/mint.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
 import { history, historyFlags, validateHistoryArguments } from "./commands/history.js";
@@ -132,6 +133,25 @@ const baseCommands: Command[] = [
     examples: ["cotal config", "cotal config get harness", "cotal config set harness opencode", "cotal config set persona reviewer --space demo", "cotal config unset color"],
     reads: true,
     run: config,
+  },
+  {
+    kind: "command",
+    name: "telemetry",
+    group: "Setup",
+    summary: "anonymous usage telemetry: show the level in force, or set it to off, minimal or regular",
+    usage: "cotal telemetry [off|minimal|regular] [--json|--plain]",
+    positionals: "[off | minimal | regular]",
+    subcommands: [
+      { name: "off", summary: "send nothing", usage: "cotal telemetry off [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "minimal", summary: "send the command name, outcome, version and platform only", usage: "cotal telemetry minimal [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "regular", aliases: ["on"], summary: "also send the subcommand, flag names, error code and masked error text, terminal kind and a daily install summary", usage: "cotal telemetry regular [--json|--plain]", outputs: ["json", "plain"] },
+    ],
+    flags: telemetryFlags,
+    outputs: ["json", "plain"],
+    prepareMeshTarget: false,
+    examples: ["cotal telemetry", "cotal telemetry off", "cotal telemetry minimal", "cotal telemetry --json"],
+    validate: validateTelemetryArguments,
+    run: telemetry,
   },
   {
     kind: "command",
@@ -245,6 +265,7 @@ const baseCommands: Command[] = [
       { name: "yes", short: "y", type: "boolean", description: "acknowledge only the reviewed named-service or recorded whole-stack stop scope" },
       { name: "dry-run", type: "boolean", description: "bare: inspect local records only; named: preview owned stop; mutate nothing" },
       { name: "with-agents", type: "boolean", description: "bare whole stack: also stop and deprovision every managed agent" },
+      { name: "abandon-stop", type: "string", value: "<request-id>", description: "bare whole stack, with --yes: abandon a member's stop that no receipt settles, once its process and the down that sent it have exited" },
       { name: "preserve-state", type: "boolean", description: "bare whole stack: stop without logical teardown and publish an offline backup cut" },
       { name: "store-dir", type: "string", value: "<dir>", description: "with --preserve-state: actual JetStream store (default .cotal/nats)" },
       { name: "session-store", type: "string", multiple: true, value: "<dir>", description: "with --preserve-state: a harness transcript store directory to capture with every continuation-capable seat (repeatable; no default and never inferred)" },

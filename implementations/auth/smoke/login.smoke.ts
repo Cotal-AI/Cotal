@@ -35,6 +35,8 @@ import {
   establishIdpSession,
   fetchIdpJwt,
   generateSigningKey,
+  IdpLoginCancelled,
+  IdpUnreachableError,
   loadIdpSession,
   normalizeIdpUrl,
   prepareIdpSpaceCatalogs,
@@ -121,6 +123,49 @@ console.log("A) one-shot remote enrollment client");
     check(`the ${label} refusal made no request`, requests === 3);
   }
   enrollment.close();
+  delete process.env.COTAL_HOME;
+  if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
+}
+
+// ---------- remote agent provisioning ----------
+console.log("A2) remote agent-provisioning client");
+{
+  let requests = 0;
+  const provisioningHome = mkdtempSync(join(tmpdir(), "cotal-provisioning-home-"));
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = provisioningHome;
+  // The path names the status the endpoint answers.
+  const provisioning = createServer((req, res) => {
+    requests++;
+    const status = Number(req.url?.slice(1));
+    res.statusCode = status;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(status === 200 ? { ok: true } : { error: `fixture_${status}` }));
+  });
+  await new Promise<void>((r) => provisioning.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(provisioning.address() as AddressInfo).port}`;
+  const idpUrl = `${base}/idp`;
+  const answer = async (status: number) => {
+    try {
+      await cotalAuthProvider.postAgentProvisioning!({ url: `${base}/${status}`, idpUrl, actor: "agent" });
+      return { code: "resolved", message: "" };
+    } catch (e) {
+      return { code: (e as { code?: unknown }).code, message: (e as Error).message };
+    }
+  };
+  const signedOut = await answer(403);
+  check("no sign-in is signed-out before any request", signedOut.code === "signed-out" && requests === 0 && signedOut.message.includes("cotal login --idp"));
+  saveIdpSession(provisioningHome, idpUrl, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
+  const expired = await answer(401);
+  // The endpoint is the deployment's, and nothing pins what its refusal left behind.
+  check("an endpoint 401 carries no code and names the login", expired.code === undefined && expired.message.includes("fixture_401") && expired.message.includes("cotal login --idp"));
+  const denied = await answer(403);
+  check("an endpoint 403 carries no code and gives the endpoint's reason", denied.code === undefined && denied.message.includes("fixture_403"));
+  const failing = await answer(503);
+  check("an endpoint 503 carries no code", failing.code === undefined && failing.message.includes("fixture_503"));
+  check("a 200 answer resolves", (await answer(200)).code === "resolved");
+  check("each signed-in call sent one request", requests === 4);
+  provisioning.close();
   delete process.env.COTAL_HOME;
   if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
 }
@@ -714,5 +759,140 @@ console.log("E) hostile-IdP responses");
 }
 
 server.close();
+
+// ---- caller cancellation ----
+console.log("G) caller cancellation (AbortSignal): stops this local sign-in, revokes nothing remotely");
+{
+  // A scripted IdP that counts every request per route, can hold /token open, and approves only
+  // when told. Cancellation is asserted on what the client SENDS and what it WRITES, not on timing.
+  const hits: Record<string, number> = {};
+  let approved = false;
+  let tokenGate: Promise<void> | undefined;
+  const jwtFor = (sub: string) =>
+    `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub, iss: "x" })).toString("base64url")}.sig`;
+  const idp = createServer(async (req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    hits[route] = (hits[route] ?? 0) + 1;
+    const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)); };
+    if (route === "/api/auth/device/code")
+      return send(200, { device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 60, interval: 1 });
+    if (route === "/api/auth/device/token")
+      return approved ? send(200, { access_token: "opaque-cancel-session", expires_in: 3600 }) : send(400, { error: "authorization_pending" });
+    if (route === "/api/auth/token") {
+      if (tokenGate) await tokenGate;
+      return send(200, { token: jwtFor("cancel-user") });
+    }
+    send(404, {});
+  });
+  await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
+  const cBase = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/api/auth`;
+  const reset = () => { for (const k of Object.keys(hits)) delete hits[k]; approved = false; tokenGate = undefined; };
+  const isCancel = (e: unknown) => e instanceof IdpLoginCancelled && !(e instanceof IdpUnreachableError);
+
+  // 1. Aborted before start: nothing is sent.
+  reset();
+  {
+    const ac = new AbortController();
+    ac.abort();
+    const err = await deviceLogin({ idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    check("an already-aborted signal is refused as a cancellation before any IdP request", isCancel(err) && Object.keys(hits).length === 0, { err: String(err), hits });
+  }
+
+  // 2. Aborted during the poll wait: settles within the interval, and no further poll is sent.
+  reset();
+  {
+    const ac = new AbortController();
+    const t0 = performance.now();
+    const p = deviceLogin({ idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    await new Promise((r) => setTimeout(r, 1300)); // after the first poll, inside the second wait
+    const pollsAtAbort = hits["/api/auth/device/token"] ?? 0;
+    ac.abort();
+    const err = await p;
+    const settledMs = performance.now() - t0 - 1300;
+    await new Promise((r) => setTimeout(r, 1500)); // a missed abort would poll again here
+    check("abort during the poll wait rejects as a cancellation, not as unreachable or expired", isCancel(err), String(err));
+    check("… settles promptly (well under one poll interval)", settledMs < 500, { settledMs });
+    check("… and sends no poll after the abort", pollsAtAbort >= 1 && (hits["/api/auth/device/token"] ?? 0) === pollsAtAbort, { pollsAtAbort, hits });
+  }
+
+  // 3. Aborted while the prompt is still open: the prompt race honours it and no poll starts.
+  reset();
+  {
+    const ac = new AbortController();
+    const p = deviceLogin({ idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => new Promise<void>(() => { setTimeout(() => ac.abort(), 50); }), signal: ac.signal }).then(() => undefined, (e) => e);
+    const err = await p;
+    check("abort while the prompt is unsettled rejects as a cancellation and never polls", isCancel(err) && (hits["/api/auth/device/token"] ?? 0) === 0, { err: String(err), hits });
+  }
+
+  // 4. Approved, then aborted while the session's JWT proof is in flight: nothing is persisted.
+  reset();
+  {
+    const cDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-cancel-"));
+    const ac = new AbortController();
+    let release!: () => void;
+    tokenGate = new Promise<void>((r) => { release = r; });
+    approved = true;
+    const p = establishIdpSession({ dir: cDir, idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    while ((hits["/api/auth/token"] ?? 0) === 0) await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+    release();
+    const err = await p;
+    check("abort after approval, before persistence, rejects as a cancellation", isCancel(err), String(err));
+    check("… and persists nothing: no session file, no catalog file", readdirSync(cDir).length === 0, readdirSync(cDir));
+  }
+
+  // 5. With no signal, behaviour is unchanged: the same flow completes and persists.
+  reset();
+  {
+    const okDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-nosignal-"));
+    approved = true;
+    const est = await establishIdpSession({ dir: okDir, idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => {} });
+    check("without a signal the same flow completes and persists (existing callers unchanged)",
+      est.sub === "cancel-user" && loadIdpSession(okDir, cBase)?.token === "opaque-cancel-session");
+  }
+  idp.close();
+}
+{
+  // 6 and 7. An error response whose body stalls: the IdP flushes non-OK headers, then never sends
+  // the body. A caller abort during that body read is a cancellation, on the first request and on
+  // a poll alike, never a generic error or an "unreachable".
+  let stallOn: "code" | "token" = "code";
+  const held = new Set<import("node:http").ServerResponse>();
+  const hits: Record<string, number> = {};
+  const stall = createServer((req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    hits[route] = (hits[route] ?? 0) + 1;
+    if (route === "/api/auth/device/code" && stallOn === "token") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 60, interval: 1 }));
+      return;
+    }
+    res.writeHead(400, { "content-type": "application/json" });
+    res.flushHeaders();
+    held.add(res); // the body never comes
+  });
+  await new Promise<void>((r) => stall.listen(0, "127.0.0.1", r));
+  const sBase = `http://127.0.0.1:${(stall.address() as AddressInfo).port}/api/auth`;
+  const abortAfterHeaders = async (route: string): Promise<unknown> => {
+    const ac = new AbortController();
+    const p = deviceLogin({ idpUrl: sBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    while ((hits[route] ?? 0) === 0) await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 30));
+    ac.abort();
+    return p;
+  };
+  const cancelledClass = (e: unknown) => e instanceof IdpLoginCancelled;
+
+  stallOn = "code";
+  const codeErr = await abortAfterHeaders("/api/auth/device/code");
+  check("abort while a /device/code error body stalls rejects as a cancellation", cancelledClass(codeErr), String(codeErr));
+
+  stallOn = "token";
+  const pollErr = await abortAfterHeaders("/api/auth/device/token");
+  check("abort while a /device/token error body stalls rejects as a cancellation", cancelledClass(pollErr), String(pollErr));
+
+  for (const r of held) r.destroy();
+  stall.close();
+}
+
 console.log(`\nlogin smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

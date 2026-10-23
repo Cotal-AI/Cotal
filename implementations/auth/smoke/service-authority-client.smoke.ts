@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,6 +11,9 @@ import type { SecretStore } from "@cotal-ai/core";
 import { createAccount } from "@nats-io/nkeys";
 import { ServiceAuthorityTransportError, contractDigest, epRequestSubject, serviceEndpointActor, type ServiceAuthorityEnvelope } from "@cotal-ai/core";
 import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo, serviceAuthorityUrl } from "../src/service-authority-client.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const accountPublicKey = createAccount().getPublicKey();
 const request = {
@@ -30,7 +34,8 @@ const viewRequest = { v: request.v, kind: request.kind, operation: "describe-vie
   observation: { subject: epRequestSubject(request.space, { endpoint: request.endpoint, command: "describe", route: { mode: "one" },
     caller: { owner, actor: "caller", uid: "c".repeat(32) }, nonce: "n".repeat(32) }), fingerprint: contractDigest({ observed: 1 }) } };
 const viewEnvelope: ServiceAuthorityEnvelope = { request: viewRequest, proof: { kind: "service-access", token: "fixture-access" } };
-const info = { v: 1, kind: "service-endpoint-authority-info", space: request.space, accountPublicKey };
+const info = { v: 1, kind: "service-endpoint-authority-info", space: request.space, accountPublicKey,
+  issuer: "https://auth.example/exchange", keys: [{ kty: "OKP", crv: "Ed25519", kid: "kid-1", x: Buffer.from("58" + "66".repeat(31), "hex").toString("base64url") }] };
 let mode = "info", requests = 0, redirectRequests = 0;
 let expectedEnvelope = envelope;
 const dir = mkdtempSync(join(tmpdir(), "service-client-"));
@@ -157,6 +162,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(requests, beforeSlow, "late preparation cannot dispatch after the original provider deadline");
   console.log("service-authority-client: live HTTP, provider projection, result binding, read-only Describe/no-store/full-flow deadlines and no-retry checks passed");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   rmSync(dir, { recursive: true, force: true });
   server.closeAllConnections();

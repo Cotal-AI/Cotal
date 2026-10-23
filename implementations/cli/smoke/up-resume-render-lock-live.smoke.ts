@@ -249,7 +249,8 @@ try {
 
   console.log("\n4) SUBJECT: a FOREGROUND resume recreates the presence bucket too");
   await cutPreserved(space);
-  const foreground = run(["up", "--space", space, "--server", server]);
+  // A bare `up` runs in the background, so the terminal-bound stack is asked for by name.
+  const foreground = run(["up", "--foreground", "--space", space, "--server", server]);
   // A foreground `up` never exits once it serves, so its resume is done when the journal is consumed.
   // A resume that skipped the bucket ends `resume-degraded` and exits instead.
   for (let i = 0; i < 1200 && foreground.exitCode === null && journalState() !== "none"; i++) await sleep(200);

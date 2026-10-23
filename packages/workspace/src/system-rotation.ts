@@ -11,6 +11,7 @@ import {
 } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
+import { retainSystemSigningSeed } from "./system-signing-seed.js";
 import { readLocalRecordSource } from "./protected-records.js";
 import {
   connectionEvictorCredsKey,
@@ -25,8 +26,9 @@ import {
  * standing renewal and deliberately EXCLUDES these two files.
  *
  * `membership-observer.creds` and `connection-evictor.creds` are `rotation-renewed`: they are signed
- * by the system-account seed, which is never persisted (`putSpaceAuth` strips it), so no running
- * process can re-sign them for their existing identity the way `remintDaemonCreds` does. Their only
+ * by the system-account seed, which the trust record omits (`putSpaceAuth` strips it; the root's
+ * separate custody record, see `system-signing-seed.ts`, serves own-broker caller issuance only), so
+ * no running process re-signs them for their existing identity the way `remintDaemonCreds` does. Their only
  * renewal is a system-account ROTATION: a fresh $SYS account under the SAME broker operator, fresh
  * creds minted from its in-memory seed, and a broker that reloads the new operator/system JWTs.
  *
@@ -125,7 +127,7 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   // AHEAD of the creds: both files stale (crash before either write) or one stale (crash between
   // them). The window is not closed here; it is DETECTED, by {@link staleSystemCreds}, which every
   // boot and every `doctor auth` runs against the persisted record. It cannot be repaired in place
-  // either: the successor's signing seed is gone the moment it is persisted, so the only repair is
+  // either: nothing re-signs these two creds in place after this call returns, so the only repair is
   // another rotation, which is idempotent and costs one generation. A durable rotation journal would
   // close the window instead of reporting it; that is deliberately not built for a display-only feed
   // plus an eviction rail whose recovery is one re-run.
@@ -139,6 +141,7 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   // `space.<hex>/` dir on a root whose pair has never been segmented.
   const composition = { injected: false as const, root };
   await putSpaceAuth(s, rotated);
+  await retainSystemSigningSeed(s, rotated); // the successor's seed replaces the retired account's
   await s.put(membershipObserverCredsKey(expectedSpace, composition), observer);
   await s.put(connectionEvictorCredsKey(expectedSpace, composition), evictor);
 

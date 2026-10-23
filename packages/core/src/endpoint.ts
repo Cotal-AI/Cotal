@@ -7818,12 +7818,13 @@ function hostPort(server: string): { host: string; port: number } {
  *      so the read won't match → returns false (a documented false-negative for that broker config);
  *    • a non-NATS / silent listener never sends a valid `INFO {` → also false (we require the real
  *      greeting, never "any open port is reachable").
- *  Closes well within the server's ~1s authorization timeout, so it cannot trip a timeout log. */
-function tcpInfoProbe(server: string, timeoutMs: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+ *  Closes well within the server's ~1s authorization timeout, so it cannot trip a timeout log.
+ *  A live server resolves to what its greeting said about auth; anything else resolves `false`. */
+function tcpInfoProbe(server: string, timeoutMs: number): Promise<false | { authRequired: boolean }> {
+  return new Promise<false | { authRequired: boolean }>((resolve) => {
     let socket: ReturnType<typeof createConnection> | undefined;
     let done = false;
-    const finish = (live: boolean) => {
+    const finish = (live: false | { authRequired: boolean }) => {
       if (done) return;
       done = true;
       try { socket?.destroy(); } catch { /* already gone */ }
@@ -7841,7 +7842,7 @@ function tcpInfoProbe(server: string, timeoutMs: number): Promise<boolean> {
       const line = buf.slice(0, nl);
       const brace = line.indexOf("{"); // greeting is `INFO {json}` (the server appends a trailing space)
       if (!/^INFO\b/.test(line) || brace === -1) return finish(false); // not NATS (incl. a TLS-first handshake)
-      try { JSON.parse(line.slice(brace)); finish(true); } // require a real INFO greeting, not arbitrary bytes
+      try { finish({ authRequired: (JSON.parse(line.slice(brace)) as { auth_required?: unknown })?.auth_required === true }); } // require a real INFO greeting, not arbitrary bytes
       catch { finish(false); }
     });
     socket.on("timeout", () => finish(false));
@@ -7923,7 +7924,7 @@ export async function isReachable(
         return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
       }
     }
-    return tcpInfoProbe(servers, timeoutMs);
+    return (await tcpInfoProbe(servers, timeoutMs)) !== false;
   }
   // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
   // the same orphaned-socket defects probeConnect did (#389, and the slow-greeting case #2156) and
@@ -7961,10 +7962,13 @@ export async function isReachable(
  *  registry prune (the D5 credential-death event). `unreachable` means nothing usable answered and
  *  the cred is not provably dead (refused / timeout / a stale registry entry). `timeout` means the
  *  dial ran out of its own budget before anything conclusive came back — never a trust or credential
- *  verdict, just "try again with more time" (#851). */
+ *  verdict, just "try again with more time" (#851). `inferred` marks an `auth-required` read from
+ *  the broker's greeting rather than from a rejection: the greeting asked for auth and the handshake
+ *  was then reset. The greeting is unauthenticated, so that verdict may name a failure but must never
+ *  be grounds for deleting state. */
 export type ProbeResult =
   | { ok: true }
-  | { ok: false; reason: "auth-required" }
+  | { ok: false; reason: "auth-required"; inferred?: true }
   | { ok: false; reason: "stale-auth" }
   | { ok: false; reason: "unreachable" }
   | { ok: false; reason: "timeout" };
@@ -7996,7 +8000,8 @@ export async function probeConnect(
   // off TLS/ws, one extra greeting read) on the reachable path; the deadline below is the
   // REMAINDER of the budget, because `connect()`'s own `timeout` always covered its handshake too.
   const gate = opts.tls || wsServers(server) ? tcpDialable : tcpInfoProbe;
-  if (!(await gate(server, timeoutMs))) return classifyProbeFailure(undefined, opts);
+  const greeting = await gate(server, timeoutMs);
+  if (!greeting) return classifyProbeFailure(undefined, opts);
   try {
     const nc = await dialerFor(server)({
       servers: server,
@@ -8008,7 +8013,7 @@ export async function probeConnect(
     await nc.close();
     return { ok: true };
   } catch (e) {
-    return classifyProbeFailure(e, opts);
+    return classifyProbeFailure(e, opts, greeting !== true && greeting.authRequired);
   }
 }
 
@@ -8022,8 +8027,9 @@ export async function probeConnect(
  *  surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError, which
  *  used to misclassify a dead cred. Reading the cred removes that timing dependency entirely, so the
  *  classification is deterministic. Unreadable content falls through to the wire truth (no false
- *  stale diagnosis from garbage). `e` is undefined when the gate refused before any connect. */
-function classifyProbeFailure(e: unknown, opts: AuthOpts): ProbeResult {
+ *  stale diagnosis from garbage). `e` is undefined when the gate refused before any connect.
+ *  `authRequired` is true when the gate read a greeting that asked for auth. */
+function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false): ProbeResult {
   if (typeof opts.creds === "string") {
     try {
       if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
@@ -8036,5 +8042,10 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts): ProbeResult {
   // and grading it `unreachable` made a TLS-required target read as a trust failure (#851). Only
   // nats-core's TimeoutError means that: a peer's `-ERR` that mentions a timeout answered at once.
   if (e instanceof TimeoutError) return { ok: false, reason: "timeout" };
+  // A broker that greeted us asking for auth and then reset the handshake most likely refused it.
+  // Windows can discard its `-ERR 'Authorization Violation'` when the reset lands, so the client
+  // sees only ECONNRESET, and a running auth broker used to read as gone. No rejection was read, so
+  // the verdict is marked inferred.
+  if (authRequired && (e as { code?: unknown } | undefined)?.code === "ECONNRESET") return { ok: false, reason: "auth-required", inferred: true };
   return { ok: false, reason: "unreachable" };
 }

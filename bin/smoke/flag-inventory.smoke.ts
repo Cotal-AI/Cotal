@@ -94,8 +94,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Named owned services or the recorded whole stack. `--instance` qualifies one name, `--yes` and
   // `--dry-run` confirm or preview the reviewed scope. `--session-store` (2026-09) is the repeatable
   // harness transcript store a preserve-state cut captures. `--file`/`--run` are the historical
-  // `spawn -f` teardown, which the redesign moves to `team remove <deployment-id>`.
-  down: { flags: ["dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
+  // `spawn -f` teardown, which the redesign moves to `team remove <deployment-id>`. `--abandon-stop`
+  // (2026-10) names the one member stop request a controller stack's down abandons.
+  down: { flags: ["abandon-stop:string", "dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
   backup: { flags: ["accept-missing-source:boolean", "dry-run:boolean", "json:boolean:j", "only:string", "plain:boolean", "store-dir:string", "yes:boolean:y"], positionals: true },
   reset: { flags: ["dry-run:boolean", "json:boolean:j", "plain:boolean", "yes:boolean:y"], positionals: true },
   // `space` (2026-10): the registered spaces and one in full, on the structured output contract.
@@ -259,6 +260,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
+  // Anonymous usage telemetry: the bare form reports the level, a level word writes it.
+  telemetry: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
   // Guarded maintenance over the hidden `reconcile-gate` and `seats` command objects below.
   manager: { flags: ["drain:boolean", "dry-run:boolean", "endpoint:string", "instance:string", "json:boolean:j", "plain:boolean", "server:string", "space:string:s", "yes:boolean:y"], positionals: true },
 
@@ -333,7 +336,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // `app-identity` (2026-10, #4082): hidden plumbing the Claude connector's local server runs to
   // open (`provision`) or retire one Claude app conversation's identity on a local mesh.
-  "app-identity": { flags: ["dir:string", "name:string", "space:string"], positionals: true },
+  "app-identity": { flags: ["dir:string", "events:boolean", "name:string", "require-approval:boolean", "selection:string", "session:string", "space:string"], positionals: true },
   // The children `service start` execs under controller custody, the owned user-unit entry and the
   // startup child `setup --start` execs. Each takes only the arguments its launcher writes.
   "__service-auth": {

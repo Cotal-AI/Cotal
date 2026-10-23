@@ -110,7 +110,9 @@ const csText = readFileSync(CHANGESETS, "utf8");
 const ciJobs = jobs(ciText);
 const csJobs = jobs(csText);
 const pack = ciJobs.get("seat-pack") ?? "";
-const version = csJobs.get("version") ?? "";
+const releasePack = csJobs.get("pack") ?? "";
+const publish = csJobs.get("publish") ?? "";
+const releaseNative = csJobs.get("native") ?? "";
 const rootPkg = JSON.parse(readFileSync(PKG, "utf8")) as { scripts?: Record<string, string> };
 const ciPublish = rootPkg.scripts?.["ci:publish"] ?? "";
 
@@ -130,7 +132,6 @@ const coldJobs = jobs(coldText);
 const native = coldJobs.get("native") ?? "";
 const candidate = coldJobs.get("candidate") ?? "";
 const packer = readFileSync(join(ROOT, "scripts/pack-cold-candidate.mjs"), "utf8");
-const publisher = readFileSync(join(ROOT, "scripts/publish-cold-candidate.mjs"), "utf8");
 check("cold candidate needs the native builder matrix", needsList(candidate).includes("native"));
 check("cold native matrix builds x64 and arm64 on native Linux", /arch: x64\s+runner: ubuntu-latest/.test(native) && /arch: arm64\s+runner: ubuntu-24.04-arm/.test(native));
 check("cold candidate downloads both native artifacts", ["cold-native-x64", "cold-native-arm64"].every((name) => downloaded(candidate).includes(name)));
@@ -143,18 +144,15 @@ check("cold Windows builder uses the shared dual-architecture recipe", /^\s+uses
 check("cold candidate downloads both Windows native artifacts", ["workspace-native-x64", "workspace-native-arm64"].every((name) => downloaded(candidate).includes(name)));
 check("cold candidate assembles Windows natives before packing", candidate.indexOf("workspace-assemble-natives.mjs") >= 0 && candidate.indexOf("workspace-assemble-natives.mjs") < candidate.indexOf("pack-cold-candidate.mjs"));
 
-console.log("\nC. Qualified archive publication");
-check("publication verifies completed cross-run qualification before writing", version.indexOf("release-qualification.mjs verify") >= 0 && version.indexOf("release-qualification.mjs verify") < version.indexOf("publish-cold-candidate.mjs"));
-check("publication downloads pinned immutable artifact IDs from the selected run", /artifact-ids:.*steps\.qualification\.outputs\.artifact-ids/.test(version) && /run-id:.*inputs\.qualification_run/.test(version));
-check("normal and snapshot publication share the npm-publish Environment", /^\s+environment:\s*npm-publish\s*$/m.test(version) && !csJobs.has("snapshot"));
-check("normal publication invokes the qualified archive publisher", /run: node scripts\/publish-cold-candidate\.mjs/.test(version) && ciPublish === "node scripts/publish-cold-candidate.mjs");
-check("snapshot publication replays qualified versions before the shared publisher", version.indexOf("apply-cold-versions.mjs") >= 0 && version.indexOf("apply-cold-versions.mjs") < version.indexOf("publish-cold-candidate.mjs"));
-check("archive publisher reaches the secure preflight before publication", publisher.indexOf("await preflight({ root, env, exec, deadline, tag })") >= 0 && publisher.indexOf("await preflight({ root, env, exec, deadline, tag })") < publisher.indexOf('await publish("pnpm", ["publish"'));
-check("archive publisher does not rebuild or rerun package hooks", publisher.includes('["publish", pkg.archive, "--provenance", "--access=public", "--no-git-checks", "--ignore-scripts"') && !/"build"|"seat-assemble-natives"|"-r"/.test(publisher));
-check("pre-publication package probe uses the original Windows native assembly",
-  ["workspace-native-x64", "workspace-native-arm64"].every((name) => downloaded(candidate).includes(name)) &&
-  candidate.indexOf("workspace-assemble-natives.mjs") >= 0 &&
-  candidate.indexOf("workspace-assemble-natives.mjs") < candidate.indexOf("post-publish-install-probe.mjs"));
+console.log("\nC. Standard packed publication");
+check("release packing needs both native build jobs", ["native", "workspace-native"].every((name) => needsList(releasePack).includes(name)));
+check("release native matrix builds x64 and arm64 on native Linux", /arch: x64\s+runner: ubuntu-latest/.test(releaseNative) && /arch: arm64\s+runner: ubuntu-24.04-arm/.test(releaseNative));
+check("release packing assembles both native families before packing", ["seat-assemble-natives.mjs", "workspace-assemble-natives.mjs"].every((name) => releasePack.indexOf(name) >= 0 && releasePack.indexOf(name) < releasePack.indexOf("changesets/action/pack@")));
+check("release packing downloads the same run's native artifacts", /pattern: '\*-native-\*'/.test(releasePack) && !/run-id:/.test(releasePack));
+check("publication uses the maintained Changesets publisher", /uses: changesets\/action\/publish@/.test(publish) && ciPublish === "pnpm changeset publish");
+check("publication consumes the packed artifact", /pack-dir-artifact-id:.*needs\.pack\.outputs\.artifact/.test(publish));
+check("only publication receives npm identity", /^\s+environment:\s*npm-publish\s*$/m.test(publish) && /id-token: write/.test(publish) && !/id-token:/.test(releasePack));
+check("publication does not invoke custom qualification or publication wrappers", !/release-qualification|publish-cold-candidate|direct-release|select-release-natives/.test(csText));
 
 console.log(`\n${fail === 0 ? "SEAT NATIVE CI SMOKE OK" : "SEAT NATIVE CI SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);

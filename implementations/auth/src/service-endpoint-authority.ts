@@ -5,14 +5,35 @@
  * returned for the current registration. Revoke and the Describe view stay unsupported. */
 import { createHash, randomBytes } from "node:crypto";
 import {
-  EpEnvelopeError, GOVERNED_TRAIT_URNS, SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, canonicalJson, contractDigest,
+  EpEnvelopeError, GOVERNED_TRAIT_URNS, SERVICE_ACCESS_TTL_SECONDS, SERVICE_ISSUER_KEYS_MAX, SERVICE_RENEWAL_TTL_SECONDS, canonicalJson, contractDigest,
+  compileContract, parseClosureManifest,
+  isCanonicalEd25519PublicCoordinate,
   serviceAuthorityRequestDigest, serviceWitnessDigest, verifyClusterManifest, verifyClusterRoot,
-  type EpCommandAuthority, type ServiceAuthorityInfo, type ServiceAuthorityRequest, type ServiceAuthorityStatus, type ServiceRegistrationWitness,
+  type EpCommandAuthority, type ServiceAuthorityInfo, type ServiceAuthorityRequest, type ServiceAuthorityStatus, type ServiceIssuerKey, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
-import type { ServiceHostRequest, ServiceHostResult, ServiceProposalTombstoneView, ServiceProposalView } from "./service-host-contract.js";
+import type { UserTokenIssuer } from "./issuer.js";
+import type { ServiceHostGranter, ServiceHostRequest, ServiceHostResult, ServiceProposalTombstoneView, ServiceProposalView } from "./service-host-contract.js";
 import { serviceHostOperationId, serviceRegisterHostRequest, type ServiceHostOperations, type ServiceServeOperation, type ServiceServeResult } from "./service-host-ops.js";
 
 export const SERVICE_ENDPOINT_AUTHORITY_PATH = "/service-endpoint-authority";
+/** The authenticated host route: an owner's decisions and reads with a fresh IdP proof on either
+ *  face, and the operator's actions only on the loopback face with its capability. */
+export const SERVICE_ENDPOINT_HOST_PATH = "/service-endpoint-host";
+
+/** The host operations only an operator grants: a name binding, a non-owner revoke and the restore
+ *  controls. Everything else is the owner's, scoped by the engine to that owner's own rows. */
+const OPERATOR_HOST_OPERATIONS: ReadonlySet<string> = new Set(["name-bind", "quarantine-restored", "admission-open"]);
+
+/** The granter the route passes for one request shape: the proved owner for owner operations, the
+ *  capability holder (named by the proved subject for audit) for operator operations. A revoke is
+ *  the owner's only for an owner cause. `undefined` means the operation is an operator action and
+ *  this face holds no operator capability. */
+export function serviceHostGranterFor(request: { operation: unknown; input: unknown }, proved: { owner: string; subject: string }, operator: boolean): ServiceHostGranter | undefined {
+  const cause = request.operation === "revoke" && request.input !== null && typeof request.input === "object" ? (request.input as { cause?: unknown }).cause : undefined;
+  const operatorAction = OPERATOR_HOST_OPERATIONS.has(String(request.operation)) || (request.operation === "revoke" && cause !== "owner-request");
+  if (!operatorAction) return { kind: "owner", owner: proved.owner };
+  return operator ? { kind: "operator", auditId: `loopback-capability:${proved.subject}` } : undefined;
+}
 
 /** What one face serves: the receiver's own account and space, the engine its plane opened, and
  *  the issuer that signs serving material once the engine has fixed its bounds. */
@@ -30,8 +51,18 @@ export interface ServiceAuthorityReply { status: number; body: unknown }
 type Command = EpCommandAuthority & { name: string };
 type Echo = Pick<ServiceAuthorityRequest, "v" | "kind" | "operation" | "requestId" | "space" | "accountPublicKey" | "endpoint" | "instanceId">;
 
-export function serviceAuthorityInfo(door: ServiceAuthorityDoor): ServiceAuthorityInfo {
-  return { v: 1, kind: "service-endpoint-authority-info", space: door.space, accountPublicKey: door.accountPublicKey };
+/** The door's account plus the issuer identity a guest verifies its access bearer under: the exact
+ *  `iss` this context mints and the public coordinates of the keys `GET /jwks` publishes. A key the
+ *  service access contract cannot name is refused rather than dropped from the answer. */
+export function serviceAuthorityInfo(door: ServiceAuthorityDoor, issuer: Pick<UserTokenIssuer, "issuer" | "jwks">): ServiceAuthorityInfo {
+  const published = issuer.jwks().keys;
+  if (published.length > SERVICE_ISSUER_KEYS_MAX) throw new Error("service authority: the issuer publishes more keys than the info answer carries; retire kids first");
+  const keys = published.map((key): ServiceIssuerKey => {
+    if (key.kty !== "OKP" || key.crv !== "Ed25519" || typeof key.kid !== "string" || typeof key.x !== "string" || !isCanonicalEd25519PublicCoordinate(key.x))
+      throw new Error("service authority: the issuer publishes a key that is not a full-order Ed25519 public key");
+    return { kty: "OKP", crv: "Ed25519", kid: key.kid, x: key.x };
+  });
+  return { v: 1, kind: "service-endpoint-authority-info", space: door.space, accountPublicKey: door.accountPublicKey, issuer: issuer.issuer, keys };
 }
 
 /** The engine request id of one public request: the full public idempotency key (account, space,
@@ -50,8 +81,10 @@ export class ServiceRegistrationRefusal extends Error {
 
 /** Compile the submitted closures into the proposal's command surface. Each cluster digest names its
  *  manifest artifact and that manifest's root names the cluster document, both verified by content
- *  digest. Every submitted artifact must belong to a declared closure, and the commands are only what
- *  the verified documents declare. This cut admits ephemeral commands without governed traits only. */
+ *  digest. The schema closures the commands reference may be submitted with them and are verified
+ *  whole. Every submitted artifact must belong to a declared closure or to a referenced schema
+ *  closure, and the commands are only what the verified documents declare. This cut admits
+ *  ephemeral commands without governed traits only. */
 export function compileServiceRegistration(registration: { clusterDigests: string[]; contractArtifacts: unknown[] }): { clusterDigests: string[]; commands: Command[] } {
   const refuse = (reason: ServiceRegistrationRefusal["reason"], detail: string): never => { throw new ServiceRegistrationRefusal(reason, detail); };
   const byDigest = new Map(registration.contractArtifacts.map((a) => [contractDigest(a), a] as const));
@@ -78,6 +111,32 @@ export function compileServiceRegistration(registration: { clusterDigests: strin
       names.add(c.name);
       commands.push({ name: c.name, clusterDigest: closure, class: c.class, targeted: c.targeted, modes: [...(c.modes ?? [])], capability: c.capability,
         inputDigest: c.inputDigest, outputDigest: c.outputDigest, traits: [...(c.traits ?? [])] });
+    }
+  }
+  // The schema closures the commands reference (each `inputDigest`/`outputDigest`) may ride along, so
+  // a service registering through the door publishes them the way an in-process registrant does. A
+  // supplied one is admitted only whole: its manifest at that digest, its root and every member
+  // present, and the bundle recompiling to that same closure digest (the resolve-time tamper
+  // boundary, SPEC 13.7). One a registration does not supply is not refused: a body from before this
+  // admission still replays, and the host publishes the canonical void closure itself.
+  for (const closure of new Set(commands.flatMap((c) => [c.inputDigest, c.outputDigest]))) {
+    const manifest = byDigest.get(closure);
+    if (manifest === undefined) continue;
+    try {
+      const { root, members } = parseClosureManifest(manifest, `the schema closure ${closure} manifest`);
+      if (!byDigest.has(root)) refuse("closure-invalid", `the schema closure ${closure} has no submitted root document`);
+      const bundleMembers: Record<string, unknown> = {};
+      for (const m of members) {
+        if (m === root) continue;
+        if (!byDigest.has(m)) refuse("closure-invalid", `the schema closure ${closure} names the member ${m}, which is not submitted`);
+        bundleMembers[m] = byDigest.get(m);
+      }
+      const compiled = compileContract({ root: byDigest.get(root), members: bundleMembers });
+      if (compiled.closureDigest !== closure) refuse("closure-invalid", `the submitted schema closure ${closure} recompiles to ${compiled.closureDigest}`);
+      used.add(closure); used.add(root); for (const m of members) used.add(m);
+    } catch (e) {
+      if (e instanceof ServiceRegistrationRefusal) throw e;
+      return refuse("closure-invalid", e instanceof Error ? e.message : String(e));
     }
   }
   if (used.size !== byDigest.size) refuse("closure-invalid", "an artifact belongs to no declared closure");

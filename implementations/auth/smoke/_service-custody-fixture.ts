@@ -36,7 +36,7 @@ import {
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { ServiceWriteScope } from "../src/service-write.js";
-import { serviceHostDiscoveryGrants } from "../src/authority-client.js";
+import { serviceHostDiscoveryGrants, type ServiceHostEffectReads } from "../src/authority-client.js";
 import { S2A_INVOCATION_MS, openServiceHostEffect, type ServiceHostEffect } from "../src/service-host-ops.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -79,7 +79,7 @@ interface ReadArm { match: (subject: string) => boolean; after: (subject: string
 
 /** Operator-mode material: one data account with JetStream, whose signing key signs every user as
  *  the auth service signs its own. A user without `perms` is unrestricted. */
-async function operatorStack(dir: string, port: number) {
+async function operatorStack(dir: string, port: number, maxPayload?: number) {
   const op = createOperator(), sys = createAccount(), account = createAccount(), signer = createAccount();
   const limits = { subs: -1, conn: -1, leaf: -1, imports: -1, exports: -1, data: -1, payload: -1, wildcards: true,
     mem_storage: -1, disk_storage: -1, streams: -1, consumer: -1 };
@@ -89,7 +89,7 @@ async function operatorStack(dir: string, port: number) {
   writeFileSync(config, [`port: ${port}`, "host: 127.0.0.1",
     `operator: ${await encodeOperator("fixture-operator", op, { system_account: sys.getPublicKey() })}`, `system_account: ${sys.getPublicKey()}`,
     "resolver: MEMORY", `resolver_preload: { ${sys.getPublicKey()}: ${sysJwt}, ${account.getPublicKey()}: ${accountJwt} }`,
-    `jetstream: { store_dir: ${JSON.stringify(join(dir, "js"))} }`, ""].join("\n"));
+    `jetstream: { store_dir: ${JSON.stringify(join(dir, "js"))} }`, ...(maxPayload === undefined ? [] : [`max_payload: ${maxPayload}`]), ""].join("\n"));
   const user = async (name: string, perms?: (id: string) => { pub: string[]; sub: string[] }) => {
     const u = createUser(), id = u.getPublicKey(), p = perms?.(id);
     const jwt = await encodeUser(name, u, account, p ? { pub: { allow: p.pub }, sub: { allow: p.sub } } : {}, { signer });
@@ -100,15 +100,19 @@ async function operatorStack(dir: string, port: number) {
   return { config, accountPublicKey: account.getPublicKey(), dataAccount, user };
 }
 
-export async function openFixture(space: string, opts: { endpoint?: string; owner?: string; limited?: boolean } = {}) {
+/** `maxPayload` sets the owned broker's `max_payload` (operator mode only); unset, the broker default applies. */
+export async function openFixture(space: string, opts: { endpoint?: string; owner?: string; limited?: boolean; maxPayload?: number } = {}) {
   const endpoint = opts.endpoint ?? "org.example.recovery";
   const owner = opts.owner ?? `u_${"c".repeat(26)}`;
   const port = await pickFreePort();
   if (port === 4222) throw new Error("fixture refuses the default NATS port");
   const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-  const stack = opts.limited ? await operatorStack(dir, port) : undefined;
+  if (opts.maxPayload !== undefined && !opts.limited) throw new Error("fixture sets max_payload only in operator mode");
+  const stack = opts.limited ? await operatorStack(dir, port, opts.maxPayload) : undefined;
   const server = `nats://127.0.0.1:${port}`;
-  const broker = spawn("nats-server", stack ? ["-c", stack.config] : ["-js", "-sd", dir, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
+  // Both argv carry a path under the tokened `dir`: the store, or the operator config written into it.
+  const argv = stack ? ["-c", stack.config] : ["-js", "-sd", dir, "-p", String(port), "-a", "127.0.0.1"];
+  const broker = spawn("nats-server", argv, { stdio: "ignore" });
   const releaseBroker = teardownOnSignal(broker, dir);
   let nc: NatsConnection | undefined;
   const limitedConns = new Set<NatsConnection>();
@@ -285,16 +289,17 @@ export async function openFixture(space: string, opts: { endpoint?: string; owne
   };
   const limitedStack = () => { if (!stack) throw new Error("this fixture's broker grants nothing per connection; open it limited"); return stack; };
   /** One invocation's product effect connection for `writes`, expiring at `deadlineMs`, with its
-   *  registry instrumented; `via` reaches the broker through another address (a test relay). A
+   *  registry instrumented; `via` reaches the broker through another address (a test relay), and
+   *  `reads` is the scope's records and contract read grant, which a serving registration needs. A
    *  deferred write still in flight keeps it open until the write lands. */
-  const effect = async (writes: ServiceWriteScope, deadlineMs = Date.now() + S2A_INVOCATION_MS, via = server): Promise<ServiceHostEffect> => {
+  const effect = async (writes: ServiceWriteScope, deadlineMs = Date.now() + S2A_INVOCATION_MS, via = server, reads?: ServiceHostEffectReads): Promise<ServiceHostEffect> => {
     let lc: NatsConnection | undefined;
     const real = await openServiceHostEffect({ server: via, space, dataAccount: limitedStack().dataAccount, log: () => {},
-      onConnection: (nc) => { lc = nc; refusals("fixture-effect", nc); } }, { keys: writes, deadlineMs });
+      onConnection: (nc) => { lc = nc; refusals("fixture-effect", nc); } }, { keys: writes, deadlineMs, ...(reads ? { reads } : {}) });
     let pending = 0, closing = false;
     const shut = async () => { if (lc) limitedConns.delete(lc); await real.close(); };
     instrument(real.registry, { add: () => { pending++; }, done: () => { if (--pending === 0 && closing) void shut(); } });
-    return { registry: real.registry, gone: real.gone, close: async () => { if (pending > 0) closing = true; else await shut(); } };
+    return { registry: real.registry, gone: real.gone, ...(real.contract ? { contract: real.contract } : {}), close: async () => { if (pending > 0) closing = true; else await shut(); } };
   };
   /** A standing connection on the product discovery grant: the registry reads and no write. */
   const discovery = async (): Promise<{ registry: LifecycleRegistry; close(): Promise<void> }> => {

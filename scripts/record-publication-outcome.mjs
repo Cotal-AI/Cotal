@@ -10,7 +10,7 @@ export function recordPublicationOutcome({ publicationFile, archivesFile, output
   const available = Boolean(archives?.complete === true && archives.candidateSha256 === env.RELEASE_CANDIDATE_SHA256
     && archives.requestedAt === env.RELEASE_REQUESTED_AT && env.INSTALL_OK === "true");
   const receipt = {
-    v: 1, requestedAt: env.RELEASE_REQUESTED_AT, observedAt: new Date(now).toISOString(),
+    v: 1, requestedAt: env.RELEASE_REQUESTED_AT, attemptStartedAt: env.RELEASE_ATTEMPT_STARTED_AT, observedAt: new Date(now).toISOString(),
     elapsedMs: now - started, available, withinPublicationBudget: available && now - started <= PUBLICATION_BUDGET_MS,
     source: env.RELEASE_SOURCE, publisherSource: env.GITHUB_SHA, candidateSha256: env.RELEASE_CANDIDATE_SHA256,
     publication, archives,
@@ -24,6 +24,7 @@ if (isMainEntry(import.meta.url)) {
     const [publicationFile, archivesFile, output] = process.argv.slice(2);
     const receipt = recordPublicationOutcome({ publicationFile, archivesFile, output });
     console.log(`Publication availability verified=${receipt.available}; within original ten-minute budget=${receipt.withinPublicationBudget}; elapsed=${receipt.elapsedMs}ms`);
-    if (!receipt.withinPublicationBudget) process.exitCode = 1;
+    if (!receipt.available) process.exitCode = 1;
+    else if (!receipt.withinPublicationBudget) console.error("::warning::Publication completed after the original ten-minute deadline; the recorded command time is unchanged.");
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

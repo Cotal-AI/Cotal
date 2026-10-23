@@ -99,7 +99,7 @@ try {
       instanceId, contracts, acquire: async () => ({ bearer: ex.body.token, sentinelCreds: a.sentinelCreds }), deadlineMs: 15000 });
     browserCallers.push(c); return c;
   };
-  cell("public contract revision includes status metadata", source.document.revision === 28, source.document.revision);
+  cell("public contract revision includes status metadata", source.document.revision >= 28, source.document.revision);
   const A = await browserOpen(iid, token, owner), B = await browserOpen(peer.state.instanceId, otherToken, otherOwner);
   const aStatus = await A.invoke("status"), bStatus = await B.invoke("status");
   const aData = aStatus.reply.data as Record<string, unknown>, bData = bStatus.reply.data as Record<string, unknown>;

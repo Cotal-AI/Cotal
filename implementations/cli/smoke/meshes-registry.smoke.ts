@@ -232,6 +232,21 @@ try {
     const enforces = await probeEnforcement(AUTH_LIVE);
     assert.equal(enforces, "auth", `the auth broker never came up enforcing (probe said "${enforces}")`);
   }
+  // A reset after an auth greeting is only an inferred auth-required. It read no refusal, so it does
+  // not verify that the broker enforces auth.
+  {
+    const { createServer } = await import("node:net");
+    const srv = createServer((sock) => {
+      sock.on("error", () => { /* the probe tears its own sockets down */ });
+      sock.write('INFO {"server_id":"reset","version":"2.12.12","proto":1,"max_payload":1048576,"auth_required":true}\r\n');
+      sock.once("data", () => sock.resetAndDestroy());
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const { probeEnforcement } = await import("../src/commands/meshes-add.js");
+    const enforces = await probeEnforcement(`nats://127.0.0.1:${(srv.address() as { port: number }).port}`);
+    await new Promise<void>((r) => srv.close(() => r()));
+    check("an auth greeting followed by a reset does not verify enforcement", enforces === "unreachable", enforces);
+  }
   const root = projectRoot("remote");
 
   // ── add: verified registration of a mesh this machine did not start ────────────────────────────

@@ -42,6 +42,7 @@ import {
   assertManagedGrantCustody,
   assertValidChannel,
   assertValidOwnerToken,
+  eventChannel,
   mintLifecycleUid,
   mkSecretDir,
   parseActorLedgerSource,
@@ -386,7 +387,11 @@ export function assertWithinSpawnerGrant(
       );
     const overScope = child.scope.filter((s) => !parent.scope.includes(s));
     const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
-    const overPub = child.allowPublish.filter((ch) => !patternInAllow(parent.allowPublish, ch));
+    // A spawner that may post its own events may hand each child that child's own event channel
+    // and no other. The channel names the child, so it reaches nothing the spawner holds, and the
+    // walk still checks the spawner's own event channel against its parent up to the root.
+    const ownEvents = patternInAllow(parent.allowPublish, eventChannel({ owner: pOwner, actor: pActor })) ? eventChannel(child) : undefined;
+    const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow(parent.allowPublish, ch));
     // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
     // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
     // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes

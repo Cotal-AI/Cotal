@@ -17,7 +17,7 @@ name: Windows
 #     reds appear on main. It still runs and its log is still the record; it just no longer gates.
 #     Promote it back once teardown is deterministic on Windows.
 #   • soak     — the live-broker soak (continue-on-error, non-blocking): server-resolution +
-#     spawn-manifest + cooperative-stop. Promote into the gate once proven stable across runs.
+#     cooperative-stop. Promote into the gate once proven stable across runs.
 #   windows-ok is the single Windows status: the deterministic `required` lane. What actually
 #   protects Windows is that lane — PATHEXT/`.exe` resolution, `.cmd` arg quoting, ConPTY, NTFS
 #   ACLs — none of which has flaked. See .internal/plans/windows-native-support.md.
@@ -38,6 +38,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   # Tracks the line above: `queue: max` with `cancel-in-progress: true` is a validation error.
   queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
+
+# The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+# DO_NOT_TRACK also reaches the suites that drop every COTAL_ variable from a child's env.
+env:
+  DO_NOT_TRACK: 1
 
 jobs:
   workspace-native:
@@ -195,16 +200,12 @@ jobs:
       - name: Live — server resolution
         continue-on-error: true
         run: pnpm smoke:server-resolution:live
-      - name: Live — spawn manifest
-        continue-on-error: true
-        run: pnpm smoke:spawn-manifest:live
       - name: Live — cooperative stop (WS4 offline presence)
         continue-on-error: true
         run: pnpm smoke:cooperative-stop:live
 
   windows-ok:
-    # Single status for the native-Windows gate: the deterministic `required` lane. Like ci-ok it is
-    # advisory on main, where `attribution` is the only required context. The
+    # Single advisory status for the native-Windows gate: the deterministic `required` lane. The
     # sharded smoke lane is advisory (see the lane note at the top) and is deliberately NOT a
     # dependency here — listing it would keep gating on it even while it is continue-on-error.
     if: always()

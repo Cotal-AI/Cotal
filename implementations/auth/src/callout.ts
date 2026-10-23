@@ -35,7 +35,7 @@ import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from 
 import { assertInboxConnId, calloutReaderId, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
-import { SESSION_EXP } from "./permissions.js";
+import { SESSION_EXP, ENDPOINT_CALLER_EXP, ENDPOINT_CALLER_RECHECK } from "./permissions.js";
 import type { NativeIssuanceRecorder } from "./native-issuance.js";
 import { assertNativeServiceCalloutAuthority, issueNativeServiceCallout, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 
@@ -305,10 +305,11 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         // nonce: a client that named another connection's nonce would otherwise be granted the
         // deletes of that connection's readers. A request without a client id throws → signed deny.
         const readerId = calloutReaderId(req.server_id.id, req.client_info?.id as number);
-        const { [SESSION_EXP]: sessionExp, ...perms } = await opts.permissionsFor(validated, inboxNonce, readerId);
+        const { [SESSION_EXP]: sessionExp, [ENDPOINT_CALLER_EXP]: endpointExp, [ENDPOINT_CALLER_RECHECK]: endpointRecheck, ...perms } = await opts.permissionsFor(validated, inboxNonce, readerId);
         // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
         // and only when the permission builder vouched for it from the live session row.
-        const exp = validated.act.view === "session-caller" ? sessionExp : validated.exp;
+        const exp = validated.act.view === "session-caller" ? sessionExp : endpointExp === undefined ? validated.exp : Math.min(validated.exp, endpointExp as number);
+        if (typeof exp === "number" && exp <= Math.floor(Date.now() / 1000)) throw new Error("callout: endpoint caller authority expired before signing");
         if (typeof exp !== "number" || !Number.isSafeInteger(exp)) throw new Error("callout: no bound expiry for this connection");
         // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
         // connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the principal,
@@ -327,6 +328,11 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           { signer: userSigner, exp }, // NATS access dies with the bearer (a session-caller: with its grant)
         );
         await opts.recordIssuance({ userNkey: req.user_nkey, token: validated, connId: inboxNonce, iat: decode(userJwt).iat, exp });
+        if (endpointRecheck !== undefined) {
+          if (typeof endpointRecheck !== "function") throw new Error("callout: invalid endpoint caller final check");
+          await endpointRecheck();
+        }
+        if (exp <= Math.floor(Date.now() / 1000)) throw new Error("callout: authority expired before response release");
         opts.onMint?.({ jwt: userJwt, principal: key, exp });
         await respond({ jwt: userJwt });
       } catch (e) {

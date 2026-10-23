@@ -229,6 +229,7 @@ failure.
 | Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Deprecated and hidden from help: run a manager daemon; use the `manager` service preset |
 | Agents & personas | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
+| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Agents & personas | [`endpoint deregister`](#endpoint-deregister) | Remove the service registration of an instance whose host is gone, when the broker affirms nothing is subscribed on its rail |
@@ -257,6 +258,7 @@ failure.
 | Extensions & misc | [`config`](#config) | Show and set your preferences: the defaults your commands use |
 | Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
+| Extensions & misc | [`telemetry`](#telemetry) | Show or set the anonymous usage telemetry level (`off`, `minimal`, `regular`) |
 | Extensions & misc | [`deliver`](#server-daemons) | Deprecated and hidden from help: run the delivery daemon; use the `delivery` service preset |
 | Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
 | Extensions & misc | [`feedback-intake`](#server-daemons) | Deprecated and hidden from help: run a feedback intake server; use the `feedback-intake` service preset |
@@ -470,6 +472,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
 | `--advertised-server <url>` | `--server` | With `--exchange-public-port`: the broker address the public discovery bundle tells participants to dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
 | `--agent-provisioning-url <https://…>` | none | With `--exchange-public-port`: the deployment's agent-provisioning endpoint the public bundle advertises. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent; without one, that spawn needs a one-time enrollment ([Run a mesh](run-a-mesh.md#remote-supervised-seats-by-enrollment)). HTTPS only |
+| `--service-endpoints` | off | With `--user-auth`: the auth service also hosts service endpoints: the public registration door and the authenticated host route that `cotal service-endpoint` drives |
 | `--detach` | on | Run in the background, which is also the no-flag default |
 | `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd/launchd unit supervises `up` itself. Cannot combine with `--detach` |
 | `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS |
@@ -609,16 +612,32 @@ failed, and the command continues with an `OPERATION_SETTLED` warning. A member 
 running is kept: `up` reuses it and `down` stops it. A member whose process cannot be established,
 or one with a stop that was requested and never confirmed, refuses `LIFECYCLE_BLOCKED` and names
 `cotal service status <definition> --instance <id> --space <space>`. A manager stop whose request
-was published and never confirmed keeps the manager's record `stopping` under that request, also
-after its process exits. After a `down` that ends this way, the next bare `up` or `down` refuses
-`LIFECYCLE_BLOCKED` and names the instance and the original request. `service start`, `restart` and
+was published and not confirmed before `down` stopped waiting keeps the manager's record `stopping`
+under that request, also after its process exits. The next bare `up` or `down` reads that request's
+own receipts first. When the manager recorded the stop as completed and its exact process is gone,
+the record becomes `stopped` with that receipt, the request's reservation is released once the
+`down` that took it has exited, and the command continues. When the manager's only receipt is a
+refusal, which it writes when it started no stop, for example because that `down` had already
+exited, the request is removed, its reservation is released, and the record returns to what its
+process shows, so `down` stops a running manager and `up` reuses it. Otherwise it refuses
+`LIFECYCLE_BLOCKED` and names the instance and the original request. `down --dry-run` writes
+nothing, so it does not settle such a stop and refuses the same way. `service start`, `restart` and
 `stop` refuse it `LIFECYCLE_BLOCKED`, exit 2, before any readiness probe, stop request or record write.
 The earlier stop's outcome stays unknown. When the launch's
 request file does not read as its own, the refusal reports that it is unknown whether a stop was
 published. A manager record that an earlier release left `unknown` while its launch still holds a
 stop request is recorded `stopping` under that request when its process is gone. Its exit is never
 recorded as a crash, and no `up`, `down` or `service` command relaunches it, removes its record or
-removes the stack's registration. No command in this release clears such a stop. When `up`
+removes the stack's registration. A stop that has neither a completed nor a refused receipt, such
+as one whose manager was killed before it read the request, is cleared only on request:
+`cotal down --abandon-stop <request-id> --yes`, with the request ID the refusal names. It refuses
+`LIFECYCLE_BLOCKED` while the manager or the `down` that sent the request still runs, and
+`TARGET_NOT_FOUND` when no member retains that request; either way nothing changes. Otherwise it
+removes the request, the stop reservation and a `--with-agents` shutdown intent that the same stop
+armed, records the manager `failed`, and stops the rest of the stack with a `STOP_ABANDONED` warning.
+Whether that manager stopped or released its agents' seats is not confirmed, and a seat that runs
+outside the manager process may still run. It needs `--yes` and refuses `--dry-run` and
+`--with-agents`. When `up`
 redefines a member because its launch options changed, the journal records the
 replacement's instance and launch request before the old instance is retired, and the new
 definition's revision before the replacement launches. After an `up` cut off in between, the next
@@ -724,9 +743,11 @@ contradict each other and are refused loudly; a running broker cannot change aut
 without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 
 `--rotate-sys` renews the two `$SYS` credentials (`membership-observer`, `connection-evictor`).
-They carry a 30-day expiry and nothing re-signs them in place, because the system-account seed is
-never persisted, so they are renewed by issuing a **new system account** under the same broker
-operator and minting fresh creds against it. A plain re-`up` does **not** do this: it reuses the
+They carry a 30-day expiry and nothing re-signs them in place, because the trust record never
+carries the system-account seed, so they are renewed by issuing a **new system account** under the
+same broker operator and minting fresh creds against it. The root keeps that seed in its own secret
+store, written at space creation and replaced here, so an auth service started with
+`--service-endpoints` can mint the short-lived observer credentials service caller issuance needs. A plain re-`up` does **not** do this: it reuses the
 existing trust record, and its `$SYS` creds along with it.
 
 The rotation is safe to run on a real space, with one operational cost. The data account, the account
@@ -915,6 +936,7 @@ service would be stopped, because the legacy reap does not reach a service's age
 ```bash
 cotal down
 cotal down --with-agents
+cotal down --abandon-stop <request-id> --yes
 cotal down --preserve-state [--store-dir <dir>] [--session-store <dir> …]
 cotal down --dry-run [--space <name>] [--json|--plain]
 cotal down <service-name> [<service-name> …] [--instance <id>] [--space <s>] [--yes|--dry-run] [--json|--plain]
@@ -924,10 +946,11 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--file <cotal.yaml>`, `-f` | none | Tear down this manifest's deploy |
-| `--run <id>` | none | Tear down one `spawn -f` run by id |
+| `--run <id>` | none | Tear down one additive ledger, written by the retired `spawn -f` deploy, by its run id |
 | `--space <name>` | current space | With service names: the space whose saved definitions to stop. With bare `--dry-run`: confirm that space belongs to this root. A bare stop refuses it |
 | `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing |
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
+| `--abandon-stop <request-id>` | none | Controller stack, with `--yes`: abandon a member's stop that no receipt settles, then stop the stack. See the settlement rules under [up](#up) |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
@@ -2186,7 +2209,10 @@ remote spawn (an enrollment or the advertised provisioning endpoint) removes onl
 credential files; its grant stays until the mesh operator revokes it, and the launch line says
 which arm you are on. A spawn through the advertised provisioning endpoint against a record that
 pins no exchange URL is refused before the grant is requested, so no credential lands on this
-machine. A foreground `--share-tools` selection that names a server the config does not declare is
+machine. With no sign-in the spawn is refused with `AUTH_REQUIRED` (exit 2) before any request is
+sent. Any provisioning failure after the request, an endpoint 401 or 403 included, is reported as
+`OPERATION_UNKNOWN` (exit 3): the endpoint belongs to the deployment, and nothing says what its
+refusal left behind. A foreground `--share-tools` selection that names a server the config does not declare is
 refused before anything is provisioned. A managed spawn is an
 **action**: the manager accepts it and allocates the identity, and the CLI waits for a real outcome
 (the agent joins, exits, or about 30 seconds pass) before it reports or attaches (see
@@ -2361,6 +2387,30 @@ command can be cast; journaled commands and `--wait` combinations refuse before 
 The receipt records the original request, resolved binding and broker flush, not a responder or
 confirmed execution. A class cast is not retried or repaired if another instance refuses its
 binding. A broker publish denial remains a refusal. A lost publication outcome remains unknown.
+
+## service-endpoint
+
+```bash
+cotal service-endpoint approve <proposalId> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json | --plain]
+cotal service-endpoint refuse <proposalId> [--request-id <hex32>] [--space <s>] [--json | --plain]
+cotal service-endpoint proposal <proposalId> | operation <operationId> | name <endpoint> [--space <s>]
+cotal service-endpoint name-bind <endpoint> --owner <u_…> --claim <ref> [--request-id <hex32>] [--space <s>]
+```
+
+Decides and inspects service endpoint registrations on a user-auth space whose auth service runs
+with `--service-endpoints`. Every subcommand is one request to the service's
+`/service-endpoint-host` route as the signed-in user: the route verifies your IdP token and derives
+the granter itself, so no command names one. `approve` and `refuse` are the owner's: the command
+reads the proposal and its name first and decides at those revisions, so a proposal or name that
+moved in between is a conflict the host reports, never a decision on something else. `proposal`,
+`operation` and `name` read as the owner: another owner's record reads absent. `name-bind` is the
+operator's: it needs the auth service on this machine and runs on its loopback face under the
+exchange capability, with your signed-in subject as the audit id. The host verifies no domain
+control, so `--claim` is your own reference for the namespace you checked. The answer is the host's
+own. A decision or a binding prints the request id it was sent under; run the same command again
+with `--request-id <hex32>` to send the identical request, which the host replays with the same
+approval or binding. A run without it is a new request, and a proposal already being approved
+answers `approval-in-progress`.
 
 ## Handle inspection
 
@@ -2773,8 +2823,8 @@ bare `cotal supervise` and an embedded manager stay machine-local. Set it direct
 
 That address is **recorded on the mesh** and carried forward, because it is a decision rather than
 something later commands can work out for themselves (a broker dial address is not a manager bind
-address). Every later manager launch for the same mesh reuses it, including a same-root `cotal up` repair,
-an adopted preserved or restored listener, and a `spawn -f` manifest deploy. A manager replacement
+address). Every later manager launch for the same mesh reuses it, including a same-root `cotal up` repair
+and an adopted preserved or restored listener. A manager replacement
 does not quietly move a reachable attach face back to loopback. Passing `--host` again overrides it,
 so you can widen or narrow exposure whenever you like; a mesh that never asked stays loopback-only
 and records nothing.
@@ -2909,9 +2959,9 @@ starts runs the same code through a hidden entry and prints no warning.
 | `--execution runtime|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
-| `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or `spawn -f` keeps it |
+| `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair keeps it |
 | `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.md#roster-files) |
-| `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
+| `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `team boot`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
 
 `--ws-port`, `--resume-attempt` and `--resume-commit-token` are passed by `cotal up` when it starts
@@ -3014,6 +3064,150 @@ the authority service and grant `supervise` for detached agents. If a running re
 renewal, it reports degraded state and refuses unsafe new starts and restarts; live agents are not
 silently replaced. Do not run `cotal down` or `cotal up` on a participant machine to repair this
 condition.
+
+## daemon
+
+```bash
+cotal daemon serve [--json|--plain]
+cotal daemon status [--json|--plain]
+cotal daemon login --idp <auth base URL> [--client-id <id>] [--json|--plain]
+cotal daemon connect-check --space <s> [--json|--plain]
+cotal daemon register --space <s> [--json|--plain]
+cotal daemon service-connect --space <s> [--json|--plain]
+cotal daemon service-disconnect --space <s> [--json|--plain]
+cotal daemon service-status --space <s> [--json|--plain]
+```
+
+This release serves a local endpoint for status, sign-in, a connection check, a registration request
+and the daemon's own service connection. It does not start a Manager, serve any command on its
+service, connect to Cloud, or install a system service. It supports Linux only. On other
+platforms, an unset `XDG_RUNTIME_DIR` produces
+`TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
+
+`serve` runs in the foreground and prints `daemon ready at <socket>` once the endpoint is bound
+and checked. That success line is plain text; `--json` shapes its refusals. `status` prints the
+state, version, protocol, process ID, start time and uptime. `state: "ready"` means only that the
+local control listener is bound and verified, not that a mesh or Cloud connection exists.
+
+The endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` both forms refuse
+`TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). Both refuse `PERMISSION_DENIED` for a runtime directory
+that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
+`PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`.
+The daemon drops connections from other users. The kernel separates users, not processes of one
+user: any process running as you can use the local controls, including sign-in and cancellation.
+
+`status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`). `serve` refuses
+`CONFLICT` (`ALREADY_RUNNING`) for any existing socket, including one left after a crash, and
+`PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) for a non-socket entry. It removes neither.
+SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
+including closing the terminal, leaves a stale socket. To recover, run `cotal daemon status`.
+If it reports `NOT_RUNNING`, confirm no daemon process is running, then remove the named socket
+path by hand and start again.
+
+`login` signs the running daemon in with device approval. The daemon runs the same sign-in as
+`cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The
+command prints only the approval link, code and expiry to stderr, then the signed-in account. No
+session token crosses the endpoint or reaches the terminal. `--idp` takes an HTTPS auth URL, or an
+HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
+
+One sign-in runs at a time: a second `login` refuses `CONFLICT` (`LOGIN_IN_PROGRESS`) without
+contacting the provider. Ctrl-C, or the command's connection closing, requests cancellation on this
+machine. If cancellation takes effect before persistence, nothing is saved, even if device approval
+already happened. An already-completed attempt remains completed; cancellation revokes nothing
+at the provider. A cancelled attempt reports `USAGE_INVALID` (`CANCELLED`). A denied or expired
+approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable provider refuses
+`DEPENDENCY_UNAVAILABLE`
+(`UNREACHABLE`); none of these saves a session. Any other provider answer fails `OPERATION_FAILED`
+(`REFUSED`). Such a failure can come after the session was saved, so run `login` again. A failure
+is reported with a fixed sentence; the provider's own error text is never relayed. `status`
+keeps answering while a sign-in waits.
+
+`connect-check` asks the running daemon whether it could register with a space as its own service.
+The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
+the space's registration on this machine and the daemon's sign-in, then the space's public account
+identity from its auth service (`GET <exchange>/service-endpoint-authority`, no redirects). It sends
+no registration and holds no credential. A space whose auth service does not host service endpoints
+refuses `UNSUPPORTED` (`UNSUPPORTED_BY_SPACE`). The daemon does not fall back to anything else.
+
+The other refusals are `TARGET_NOT_FOUND` (`NOT_REGISTERED`) for a space this machine has not
+registered, `UNSUPPORTED` (`NOT_USER_AUTH`) for a space without user sign-in, `AUTH_REQUIRED`
+(`NOT_SIGNED_IN`) when the machine is not signed in to the space's provider, and
+`DEPENDENCY_UNAVAILABLE` (`UNREACHABLE` or `REFUSED`) when the auth service cannot be reached or
+answers with something unusable.
+
+On success it reports `ready-to-register` with the space's account, the daemon's service name
+`ai.cotal.machine` and the daemon's own instance ID. Nothing has been registered. The space owner must
+still approve the daemon, and the service name needs the space operator's binding. The first
+success creates the daemon's identity for that space at
+`<COTAL_HOME>/daemon/<space segment>/service-identity.json` (mode `0600`). It holds the instance ID
+and the account, and no credential. Later checks reuse it. If the space later answers with a
+different account, the check refuses `CONFLICT` (`ACCOUNT_MISMATCH`) and changes nothing: confirm
+the space was not replaced before you remove that file by hand.
+
+`register` asks the running daemon to request its own service registration with a space. It first
+runs `connect-check` and returns any outcome other than `ready-to-register` unchanged, without
+contacting the space again. Otherwise it sends one registration request for the daemon's instance
+with this machine's sign-in, through the space's stock service authority. The daemon never sees or
+relays that sign-in proof. The request ID is saved before the first send, at
+`<COTAL_HOME>/daemon/<space segment>/register-request.json`, and every later `register`, including
+after a restart, replays the same request unchanged. The stock writer does not guarantee durability
+across power loss.
+
+The fixed service name binds to one owner per space. Different owners in a shared space need distinct
+operator-approved endpoint names; this command does not yet select one. The operator must verify or
+delegate the namespace before binding it.
+
+The space answers in one of three ways, each reported with exit 0:
+
+- `approval-required`: the space owner must approve this daemon and the space operator must bind its
+  service name `ai.cotal.machine`.
+- `pending`: the space is processing an approved registration.
+- `registered`: the registration is recorded. It is not activated or serving, so the machine is
+  still not connected.
+
+No release ships a command or page that lets an owner approve the daemon or an operator bind its
+name. A refusal by the space is `PERMISSION_DENIED` with the space's reason as the native code, such
+as `PROPOSAL_REFUSED`. A reason the daemon does not recognize is reported as `UNRECOGNIZED`, and the
+space's own text is never shown. A new proposal after a refusal needs a new request, which `register`
+does not send. A sign-in the provider rejects (expired or revoked) is `AUTH_REQUIRED`: run
+`cotal daemon login` again. A failure before anything was sent is `DEPENDENCY_UNAVAILABLE`. Only a
+request whose outcome is unconfirmed is `OPERATION_UNKNOWN`: run the same command again
+to replay it. A changed registration for the same instance is refused `CONFLICT` and nothing is sent.
+
+`service-connect` connects the running daemon to the space as its own registered service. It replays
+the saved register request unchanged to read its registration, gets its service credential from the
+space's auth provider, verifies the bearer signature and witness against the pinned authority's
+issuer keys, checks the serving snapshot against its embedded contract, and connects to the broker
+as that service. It binds the registered
+responder before reporting ready. It succeeds, exit 0, only after the broker accepts the connection,
+the responder subscriptions are flushed and the space accepts the daemon as ready. The renewal and ready request IDs are kept in
+`<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
+
+Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
+(`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
+daemon's authority, with its code as the native code, such as `APPROVAL_REVOKED`; connecting again
+does not reconnect it. A space or broker that cannot be reached is `DEPENDENCY_UNAVAILABLE`, and
+connecting again retries the same requests. Without a register request the answer is
+`TARGET_NOT_FOUND`.
+
+While the daemon runs, the connection renews itself and reconnects on its own. The access bearer
+lives at most 60 seconds, so the broker drops the connection when each one expires and the daemon
+reconnects with the next. While the broker connection is down, for that reason or any other, the
+answer is `connecting`, not connected; it is connected again only after the broker is back and the
+space accepts the daemon as ready again. This is not a persistent service: a restarted daemon starts
+with no service connection and stays disconnected until you run `service-connect` again, and an
+ended connection is remembered only until the daemon stops.
+`service-status` reads the daemon's current answer without contacting the space. `service-disconnect`
+drains the responder and closes the connection, and stopping the daemon closes all of them.
+
+The service answers its existing `machine-status` command with `null`. This is a liveness response;
+it contains no vitals, hostname or machine metadata. Its stock Describe answer is explicitly public:
+it identifies the endpoint and derived owner token and includes the protocol and command schemas.
+Callers still need broker-enforced invoke access to the selected instance and command. Connecting the
+daemon grants no caller access. Owner approval, operator name binding and caller grants remain
+separate actions. An authority that does not publish its issuer identity cannot support this
+serving connection; the daemon refuses rather than trusting a decoded token or using Manager
+credentials. The registration contract is unchanged.
 
 ## service
 
@@ -4143,23 +4337,24 @@ plaintext. A `ws://` address uses plaintext WebSocket. Use `wss://` for TLS.
 ## Manifest deploys
 
 A `cotal.yaml` manifest declares a whole mesh (channels, personas, roles, and ACLs) in one file.
-Three commands consume it, plus a read-only validator:
+These commands consume it:
 
 ```bash
-cotal up -f cotal.yaml         # boot a fresh mesh from the manifest
-cotal spawn -f cotal.yaml      # deploy the manifest additively onto a running mesh
-cotal down -f cotal.yaml       # tear that deploy down (or --run <id> for one run)
+cotal up -f cotal.yaml              # boot a fresh mesh from the manifest
+cotal team deploy cotal.yaml        # deploy the manifest additively onto a running mesh
+cotal team remove <deployment-id>   # retire a returned deployment
 cotal topology view -f cotal.yaml   # validate + view the access graph, change nothing
 ```
 
-`up -f` and `spawn -f` differ in target: `up -f` brings up a new broker and applies the manifest;
-`spawn -f` requires an already-reachable mesh and applies additively (ownership-scoped). On a
-user-auth mesh, `spawn -f` deploys over your own login (the deployer view, gated on ledger scope
-`spawn`): the manifest's agents land under your owner, a manifest claiming another owner is
-refused, and seeding new channels additionally needs scope `admin`. Both take
-`--dry-run` to print the plan without mutating anything. `topology` validates the manifest and
-renders its channel / role / ACL graph. See [Define a team](define-a-team.md) and the
-[manifest reference](manifest.md).
+`up -f` brings up a new broker and applies the manifest. `team deploy` requires a registered,
+running mesh and applies additively: all-new live channel-only manifests, or bounded all-new agent
+and mixed manifests on static-auth or open meshes through one native manager. It does not launch
+user-auth agents. `team remove` retires a returned deployment by its full ID within the limits in
+[Recorded team views](#recorded-team-views). `spawn -f` no longer deploys a manifest; an additive
+ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. `up -f`,
+`team deploy` and `team remove` take `--dry-run` to print the plan without mutating anything.
+`topology` validates the manifest and renders its channel / role / ACL graph. See
+[Define a team](define-a-team.md) and the [manifest reference](manifest.md).
 
 ## ext
 
@@ -4383,7 +4578,9 @@ explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access. On Windows, PowerShell script generation works but automatic
+owner or unsafe file access. A startup file its owner made read-only is never replaced. `install`
+still writes its stub, then fails, exit 5, and names the line to add to that file yourself.
+`uninstall` refuses it, exit 2, and changes nothing until you remove that line. On Windows, PowerShell script generation works but automatic
 profile editing remains unsupported: the guarded POSIX file writer cannot safely replace
 Windows reparse-point paths. Installing files does not establish that the host runs its
 profile or permits scripts under its execution policy.
@@ -4436,6 +4633,25 @@ server provides one. They do not repeat the submitted summary, details, contact 
 response body. Acceptance does not prove that anyone read the report or acted on it. A success
 response without an established ID is reported with that limitation, not retried for a new ID.
 Run a self-hosted intake with [`feedback-intake`](#server-daemons).
+
+## telemetry
+
+```bash
+cotal telemetry [--json|--plain]
+cotal telemetry off|minimal|regular [--json|--plain]
+```
+
+The CLI sends anonymous usage data: one small event per command as it exits, and at the default
+`regular` level one install summary per day. [Telemetry](telemetry.md) lists every field and what
+is never sent. The bare form prints the level in force, what set it (the settings file,
+`COTAL_TELEMETRY`, `DO_NOT_TRACK` or `COTAL_TELEMETRY_DISABLED`), the install id, the intake URL and
+the settings file. A level argument writes the file; `on` is an alias of `regular`, and writing the
+level the file already holds is a `no-op`. A level the environment forces still wins, and the
+report says so. `cotal telemetry` itself sends nothing.
+
+The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEMETRY` set to
+anything but a level refuses `USAGE_INVALID`, and a settings file that does not validate refuses
+`SCHEMA_INVALID` on every command until it is fixed or moved away.
 
 ## run
 
@@ -4585,7 +4801,10 @@ pinned public exchange with no local capability, follows no redirects, and refus
 URL because the actor token is the credential in the request body. Because a seat execs it on every
 bearer refresh, it skips the connector-seed boot gate entirely: it reads one 0600 token file,
 exchanges it and prints the bearer without consulting or writing the operator-global seed store, so
-a newer store generation cannot refuse a live seat's refresh. `--manager-call` asks for the
+a newer store generation cannot refuse a live seat's refresh. For the same reason the seat's command
+names the CLI entry file the `cotal` bin link resolved to at spawn, not the link: an install that
+later replaces the link, such as the get.cotal.ai launcher over an `npm i -g` link, leaves running
+seats able to refresh. `--manager-call` asks for the
 instance-bound `manager-caller` view; `--manager-instance <id>` selects an explicit live candidate,
 and an owner with more than one live candidate is refused with their ids until it names one.
 That mode still prints only the raw token and does not update `--health-file`. A spawn runs it once as the agent auth
@@ -4593,19 +4812,33 @@ preflight. When it fails there without printing a sentence of its own, the refus
 timeout, the signal that killed it, or its exit code. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)
 
-`cotal app-identity` is plumbing for a Claude app conversation on a local mesh, and you never run it
-directly either. The Claude connector's local server runs `cotal app-identity provision --name <name>`
-when a conversation connects. It picks the mesh as `cotal spawn` does (`--space` selects one), and
-answers `{"ok":false,"taken":true}` when a peer with that name is live, so the server tries another
-name. Otherwise it prints one JSON line: the launch env the connector reads and the reference that
-`retire` takes. The channels and role come from the mesh's default persona. On a mesh with static
-credentials it provisions the identity's own delivery durables and writes its credential to a 0600
-file in a new temporary directory; the credential never appears on stdout. A record beside it names
-the identity, the mesh and the process that asked. `cotal app-identity retire --dir <dir>` removes
-the identity's broker footprint, then the files and the directory. When the broker is not answering
-it keeps them. Each provision also retires the directories whose owning process has exited, which
-covers a host killed before it could retire. A mesh that uses per-user sign-in is refused. Like
-`agent-bearer`, it skips the connector-seed boot gate.
+`cotal app-identity` is plumbing for a Claude app conversation, and you never run it directly
+either. The Claude connector's local server runs `cotal app-identity provision --name <name>` when
+a conversation connects. It picks the mesh as `cotal spawn` does (`--space` selects one) and prints
+one JSON line. A new identity opens only after a person approves it at the mesh's authority, so
+provision needs a signed-in mesh whose authority advertises connection approval v1, and the
+conversation's native `--session`. It keeps the request and its secret in a private record under
+`~/.cotal/app-identities`. Until the person decides, it answers
+`{"ok":false,"pending":true,"requestId":"<id>","approval":{"id":"<id>","url":"<url>","expiresAt":"<time>"},"proposed":<selection>}`,
+with no credential, secret or path. `proposed` is `null` for a request without a selection.
+Provisioning again sends the same request: it answers the same approval while pending, and the
+launch env and the reference that `retire` takes once approved. The grant is what the person
+approved, which can differ from the request. A denial or an expiry drops the record, and the next
+provision makes a new request. `--selection <json>` proposes channels, a role and capabilities for
+that conversation. A mesh with static credentials, an open mesh, and a signed-in mesh whose
+authority this machine holds have no approval page, so provision opens no identity on them.
+The connector passes `--require-approval`. Every provision needs approval with or without it, and
+an earlier CLI that opened identities without approval refuses the unknown flag before doing
+anything. A saved request that was never issued needs the person's decision even when an earlier
+version saved it.
+`cotal app-identity retire --dir <dir>` still removes an identity an earlier version opened on a
+static mesh: its broker footprint, then its files and directory. When the broker is not answering it
+keeps them. Each provision also retires those directories whose owning process has exited. For a
+signed-in identity, `retire` keeps the record until the mesh confirms retirement, and names the
+mesh's phase while it is pending. A request still pending is dropped.
+`cotal app-identity reap` retires the selected mesh's saved conversations whose server process no
+longer exists. The connector runs it after each signed-in connection, so a connection never waits
+for that cleanup. Like `agent-bearer`, it skips the connector-seed boot gate.
 
 ## watch
 
@@ -4769,7 +5002,8 @@ is not enough.
 
 `--harness/-H`, `--model/-m`, `--name/-n`, `--prompt/-p` and `--cwd/-C` retain their declared
 meanings. The legacy `--agent` spelling remains accepted; using both harness spellings refuses.
-Persona/file and manifest launches do not use this route.
+A `--file <persona-file>` launch uses this route too unless `--foreground` is given. A manifest is
+deployed with `cotal team deploy <file>`, not `spawn`.
 
 `--foreground` runs the native application directly. It does not support a structured receipt,
 manager pin or manager control credential. Native exit or terminal loss may end that process;
@@ -5474,6 +5708,9 @@ It is not OS-supervised installation or platform parity.
 
 The real child exclusively claims its creation-pinned native PID custody before hosted authority
 preparation or local endpoint initialization. That starting record is not readiness; another existing slot is not adopted or reclaimed.
+After a crash, the record the killed child left names a dead pid. The manager adapter removes that
+record before the next launch, so the next `up` relaunches the manager; a live, foreign or
+unreadable record still refuses.
 It binds its actual native identity before endpoint construction. A startup phase appears only
 after native start, settled custody and signal handlers. On authenticated meshes the adapter also
 requires a current status response pinned to that native instance and epoch, with the same process
@@ -5499,7 +5736,8 @@ identities, and uses the existing native shutdown intent for agent reap. The chi
 same complete scope before accepting. Changed or incomplete scope refuses without a broader policy.
 The controller requires immutable accepted/returned evidence and the original process exit before
 recording a native stopped state. An unconfirmed request retains its reservation and never escalates
-to force kill, restarts, or treats PID disappearance as completion. Reported cleanup remains not
+to force kill, restarts, or treats PID disappearance as completion. A later bare `up` or `down`
+settles it only from the same evidence, and only then releases the reservation. Reported cleanup remains not
 checked. Retained native-policy markers prevent a metadata change from selecting generic signals,
 and an unconfirmed native stop cannot be forgotten just because its process disappeared. Legacy shutdown refuses the native child rather than bypassing that boundary.
 

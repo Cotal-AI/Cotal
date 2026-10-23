@@ -1,6 +1,7 @@
 /** Runs the production runtime gates with a terminal child standing in for the harness UI.
  * This checks final confirmation/timeout custody; claude-workspace-trust covers real native trust. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +13,9 @@ import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { TmuxRuntime } from "../../../extensions/tmux/src/runtime.js";
 import { available as tmuxAvailable } from "../../../extensions/tmux/src/driver.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "../../../extensions/connector-claude-code/src/trust.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const root = mkdtempSync(join(tmpdir(), "cotal-startup-choices-"));
 const session = `choices-${process.pid}`;
@@ -75,6 +79,7 @@ try {
   }
   console.log("STARTUP CHOICES COMPLETE");
   assert.equal(failures.length, 0, failures.join("\n"));
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   for (const handle of handles) handle.stop({ graceful: false });
   await Promise.all(handles.map((h) => h.waitForExit?.()));

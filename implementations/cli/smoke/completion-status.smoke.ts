@@ -200,7 +200,13 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
     chmodSync(rc, 0o400);
     const readOnly = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o600);
-    check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source "${stub}"`) && existsSync(stub), shown(readOnly));
+    // The line is the one the owned block would hold, single-quoted as the shell needs.
+    check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && existsSync(stub) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
+    const installed = s.run(["completion", "install", "zsh"]);
+    chmodSync(rc, 0o400);
+    const lockedOut = s.run(["completion", "uninstall", "zsh"]);
+    chmodSync(rc, 0o600);
+    check("uninstall refuses an rc it cannot write, exit 2, and keeps the stub and its line", installed.status === 0 && lockedOut.status === 2 && /is read-only, so its completion line was not removed/.test(lockedOut.stderr) && existsSync(stub) && readFileSync(rc, "utf8").includes(stub), { install: shown(installed), uninstall: shown(lockedOut) });
   }
 }
 

@@ -213,7 +213,9 @@ const MODE_PROBE_TIMEOUT_MS = 5_000;
 export async function probeEnforcement(server: string): Promise<"auth" | "open" | "unreachable"> {
   const bare = await probeConnect(server, { timeoutMs: MODE_PROBE_TIMEOUT_MS });
   if (bare.ok) return "open";
-  return bare.reason === "auth-required" ? "auth" : "unreachable";
+  // An inferred auth-required read only the greeting, not a refusal, so it does not verify a
+  // registration.
+  return bare.reason === "auth-required" && !bare.inferred ? "auth" : "unreachable";
 }
 
 /** The claimed mode must match what the broker actually enforces, in both directions. The USER

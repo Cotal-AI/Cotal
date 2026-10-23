@@ -11,12 +11,28 @@ import { assertDerivedOwnerToken, assertLifecycleToken, spacePrefix } from "./su
 import { SERVICE_AUTHORITY_MAX_BYTES, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
 export { SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, SERVICE_AUTHORITY_MAX_BYTES, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
 
-/** Non-authorizing account metadata read through the client's already-pinned authority origin. */
+/** One published Ed25519 verification key of the service authority's issuer: the public
+ *  coordinate only, as the door projects its JWKS. */
+export interface ServiceIssuerKey {
+  kty: "OKP";
+  crv: "Ed25519";
+  kid: string;
+  x: string;
+}
+
+/** Non-authorizing account metadata read through the client's already-pinned authority origin,
+ *  with the issuer identity a guest verifies its service access bearer under: the same origin,
+ *  tenant path included, that mints the bearer. */
 export interface ServiceAuthorityInfo {
   v: 1;
   kind: "service-endpoint-authority-info";
   space: string;
   accountPublicKey: string;
+  /** The exact `iss` the authority mints into its service access bearers. Absent, with `keys`,
+   *  from a door that predates the issuer identity. */
+  issuer?: string;
+  /** The authority's published verification keys, the set its `GET /jwks` serves. */
+  keys?: readonly ServiceIssuerKey[];
 }
 
 /** A transport failure never permits a new mutation identity or an unqualified replay. */
@@ -219,14 +235,70 @@ function artifacts(raw: unknown, closureCount: number): void {
   }
 }
 
+/** How many verification keys an issuer may publish at once: the active key plus the retired
+ *  kids still published for their max-age window. The door refuses to publish more. */
+export const SERVICE_ISSUER_KEYS_MAX = 16;
+/** Unpadded base64url of a 32-byte Ed25519 public coordinate. */
+const ED25519_X = /^[A-Za-z0-9_-]{43}$/;
+const ED25519_P = (1n << 255n) - 19n;
+/** The canonical encodings of the Ed25519 points of small order, with both sign bits where the
+ *  sign carries nothing. A verifier handed one accepts signatures no private key made, so a key
+ *  set is refused rather than published or trusted with one in it. */
+const ED25519_SMALL_ORDER = new Set([
+  "0100000000000000000000000000000000000000000000000000000000000000",
+  "0100000000000000000000000000000000000000000000000000000000000080",
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "0000000000000000000000000000000000000000000000000000000000000000",
+  "0000000000000000000000000000000000000000000000000000000000000080",
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+]);
+
+/** Whether `x` encodes an Ed25519 public key a verifier may trust: canonical unpadded base64url of
+ *  32 bytes, a y coordinate below the field prime, and not a point of small order. The door, the
+ *  parser and the guest seam all ask this one question. */
+export function isCanonicalEd25519PublicCoordinate(x: string): boolean {
+  if (!ED25519_X.test(x)) return false;
+  const bytes = Buffer.from(x, "base64url");
+  if (bytes.length !== 32 || bytes.toString("base64url") !== x) return false;
+  if (ED25519_SMALL_ORDER.has(bytes.toString("hex"))) return false;
+  let y = 0n;
+  for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(bytes[i]!);
+  return (y & ((1n << 255n) - 1n)) < ED25519_P;
+}
+
+function issuerKeys(raw: unknown): ServiceIssuerKey[] {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > SERVICE_ISSUER_KEYS_MAX) invalid("keys must be a bounded nonempty array");
+  const kids = new Set<string>();
+  return raw.map((entry) => {
+    const o = record(entry, "issuer key");
+    closed(o, ["kty", "crv", "kid", "x"]);
+    if (o.kty !== "OKP" || o.crv !== "Ed25519") invalid("issuer key must be an Ed25519 public key");
+    const kid = text(o.kid, "kid", 256);
+    if (kids.has(kid)) invalid("duplicate issuer kid");
+    kids.add(kid);
+    if (typeof o.x !== "string" || !isCanonicalEd25519PublicCoordinate(o.x)) invalid("issuer key x must be a canonical full-order Ed25519 coordinate");
+    return { kty: "OKP", crv: "Ed25519", kid, x: o.x };
+  });
+}
+
 export function parseServiceAuthorityInfo(raw: unknown, expectedSpace: string): ServiceAuthorityInfo {
   const o = record(raw, "authority info");
-  closed(o, ["v", "kind", "space", "accountPublicKey"]);
+  // A door that predates the issuer identity answers the four account fields; the answer is
+  // still read, and a guest that needs the identity refuses at `serveAuthenticityOf`.
+  closed(o, ["v", "kind", "space", "accountPublicKey"], ["issuer", "keys"]);
   spacePrefix(expectedSpace);
   if (o.v !== 1 || o.kind !== "service-endpoint-authority-info" || o.space !== expectedSpace)
     invalid("authority info does not match this space and protocol");
   if (typeof o.accountPublicKey !== "string" || !isAccountNkey(o.accountPublicKey)) invalid("invalid DATA-account public key");
-  return { v: 1, kind: "service-endpoint-authority-info", space: expectedSpace, accountPublicKey: o.accountPublicKey };
+  if (Object.hasOwn(o, "issuer") !== Object.hasOwn(o, "keys")) invalid("issuer and keys are answered together or not at all");
+  return {
+    v: 1, kind: "service-endpoint-authority-info", space: expectedSpace, accountPublicKey: o.accountPublicKey,
+    ...(Object.hasOwn(o, "issuer") ? { issuer: text(o.issuer, "issuer", 2048), keys: issuerKeys(o.keys) } : {}),
+  };
 }
 
 export function parseServiceRegistrationWitness(raw: unknown): ServiceRegistrationWitness {

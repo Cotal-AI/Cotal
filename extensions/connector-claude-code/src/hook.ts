@@ -13,6 +13,9 @@
 import { runHookRelay } from "@cotal-ai/connector-core/relay";
 import { otherCotalPath } from "./one-path.js";
 import { connectionOwner } from "./connection-owner.js";
+import { observePersonalHook } from "./native-binding.js";
 
 const owner = connectionOwner(process.env.CLAUDE_PLUGIN_DATA);
-void runHookRelay((event, session) => otherCotalPath(event, session) ?? owner(event, session)).catch(() => process.exit(0));
+void runHookRelay((event, session) => otherCotalPath(event, session) ?? owner(event, session),
+  async (event, session) => { if (!session.managed) await observePersonalHook(event); },
+).catch(() => process.exit(0));

@@ -13,6 +13,8 @@ export interface ResolvedServiceAdapter { pin: ServiceAdapterPin; declaration: S
 export interface LoadedServiceAdapter extends ResolvedServiceAdapter {
   prepareStop?: ServiceAdapterHooks["prepareServiceStop"];
   stop?: ServiceAdapterHooks["stopService"];
+  settleStop?: ServiceAdapterHooks["settleServiceStop"];
+  abandonStop?: ServiceAdapterHooks["abandonServiceStop"];
   prepareKernelStop?: ServiceAdapterHooks["prepareKernelStop"];
   observeKernelStop?: ServiceAdapterHooks["observeKernelStop"];
   build: (context: ServiceAdapterContext) => ServiceAdapterLaunch | Promise<ServiceAdapterLaunch>;
@@ -54,6 +56,6 @@ export async function loadServiceAdapter(expected: ResolvedServiceAdapter, optio
     if (!sameServiceAdapterPin(after.pin, expected.pin) || typeof provider.buildServiceLaunch !== "function" || typeof provider.checkServiceReadiness !== "function") throw new CommandFailure("refused", "CONFLICT", "the service adapter's live declaration or hooks do not match its reviewed metadata");
     if (current.declaration.stop === "native" && (typeof provider.prepareServiceStop !== "function" || typeof provider.stopService !== "function")) throw new CommandFailure("refused", "UNSUPPORTED", "the native stop declaration has no matching impact and terminal hooks; generic signals were not substituted");
     if (current.declaration.stop === "kernel-exit" && (typeof provider.prepareKernelStop !== "function" || typeof provider.observeKernelStop !== "function")) throw new CommandFailure("refused", "UNSUPPORTED", "the kernel-exit stop declaration has no matching scope and exit-observation hooks; generic signals were not substituted");
-    return { ...current, build: provider.buildServiceLaunch.bind(provider), readiness: provider.checkServiceReadiness.bind(provider), ...(current.declaration.stop === "native" ? { prepareStop: provider.prepareServiceStop!.bind(provider), stop: provider.stopService!.bind(provider) } : {}), ...(current.declaration.stop === "kernel-exit" ? { prepareKernelStop: provider.prepareKernelStop!.bind(provider), observeKernelStop: provider.observeKernelStop!.bind(provider) } : {}) };
+    return { ...current, build: provider.buildServiceLaunch.bind(provider), readiness: provider.checkServiceReadiness.bind(provider), ...(current.declaration.stop === "native" ? { prepareStop: provider.prepareServiceStop!.bind(provider), stop: provider.stopService!.bind(provider), ...(typeof provider.settleServiceStop === "function" ? { settleStop: provider.settleServiceStop.bind(provider) } : {}), ...(typeof provider.abandonServiceStop === "function" ? { abandonStop: provider.abandonServiceStop.bind(provider) } : {}) } : {}), ...(current.declaration.stop === "kernel-exit" ? { prepareKernelStop: provider.prepareKernelStop!.bind(provider), observeKernelStop: provider.observeKernelStop!.bind(provider) } : {}) };
   } finally { release?.(); }
 }

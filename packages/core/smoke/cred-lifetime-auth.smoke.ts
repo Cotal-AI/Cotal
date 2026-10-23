@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { createServer, createAccount } from "@nats-io/nkeys";
 import { spawn } from "node:child_process";
+import { createServer as createTcpServer, type AddressInfo } from "node:net";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -266,6 +267,27 @@ try {
   // resolves deterministically on every OS regardless of connect latency.
   const deadProbe = await probeConnect("nats://127.0.0.1:1", { creds: expiredCreds, timeoutMs: 500 });
   check("probeConnect classifies an expired cred as stale-auth even when unreachable (the flake, killed)", !deadProbe.ok && deadProbe.reason === "stale-auth", deadProbe);
+  // On Windows a broker's auth refusal can reach the client as a bare ECONNRESET: the reset discards
+  // the `-ERR` it sent first. A listener that greets like an auth broker and resets the connection
+  // when CONNECT arrives gives the client that same view on any OS. The open greeting is the control.
+  for (const authRequired of [true, false]) {
+    const resetter = createTcpServer((socket) => {
+      socket.on("error", () => {});
+      socket.write(`INFO {"server_id":"reset-probe","version":"2.12.12","proto":1,"max_payload":1048576,"auth_required":${authRequired}}\r\n`);
+      socket.once("data", () => socket.resetAndDestroy());
+    });
+    await new Promise<void>((resolve) => resetter.listen(0, "127.0.0.1", resolve));
+    const resetPort = (resetter.address() as AddressInfo).port;
+    const resetProbe = await probeConnect(`nats://127.0.0.1:${resetPort}`, { timeoutMs: 2000 });
+    await new Promise<void>((resolve) => resetter.close(() => resolve()));
+    check(
+      authRequired
+        ? "probeConnect grades a reset after an auth-required greeting as an inferred auth-required, not a dead broker"
+        : "probeConnect still grades a reset after an open greeting as unreachable",
+      !resetProbe.ok && (authRequired ? resetProbe.reason === "auth-required" && resetProbe.inferred === true : resetProbe.reason === "unreachable"),
+      resetProbe,
+    );
+  }
 
   const fresh = newIdentity();
   const freshCreds = await mintCreds(auth, fresh, "probe", { expiresInSeconds: 60 });

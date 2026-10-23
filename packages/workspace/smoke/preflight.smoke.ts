@@ -8,6 +8,8 @@
  *  • renderWorkspaceError — one canonical sentence per failure kind (unreachable names the recorded root).
  *  • preflightTarget — probe a DEAD port and assert it classifies unreachable + prunes by source,
  *    WITHOUT mutating the registry (it returns the decision; the caller mutates).
+ *  • an inferred auth-required (an auth greeting, then a reset handshake) refuses but never deletes a
+ *    record, while a real refusal behind the same greeting still drops an `up` record.
  *  • pruneStaleMeshes — a registered entry whose broker is gone is kept as offline; an explicit call only.
  *  • resolveControlTarget — a space-less control resolve sweeps once, and the sweep it reads is the
  *    one the caller handed in when there is one (#3872).
@@ -15,7 +17,7 @@
  * Run: pnpm smoke:preflight
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MeshTarget, PreflightFailure } from "@cotal-ai/workspace"; // erased at runtime — safe before the COTAL_HOME sandbox
@@ -36,6 +38,8 @@ const {
   recordMesh,
   removeMesh,
   loadMeshes,
+  meshFile,
+  preflightOrThrow,
   renderWorkspaceError,
   reachableOrThrow,
   ConnectRefusal,
@@ -91,6 +95,14 @@ check("auth-required + local + open → NO prune + 'open-wants-auth'", (() => {
   const r = classifyPreflightFailure("flag-server", "auth-required", false);
   return r.prune === false && r.kind === "open-wants-auth";
 })());
+// INFERRED auth-required (an auth greeting, then a reset handshake): no refusal was read, so it
+// names the same failure as a real refusal but never prunes, whatever the source.
+for (const s of REGISTRY)
+  for (const hasAuth of [true, false])
+    check(`inferred auth-required + ${s} / auth=${hasAuth} → NO prune + '${hasAuth ? "registry-creds-rejected" : "registry-open-now-auth"}'`, (() => {
+      const r = classifyPreflightFailure(s, "auth-required", hasAuth, true);
+      return r.prune === false && r.kind === (hasAuth ? "registry-creds-rejected" : "registry-open-now-auth");
+    })());
 // STALE-AUTH (D5 slice 6): a dead CREDENTIAL on a LIVE broker — never a prune, whatever the
 // source (deleting a live mesh's entry for an expired cred would misdirect the repair).
 for (const s of [...REGISTRY, ...NON_REGISTRY])
@@ -244,6 +256,47 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   const gone = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "ours", root: "/tmp/p3", found: "other", removed: true }) });
   return !kept.includes("removed") && kept.includes("cotal meshes add") && gone.includes("stale entry removed");
 })());
+
+// ── INFERRED auth: a reset after an auth greeting names the failure but never deletes a record ───
+// A listener that greets like an auth broker and resets the handshake gives the client what Windows
+// gives it when the reset discards the broker's `-ERR`. The control greets the same way, reads the
+// whole handshake, refuses with the real `-ERR` and closes cleanly. That refusal still drops its
+// `up` record, which is what shows these cells can see a deletion.
+{
+  const { createServer } = await import("node:net");
+  const listen = (onConnect: (sock: import("node:net").Socket) => void) =>
+    new Promise<{ server: string; close: () => Promise<void> }>((resolve) => {
+      const srv = createServer((sock) => {
+        sock.on("error", () => { /* the probe tears its own sockets down */ });
+        sock.write('INFO {"server_id":"inferred","version":"2.12.12","proto":1,"max_payload":1048576,"auth_required":true}\r\n');
+        onConnect(sock);
+      });
+      srv.listen(0, "127.0.0.1", () =>
+        resolve({ server: `nats://127.0.0.1:${(srv.address() as { port: number }).port}`, close: () => new Promise((r) => srv.close(() => r())) }));
+    });
+  const reset = await listen((sock) => sock.once("data", () => sock.resetAndDestroy()));
+  const refuse = await listen((sock) => {
+    let seen = "";
+    sock.on("data", (chunk: Buffer) => {
+      seen += chunk.toString("utf8");
+      if (seen.includes("PING\r\n")) sock.end("-ERR 'Authorization Violation'\r\n");
+    });
+  });
+  for (const [space, server] of [["inferred-auth", reset.server], ["refused-auth", refuse.server]] as const)
+    recordMesh({ space, server, root: `/tmp/${space}`, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const inferredT: MeshTarget = { ...T, space: "inferred-auth", server: reset.server, root: "/tmp/inferred-auth", origin: "up" };
+  const classified = await preflightTarget(inferredT);
+  check("an inferred auth-required classifies registry-open-now-auth with NO prune", !classified.ok && classified.kind === "registry-open-now-auth" && classified.prune === false, classified);
+  const before = readFileSync(meshFile("inferred-auth"));
+  const inferredRefusal = await preflightOrThrow(inferredT).then(() => undefined, (e: unknown) => e);
+  check("preflightOrThrow refuses the command on it as AUTH_REQUIRED", inferredRefusal instanceof ConnectRefusal && inferredRefusal.code === "AUTH_REQUIRED", String(inferredRefusal));
+  check("…and the `up` record's registry bytes survive unchanged", Buffer.compare(before, readFileSync(meshFile("inferred-auth"))) === 0);
+  const refusedT: MeshTarget = { ...T, space: "refused-auth", server: refuse.server, root: "/tmp/refused-auth", origin: "up" };
+  const refused = await preflightOrThrow(refusedT).then(() => undefined, (e: unknown) => e);
+  check("CONTROL: a real auth refusal behind the same greeting is AUTH_REQUIRED and drops the `up` record", refused instanceof ConnectRefusal && refused.code === "AUTH_REQUIRED" && findMesh("refused-auth") === undefined, { refused: String(refused), meshes: loadMeshes() });
+  await reset.close();
+  await refuse.close();
+}
 
 // ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────
 // A TCP peer that greets with INFO {tls_required:true} only after 1.5s and then answers the TLS

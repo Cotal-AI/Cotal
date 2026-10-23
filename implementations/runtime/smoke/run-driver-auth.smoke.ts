@@ -927,6 +927,8 @@ const A = await driver(RUN_A, TK_A);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
   env.HOME = dir;
   env.XDG_CONFIG_HOME = join(dir, "config");
+  // A test CLI sends no usage telemetry, and this entry sits under no package that holds a version.
+  env.COTAL_TELEMETRY = "off";
   const entry = join(dir, "run-cli.mts");
   writeFileSync(entry, `
     import ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};

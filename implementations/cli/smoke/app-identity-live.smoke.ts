@@ -1,6 +1,7 @@
 /**
- * `cotal app-identity`: the plumbing a Claude app conversation runs to open its own identity on a
- * local mesh, and to retire it.
+ * `cotal app-identity`: the plumbing a Claude app conversation runs to open its own identity, and
+ * to retire it. A new identity opens only after a person approves it at the mesh's authority, so a
+ * static-credential mesh opens none. What an earlier provision opened there still retires.
  *
  * Live: a throwaway JWT-auth broker on an OS-assigned port, a mesh registered in a temp COTAL_HOME
  * with `cotal meshes add`, and the command run in-process with its stdout captured, because stdout
@@ -11,9 +12,9 @@
  */
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-appid-smoke-home-"));
 process.env.COTAL_HOME = home;
@@ -21,8 +22,8 @@ process.env.COTAL_NO_PROMPT = "1";
 delete process.env.COTAL_DEFAULT_PERSONA;
 
 const {
-  createSpaceAuth, deprovisionAgent, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry,
-  setupSpaceStreams, CotalEndpoint,
+  conversationSelection, createSpaceAuth, deprovisionAgent, mintCreds, mintLifecycleUid, newIdentity, provisionAgent,
+  seedChannelRegistry, setupSpaceStreams, CotalEndpoint,
 } = await import("@cotal-ai/core");
 const { authDir, recordMesh, saveSpaceAuth } = await import("@cotal-ai/workspace");
 const { meshes } = await import("../src/commands/meshes.js");
@@ -35,7 +36,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Run `cotal app-identity …` in-process and return what it wrote to stdout and its exit code. */
 async function run(positionals: string[], values: Record<string, unknown>): Promise<{ out: string; code: number; reply: any }> {
@@ -78,10 +78,15 @@ async function runMeshes(positionals: string[], values: Record<string, unknown>)
 }
 
 const credDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-app-identity-"));
+const noApproval = /no human approval for app conversations, so no identity was opened/;
 
 const SPACE = "appmesh";
 const root = mkdtempSync(join(tmpdir(), "cotal-appid-smoke-root-"));
-mkdirSync(join(root, ".cotal"), { recursive: true });
+mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
+writeFileSync(
+  join(root, ".cotal", "agents", "default.md"),
+  "---\nname: default\nrole: default\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\n\nA Claude app conversation.\n",
+);
 const userRoot = mkdtempSync(join(tmpdir(), "cotal-appid-smoke-user-"));
 const auth = await createSpaceAuth(SPACE);
 const broker = await bootBroker(auth);
@@ -94,20 +99,46 @@ try {
   await setupSpaceStreams({ servers: broker.servers, space: SPACE, creds: provisioner });
   await seedChannelRegistry({ servers: broker.servers, space: SPACE, creds: provisioner, file: { channels: { general: {} } } });
   check("the mesh registers", (await runMeshes(["add", SPACE], { server: broker.servers, root })) === 0);
+  const supervisor = new CotalEndpoint({
+    space: SPACE, servers: broker.servers, creds: provisioner, card: { name: "prov", kind: "endpoint" },
+    consume: false, watchPresence: false, registerPresence: false,
+  });
+  await supervisor.start();
+  cleanup.push(() => supervisor.stop());
 
-  // ── refusals that come before anything is made ───────────────────────────────────────────────
+  /** An identity as a static-mesh provision made one before connection approval: a fresh `mkdtemp`
+   *  directory with its record and credential, and the broker footprint of a foreground spawn. */
+  const earlier = async (owner: number) => {
+    const identity = newIdentity(), lifecycleUid = mintLifecycleUid();
+    const dir = mkdtempSync(join(tmpdir(), "cotal-app-identity-"));
+    writeFileSync(join(dir, "identity.json"), JSON.stringify({ space: SPACE, id: identity.id, lifecycleUid, owner }), { mode: 0o600 });
+    const creds = await provisionAgent(supervisor, auth, identity,
+      { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"], role: "default", lifecycleUid });
+    writeFileSync(join(dir, "agent.creds"), creds, { mode: 0o600 });
+    return { dir, id: identity.id, lifecycleUid };
+  };
+  const footprintGone = async (who: { id: string; lifecycleUid: string }) => {
+    const again = await deprovisionAgent({
+      servers: broker.servers, space: SPACE, targetId: who.id, lifecycleUid: who.lifecycleUid,
+      creds: await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: who.id, lifecycleUid: who.lifecycleUid } }),
+    });
+    return again.acls.absent === 1 && again.consumers.absent === 2 && again.deleted === 0;
+  };
+
+  // ── provision opens nothing without a person's approval ──────────────────────────────────────
   const usage = await run(["open"], {});
   check("an unknown verb answers its usage as one JSON line", usage.code === 1 && usage.reply?.ok === false && /usage/.test(usage.reply.error), usage.out);
   const nameless = await run(["provision"], { space: SPACE });
   check("provision without a name is refused", nameless.code === 1 && /--name/.test(nameless.reply?.error), nameless.out);
   const before = credDirs().length;
-  const noPersona = await run(["provision"], { space: SPACE, name: "claude_app" });
-  check(
-    "a mesh with no default persona is refused, naming where it looked",
-    noPersona.code === 1 && noPersona.reply?.error?.includes(join(root, ".cotal", "agents")) && noPersona.reply.error.includes(`cotal persona create default --space ${SPACE}`),
-    noPersona.out,
-  );
+  const refused = await run(["provision"], { space: SPACE, name: "claude_app" });
+  check("a static-credential mesh refuses a new app identity by name", refused.code === 1 && refused.reply?.ok === false &&
+    noApproval.test(refused.reply.error) && refused.reply.error.includes(`"${SPACE}"`) && refused.out.trim().split("\n").length === 1, refused.out);
+  check("  with no environment or credential in the reply", refused.reply.env === undefined && !/BEGIN NATS|NKEY SEED|COTAL_CREDS/.test(refused.out), refused.out);
   check("  and it made no credential directory", credDirs().length === before, credDirs());
+  const selected = await run(["provision"], { space: SPACE, name: "claude_app",
+    selection: JSON.stringify(conversationSelection({ capabilities: ["run"] })) });
+  check("a selection does not open one either", selected.code === 1 && noApproval.test(selected.reply?.error) && credDirs().length === before, selected.out);
   // A per-user sign-in mesh, recorded the way `cotal meshes add` records one. It is refused before
   // anything dials it, so its addresses only need to parse.
   recordMesh({ space: "usermesh", server: "nats://127.0.0.1:9", root: userRoot, mode: "user", origin: "manual", userAuth: {
@@ -116,93 +147,29 @@ try {
   }, ts: new Date().toISOString() } as never);
   const userMesh = await run(["provision"], { space: "usermesh", name: "claude_app" });
   check(
-    "a mesh that uses per-user sign-in is refused by name",
-    userMesh.code === 1 && /per-user sign-in/.test(userMesh.reply?.error) && userMesh.reply.error.includes('"usermesh"'),
+    "a signed-in mesh refuses a missing native session before provisioning",
+    userMesh.code === 1 && /native session identity before connecting/.test(userMesh.reply?.error),
     userMesh.out,
   );
-  check("  and it made no credential directory", credDirs().length === before, credDirs());
 
-  mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
-  writeFileSync(
-    join(root, ".cotal", "agents", "default.md"),
-    "---\nname: default\nrole: default\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\n\nA Claude app conversation.\n",
-  );
+  // ── an identity opened before approval still retires, with its broker footprint ─────────────
+  const live = await earlier(process.ppid);
+  const retired = await run(["retire"], { dir: live.dir });
+  check("an earlier identity retires", retired.code === 0 && retired.reply?.ok === true && retired.out.trim().split("\n").length === 1, retired.out);
+  check("  and its credential directory is gone", !existsSync(live.dir));
+  check("  and so is its broker footprint", await footprintGone(live));
 
-  // ── provision: the launch env, the credential in a file, and nothing secret on stdout ────────
-  const opened = await run(["provision"], { space: SPACE, name: "claude_app" });
-  check("provision answers ok with one JSON line", opened.code === 0 && opened.reply?.ok === true && opened.out.endsWith("\n") && opened.out.trim().split("\n").length === 1, opened.out);
-  const env: Record<string, string> = opened.reply.env;
-  const retire = opened.reply.retire;
-  check("the env names the mesh and the exact name asked for", env.COTAL_SPACE === SPACE && env.COTAL_SERVERS === broker.servers && env.COTAL_NAME === "claude_app", env);
-  check(
-    "the env carries the default persona's channels and role",
-    env.COTAL_SUBSCRIBE === "general" && env.COTAL_ALLOW_SUBSCRIBE === "general" && env.COTAL_ALLOW_PUBLISH === "general" && env.COTAL_ROLE === "default",
-    env,
-  );
-  const credsText = readFileSync(env.COTAL_CREDS, "utf8");
-  check("the credential is a file the env names", /BEGIN NATS USER JWT/.test(credsText));
-  check("  readable by its owner only", (statSync(env.COTAL_CREDS).mode & 0o777) === 0o600, (statSync(env.COTAL_CREDS).mode & 0o777).toString(8));
-  check("  in a directory only its owner can enter", (statSync(dirname(env.COTAL_CREDS)).mode & 0o777) === 0o700);
-  const jwt = credsText.split("\n").find((l) => l.startsWith("eyJ"));
-  check("stdout carries no credential", !/NKEY SEED|BEGIN NATS/.test(opened.out) && !!jwt && !opened.out.includes(jwt), opened.out);
-  check("the retire reference is the credential's directory", retire?.dir === dirname(env.COTAL_CREDS), retire);
-  const recordPath = join(retire.dir, "identity.json");
-  const recordText = readFileSync(recordPath, "utf8");
-  const record = JSON.parse(recordText);
-  check(
-    "a record beside it names the identity, its mesh and the process that asked",
-    record.space === SPACE && record.lifecycleUid === env.COTAL_LIFECYCLE_UID && typeof record.id === "string" && record.owner === process.ppid,
-    record,
-  );
-  check("  readable by its owner only, and carrying no credential", (statSync(recordPath).mode & 0o777) === 0o600 && !/NKEY SEED|BEGIN NATS/.test(recordText) && !recordText.includes(jwt!));
+  const orphan = await earlier(spawnSync(process.execPath, ["-e", ""]).pid);
+  const kept = await earlier(process.ppid);
+  const next = await run(["provision"], { space: SPACE, name: "claude_app_3" });
+  check("a refused provision still retires an earlier identity whose host is gone", noApproval.test(next.reply?.error) && !existsSync(orphan.dir));
+  check("  with its broker footprint", await footprintGone(orphan));
+  check("  and keeps the one whose host is alive", existsSync(join(kept.dir, "agent.creds")));
 
-  // ── the identity works: it joins and a peer's DM reaches it ──────────────────────────────────
-  const app = new CotalEndpoint({
-    space: SPACE, servers: env.COTAL_SERVERS, creds: credsText, lifecycleUid: env.COTAL_LIFECYCLE_UID,
-    card: { name: env.COTAL_NAME, kind: "agent", id: record.id }, channels: ["general"],
-  });
-  const heard: string[] = [];
-  app.on("message", (m: { parts?: Array<{ kind: string; text?: string }> }) => {
-    for (const part of m?.parts ?? []) if (part.kind === "text" && part.text) heard.push(part.text);
-  });
-  await app.start();
-  const stopApp = () => app.stop();
-  cleanup.push(stopApp);
-  const supervisor = new CotalEndpoint({
-    space: SPACE, servers: broker.servers, creds: provisioner, card: { name: "prov", kind: "endpoint" },
-    consume: false, watchPresence: false, registerPresence: false,
-  });
-  await supervisor.start();
-  cleanup.push(() => supervisor.stop());
-  const peerId = newIdentity();
-  const peerUid = mintLifecycleUid();
-  const peer = new CotalEndpoint({
-    space: SPACE, servers: broker.servers, lifecycleUid: peerUid,
-    creds: await provisionAgent(supervisor, auth, peerId, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: peerUid }),
-    card: { name: "peer", kind: "agent", id: peerId.id }, channels: ["general"],
-  });
-  await peer.start();
-  cleanup.push(() => peer.stop());
-  await wait(300);
-  await peer.unicast(app.ref().id, "hello from a peer");
-  for (let i = 0; i < 40 && !heard.length; i++) await wait(100);
-  check("the provisioned identity joins and receives a DM", heard.some((t) => t.includes("hello from a peer")), heard);
-
-  // ── D1: a live name is taken, and asking for it makes nothing ────────────────────────────────
-  const beforeTaken = credDirs().length;
-  const second = await run(["provision"], { space: SPACE, name: "claude_app" });
-  check("a second provision of a live name answers taken", second.code === 1 && second.reply?.ok === false && second.reply.taken === true, second.out);
-  check("  and it made no credential directory", credDirs().length === beforeTaken, credDirs());
-  const other = await run(["provision"], { space: SPACE, name: "claude_app_2" });
-  check("another name provisions beside it", other.code === 0 && other.reply?.ok === true && other.reply.env.COTAL_NAME === "claude_app_2", other.out);
-  const otherRecord = JSON.parse(readFileSync(join(other.reply.retire.dir, "identity.json"), "utf8"));
-  check("  as an identity of its own", otherRecord.id !== record.id && other.reply.env.COTAL_CREDS !== env.COTAL_CREDS);
-  check("  and left the first identity, whose host is alive, in place", existsSync(env.COTAL_CREDS) && existsSync(recordPath));
-
-  // ── retire: the credential directory and the broker footprint go ─────────────────────────────
+  // ── retire removes only what provision made ─────────────────────────────────────────────────
   const foreign = mkdtempSync(join(tmpdir(), "not-an-app-identity-"));
-  const refused = await run(["retire"], { dir: foreign });
-  check("retire refuses a directory provision did not make", refused.code === 1 && /refusing to remove/.test(refused.reply?.error), refused.out);
+  const notOurs = await run(["retire"], { dir: foreign });
+  check("retire refuses a directory provision did not make", notOurs.code === 1 && /refusing to remove/.test(notOurs.reply?.error), notOurs.out);
   check("  and leaves it in place", existsSync(foreign));
   // Raw, as a caller could pass it: `join` would normalize the climb away before retire saw it.
   const climbing = `${tmpdir()}/cotal-app-identity-/../${basename(foreign)}`;
@@ -227,49 +194,17 @@ try {
   const missing = await run(["retire"], {});
   check("retire without a directory is refused", missing.code === 1 && /--dir/.test(missing.reply?.error), missing.out);
 
-  await stopApp();
-  cleanup.splice(cleanup.indexOf(stopApp), 1);
-  const retired = await run(["retire"], { dir: retire.dir });
-  check("retire answers ok", retired.code === 0 && retired.reply?.ok === true && retired.out.trim().split("\n").length === 1, retired.out);
-  check("  and removed the credential directory", !existsSync(retire.dir));
-  // A second deprovision of the same identity finds nothing left: the read-ACL row and both
-  // durables were removed by retire, not by this call.
-  const again = await deprovisionAgent({
-    servers: broker.servers, space: SPACE, targetId: record.id, lifecycleUid: record.lifecycleUid,
-    creds: await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: record.id, lifecycleUid: record.lifecycleUid } }),
-  });
-  check("  and removed its broker footprint", again.acls.absent === 1 && again.consumers.absent === 2 && again.deleted === 0, again);
-
-  // ── an identity whose host died without retiring is retired by the next provision ───────────
-  const orphan = await run(["provision"], { space: SPACE, name: "claude_app_9" });
-  const orphanRecord = JSON.parse(readFileSync(join(orphan.reply.retire.dir, "identity.json"), "utf8"));
-  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
-  writeFileSync(join(orphan.reply.retire.dir, "identity.json"), JSON.stringify({ ...orphanRecord, owner: dead }), { mode: 0o600 });
-  const third = await run(["provision"], { space: SPACE, name: "claude_app_3" });
-  check("the next provision answers ok", third.code === 0 && third.reply?.ok === true, third.out);
-  check("  and retired the identity whose host is gone", !existsSync(orphan.reply.retire.dir));
-  const orphanAgain = await deprovisionAgent({
-    servers: broker.servers, space: SPACE, targetId: orphanRecord.id, lifecycleUid: orphanRecord.lifecycleUid,
-    creds: await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: orphanRecord.id, lifecycleUid: orphanRecord.lifecycleUid } }),
-  });
-  check("  with its broker footprint", orphanAgain.acls.absent === 1 && orphanAgain.consumers.absent === 2 && orphanAgain.deleted === 0, orphanAgain);
-  check("  and kept the one whose host is alive", existsSync(join(other.reply.retire.dir, "agent.creds")));
-
-  const otherRetired = await run(["retire"], { dir: other.reply.retire.dir });
-  check("the other identity retires on its own", otherRetired.code === 0 && !existsSync(other.reply.retire.dir), otherRetired.out);
-
   // ── a mesh that does not answer ──────────────────────────────────────────────────────────────
   for (const stop of cleanup.splice(0).reverse()) await stop();
   await broker.stop();
   brokerUp = false;
   const beforeDown = credDirs().length;
   const down = await run(["provision"], { space: SPACE, name: "claude_app" });
-  check("a mesh that is not answering is refused by name", down.code === 1 && down.reply?.error?.includes(`"${SPACE}"`) && /not answering/.test(down.reply.error), down.out);
-  check("  and it made no credential directory", credDirs().length === beforeDown, credDirs());
-  const downRetire = await run(["retire"], { dir: third.reply.retire.dir });
+  check("a mesh that is not answering still opens nothing", down.code === 1 && noApproval.test(down.reply?.error) && credDirs().length === beforeDown, down.out);
+  const downRetire = await run(["retire"], { dir: kept.dir });
   check("retire on a mesh that is not answering is refused", downRetire.code === 1 && /not answering/.test(downRetire.reply?.error), downRetire.out);
-  check("  and keeps what a later retire needs", existsSync(join(third.reply.retire.dir, "agent.creds")) && existsSync(join(third.reply.retire.dir, "identity.json")));
-  rmSync(third.reply.retire.dir, { recursive: true, force: true });
+  check("  and keeps what a later retire needs", existsSync(join(kept.dir, "agent.creds")) && existsSync(join(kept.dir, "identity.json")));
+  rmSync(kept.dir, { recursive: true, force: true });
 } finally {
   for (const stop of cleanup.reverse()) await Promise.resolve(stop()).catch(() => {});
   if (brokerUp) await broker.stop();

@@ -1667,9 +1667,20 @@ then has no call in flight, and does not make the plane fatal.
 
 The plane and a hosted context expose `decide`, `revoke`, `name-bind`, `operation-read` and
 `proposal-read` as one in-process function; a hosted context refuses it as `unavailable` while it is
-not ready. That function has no route, capability, CLI flag or caller policy. The host checks an
-owner granter's current interactive row but authenticates no caller: the embedder MUST authenticate
-the granter it passes, operator or owner.
+not ready. The host checks an owner granter's current interactive row but authenticates no caller:
+the embedder MUST authenticate the granter it passes, operator or owner. The stock auth service
+serves that function on `POST /service-endpoint-host` when started with `--service-endpoints`: the
+body is `{ idpToken, request }` with no granter, the route verifies the IdP token and derives the
+granter itself. `decide`, a revoke whose cause is `owner-request`, the four caller-policy operations
+(`caller-grant`, `caller-revoke`, `caller-policy-read`, `caller-policy-list`) and the reads
+(`proposal-read`, `operation-read` and `name-read`, each scoped to the owner's own records; a
+proposal read names its endpoint's binding only when that binding is the owner's) run as the proved
+owner on either face; `name-bind`, any other revoke and the admission operations are the operator's
+and are served on the loopback face under the exchange capability only, with the proved subject as
+the audit id. The admission operations have no engine handler in this cut and answer `unsupported`.
+The engine's answer, replay included, is returned as is. Host requestIds share one space-wide
+namespace, so a client MUST mint them unpredictably (16 random bytes); a guessable id can be bound
+first by another owner.
 
 `name-bind` is create-only and needs an operator granter. Its `expectedRevision` MUST be 0; any other
 value answers `unsupported`, and a native control endpoint name is refused. It issues one
@@ -1684,7 +1695,13 @@ record carries; it recovers only by replaying the same request.
 
 The public route `/service-endpoint-authority` exists only with `serviceEndpoints`, on both faces;
 without it the route answers 404. `GET` returns `{v:1, kind:"service-endpoint-authority-info", space,
-accountPublicKey}` for the receiver's own account with `cache-control: no-store`. `POST` takes one
+accountPublicKey, issuer, keys}` for the receiver's own account with `cache-control: no-store`:
+`issuer` is the exact `iss` its service access bearers carry and `keys` the Ed25519 verification
+keys it publishes at `GET /jwks`, public coordinates only (`kty`, `crv`, `kid`, `x`, at most 16),
+each a canonical encoding of a full-order point; a key of small order is refused on both sides. A
+guest verifies its access bearer under them before it brands its serve grant (§13.6). A door that
+predates the identity answers the four account fields alone, and a guest that needs it refuses to
+serve rather than brand unverified. `POST` takes one
 envelope of at most 2 MiB. The proof is the credential on either face; the loopback capability is
 never read. A request naming another account or space is refused before its proof is used. The proof
 kinds each operation admits are fixed: register needs IdP; activate needs IdP or a renewal proof;
@@ -1702,9 +1719,14 @@ completed after the proof, an unread, unknown or inconsistent record, or a `held
 503 with no protocol echo, because the request may already be bound.
 
 Register compiles the submitted closures in memory. Each cluster digest names a submitted manifest
-whose root names a submitted cluster document, each verified against its content digest, and every
-artifact must belong to a declared closure. The proposal's commands are exactly those documents'
-declarations; a journal-class command, or one declaring a governed trait (`ai.cotal.guarded`,
+whose root names a submitted cluster document, each verified against its content digest. The schema
+closures the commands reference (each `inputDigest` and `outputDigest`) MAY be submitted with them;
+a submitted one is admitted only whole: its manifest at that digest, its root and every member
+present, and the bundle recompiling to that closure digest. Every artifact must belong to a declared
+cluster closure or to a referenced schema closure. A schema closure that is not submitted is not
+refused: the host publishes the canonical void closure itself when it opens service endpoints, and
+any other schema closure is the registrant's to publish. The proposal's commands are exactly those
+documents' declarations; a journal-class command, or one declaring a governed trait (`ai.cotal.guarded`,
 `ai.cotal.priced`), is refused as `unsupported-runtime`, in the proposal phase and the registration
 phase alike. A native control endpoint name (`auth`, `delivery`, `manager`) is refused as
 `permission-denied` before any effect and binds nothing. The engine requestId is the first 32 lowercase hex

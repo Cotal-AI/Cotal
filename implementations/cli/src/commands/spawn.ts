@@ -96,6 +96,7 @@ import {
 import { c } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstance, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
@@ -355,8 +356,14 @@ async function uniqueMeshName(
 }
 
 
-/** Only an occupied actor is retryable; authorization and provisioning failures stay failures. */
-class ForegroundActorCollision extends Error {}
+/** Only an occupied actor is retryable; authorization and provisioning failures stay failures.
+ *  Thrown only where the collision is found before anything is launched, issued or redeemed, so
+ *  it is a refusal. */
+class ForegroundActorCollision extends CommandFailure {
+  constructor(message: string) {
+    super("refused", "CONFLICT", message);
+  }
+}
 
 async function provisionFreshForeground<T>(
   requested: string,
@@ -1542,9 +1549,12 @@ async function provisionRemoteUserForeground(
   const exchangeUrl = "body" in source ? source.exchangeUrl : target.userAuth?.endpoints?.url;
   if (!exchangeUrl) return fail(noExchangeEndpoint(space));
   let body: unknown;
+  const held = `foreground actor material for "${name}" is already held; preserve its session and choose a distinct actor for a new launch`;
   const materialClaim = acquireLock(`${paths.actorToken}.launch.lock`, {
     waitMs: 0,
-    onTimeout: () => new ForegroundActorCollision(`foreground actor material for "${name}" is already held; preserve its session and choose a distinct actor for a new launch`),
+    // A supplied body comes from an enrollment that was already redeemed, so its collision is not
+    // a refusal: the one-time enrollment is spent.
+    onTimeout: () => "body" in source ? new Error(held) : new ForegroundActorCollision(held),
   });
   if ("body" in source) {
     body = source.body;
@@ -1560,6 +1570,9 @@ async function provisionRemoteUserForeground(
       body = await provider.postAgentProvisioning({ url: source.provisioningUrl, idpUrl, actor: name });
     } catch (e) {
       materialClaim.release();
+      // No sign-in refuses before any request. Any failure after the request, an endpoint refusal
+      // included, may have provisioned the actor.
+      if ((e as { code?: unknown }).code === "signed-out") throw new CommandFailure("refused", "AUTH_REQUIRED", (e as Error).message);
       throw e;
     }
   }
@@ -1585,11 +1598,13 @@ async function provisionRemoteUserForeground(
     rmSync(healthPath, { force: true });
     provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
     // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
-    // exchange instead of a local service. A dead auth chain stops the spawn here.
+    // exchange instead of a local service. A dead auth chain stops the spawn here. The agent runs
+    // this command for every renewal, so it names the resolved entry: an install can replace the
+    // bin link meanwhile (get.cotal.ai writes a shell launcher over `~/.local/bin/cotal`).
     const bearerCmd = [
       process.execPath,
       ...process.execArgv,
-      process.argv[1],
+      entryScript(),
       provider.agentBearerCommand,
       "--exchange-url", exchangeUrl,
       "--space", space,
@@ -1753,10 +1768,11 @@ async function provisionUserForeground(
     await materializeSecretToFile(store, agentSentinelCredsKey(space, name, composition), sentinelPath);
     rmSync(healthPath, { force: true });
     provenance.wrote(`actor grant ${owner}.${name} (user mode)`, tokenPath);
+    // The resolved entry, for the same reason as the remote arm above.
     const bearerCmd = [
       process.execPath,
       ...process.execArgv,
-      process.argv[1],
+      entryScript(),
       provider.agentBearerCommand,
       "--dir", dir,
       "--space", space,

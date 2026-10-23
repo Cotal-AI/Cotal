@@ -17,8 +17,8 @@
  * Two credentials by design (never one broad sys user that both enumerates and kills):
  *  - the existing `membership-observer` (CONNZ-read only) does discovery;
  *  - a NEW kick-only evictor (`$SYS.REQ.SERVER.*.KICK` and nothing else) does the kill.
- * Both are system-account users mintable ONLY at the `up` that provisions the account (the $SYS
- * signing seed is never persisted) — so the evictor is a standing, high-power, renewable credential,
+ * Both are system-account users mintable ONLY at the `up` that provisions the account (the trust
+ * record carries no $SYS signing seed) — so the evictor is a standing, high-power, renewable credential,
  * classified with the observer, surfaced by the stale-auth diagnostics when absent.
  *
  * SEMANTICS, stated in the result (never inferred):

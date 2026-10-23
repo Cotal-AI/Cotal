@@ -159,7 +159,7 @@ try {
 
 } finally {
   const cleanupErrors: unknown[] = [];
-  for (const stop of [() => nc?.close(), () => longNc?.close(), () => manager?.stop(), () => delivery?.stop(), () => killAndAwaitExit(broker)]) {
+  for (const stop of [() => nc?.close(), () => longNc?.close(), () => manager?.stop({ withAgents: true }), () => delivery?.stop(), () => killAndAwaitExit(broker)]) {
     try { await stop(); } catch (error) { cleanupErrors.push(error); }
   }
   releaseBroker();

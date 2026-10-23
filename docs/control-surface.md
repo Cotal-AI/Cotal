@@ -272,8 +272,8 @@ gate frozen by a takeover or a registration says nothing about the head, so that
 carries `gateState=frozen` and no `headState`. Those facts ride `error.details[]` as
 `kind = ai.cotal.ep.lifecycle-blocked` and are also appended to the error string, so a
 caller that only prints `error.message` still sees them. The CLI and the connector tools hand a
-refusal on in one shape, so `cotal spawn -f` keeps the same code, details, rendered facts and
-acceptance data as `cotal spawn --detach` and `cotal_spawn`. A connector that collapses the
+refusal on in one shape, so `cotal spawn --detach` keeps the same code, details, rendered facts
+and acceptance data as `cotal_spawn`. A connector that collapses the
 refusal to "startup failed (unknown)" or a SPEC 13.6 wait-timeout is hiding a knowable
 state, not reporting a missing one.
 

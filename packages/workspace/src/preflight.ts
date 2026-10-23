@@ -47,6 +47,7 @@ export function classifyPreflightFailure(
   source: MeshTarget["source"],
   reason: "auth-required" | "stale-auth" | "unreachable" | "timeout",
   hasAuth: boolean,
+  inferred = false,
 ): { prune: boolean; kind: PreflightFailure } {
   // A timeout is never a stale-entry signal, whatever the source: the dial ran out of its own
   // budget, which says nothing about whether the broker is actually gone (#851).
@@ -64,8 +65,11 @@ export function classifyPreflightFailure(
   // live mesh's registry entry because a cred expired would misdirect the repair (the fix is
   // `doctor auth`, not re-registration) — the same misdiagnosis class as the gate-1 prune bug.
   if (reason === "stale-auth") return { prune: false, kind: "stale-auth" };
-  if (fromRegistry && hasAuth) return { prune: true, kind: "registry-creds-rejected" };
-  if (fromRegistry) return { prune: true, kind: "registry-open-now-auth" };
+  // An `inferred` auth-required read no rejection, only an auth greeting and a reset handshake. Like
+  // the tls-trust read in `preflightTarget`, that unauthenticated evidence names the failure but
+  // never deletes a record.
+  if (fromRegistry && hasAuth) return { prune: !inferred, kind: "registry-creds-rejected" };
+  if (fromRegistry) return { prune: !inferred, kind: "registry-open-now-auth" };
   if (hasAuth) return { prune: false, kind: "creds-rejected" };
   return { prune: false, kind: "open-wants-auth" };
 }
@@ -138,7 +142,8 @@ export async function preflightTarget(
       return { ok: false, kind: "tls-trust", prune: false };
   }
 
-  const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth));
+  const inferred = probe.reason === "auth-required" && probe.inferred === true;
+  const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth), inferred);
   return { ok: false, kind, prune };
 }
 

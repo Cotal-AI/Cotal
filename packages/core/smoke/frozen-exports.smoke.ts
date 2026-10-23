@@ -101,27 +101,38 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // session rail and frame codec re-export for the console bundle. "./launch-material" is the
 // launch-material reader the lifecycle hook relay imports without loading the barrel, and
 // "./peer-label" is the peer label its frame rendering prints, for the same reason.
+// "./secret-fs" is the secret-file writers the Claude native binding hook imports, again without
+// the barrel; it maps to an entry naming the barrel's writers, never the module and its test seam.
 // "./browser-control" and "./browser-validators-build" are the Node-free browser describe/invoke
 // entry and its build-time validator generator; their callers never load the barrel, so their
 // entry functions live only there.)
 {
   const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { exports?: Record<string, unknown> };
   const keys = Object.keys(pkg.exports ?? {});
-  const ALLOWED_SUBPATHS = new Map<string, { mod: Record<string, unknown>; additions: readonly string[] }>([
-    ["./session-browser", { mod: await import("../src/session-browser.js") as Record<string, unknown>, additions: [] }],
-    ["./launch-material", { mod: await import("../src/launch-material.js") as Record<string, unknown>, additions: [] }],
-    ["./peer-label", { mod: await import("../src/peer-label.js") as Record<string, unknown>, additions: [] }],
-    ["./browser-control", { mod: await import("../src/browser-control.js") as Record<string, unknown>, additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
-    ["./browser-validators-build", { mod: await import("../src/browser-validators-build.js") as Record<string, unknown>, additions: ["generateBrowserContracts"] }],
+  const ALLOWED_SUBPATHS = new Map<string, { module: string; additions: readonly string[] }>([
+    ["./session-browser", { module: "session-browser", additions: [] }],
+    ["./launch-material", { module: "launch-material", additions: [] }],
+    ["./peer-label", { module: "peer-label", additions: [] }],
+    ["./secret-fs", { module: "secret-fs-entry", additions: [] }],
+    ["./browser-control", { module: "browser-control", additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
+    ["./browser-validators-build", { module: "browser-validators-build", additions: ["generateBrowserContracts"] }],
   ]);
   const unexpected = keys.filter((k) => k !== "." && !ALLOWED_SUBPATHS.has(k));
   c(`core's package "exports" map is the barrel "." plus only allow-listed subpaths (no wildcard/opaque deep import)`,
     keys.includes(".") && unexpected.length === 0, unexpected);
+  // The proof below reads each module from src, so pin that module to what the map publishes:
+  // otherwise a subpath remapped to a wider module passes on a file the package never serves.
+  const remapped = [...ALLOWED_SUBPATHS].filter(([subpath, { module }]) => {
+    const entry = (pkg.exports ?? {})[subpath] as { import?: unknown; types?: unknown } | undefined;
+    return keys.includes(subpath) && (entry?.import !== `./dist/${module}.js` || entry?.types !== `./dist/${module}.d.ts`);
+  }).map(([subpath]) => subpath);
+  c(`each allow-listed subpath publishes the module this proof reads`, remapped.length === 0, remapped);
   // Prove each allow-listed subpath re-exports barrel-covered symbols: every runtime export it
   // exposes is IDENTICAL (===) to the barrel's same-named export, or is one of its declared
   // additions and a function. Either way it surfaces no collection the barrel scan above did not
   // already reach and freeze.
-  for (const [subpath, { mod, additions }] of ALLOWED_SUBPATHS) {
+  for (const [subpath, { module, additions }] of ALLOWED_SUBPATHS) {
+    const mod = await import(`../src/${module}.js`) as Record<string, unknown>;
     const offBarrel = Object.keys(mod).filter((k) => mod[k] !== (core as Record<string, unknown>)[k]).sort();
     const exact = JSON.stringify(offBarrel) === JSON.stringify([...additions].sort());
     c(`"${subpath}" re-exports the barrel's objects and adds only its ${additions.length} declared function(s), so no off-barrel collection`,

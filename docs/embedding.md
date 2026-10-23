@@ -141,8 +141,9 @@ space and grantee UID. Grant ids are immutable; an append cannot replace or reac
 Initial writes require no prior native key history. A deletion arriving after an absence read
 cannot recreate a policy or a pending service gate.
 Revocation begins with a revision-pinned deny-new intent that unrelated appends preserve.
-These are storage operations, not entitlement checks. The effective policy resolver, host operations,
-cutoff evidence and terminal caller revocation are not implemented yet.
+These are storage operations, not entitlement checks; the service endpoint host below is their only
+writer. The effective resolver and native caller issuance are described under the service endpoint
+host below. Receipts and terminal caller revocation remain unsupported.
 
 Scoped Describe callbacks also receive an optional immutable local context with the actual subject,
 complete-envelope fingerprint, serving identity and receive-relative deadline information.
@@ -417,17 +418,31 @@ The host implements `GatewayHost`:
 
 - `account(auth)` returns the account the request authenticated as, read from the SDK's `AuthInfo`.
   It throws when the request has none, and the tool then runs nothing.
-- `open(account, name)` issues and starts a new connection under that name. It throws `NameTaken`
-  only when the issuer reports that the name exists. `cotal_connect` then tries `name_2`, `name_3`
-  and so on, up to `GATEWAY_NAME_ATTEMPTS` names. Any other error goes back to the caller and no
-  other name is tried. The collision check and the issue must be one atomic step per account, so
-  two conversations asking for one name at once get different names. Error messages reach the
-  caller and must not carry secrets.
+- `open(account, name, context?, selection?, approvalId?)` starts a connection only after the person
+  approves its permissions. `selection` is a proposal. Throw `ApprovalRequired` with the request ID,
+  approval page, expiry and proposal while they decide. The tool returns a structured pending result
+  and a readable link, with no connection handle. `approvalId` resumes one unchanged request when
+  `options.approvalResume` is enabled. It conveys no authority. Bind it to the authenticated account,
+  space, name and request generation. An issued approval cannot grant a replacement connection.
+  Throw `NameTaken` only for an authoritative name collision. A new request tries `name_2` and later
+  variants up to `GATEWAY_NAME_ATTEMPTS`; a resumed approval never renames. The collision check and
+  issue must be atomic. Other errors reach the caller without renaming and must not carry secrets.
 - `find(account, id)` and `close(account, id)` act only on a connection that account owns.
 
-`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. `GATEWAY_TOOLS`
-names the mesh tools the gateway offers. Spawn, despawn, persona, run, yield and reconnect belong
-to a supervised local seat and are left out. One tool list serves every connection, so no
+`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names
+the channels the new connection reads, may join and may post to, from the configuration its grant
+produced. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included. A native
+embedder whose host issues each conversation its own grant may pass `options.tools` from
+`NATIVE_GATEWAY_TOOLS`, which adds spawn, despawn, persona, run and reconnect but not yield.
+Registering a tool offers it to no connection by itself: a connection calls only the tools its
+host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
+capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
+builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Only the
+person's decision in the authority's authenticated UI is consent. The approved selection may differ
+from the proposal and must stay within their current authority. The empty approved selection still
+includes direct-message send and receive and own activity publication; disclose these before
+approval. A model flag, API bearer or ordinary tool approval cannot approve the request. Unsupported
+approval paths refuse before issuing a grant. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.
@@ -447,7 +462,7 @@ when its connection closes, also while the broker is unreachable; it listens for
 since the last read, and a wait that starts after one returns it at once. Every other routed tool
 except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, waitSeconds? })`
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, waitSeconds? })`
 serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
 never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
 401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
@@ -462,13 +477,22 @@ and names the local user. A client that cancels a call aborts its signal, so a c
 listening. The streams default to the process's own, and stdout then carries only MCP.
 
 An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
-`registerCotalGatewayTools`. The gateway calls `wake.signal(connection)` when a connection gets
-something that would end a `cotal_wait` while no wait holds it, and not again for that connection
-until `cotal_inbox` or `cotal_wait` reads. `signal` returns false when no client heard it. The
-gateway then signals that connection again when the embedder calls the function `wake.attach`
-received, which it does when a client starts listening. `cotal_connect` adds `wake.listening()` to
-its reply. `GATEWAY_INSTRUCTIONS` is `GATEWAY_CONNECTING` followed by `GATEWAY_LISTENING`, so an
-embedder can say how its conversations listen and keep how they connect.
+`registerCotalGatewayTools`. The gateway calls `wake.signal(connection, preview)` when a connection
+gets something that would end a `cotal_wait` while no wait holds it. A true result means a reader
+heard the signal, not that it received complete message content. The preview never consumes mail.
+`cotal_connect` adds `wake.listening(connection)` to its reply. An embedder delivering full content
+can return false from `wake.inboxNotice(connection)` to omit competing inbox-read advice from other
+tool results. Notification-only clients retain that advice.
+
+`wake.attach` receives a rearm callback. Call it without arguments when a replacement reader starts
+listening. Call it with one connection after confirmed inline delivery to reoffer that connection's
+remaining work. Pass `false` as its second argument to clear the latch without immediately retrying
+a refused handoff. Ordinary inbox reads and waits also clear the latch. An adapter offering complete
+inline messages can use `prepareInlineDelivery`: hold whole automatic messages, validate the final
+transport size, recheck the batch before admission, then settle it with the native result. A failed
+or unknown admission releases the hold without committing. Never settle successfully on a preview,
+socket write or queued native call. `GATEWAY_INSTRUCTIONS` combines `GATEWAY_CONNECTING` and
+`GATEWAY_LISTENING`, so an embedder can supply its own listening instructions.
 
 ### Private tool results
 
@@ -1355,12 +1379,22 @@ does not export this module; the typed request, result and view parsers in the s
 are public.
 
 `openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
-to host these operations; it is off by default and no CLI flag sets it. With it, the plane and the
-hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind` and
-the two reads in process. A hosted context rejects it as `unavailable` while it is not ready. That
-function has no route, capability or caller policy; register admission is reachable only through the
-public route below. The host authenticates no caller: the embedder must authenticate the operator or
-owner granter it passes. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
+to host these operations; it is off by default. `cotal up --user-auth --service-endpoints` sets it
+on the stock auth service. With it, the plane and the
+hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
+four caller-policy operations and the three reads (`proposal-read`, `operation-read` and
+`name-read`) in process. A hosted context rejects it as
+`unavailable` while it is not ready. The host authenticates no caller: the embedder must
+authenticate the operator or owner granter it passes. The stock service does that on
+`POST /service-endpoint-host`: the body is `{ idpToken, request }` with no granter, and the route
+verifies the token and derives the granter. A decision, an `owner-request` revoke, the four
+caller-policy operations and the reads run as the proved owner on either face; `name-bind`, any
+other revoke and the admission operations are the operator's, served on the loopback face under the
+exchange capability only, with the proved subject as the audit id (the admission operations have no
+engine handler yet and answer `unsupported`). Mint requestIds unpredictably: they share one
+space-wide namespace. `cotal service-endpoint` drives that route as the signed-in user
+([docs/cli.md](cli.md#service-endpoint)). Register admission is reachable only through the public
+route below. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
 the endpoint's name binding once, with your `claimReference`, and only the identical request recovers
 it; nothing updates, transfers or releases a name. The host checks no domain control, so verify the
 claim, or delegate a namespace you control, before you bind. The host runs over the plane's claim hold, data account and
@@ -1380,7 +1414,8 @@ the administrative rail, both scanners and the remaining clients stay live, so n
 take over the claim.
 
 With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
-route answers 404. `GET` returns the receiver's account and space. `POST` takes a `{request, proof}`
+route answers 404. `GET` returns the receiver's account and space, the exact `iss` its service
+access bearers carry, and the public Ed25519 keys `GET /jwks` publishes. `POST` takes a `{request, proof}`
 envelope of at most 2 MiB. An IdP proof derives the owner, who needs a current interactive cli or web
 row; register needs one, and so may activate. A service's renewal proof authorizes activate, renew
 and status, and its access bearer authorizes ready and status; neither is owner authority. A typical
@@ -1392,6 +1427,38 @@ it connects to the broker with the bearer through the composed native service ca
 responder, calls `ready`, and renews before the bearer expires. The auth provider's
 `serviceEndpointInfo` and `serviceEndpointAuthority` hooks are the client, and accept a service proof
 as well as the signed-in login.
+
+The `credential` answer carries no store access and no serve grant, so a service turns it into the
+process-local grant `serveEndpoint` consumes with `authorizeGuestServeGrant({ accountPublicKey,
+result, registration, authenticity })`: the parsed result, the service's own embedded closure, and
+the pinned issuer's `iss` and published keys. The issuer and keys come from the registered
+space's authority URL the service already pins, tenant path included: the auth provider's
+`serviceEndpointInfo` answer carries them, and a service passes `serveAuthenticityOf(info)` as
+`authenticity`; an authority that does not publish them yet makes that call refuse, so the
+service does not serve on a bearer it cannot verify.
+It verifies the access bearer's EdDSA signature under the published key its `kid` names and the
+same closed claims the host's token validator checks, so a bearer the issuer did not sign for
+this witness brands nothing; the closure is bound to the service's own embedded contract, not to
+the bearer. It refuses
+another account, a bearer from another issuer, space, subject or key, one that names another
+witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
+that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.
+
+For a serving connection, `serviceEndpointRenewal({ store, dir, witness })` returns that loop as a
+bearer function: pass its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
+first pull activates on the signed-in login and every later pull renews on the stored renewal proof.
+If that proof has expired, as after a machine was off for more than a day, the next pull replays the
+same activate request on the signed-in login, which mints again while the root and the approval stand.
+It keeps one activate and one renew requestId per witness, written to `store` before the first send,
+and replays them, with fresh material each time, for as long as the root and the approval allow.
+Concurrent pulls share one request. `credential()` is that same pull answering the validated
+`credential` result without its renewal proof, which never leaves the source, as a copy per caller;
+it is what `authorizeGuestServeGrant` takes. `bearer()` and `credential()` share one pull, so the
+two in flight together send one request under the same persisted ids, and an ended or closed
+source refuses both the same way. It owns no timer. A transport failure, `rate-limited`, a missing
+or rejected sign-in, or a store failure leaves it `unavailable`, and the next pull replays the same
+request; any other denial from the space ends it, and later pulls send nothing. `state()` reports
+expiries only, errors are fixed sentences, and `close()` aborts a pull in flight.
 
 Every effectful request is keyed by its requestId and body. Keep one requestId per operation and
 witness, store it with the witness and the renewal material before you send it, and reuse it with
@@ -1414,9 +1481,73 @@ running, answers 503; replay the same request. Once a service has activated, its
 can no longer change. Commands must be ephemeral and declare
 no governed trait.
 
-This is registration and serving, not a complete service endpoint. Caller policy and scoped Describe
-are not available, so callers cannot yet be authorized against the service, and revoke, terminal
-retirement and restore stay unsupported: a host revoke refuses new activation, renewal, readiness
+`caller-grant` takes an owner granter with an interactive row who holds the approved instance, and a
+grantee is a current exact owner, actor and lifecycle UID. A managed grantee also needs its actual
+same-owner parent chain, with each current ancestor holding active covering grants for the same
+service approval. The operation records those immutable grant ids and lifecycle UIDs in `parentRefs`
+and rechecks them before append. An admin scope never substitutes for endpoint caller rights. Every
+capability must name that instance with `instanceOnly: true`, carry no journal access and no `any` or
+`ledger` target, and sit within the approval's caller ceiling. The answer is `granted` with the grant
+as stored. Ordinary user-auth agent connects now derive their endpoint rows from this policy through
+core's native grant builder, including reserved Describe for each authorized exact instance. The
+callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
+approval and ceiling, then checks the policy evidence again after signing and native-key recording.
+The original connection expiry is at most 60 seconds from issuance, and capped by root and approval
+expiry. These are fresh leader reads,
+not a linearized revoke fence. Existing issued connections keep their original expiry, and caller
+revocation remains deny-new, not terminal absence proof.
+One instance indexes at most 256 grants over its life, including attempts refused after indexing, and
+a full index answers `resource-exhausted`; a new instance is the remedy. `caller-revoke` admits the
+grant's source owner, its grantee owner and an operator. It answers `pending` with
+`denyNew: "landed"` and `notBefore`, in epoch seconds, 71 s after the broker time of the grant's
+cutoff marker. It never answers `revoked`, and the result parser refuses that arm.
+`caller-policy-read` gives an owner its own grantees, and another owner's grantee only filtered to a
+service it holds; `caller-policy-list` needs a service selector.
+
+Caller grants need `max_payload >= 2098176` (2 MiB plus 1 KiB), `max_control_line >= 4096`,
+and an auth stream with `max_msg_size: -1`. Broker generation accepts an explicit
+`serverConfig(broker, accounts, { ...options, maxPayload: 2098176 })`; omission leaves the native
+1 MiB default unchanged. No startup path raises limits automatically.
+
+For a **standalone broker only**, pass `serviceEndpoints.callerPayload.observerCreds` to
+`startAuthService` (or the corresponding authority-plane option). The callback returns fresh
+host-private credentials from the broker owner's
+`mintServiceCallerPayloadObserverCreds({ pub: broker.sys.pub, signingSeed: broker.sys.signingSeed })`.
+Keep that registered SYS signer with the broker owner, never in the data account, a sandbox or a
+participant client. The helper returns an in-memory, at-most-60-second VARZ-only credential.
+The stock root does this itself: `cotal up` retains the system-account signing seed in the root's
+secret store at space creation and at `--rotate-sys`, and the auth service started with
+`--service-endpoints` composes `callerPayload` from it when the record names the trust record's
+system account and the seed derives it; a root with no retained seed opens the engine and door
+without caller issuance and logs why.
+The callback only supplies credentials, owns no authority resource, and may finish after its
+10-second observation deadline has refused the operation. It is not a cancellation callback.
+
+Startup authenticates native VARZ, matches the observer and data connection's broker incarnation,
+checks config/system-account evidence and live stream limits, then writes an exact-key assertion
+bound to that broker, configuration and genuine plane claim. Configured clusters, gateways and
+leaf links refuse, regardless of connected peer count. This is not multi-broker proof. A default
+1 MiB broker fails startup with the required byte limit and creates no assertion.
+
+Positive caller issuance repeats the observation and checks the exact assertion revision, complete
+plane hold and effective authority again before native JWT release. Withdrawal, config changes or
+claim loss refuse new issuance. Reopening needs an explicit bootstrap to reassert for the new claim;
+a prior-plane broker-bound assertion cannot authorize another append. Legacy assertion syntax still
+parses for existing trusted storage fixtures but alone never enables production caller issuance.
+Shutdown drains in-flight observations and closes their owned connections before releasing the claim.
+Reads and revokes do not need a positive assertion. A revoke whose policy row would not fit holds
+`payload-precondition` without writing it, and a failed live-limit check withdraws the assertion.
+
+Give each caller operation a fresh random requestId, record it with the exact body before you send
+it, and replay that body after a lost reply, a 503 or a `held` answer. Never switch to a new requestId
+while an earlier answer is unknown. A settled `refused` or `expired` ends the attempt, and a grant
+replayed after its 10-minute window adopts a grant that landed and otherwise answers `expired`.
+
+Caller issuance is generic, not tied to Linear: the same provider-independent contract discovery and
+invoke path works for ordinary and managed user-auth callers. Controlled policy append currently
+requires the application's approved service-host instance. Native control endpoints retain their
+existing ledger/scope and typed authority contracts, not fabricated application approvals. Scoped
+Describe is not available, and complete terminal retirement and restore remain unsupported. A host revoke refuses new activation, renewal, readiness
 and connections, but a connection already open keeps its original expiry of at most 60 s. Approval
 runs service bootstrap and revoke runs cancellation, while complete observer evidence and writer
 exclusion remain unavailable. Do not seed service reservations in an existing space, adopt old
