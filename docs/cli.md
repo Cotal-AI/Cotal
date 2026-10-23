@@ -4867,8 +4867,9 @@ explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access. A refused directory on the way to a file is named with its reason, and
-a group- or other-writable one with `chmod go-w <path>` as the fix. A startup file that is a
+owner or unsafe file access before it creates anything. One refusal names every refused startup
+file, stub, record and directory on the way to them with its reason, and a group- or other-writable
+one with its mode and one `chmod go-w <paths>` that fixes them all. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
 it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
 warns that it is a symlink and does not read it. A startup file its owner made read-only is never
