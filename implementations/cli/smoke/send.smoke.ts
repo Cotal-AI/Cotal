@@ -293,8 +293,8 @@ try {
   );
   check(
     "reading an unregistered channel's earlier messages leaves no consumer on the presence or channel-registry stream",
-    consumersAfterFresh.presence === consumersAfterList.presence && consumersAfterFresh.channels === consumersAfterList.channels,
-    { before: consumersAfterList, after: consumersAfterFresh },
+    consumersAfterFresh.presence === consumersAfterAgent.presence && consumersAfterFresh.channels === consumersAfterAgent.channels,
+    { before: consumersAfterAgent, after: consumersAfterFresh },
   );
 
   check("`cotal send -t` outside a seat exits 0", dm.code === 0, dm.stderr);
