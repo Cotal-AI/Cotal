@@ -91,7 +91,7 @@ assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [issuerKey, issue
 assert.throws(() => parseServiceAuthorityInfo({ ...info, keys: [{ ...issuerKey, x: "not base64url!" }] }, identity.space), /coordinate/);
 for (const [what, hex] of [
   ["the identity", "01" + "00".repeat(31)], ["the identity with the sign bit", "01" + "00".repeat(30) + "80"],
-  ["y = -1", "ec" + "ff".repeat(30) + "7f"], ["y = 0", "00".repeat(32)], ["y = 0 with the sign bit", "00".repeat(31) + "80"],
+  ["y = -1", "ec" + "ff".repeat(30) + "7f"], ["y = -1 with the sign bit", "ec" + "ff".repeat(31)], ["y = 0", "00".repeat(32)], ["y = 0 with the sign bit", "00".repeat(31) + "80"],
   ["an order-8 point", "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"],
   ["its sign twin", "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa"],
   ["the other order-8 point", "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"],

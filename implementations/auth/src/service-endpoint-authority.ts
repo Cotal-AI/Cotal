@@ -11,10 +11,28 @@ import {
   type EpCommandAuthority, type ServiceAuthorityInfo, type ServiceAuthorityRequest, type ServiceAuthorityStatus, type ServiceIssuerKey, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import type { UserTokenIssuer } from "./issuer.js";
-import type { ServiceHostRequest, ServiceHostResult, ServiceProposalTombstoneView, ServiceProposalView } from "./service-host-contract.js";
+import type { ServiceHostGranter, ServiceHostRequest, ServiceHostResult, ServiceProposalTombstoneView, ServiceProposalView } from "./service-host-contract.js";
 import { serviceHostOperationId, serviceRegisterHostRequest, type ServiceHostOperations, type ServiceServeOperation, type ServiceServeResult } from "./service-host-ops.js";
 
 export const SERVICE_ENDPOINT_AUTHORITY_PATH = "/service-endpoint-authority";
+/** The authenticated host route: an owner's decisions and reads with a fresh IdP proof on either
+ *  face, and the operator's actions only on the loopback face with its capability. */
+export const SERVICE_ENDPOINT_HOST_PATH = "/service-endpoint-host";
+
+/** The host operations only an operator grants: a name binding, a non-owner revoke and the restore
+ *  controls. Everything else is the owner's, scoped by the engine to that owner's own rows. */
+const OPERATOR_HOST_OPERATIONS: ReadonlySet<string> = new Set(["name-bind", "quarantine-restored", "admission-open"]);
+
+/** The granter the route passes for one request shape: the proved owner for owner operations, the
+ *  capability holder (named by the proved subject for audit) for operator operations. A revoke is
+ *  the owner's only for an owner cause. `undefined` means the operation is an operator action and
+ *  this face holds no operator capability. */
+export function serviceHostGranterFor(request: { operation: unknown; input: unknown }, proved: { owner: string; subject: string }, operator: boolean): ServiceHostGranter | undefined {
+  const cause = request.operation === "revoke" && request.input !== null && typeof request.input === "object" ? (request.input as { cause?: unknown }).cause : undefined;
+  const operatorAction = OPERATOR_HOST_OPERATIONS.has(String(request.operation)) || (request.operation === "revoke" && cause !== "owner-request");
+  if (!operatorAction) return { kind: "owner", owner: proved.owner };
+  return operator ? { kind: "operator", auditId: `loopback-capability:${proved.subject}` } : undefined;
+}
 
 /** What one face serves: the receiver's own account and space, the engine its plane opened, and
  *  the issuer that signs serving material once the engine has fixed its bounds. */

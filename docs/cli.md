@@ -472,6 +472,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
 | `--advertised-server <url>` | `--server` | With `--exchange-public-port`: the broker address the public discovery bundle tells participants to dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
 | `--agent-provisioning-url <https://…>` | none | With `--exchange-public-port`: the deployment's agent-provisioning endpoint the public bundle advertises. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent; without one, that spawn needs a one-time enrollment ([Run a mesh](run-a-mesh.md#remote-supervised-seats-by-enrollment)). HTTPS only |
+| `--service-endpoints` | off | With `--user-auth`: the auth service also hosts service endpoints: the public registration door and the authenticated host route that `cotal service-endpoint` drives |
 | `--detach` | on | Run in the background, which is also the no-flag default |
 | `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd/launchd unit supervises `up` itself. Cannot combine with `--detach` |
 | `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS |
@@ -2384,6 +2385,27 @@ command can be cast; journaled commands and `--wait` combinations refuse before 
 The receipt records the original request, resolved binding and broker flush, not a responder or
 confirmed execution. A class cast is not retried or repaired if another instance refuses its
 binding. A broker publish denial remains a refusal. A lost publication outcome remains unknown.
+
+## service-endpoint
+
+```bash
+cotal service-endpoint approve <proposalId> [--caller-ceiling a,b] [--space <s>] [--json | --plain]
+cotal service-endpoint refuse <proposalId> [--space <s>] [--json | --plain]
+cotal service-endpoint proposal <proposalId> | operation <operationId> | name <endpoint> [--space <s>]
+cotal service-endpoint name-bind <endpoint> --owner <u_…> --claim <ref> [--space <s>]
+```
+
+Decides and inspects service endpoint registrations on a user-auth space whose auth service runs
+with `--service-endpoints`. Every subcommand is one request to the service's
+`/service-endpoint-host` route as the signed-in user: the route verifies your IdP token and derives
+the granter itself, so no command names one. `approve` and `refuse` are the owner's: the command
+reads the proposal and its name first and decides at those revisions, so a proposal or name that
+moved in between is a conflict the host reports, never a decision on something else. `proposal`,
+`operation` and `name` read as the owner: another owner's record reads absent. `name-bind` is the
+operator's: it needs the auth service on this machine and runs on its loopback face under the
+exchange capability, with your signed-in subject as the audit id. The host verifies no domain
+control, so `--claim` is your own reference for the namespace you checked. The answer is the host's
+own, replay included: the identical request recovers the same approval or binding.
 
 ## Handle inspection
 

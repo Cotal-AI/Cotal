@@ -1,4 +1,8 @@
 import { authServiceFlags } from "./daemon-flags.js";
+import { randomBytes } from "node:crypto";
+import type { EpCapability } from "@cotal-ai/core";
+import { postServiceEndpointHost, type ServiceHostRouteRequest } from "./service-host-client.js";
+import type { ServiceHostInputs, ServiceHostOperation, ServiceHostResult } from "./service-host-contract.js";
 /**
  * Self-registering `login` / `logout` commands (the delivery-daemon pattern): importing
  * `@cotal-ai/auth` registers them into the core `Registry`, and the `cotal` binary pulls the
@@ -307,6 +311,57 @@ function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[
   ] }] };
 }
 
+const SERVICE_ENDPOINT_USAGE = "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>>";
+
+/** One host request over the authenticated `/service-endpoint-host` route, as the signed-in owner
+ *  or, for `name-bind`, as the operator on the loopback face. A decision reads the proposal first,
+ *  with the name binding that read carries, and decides at those revisions, so a proposal or name
+ *  that moved in between is a conflict the host reports, never a decision on something else. */
+async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise<void> {
+  const [sub, subject, ...extra] = args.positionals;
+  const values = args.values as { owner?: string; claim?: string; "caller-ceiling"?: string };
+  const { dir, space } = actorState(target);
+  const presentation = presentationOf(args.values);
+  const request = <K extends ServiceHostOperation>(operation: K, input: ServiceHostInputs[K]): ServiceHostRouteRequest<K> =>
+    ({ v: 1, kind: "service-endpoint-host", requestId: randomBytes(16).toString("hex"), operation, input });
+  const post = (r: ServiceHostRouteRequest) => postServiceEndpointHost(dir, space, r, `service-endpoint ${sub}`);
+  const usage = () => new CommandFailure("refused", "USAGE_INVALID", SERVICE_ENDPOINT_USAGE);
+  await legibly(async () => {
+    if (!sub || !subject || extra.length) throw usage();
+    let answer: ServiceHostResult;
+    switch (sub) {
+      case "approve": case "refuse": {
+        const read = await post(request("proposal-read", { proposalId: subject })) as ServiceHostResult & { record?: { value: { nameBinding: { revision: number } | null }; revision: number } };
+        if (read.state !== "present" || read.record === undefined)
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no proposal ${subject} is yours to decide on space "${space}"; nothing was decided`);
+        const callerCeiling = (values["caller-ceiling"] ?? "").split(",").map((c) => c.trim()).filter(Boolean) as unknown as EpCapability[];
+        answer = await post(request("decide", {
+          proposalId: subject, expectedProposalRevision: read.record.revision,
+          expectedNameRevision: read.record.value.nameBinding?.revision ?? 0,
+          decision: sub, callerCeiling,
+        }));
+        break;
+      }
+      case "proposal": answer = await post(request("proposal-read", { proposalId: subject })); break;
+      case "operation": answer = await post(request("operation-read", { operationId: subject })); break;
+      case "name": answer = await post(request("name-read", { endpoint: subject })); break;
+      case "name-bind": {
+        if (!values.owner || !values.claim) throw usage();
+        answer = await post(request("name-bind", { endpoint: subject, owner: values.owner, expectedRevision: 0, claimReference: values.claim }));
+        break;
+      }
+      default: throw usage();
+    }
+    writeResult(presentation, { command: "service-endpoint", target: { space }, result: { kind: "service-endpoint-host", request: sub, subject, answer } }, (result) => ({
+      space,
+      sections: [{ title: `Service endpoint ${result.request}`, blocks: [
+        { kind: "fields" as const, rows: [["Space", space], ["Subject", result.subject], ["State", String((result.answer as { state: string }).state)]] as [string, string][] },
+        { kind: "lines" as const, lines: [{ text: JSON.stringify(result.answer), tone: "hint" as const }] },
+      ] }],
+    }));
+  });
+}
+
 /** A grant read or change, `auth grants|grant|revoke` or its `actor list|grant|revoke` spelling, at
  *  the target {@link localAuthTarget} resolved, once {@link validateGrantUsage} has passed. */
 async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | "actor"): Promise<void> {
@@ -591,6 +646,22 @@ const authCommands: Command[] = [
       { name: "manager-instance", type: "string", value: "<id>", description: "select the manager instance for --manager-call" },
     ],
     run: (args) => legibly(() => runAgentBearer(args)),
+  },
+  {
+    kind: "command",
+    name: "service-endpoint",
+    group: "Identity",
+    summary: "decide and inspect service endpoint registrations on this space's auth service - approve or refuse a proposal as its owner; bind a name as the operator",
+    usage: "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--space <s>] [--json|--plain]",
+    positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint>>",
+    outputs: ["json", "plain"],
+    flags: [
+      jsonFlag, plainFlag, spaceFlag,
+      { name: "owner", type: "string", value: "<u_…>", description: "name-bind: the derived owner token the name is bound to" },
+      { name: "claim", type: "string", value: "<ref>", description: "name-bind: your claim reference for the namespace (the host verifies no domain control)" },
+      { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: the capability ceiling callers of this service may be granted (default: none)" },
+    ],
+    run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
   },
   {
     kind: "command",

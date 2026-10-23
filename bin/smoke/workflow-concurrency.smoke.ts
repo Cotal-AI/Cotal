@@ -22,12 +22,10 @@
  * It also refuses rather than guesses. An expression it does not recognise is a FAILURE, not a skip,
  * because a skip is how a reader turns into a green that means nothing.
  *
- * THREE HOLES, NAMED because an unnamed limit gets rediscovered as a surprise. None of them can
- * produce a pass while a workflow is broken, which is the property that matters, and all three fail
- * in the safe direction:
+ * TWO HOLES, NAMED because an unnamed limit gets rediscovered as a surprise. Neither can produce a
+ * pass while a workflow is broken, which is the property that matters, and both fail in the safe
+ * direction:
  *
- *   - JOB-LEVEL `concurrency:` is not read at all. Only the top-level block is. A job that declares
- *     its own group is outside this guard entirely.
  *   - `on:` detection is indentation-driven, so a workflow writing its triggers in a shape this
  *     reader does not follow is misclassified. That moves the population counts in section A rather
  *     than passing quietly, so the failure is loud and lands on the count cell.
@@ -79,7 +77,11 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  and EXPECTED_GROUPED is unchanged.
  *
  *  Lowered to 11 when `attribution.yml` was removed (9cc9117c6). It was pull_request only, so it
- *  never counted toward push-to-main or EXPECTED_GROUPED, and only the total moves. */
+ *  never counted toward push-to-main or EXPECTED_GROUPED, and only the total moves.
+ *
+ *  `changesets.yml` moved its group from the workflow to its `version-pr` and `publish` jobs
+ *  (5046e8632), so a publication waits only for the previous upload and not for its install check.
+ *  It still counts as grouped: a job's own group evicts its pending job the same way. */
 const EXPECTED_WORKFLOWS = 11;
 const EXPECTED_PUSH_TO_MAIN = 7;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
@@ -116,18 +118,47 @@ function resolve(raw: string): Resolved {
   return { kind: "unknown", raw: v };
 }
 
-interface Wf {
-  file: string;
-  /** True when a push to `main` can start this workflow. */
-  pushesMain: boolean;
-  /** True when the file uses the short `concurrency: <string>` form, which cannot carry `queue`. */
+/** One `concurrency:` block: the workflow's own, or one job's. */
+interface Group {
+  /** `ci.yml` for the workflow's own group, `changesets.yml job publish` for a job's. */
+  where: string;
+  /** True for the short `concurrency: <string>` form, which cannot carry `queue`. */
   shortForm: boolean;
-  hasConcurrency: boolean;
   cancel?: string;
   queue?: string;
 }
 
-/** Read the `concurrency:` block and whether `push:` names `main`.
+interface Wf {
+  file: string;
+  /** True when a push to `main` can start this workflow. */
+  pushesMain: boolean;
+  /** The workflow's own group, then each job's, in file order. */
+  groups: Group[];
+}
+
+/** Read the mapping of the `concurrency:` key at `lines[at]`, whose key sits at `indent`. */
+function readGroup(lines: string[], at: number, indent: string, where: string): Group {
+  const g: Group = { where, shortForm: false };
+  const head = lines[at].slice(indent.length + "concurrency:".length).trim();
+  if (head !== "") {
+    g.shortForm = true; // `concurrency: <string>` cannot carry cancel-in-progress or queue
+    return g;
+  }
+  const member = new RegExp(`^${indent} {2}\\S`);
+  const kvRe = new RegExp(`^${indent} {2}([a-z-]+):\\s*(.*)$`);
+  for (let i = at + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.trim() === "" || /^\s*#/.test(l)) continue;
+    if (!member.test(l)) break; // dedent ends the mapping
+    const kv = l.match(kvRe);
+    if (!kv) continue;
+    if (kv[1] === "cancel-in-progress") g.cancel = kv[2].trim();
+    if (kv[1] === "queue") g.queue = kv[2].trim();
+  }
+  return g;
+}
+
+/** Read the workflow's `concurrency:` block, each job's, and whether `push:` names `main`.
  *
  *  Indentation-driven rather than a YAML parse: `bin/` declares no YAML dependency and reaching for
  *  a transitive one would make this guard's own resolution a thing that can break silently. The
@@ -136,7 +167,7 @@ function parse(file: string): Wf {
   const text = readFileSync(join(DIR, file), "utf8");
   const lines = text.split("\n");
 
-  const wf: Wf = { file, pushesMain: false, shortForm: false, hasConcurrency: false };
+  const wf: Wf = { file, pushesMain: false, groups: [] };
 
   // `on:` block, to the next top-level key.
   const onIdx = lines.findIndex((l) => /^on:\s*$/.test(l) || /^on:\s*\S/.test(l));
@@ -152,23 +183,23 @@ function parse(file: string): Wf {
     }
   }
 
-  const cIdx = lines.findIndex((l) => /^concurrency:/.test(l));
-  if (cIdx >= 0) {
-    wf.hasConcurrency = true;
-    const head = lines[cIdx].slice("concurrency:".length).trim();
-    if (head !== "") {
-      wf.shortForm = true; // `concurrency: <string>` cannot carry cancel-in-progress or queue
-    } else {
-      for (let i = cIdx + 1; i < lines.length; i++) {
-        const l = lines[i];
-        if (l.trim() === "" || /^\s*#/.test(l)) continue;
-        if (!/^\s{2}\S/.test(l)) break; // dedent ends the mapping
-        const kv = l.match(/^\s{2}([a-z-]+):\s*(.*)$/);
-        if (!kv) continue;
-        if (kv[1] === "cancel-in-progress") wf.cancel = kv[2].trim();
-        if (kv[1] === "queue") wf.queue = kv[2].trim();
-      }
+  // The workflow's own `concurrency:` sits at column 0. A job's sits at column 4, under the job's
+  // key at column 2 of `jobs:`.
+  let inJobs = false;
+  let job: string | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.trim() === "" || /^\s*#/.test(l)) continue;
+    if (/^\S/.test(l)) {
+      inJobs = /^jobs:\s*$/.test(l);
+      job = undefined;
+      if (/^concurrency:/.test(l)) wf.groups.push(readGroup(lines, i, "", file));
+      continue;
     }
+    if (!inJobs) continue;
+    const key = l.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (key) job = key[1];
+    else if (job && /^ {4}concurrency:/.test(l)) wf.groups.push(readGroup(lines, i, "    ", `${file} job ${job}`));
   }
   return wf;
 }
@@ -183,7 +214,7 @@ check(`exactly ${EXPECTED_WORKFLOWS} workflow files (update deliberately if you 
 check(`exactly ${EXPECTED_PUSH_TO_MAIN} of them can be started by a push to main`,
   pushers.length === EXPECTED_PUSH_TO_MAIN, { found: pushers.map((w) => w.file) });
 
-const grouped = pushers.filter((w) => w.hasConcurrency);
+const grouped = pushers.filter((w) => w.groups.length > 0);
 check(`exactly ${EXPECTED_GROUPED} of those declare a concurrency group, so only those can evict`,
   grouped.length === EXPECTED_GROUPED, { found: grouped.map((w) => w.file) });
 
@@ -191,18 +222,18 @@ console.log("\nB. every push-to-main workflow that HAS a group queues rather tha
 // A workflow with no group cannot evict: nothing is grouped, so nothing is ever pending behind
 // anything. It is checked above by count rather than waived silently here, so removing a group
 // somewhere else shows up as a moved number rather than as one fewer cell.
-for (const w of grouped) {
+for (const g of grouped.flatMap((w) => w.groups)) {
   // The short form is the trap `changesets.yml` and `installer.yml` sat in. It reads as a
   // deliberate minimal choice and silently selects `queue: single`, the evicting default.
-  check(`${w.file}: uses the mapping form, so it can carry \`queue\``, !w.shortForm, { shortForm: w.shortForm });
-  if (w.shortForm) continue;
+  check(`${g.where}: uses the mapping form, so it can carry \`queue\``, !g.shortForm, { shortForm: g.shortForm });
+  if (g.shortForm) continue;
 
-  const q = w.queue === undefined ? undefined : resolve(w.queue);
-  check(`${w.file}: declares \`queue\``, q !== undefined);
+  const q = g.queue === undefined ? undefined : resolve(g.queue);
+  check(`${g.where}: declares \`queue\``, q !== undefined);
   if (!q) continue;
-  check(`${w.file}: \`queue\` is a form this check understands`, q.kind !== "unknown", { raw: w.queue });
+  check(`${g.where}: \`queue\` is a form this check understands`, q.kind !== "unknown", { raw: g.queue });
   const onPush = q.kind === "literal" ? q.value : q.kind === "byEvent" ? q.push : undefined;
-  check(`${w.file}: resolves to \`max\` on a push to main (got ${onPush ?? "unresolvable"})`, onPush === "max");
+  check(`${g.where}: resolves to \`max\` on a push to main (got ${onPush ?? "unresolvable"})`, onPush === "max");
 }
 
 console.log("\nC. nothing can resolve to the forbidden pairing");
@@ -210,18 +241,18 @@ console.log("\nC. nothing can resolve to the forbidden pairing");
 // that can reach that combination for any event does not merely misbehave, it fails to parse and
 // the workflow stops running at all. Checked per event rather than per file, because both keys are
 // event-conditional and a per-file glance cannot see the combination.
-for (const w of all) {
-  if (!w.hasConcurrency || w.shortForm) continue;
-  const q = w.queue === undefined ? { kind: "literal", value: "single" } as Resolved : resolve(w.queue);
-  const c = w.cancel === undefined ? { kind: "literal", value: "false" } as Resolved : resolve(w.cancel);
+for (const g of all.flatMap((w) => w.groups)) {
+  if (g.shortForm) continue;
+  const q = g.queue === undefined ? { kind: "literal", value: "single" } as Resolved : resolve(g.queue);
+  const c = g.cancel === undefined ? { kind: "literal", value: "false" } as Resolved : resolve(g.cancel);
   if (q.kind === "unknown" || c.kind === "unknown") {
-    check(`${w.file}: both concurrency keys are resolvable`, false, { queue: w.queue, cancel: w.cancel });
+    check(`${g.where}: both concurrency keys are resolvable`, false, { queue: g.queue, cancel: g.cancel });
     continue;
   }
   for (const ev of ["pr", "push"] as const) {
     const qv = q.kind === "literal" ? q.value : q[ev];
     const cv = c.kind === "literal" ? c.value : c[ev];
-    check(`${w.file}: on ${ev === "pr" ? "pull_request" : "push"}, not (queue=max AND cancel-in-progress=true)`,
+    check(`${g.where}: on ${ev === "pr" ? "pull_request" : "push"}, not (queue=max AND cancel-in-progress=true)`,
       !(qv === "max" && cv === "true"), { queue: qv, cancel: cv });
   }
 }

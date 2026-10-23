@@ -781,8 +781,8 @@ export interface ServiceHostOperations {
   readonly accountPublicKey: string;
   /** Internal register admission; the public register route that verifies the owner calls it. */
   register(raw: unknown): Promise<ServiceRegisterResult>;
-  /** decide, revoke, name-bind, caller-grant, caller-revoke, operation-read, proposal-read and the two
-   *  caller-policy reads; every other operation is `unsupported`. */
+  /** decide, revoke, name-bind, caller-grant, caller-revoke, operation-read, proposal-read, name-read
+   *  and the two caller-policy reads; every other operation is `unsupported`. */
   handle(raw: unknown): Promise<ServiceHostResult>;
   /** One owner's assignment at a selector, from one discovery read of its record and endpoint gate.
    *  Another owner's assignment reads absent. For the authority door, which proved the owner. */
@@ -2109,6 +2109,16 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     } catch (err) { if (err instanceof Held) return denied("unavailable"); throw err; }
   }
 
+  /** One name binding, as the operator or as the owner it is bound to; another owner's reads absent. */
+  async function nameRead(req: Extract<ServiceHostRequest, { operation: "name-read" }>): Promise<ReadOut<ServiceNameView>> {
+    try {
+      const ctx = discoveryCtx("name-read");
+      const name = await nameOf(ctx, req.input.endpoint);
+      if (name === undefined || (req.granter.kind === "owner" && name.owner !== req.granter.owner)) return { state: "absent" };
+      return { state: "present", record: { value: name, revision: name.revision } };
+    } catch (err) { if (err instanceof Held) return denied("unavailable"); throw err; }
+  }
+
   // ---- name binding (create-only) ----------------------------------------------------------------
 
   type NameOut = Arms | { state: "bound"; binding: ServiceNameView };
@@ -2627,6 +2637,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       case "name-bind": return out(await nameBind(req));
       case "operation-read": return out(authorized ? await operationRead(req) : denied("permission-denied"));
       case "proposal-read": return out(authorized ? await proposalRead(req) : denied("permission-denied"));
+      case "name-read": return out(authorized ? await nameRead(req) : denied("permission-denied"));
       case "caller-grant": return out(await callerGrant(req, authorized));
       case "caller-revoke": return out(await callerRevoke(req, authorized));
       case "caller-policy-read": return out(authorized ? await callerPolicyRead(req) : denied("permission-denied"));
