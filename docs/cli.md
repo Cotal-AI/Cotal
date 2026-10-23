@@ -4251,7 +4251,11 @@ naming the registered spelling when only the case differs. Removing a channel th
 messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`; `--purge`
 still deletes that channel's retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
 removal nor replay settings revoke grants or stop participants; future posts can create retained
-history again.
+history again. A `set`, `defaults` or `remove` that the broker refuses for the credential's grant
+applied nothing, so it is refused with `PERMISSION_DENIED` (exit 2), naming the credential's profile,
+the write it lacks and the subject the broker refused. With `--creds`, the Next is to run it without
+`--creds`, on the operator credential this machine records. A remove whose credential may not read
+the registry skips the name check, and the broker's answer to the remove decides.
 
 
 | Flag | Default | Meaning |
@@ -4350,6 +4354,9 @@ code is the snapshot's.
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
 purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](#clean). On a user-auth mesh the purge rides a short-lived
 purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+A purge the broker refuses for the credential's grant purged nothing, so it is refused with
+`PERMISSION_DENIED` (exit 2), naming the credential's profile; with `--creds`, the Next is to run it
+without `--creds`, on the operator credential this machine records.
 
 ## console
 

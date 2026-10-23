@@ -2,7 +2,8 @@
  * `cotal history [channel]` on the structured output contract, against brokers this suite owns. Real
  * agents post to channels and DM each other; the CLI child reads with its own one-shot credential.
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
- * `--grep`, `--dms`, the usage refusals, a credential that may not read history, one another space's
+ * `--grep`, `--dms`, the usage refusals, a credential that may not read history, writes an observer
+ * credential may not make, one another space's
  * account issued, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
@@ -244,6 +245,25 @@ try {
     crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && crossed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", not "${space}"`) && (crossed.envelope.target as { credentialSpace?: string } | null)?.credentialSpace === "elsewhere" && (crossed.envelope.error.remedy ?? "").includes(`cotal auth mint <label> --space ${space}`), shown(crossed));
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
   check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
+
+  // ── a write the broker refuses for the credential's grant applied nothing ───────────────────────
+  // An observer credential may read but not write channel metadata or purge history. Each refusal
+  // names the profile and the write, points at the operator credential, and leaves the state that
+  // the later sections read as it was.
+  const observer = join(home, "observer.creds");
+  writeFileSync(observer, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  const asObserver = ["--creds", observer, "--space", space, "--server", servers, "--json"];
+  const deniedWrites: [string, string[], RegExp][] = [
+    ["channel set", ["channel", "set", "general", "--desc", "x"], /^this observer credential may not write channel metadata in \S+, so nothing was saved: Permissions Violation/],
+    ["channel remove", ["channel", "remove", "general", "--yes"], /^this observer credential may not remove channel metadata in \S+, so nothing was removed: Permissions Violation/],
+    ["channel remove --purge", ["channel", "remove", "general", "--purge", "--yes"], /^this observer credential may not purge #general's history and remove its metadata in \S+, so nothing was removed: Permissions Violation/],
+    ["history clear", ["history", "clear", "--yes"], /^this observer credential may not purge retained history in \S+, so nothing was purged: Permissions Violation/],
+  ];
+  for (const [what, args, message] of deniedWrites) {
+    const r = await run([...args, ...asObserver]);
+    check(`a ${what} the broker refuses is PERMISSION_DENIED, exit 2, naming the profile and the write, with the operator credential as the Next`,
+      r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "PERMISSION_DENIED" && message.test(r.envelope.error.message) && (r.envelope.error.remedy ?? "").startsWith("run it without --creds to use the operator credential this machine records for"), shown(r));
+  }
 
   // ── --follow ────────────────────────────────────────────────────────────────────────────────────
   const f = follow(["history", "general", "--follow", "--json"]);
