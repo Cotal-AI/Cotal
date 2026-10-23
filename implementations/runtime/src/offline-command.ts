@@ -8,7 +8,8 @@ export interface OfflineValues {
   handler?: string;
 }
 
-function sourceOf(file: string): string {
+/** A workflow program's source, or the TARGET_NOT_FOUND refusal every run verb gives a file it cannot read. */
+export function sourceOf(file: string): string {
   try { return readFileSync(file, "utf8"); }
   catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the workflow source file could not be read", { target: { file } }); }
 }

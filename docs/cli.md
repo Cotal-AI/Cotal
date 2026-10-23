@@ -3674,6 +3674,14 @@ The terminal view needs a terminal for input and output; without one, `chat` ref
 diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 
+In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
+question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
+`#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
+name without `@`, is refused with that list of forms, and the numbered list opens. In the list, an
+empty line keeps the current recipient. `:multi` starts a message of several lines, which a line
+holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
+starts with `/`.
+
 A direct message to an agent the roster shows offline is stored, and the view adds a notice that
 the agent receives it when it reconnects, as [`send`](#send) warns. `--stdio` carries that roster
 status as `recipientStatusAtSend` in the stored result.
@@ -3733,10 +3741,11 @@ message body.
 Every request and record carries `"schemaVersion":1`. A request names its `type` and an `id` you
 choose, 1 to 128 printable ASCII characters, and its `result` record repeats that id. A request that
 reuses the id of one still in flight is refused with `USAGE_INVALID`, in a result under that same
-id. Requests run one at a time in arrival order, so results come back in that order. `message`,
-`presence` and `gap` records can arrive between results, so match each result by its id. A missing
-field, a field the type does not take or a malformed value refuses with `USAGE_INVALID` before the
-session sees the request. A channel must be a valid channel name with no `*` or `>`, and a role a
+id that follows the first request's result. Requests run one at a time in arrival order, and a
+refusal waits its turn too, so every `result` and `error` record comes back in the order its line
+arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
+by its id. A missing field, a field the type does not take or a malformed value refuses with
+`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and a role a
 valid role name.
 
 | `type` | Fields | Result |
@@ -4780,9 +4789,10 @@ the manager's answer deadline.
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
-run is recorded; a program that does not validate is refused with every problem listed. `resume`
-asks the manager to take an existing run back and continue it from its step journal; the source is
-the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
+run is recorded; a program that does not validate is refused with every problem listed. A program
+file that cannot be read is refused with `TARGET_NOT_FOUND`, exit 2, by every verb that takes one.
+`resume` asks the manager to take an existing run back and continue it from its step journal; the
+source is the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. An open pause prints its question
 under `Needs an answer`, and only then does Next offer `answer`. A pause counts as open while its

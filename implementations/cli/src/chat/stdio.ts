@@ -16,8 +16,9 @@
  *   error     {schemaVersion, type:"error", id:null, error}   (a line that names no usable id)
  *   end       {schemaVersion, type:"end", reason, close?}
  *
- * Requests run one at a time in arrival order, so results come back in request order. Unknown
- * types, unknown fields and malformed values refuse with USAGE_INVALID and never reach the session.
+ * Requests run one at a time in arrival order, and a refusal waits its turn, so every result and
+ * error comes back in line order. Unknown types, unknown fields and malformed values refuse with
+ * USAGE_INVALID and never reach the session.
  */
 import { assertValidChannel, assertValidRole, isConcreteChannel, MAX_NAME_LENGTH } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
@@ -346,21 +347,23 @@ export class StdioParticipant {
     this.unsubscribe = session.subscribe((event) => this.onEvent(event));
   }
 
-  /** Queue one input line. Blank lines are ignored. After the end record nothing is written. */
+  /** Queue one input line. Blank lines are ignored. After the end record nothing is written. A
+   *  refusal is decided on arrival but written in its turn, so every line's record comes back in
+   *  arrival order. */
   acceptLine(line: string): void {
     if (this.ended || line.trim() === "") return;
     const parsed = parseRequestLine(line);
     if (!parsed.ok) {
-      this.emitRefusal(parsed.id, parsed.error);
+      this.queueRefusal(parsed.id, parsed.error);
       return;
     }
     const req = parsed.request;
     if (this.closing) {
-      this.emitRefusal(req.id, { code: "LIFECYCLE_BLOCKED", message: "the session is ending; no new requests are accepted" });
+      this.queueRefusal(req.id, { code: "LIFECYCLE_BLOCKED", message: "the session is ending; no new requests are accepted" });
       return;
     }
     if (this.inFlight.has(req.id)) {
-      this.emitRefusal(req.id, { code: "USAGE_INVALID", message: `request id ${JSON.stringify(req.id)} is already in flight` });
+      this.queueRefusal(req.id, { code: "USAGE_INVALID", message: `request id ${JSON.stringify(req.id)} was still in flight when this request arrived` });
       return;
     }
     this.inFlight.add(req.id);
@@ -379,11 +382,26 @@ export class StdioParticipant {
     });
   }
 
+  /** Refuse a line that never reached {@link acceptLine}, such as one too long to frame, in its turn
+   *  with the other records. */
+  refuseLine(error: ProtocolError): void {
+    if (this.ended) return;
+    this.queueRefusal(null, error);
+  }
+
   /** stdin closed: finish already accepted requests in order, close the session, then write the end record. */
   async endOfInput(): Promise<CloseReport | undefined> {
     this.closing = true;
-    await this.chain;
+    await this.drain();
     return this.finish("input closed");
+  }
+
+  /** Wait until every queued record is written, including refusals queued while waiting. */
+  private async drain(): Promise<void> {
+    for (let queued = this.chain; ; queued = this.chain) {
+      await queued;
+      if (queued === this.chain) return;
+    }
   }
 
   private async finish(reason: string): Promise<CloseReport | undefined> {
@@ -420,15 +438,17 @@ export class StdioParticipant {
           this.emit({ schemaVersion: 1, type: "gap", scope: "live", reason: event.reason ?? `connection ${event.state}: live channel messages may be missed until it returns` });
         else if (event.state === "ended") {
           this.closing = true;
-          void this.chain.then(() => this.finish(event.reason ?? "session ended"));
+          void this.drain().then(() => this.finish(event.reason ?? "session ended"));
         }
         return;
     }
   }
 
-  private emitRefusal(id: string | null, error: ProtocolError): void {
-    if (id === null) this.emit({ schemaVersion: 1, type: "error", id: null, error });
-    else this.emit({ schemaVersion: 1, type: "result", id, outcome: "refused", error });
+  private queueRefusal(id: string | null, error: ProtocolError): void {
+    this.chain = this.chain.then(() => {
+      if (id === null) this.emit({ schemaVersion: 1, type: "error", id: null, error });
+      else this.emit({ schemaVersion: 1, type: "result", id, outcome: "refused", error });
+    });
   }
 
   private emit(record: OutputRecord): void {
