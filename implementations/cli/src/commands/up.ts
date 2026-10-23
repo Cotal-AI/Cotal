@@ -110,6 +110,7 @@ import {
   type UserAuthInfo,
   acquireMaintenanceLock,
   assertStoreIdentity,
+  assessMaintenanceClaim,
   assessRestoreClaim,
   beginOrdinaryResume,
   bindOrdinaryResumeListener,
@@ -202,7 +203,7 @@ import {
   markPreparedRestoreActive,
   markPreparedRestoreDegraded,
   heldRestoreAttempt,
-  heldRestoreClaim,
+  heldClaim,
   prepareRestore,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
@@ -701,7 +702,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // written by its isolated broker. Refuse with the exact recovery recourse instead.
         const attempt = journal.restore.attemptId;
         const assessment = assessRestoreClaim(journal, { unrecordedOwnersDead: attemptProcessesGone(root) });
-        if (assessment !== "stale") throw heldRestoreClaim(root, journal, "cotal up", assessment);
+        if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: restore attempt ${attempt} stopped before it committed and still holds the store; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `roll it back with cotal backup recover ${attempt} --yes, then run cotal up; or run the restore again` });
       }
       const controllerCut = journal ? cutController(journal.cut) : undefined;
@@ -865,6 +866,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         pendingOrdinaryResumes.set(attemptId, pending);
       } else if (journal?.state === "resume-retired") {
         consumeRetiredMaintenance(lock);
+      } else if (journal?.state === "claimed") {
+        // An interrupted backup create holds the cut. Refuse with its holder or its release.
+        const attempt = journal.claim.attemptId;
+        const assessment = assessMaintenanceClaim(journal.claim, { unrecordedOwnersDead: attemptProcessesGone(root) });
+        if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: backup attempt ${attempt} stopped before it finished and still holds this root; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `release it with cotal backup recover ${attempt} --yes, then run cotal up` });
       } else if (journal) {
         throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
       }

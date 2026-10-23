@@ -408,6 +408,23 @@ if (process.platform !== "win32") {
   releaseMaintenanceLock(p.lock);
 }
 
+// Before its deadline a backup claim recovers only with every owner dead AND the caller's proof that
+// no process the attempt started outside its recorded owners is alive.
+{
+  const p = ready("claim-early");
+  claimMaintenanceReady(p.lock, {
+    attemptId: "backup-early", deadline: new Date(Date.now() + 60_000).toISOString(),
+    coordinator: owner("coordinator"), owners: [owner("watchdog"), owner("broker")],
+  });
+  expectCode("before the deadline, dead owners alone do not recover the claim", "claim-not-expired", () =>
+    recoverStaleMaintenanceClaim(p.lock, { ownerStatus: () => "dead" }));
+  expectCode("before the deadline, the unrecorded proof with a live broker does not either", "claim-not-expired", () =>
+    recoverStaleMaintenanceClaim(p.lock, { unrecordedOwnersDead: true, ownerStatus: (candidate) => candidate.id === "broker" ? "alive" : "dead" }));
+  const recovered = recoverStaleMaintenanceClaim(p.lock, { unrecordedOwnersDead: true, ownerStatus: () => "dead" });
+  check("every owner dead and the unrecorded proof recover the claim before its deadline", recovered.state === "ready");
+  releaseMaintenanceLock(p.lock);
+}
+
 // The content-addressed resume descriptor is immutable across the complete restore state chain.
 {
   const p = ready("resume-transitions");

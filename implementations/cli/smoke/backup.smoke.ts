@@ -76,6 +76,13 @@ try {
   rmSync(join(destination, "stream-a.snap"));
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] }),
     verifyFault("stream-a.snap", "missing", /^backup artifact is missing its declared file stream-a\.snap/));
+  // An interrupted create leaves snapshots with no manifest: verify names it an incomplete artifact.
+  const partial = join(root, "partial-artifact");
+  mkdirSync(partial);
+  writeFileSync(join(partial, "stream-0123456789abcdef01234567.snap"), Buffer.from([1, 2, 3]));
+  assert.throws(() => backupRead({ positionals: ["verify", realpathSync(partial)], values: {}, raw: [] }), (error: unknown) =>
+    isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`
+      && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").includes("cotal backup recover <attempt> --yes"));
   writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
   const traversing = JSON.parse(originalManifest) as { checkpoints: string };
   traversing.checkpoints = "../checkpoints.json";
@@ -330,6 +337,16 @@ try {
       backup({ positionals: ["recover", "00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),
       (error: unknown) => isCommandFailure(error) && error.code === "USAGE_INVALID" && error.message.includes("restore-<uuid>") && (error.remedy ?? "").includes("cotal status"),
       "a recover given a bare uuid shows the restore-<uuid> form",
+    );
+    await assert.rejects(
+      backup({ positionals: ["recover", "backup-00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.message.includes("names that backup attempt"),
+      "recover takes an interrupted create's backup-<uuid> and says when the root holds no such claim",
+    );
+    await assert.rejects(
+      backup({ positionals: ["cleanup-fallback", "backup-00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.code === "USAGE_INVALID" && error.message.includes("restore-<uuid>"),
+      "cleanup-fallback takes only a restore attempt",
     );
     await assert.rejects(
       backup({ positionals: ["cleanup-fallback", "restore-00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),

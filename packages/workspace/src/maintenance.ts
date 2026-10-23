@@ -2579,20 +2579,24 @@ export function releaseMaintenanceClaim(lock: MaintenanceLock, attemptId: string
   return writeJournal(lock, record, readyFrom(record)) as MaintenanceReadyRecord;
 }
 
+/** Recover a stale backup claim: remove exactly the paths it owns and return the cut to ready. The
+ *  claim must be stale as {@link assessMaintenanceClaim} judges it, so before its deadline the
+ *  caller's `unrecordedOwnersDead` proof is required. */
 export function recoverStaleMaintenanceClaim(
   lock: MaintenanceLock,
-  options: { readonly now?: Date; readonly ownerStatus?: (owner: ProcessOwner) => OwnerStatus } = {},
+  options: ClaimAssessmentOptions = {},
 ): MaintenanceReadyRecord {
   const record = currentJournal(lock);
   if (record.state !== "claimed")
     maintenanceError("invalid-transition", "maintenance journal has no claim to recover", { root: lock.root });
   const now = options.now ?? new Date();
-  if (now.getTime() <= Date.parse(record.claim.deadline))
+  const status = options.ownerStatus ?? localProcessOwnerStatus;
+  const proven = options.unrecordedOwnersDead === true && [record.claim.coordinator, ...record.claim.owners].every((owner) => status(owner) === "dead");
+  if (now.getTime() <= Date.parse(record.claim.deadline) && !proven)
     maintenanceError("claim-not-expired", "maintenance claim deadline has not elapsed", {
       root: lock.root, attemptId: record.claim.attemptId,
       recourse: [{ action: "retry", description: `Retry after ${record.claim.deadline}.` }],
     });
-  const status = options.ownerStatus ?? localProcessOwnerStatus;
   const owners = [record.claim.coordinator, ...record.claim.owners];
   const statuses = owners.map(status);
   if (statuses.includes("alive"))
@@ -3256,23 +3260,36 @@ function newRestoreClaim(input: RestoreClaimInput): { claim: RestoreClaim; owned
   return { claim, ...(input.ownedPaths ? { ownedPaths: input.ownedPaths } : {}) };
 }
 
-/** Assess the recorded pre-commit liveness claim. `live` while the deadline has not elapsed or any
- *  recorded owner is alive; `stale` once the deadline elapsed AND every owner is proven dead. Before
- *  the deadline it is `stale` only when the caller also proves that no process the attempt started
- *  outside the recorded owners is alive (`unrecordedOwnersDead`), and every recorded owner,
+/** Options for judging a claim: the clock, the owner probe, and the caller's proof that no process
+ *  the attempt started outside its recorded owners is alive. */
+export interface ClaimAssessmentOptions {
+  readonly now?: Date;
+  readonly ownerStatus?: (owner: ProcessOwner) => OwnerStatus;
+  readonly unrecordedOwnersDead?: boolean;
+}
+
+/** Assess a maintenance claim (a restore's or a backup's). `live` while the deadline has not elapsed
+ *  or any recorded owner is alive; `stale` once the deadline elapsed AND every owner is proven dead.
+ *  Before the deadline it is `stale` only when the caller also proves that no process the attempt
+ *  started outside the recorded owners is alive (`unrecordedOwnersDead`), and every recorded owner,
  *  coordinator included, is proven dead. */
-export function assessRestoreClaim(
-  record: RestoreReadyRecord,
-  options: { readonly now?: Date; readonly ownerStatus?: (owner: ProcessOwner) => OwnerStatus; readonly unrecordedOwnersDead?: boolean } = {},
+export function assessMaintenanceClaim(
+  claim: { readonly deadline: string; readonly coordinator: ProcessOwner; readonly owners: readonly ProcessOwner[] },
+  options: ClaimAssessmentOptions = {},
 ): RestoreClaimAssessment {
   const now = options.now ?? new Date();
   const status = options.ownerStatus ?? localProcessOwnerStatus;
-  if (now.getTime() <= Date.parse(record.claim.deadline))
-    return options.unrecordedOwnersDead === true && [record.claim.coordinator, ...record.claim.owners].every((owner) => status(owner) === "dead") ? "stale" : "live";
-  const statuses = [record.claim.coordinator, ...record.claim.owners].map(status);
+  if (now.getTime() <= Date.parse(claim.deadline))
+    return options.unrecordedOwnersDead === true && [claim.coordinator, ...claim.owners].every((owner) => status(owner) === "dead") ? "stale" : "live";
+  const statuses = [claim.coordinator, ...claim.owners].map(status);
   if (statuses.includes("alive")) return "live";
   if (statuses.includes("unknown")) return "ambiguous";
   return "stale";
+}
+
+/** Assess the recorded pre-commit restore claim; see {@link assessMaintenanceClaim}. */
+export function assessRestoreClaim(record: RestoreReadyRecord, options: ClaimAssessmentOptions = {}): RestoreClaimAssessment {
+  return assessMaintenanceClaim(record.claim, options);
 }
 
 function requireRestoreReady(lock: MaintenanceLock): RestoreReadyRecord {

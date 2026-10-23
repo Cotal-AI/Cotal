@@ -77,7 +77,7 @@ import {
   type ProcessOwner,
   type RestoreActiveRecord,
   type RestoreDegradedRecord,
-  type RestoreListenerProof, type RestoreReadyRecord,
+  type RestoreListenerProof,
   type RestoreManagerCommittedRecord,
 } from "@cotal-ai/workspace";
 import { readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
@@ -653,21 +653,21 @@ export function restoreNextStep(state: string, attemptId: string): string {
   return `recover forward with bare cotal up from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
 
-/** The refusal while a pre-commit restore claim is not provably stale: what holds it, until when,
- *  and when `backup recover` can roll it back. The refusing command changed nothing. */
-export function heldRestoreClaim(root: string, journal: RestoreReadyRecord, command: string, assessment: "live" | "ambiguous"): CommandFailure {
-  const attemptId = journal.restore.attemptId, { coordinator, owners, deadline } = journal.claim;
+/** The refusal while a restore's or backup's claim is not provably stale: what holds it, until
+ *  when, and when `backup recover` can release it. The refusing command changed nothing. */
+export function heldClaim(root: string, attemptId: string, claim: { readonly deadline: string; readonly coordinator: ProcessOwner; readonly owners: readonly ProcessOwner[] }, command: string, assessment: "live" | "ambiguous"): CommandFailure {
+  const { coordinator, owners, deadline } = claim, kind = attemptId.startsWith("backup-") ? "backup" : "restore";
   const running = owners.filter((owner) => localProcessOwnerStatus(owner) === "alive").map((owner) => owner.pid);
   const coordinatorRuns = localProcessOwnerStatus(coordinator) === "alive";
   const recover = `cotal backup recover ${attemptId} --yes`;
   const [holder, remedy] = assessment === "ambiguous"
-    ? [`its processes on host ${coordinator.host} cannot be proven gone from this host`, `prove its restore process and brokers on ${coordinator.host} have exited, then run ${recover}`]
+    ? [`its processes on host ${coordinator.host} cannot be proven gone from this host`, `prove its ${kind} process and brokers on ${coordinator.host} have exited, then run ${recover}`]
     : coordinatorRuns
-      ? [`its restore process ${coordinator.pid} is still running`, `wait for that restore to finish; if it was stopped, run ${recover} once process ${coordinator.pid} has exited`]
+      ? [`its ${kind} process ${coordinator.pid} is still running`, `wait for that ${kind} to finish; if it was stopped, run ${recover} once process ${coordinator.pid} has exited`]
       : running.length
-        ? [`its restore process ${coordinator.pid} has exited, and its brokers (pid ${running.join(", ")}) are still stopping`, `run ${recover} again once they have exited`]
-        : [`its restore process ${coordinator.pid} has exited, but a broker it started cannot be proven gone`, `run ${recover} after ${deadline}`];
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: restore attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
+        ? [`its ${kind} process ${coordinator.pid} has exited, and its brokers (pid ${running.join(", ")}) are still stopping`, `run ${recover} again once they have exited`]
+        : [`its ${kind} process ${coordinator.pid} has exited, but a broker it started cannot be proven gone`, `run ${recover} after ${deadline}`];
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: ${kind} attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
 /** The restore attempt the root's journal holds, with the step that moves it on, so a failure can
@@ -727,7 +727,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       // stale (every owner dead, and the deadline elapsed or every broker it started gone).
       const unrecordedOwnersDead = attemptProcessesGone(root);
       const assessment = assessRestoreClaim(journal, { unrecordedOwnersDead });
-      if (assessment !== "stale") throw heldRestoreClaim(root, journal, "this restore", assessment);
+      if (assessment !== "stale") throw heldClaim(root, journal.restore.attemptId, journal.claim, "this restore", assessment);
       journal = rollbackRestoreWithBroker(lock, { unrecordedOwnersDead });
     }
     if (!journal || journal.state !== "ready") throw notRestorable(root, journal);

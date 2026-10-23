@@ -1394,6 +1394,16 @@ refuses and names that state and its space. A destination that already exists is
 refusal, because create writes only a new directory. Any other refusal or failure shows the check's
 own sentence as its native detail, such as a broker still listening at the cut's recorded endpoint.
 
+A `backup create` interrupted by SIGINT, SIGTERM or SIGHUP after it claims the cut exits 130, 143
+or 129 and names its attempt, the partial artifact it left and `cotal backup recover <attempt> --yes`.
+That claim follows the restore claim's rule below: it holds the cut until its backup process and
+brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`, another create and
+`backup recover` refuse `LIFECYCLE_BLOCKED` and name the backup process and the deadline, and
+`cotal status` names the attempt and its next step. Once it is stale, `backup recover` removes the
+partial artifact, the clone and the broker files, each matched by inode, and a create to another
+directory does the same before it starts. A create naming the partial artifact refuses `CONFLICT`
+and names that recovery.
+
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
 hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
 and compares its size and SHA-256. Both are read-only: no staging directory, broker, restore or
@@ -1401,6 +1411,8 @@ secret upload. Reports omit snapshot bytes, configuration bodies and trust mater
 the declared metadata; terminal file lists are bounded and state their omissions. When a declared
 file is missing, an undeclared file is present, or a file does not match its declared size and
 SHA-256, the refusal names that file and the fault, and its JSON target carries `file` and `fault`.
+A directory with no `manifest.json` is refused as an incomplete artifact, the kind an interrupted
+`backup create` leaves, with the fault `manifest-missing`.
 
 File integrity is not a signature or a restore proof. Matching a manifest does not authenticate
 its author, verify snapshot semantics or prove existing trust will accept a restore. The guarded
@@ -1419,8 +1431,9 @@ Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` 
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
 or process kill is supplied.
-The full attempt id has the form `restore-<uuid>`. `cotal status` shows the attempt a root holds
-under Maintenance, with its state and next step. A refusal for the wrong state names the next step
+A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
+interrupted create's `backup-<uuid>`, as described above. `cotal status` shows the attempt a root
+holds under Maintenance, with its state and next step. A refusal for the wrong state names the next step
 for the recorded one. A completed `cleanup-fallback` retires the journal, so a repeated cleanup
 refuses with `TARGET_NOT_FOUND` and says the root holds no restore attempt.
 
