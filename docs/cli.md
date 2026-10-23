@@ -751,7 +751,10 @@ readiness is recorded as failed with its exit code, and the refusal names its lo
 `cotal service logs <definition> --instance <id> --space <space>`. When the broker this `up` started cannot
 create the space's streams, `up` stops that broker again, so the next `up` starts a fresh one. It
 fails `OPERATION_FAILED`, exit 5, and names the cause when the broker's log shows it ran out of
-open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log.
+open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log. When
+another member, such as the manager, exits before readiness and the broker's log shows it ran out of
+open files, `up` names that log and that cause. A running broker keeps the open-file limit it started
+with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`.
 
 Before it launches a broker, the controller binds the broker address once. When another process
 holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches nothing. A
