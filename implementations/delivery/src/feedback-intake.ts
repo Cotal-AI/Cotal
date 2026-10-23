@@ -2,8 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { closeSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, isReachable, mintLifecycleUid, openPrivateAppend, type JsonValue, type ParsedArgs } from "@cotal-ai/core";
-import { c } from "@cotal-ai/workspace";
+import { CotalEndpoint, isReachable, mintLifecycleUid, openPrivateAppend, type JsonValue, type ParsedArgs } from "@cotal-ai/core";
+import { c, findMesh } from "@cotal-ai/workspace";
 
 type FeedbackType = "bug" | "idea" | "friction" | "praise" | "other";
 type FeedbackSeverity = "low" | "medium" | "high";
@@ -97,12 +97,20 @@ export async function runFeedbackIntake(args: ParsedArgs, hooks?: FeedbackIntake
   const store = hooks ? hooks.store : resolve(values.store ?? ".cotal/feedback/feedback.jsonl");
   const space = values.space ?? "beta-feedback";
   const channel = values.channel ?? "feedback";
-  const natsServer = values.server ?? DEFAULT_SERVER;
+  // The intake credential goes only to `--server` or the broker the space is registered at. The
+  // default address is never assumed for it.
+  const recorded = values.server === undefined ? findMesh(space) : undefined;
+  const natsServer = values.server ?? recorded?.server;
+  if (natsServer === undefined) {
+    console.error(c.red(`✗ --creds needs --server <url> or a registered --space: space "${space}" is not registered here, so nothing was dialed`));
+    process.exit(1);
+  }
+  const tls = values.tls === true || recorded?.tlsRequired === true;
   const creds = hooks ? hooks.creds : readFileSync(values.creds, "utf8");
   const testers = hooks ? hooks.testers : loadTesters(resolve(values.keys));
   const rate = new Map<string, { minute: number; count: number }>();
 
-  if (!(await isReachable(natsServer, { creds, ...(values.tls ? { tls: true } : {}) }))) {
+  if (!(await isReachable(natsServer, { creds, ...(tls ? { tls } : {}) }))) {
     console.error(c.red(`Can't reach NATS at ${natsServer} with the intake creds.`));
     process.exit(1);
   }
@@ -110,7 +118,7 @@ export async function runFeedbackIntake(args: ParsedArgs, hooks?: FeedbackIntake
   const ep = new CotalEndpoint({
     space,
     servers: natsServer,
-    ...(values.tls ? { tls: true } : {}),
+    ...(tls ? { tls } : {}),
     creds,
     channels: [channel],
     // Registers on the roster (deliberately visible infra), so under auth it is lifecycle-keyed

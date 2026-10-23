@@ -4458,8 +4458,12 @@ cotal join --link <url> | --token <t>
 | `--tls` | off | Connect over TLS |
 
 An interactive presence: join a space under your own name and role, without launching an agent
-harness. A `--link` or `--token` supplies the where and the auth in one value. See
+harness. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.md) and [Identity and auth](identity-and-auth.md).
+
+A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
+keeping that registration's TLS requirement. A space not registered here is refused before
+anything is dialed. The default address is never assumed for a credential.
 
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
@@ -4944,6 +4948,8 @@ directory it searched from, before it reads a credential or dials a broker.
 See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
+Without `--server` it dials the broker its `--space` is registered at, and refuses an unregistered
+space before dialing.
 `--port` takes a decimal port from 1 to 65535 and is checked before the intake dials the broker.
 
 ## Plumbing
