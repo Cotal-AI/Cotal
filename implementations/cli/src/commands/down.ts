@@ -97,6 +97,7 @@ import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, stackDown, validateStackDownArguments } from "./stack-down.js";
 import { recordedProcessLine } from "../lib/stack-journal.js";
+import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -364,9 +365,18 @@ function refuseUncontainedRecords(components: readonly LocalProcess[], context: 
   });
 }
 
+/** `cotal down`. It owns stdout's errors for its whole run, so a reader that goes away, as with
+ *  `| head -1`, no longer ends it between a member's stop request and that stop's confirmation. The
+ *  stop runs to its end, and the exit status is the stop's own. */
+export async function down(args: ParsedArgs): Promise<void> {
+  const releaseOutput = ownStdoutErrors(() => {});
+  try { await downCommand(args); }
+  finally { releaseOutput(); }
+}
+
 /** One named service is a thin native-controller alias. The retained bare-stack and manifest
  *  paths below have not yet been replaced by the approved whole-stack controller. */
-export async function down(args: ParsedArgs): Promise<void> {
+async function downCommand(args: ParsedArgs): Promise<void> {
   validateDownArguments(args);
   if (args.positionals.length > 1) return stopNamedServiceSet(args);
   if (args.positionals.length) return service(namedStopArguments(args), "down");

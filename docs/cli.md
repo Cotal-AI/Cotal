@@ -838,6 +838,9 @@ and the manager's log both name the credential and this repair.
 
 ## down
 
+Every `down` runs to its end when the reader of its output goes away, as `| head` does. It
+keeps stopping, writes nothing more, and exits with the stop's own status.
+
 `down <service-name>` routes one saved owned definition through the
 same selection, confirmation, reservation, native manager-impact and stop controller as
 `service stop`. Use `--instance <full-id>` when selection needs a full instance pin. `--yes`,
