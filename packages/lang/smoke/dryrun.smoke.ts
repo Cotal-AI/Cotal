@@ -11,7 +11,7 @@
  * not report a shorter plan. A report that quietly describes half a program is worse than no report,
  * because it is the half that ran.
  */
-import { dryRun, renderReport } from "../src/dryrun.js";
+import { dryRun, dryRunOutcome, renderReport } from "../src/dryrun.js";
 import { run } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 
@@ -102,6 +102,22 @@ const realMs = Date.now() - realStart;
   // A report that stopped early and said so is useful. One that quietly described half a program
   // would be worse than no report, because the half it described is the half that already ran.
   ok("it does NOT return a shorter plan", caught !== undefined);
+}
+
+// ---- 3b) a program that fails under its script is a completed dry run with that fault --------------
+
+{
+  const expiring = 'const a = await checkpoint("gate", "Go?", { timeout: "4s" });\nlog(a);\n';
+  const script = { checkpoints: { gate: { status: "expired" as const } } };
+  let thrown: unknown;
+  try { await dryRun(expiring, script); } catch (e) { thrown = e; }
+  ok("dryRun still throws a program's own fault", (thrown as { code?: string })?.code === "L4007", String(thrown).slice(0, 80));
+  const outcome = await dryRunOutcome(expiring, script);
+  ok("dryRunOutcome reports it with what ran: the expired gate is in the effects",
+    "fault" in outcome && outcome.fault.code === "L4007" && outcome.effects.some((e) => e.step === "/checkpoint:gate#0"), "fault" in outcome ? outcome.effects : outcome);
+  let gap: unknown;
+  try { await dryRunOutcome(expiring, {}); } catch (e) { gap = e; }
+  ok("and an unscripted effect still throws: that dry run did not complete", (gap as { code?: string })?.code === "L6001", String(gap).slice(0, 80));
 }
 
 // ---- 4) the plan is the run: checked against a real execution, not against an expectation --------

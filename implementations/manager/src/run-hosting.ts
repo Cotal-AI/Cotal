@@ -180,13 +180,15 @@ interface HostedRun {
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
 /** How many launches (start or resume) may be in their activation wait at once. Each holds a
  *  standing connection and a minted credential; past this a caller is refused `resource-exhausted`
- *  rather than letting a burst of starts pin unbounded connections for the wait's length. */
+ *  before anything is written, rather than letting a burst of starts pin unbounded connections for
+ *  the wait's length. */
 const MAX_LAUNCHING = 8;
 
 export class RunHosting {
   private readonly runs = new Map<string, HostedRun>();
   private readonly cancellations = new Map<string, { runId: string; reason: string; observed: boolean; mayHaveDispatched: boolean }>();
-  private launching = 0;
+  /** The launches in their activation wait, each with its run id once one is known. */
+  private readonly launching = new Map<symbol, string | undefined>();
   private reconciled = false;
   private stopping = false;
 
@@ -242,18 +244,25 @@ export class RunHosting {
     // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
     // 128 bits, the width the spec's other minted identifiers carry.
     const runId = `run-${randomBytes(16).toString("hex")}`;
-    const admission = await this.admit(ctx, runId);
-    await this.launch(host, {
-      mode: "new",
-      runId,
-      source: args.source,
-      ...(args.file !== undefined ? { file: args.file } : {}),
-      epoch: 1,
-      fencingToken: 1,
-      timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
-      admission,
-      placements,
-    });
+    // The launch slot is taken before the admission is written, so a start refused at the limit
+    // writes nothing.
+    const release = this.reserveLaunch(runId);
+    try {
+      const admission = await this.admit(ctx, runId);
+      await this.launch(host, {
+        mode: "new",
+        runId,
+        source: args.source,
+        ...(args.file !== undefined ? { file: args.file } : {}),
+        epoch: 1,
+        fencingToken: 1,
+        timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
+        admission,
+        placements,
+      }, undefined, release);
+    } finally {
+      release();
+    }
     return { runId };
   }
 
@@ -699,6 +708,11 @@ export class RunHosting {
       });
       if (found === undefined)
         throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${this.ctx.endpoint}; a run that was never started cannot be resumed`);
+      // A completed or failed run's journal already holds its outcome. Driving it again would only
+      // replay that outcome under a new epoch and holder, as the boot reconcile never does.
+      const state = found.status?.state;
+      if (state === "completed" || state === "failed")
+        throw new EpEnvelopeError("failed-precondition", `run ${args.runId} ${state === "completed" ? "is already completed" : "has already failed"}, so there is nothing to resume; a resume continues a run that is running or released`);
       if (found.program === undefined)
         throw new EpEnvelopeError("failed-precondition", `run ${args.runId}: no program is recorded for it, so a hosted resume has no source to run; drive it from a terminal with \`cotal run resume ${args.runId} --local --file <program>\``);
       const verdict = host.validate(found.program.source, found.program.file);
@@ -1029,7 +1043,7 @@ export class RunHosting {
     let release = reserved;
     try {
       if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
-      release ??= this.reserveLaunch();
+      release ??= this.reserveLaunch(req.runId);
       await this.drive(host, req, slot);
     } catch (e) {
       // A slot whose drive never started is freed here; one whose drive exists is freed by that
@@ -1041,14 +1055,20 @@ export class RunHosting {
     }
   }
 
-  /** Take one launching unit, or refuse while stopping or at MAX_LAUNCHING. The release is idempotent. */
-  private reserveLaunch(): () => void {
+  /** Take one launching unit, or refuse while stopping or at MAX_LAUNCHING. The refusal names the
+   *  runs holding the units and is `not-executed`, because it comes before any write. The release
+   *  is idempotent. */
+  private reserveLaunch(runId?: string): () => void {
     if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
-    if (this.launching >= MAX_LAUNCHING)
-      throw new EpEnvelopeError("resource-exhausted", `${MAX_LAUNCHING} workflow runs are launching on this manager already; retry once one has activated`);
-    this.launching += 1;
-    let held = true;
-    return () => { if (held) { held = false; this.launching -= 1; } };
+    if (this.launching.size >= MAX_LAUNCHING) {
+      const holding = [...this.launching.values()].filter((id): id is string => id !== undefined);
+      throw new EpEnvelopeError("resource-exhausted",
+        `${MAX_LAUNCHING} workflow runs are activating on this manager already, the most it activates at once${holding.length ? ` (${holding.join(", ")})` : ""}; nothing was written`,
+        undefined, "not-executed");
+    }
+    const unit = Symbol("launch");
+    this.launching.set(unit, runId);
+    return () => { this.launching.delete(unit); };
   }
 
   private async drive(

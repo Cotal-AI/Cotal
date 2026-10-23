@@ -509,7 +509,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh and reused by every later manager launch, so a repair or resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
 | `--manager-name <name>` | none | Name this root's manager. `who --all` and the manager choice show the name, and on a user-auth mesh `--on` takes it. It is recorded in the root, so a restart or repair keeps it. A running manager keeps the name it started with, so a different name is refused until `cotal down`. The name is one line of at most 128 characters with no `/` or `\`, and it may not look like an instance id (26 to 32 lowercase letters and digits). Cannot be combined with `--no-manager`, `--file` or `--restore` |
 | `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
-| `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
+| `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open`. A controller stack takes it once every member is stopped |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
@@ -863,10 +863,17 @@ cotal up --rotate-sys --detach     # agents reconnect; nothing is re-provisioned
 cotal doctor auth                  # both $SYS creds healthy again, 30 days out
 ```
 
+A controller stack rotates the same way. Outside a terminal its `down` needs `--yes`. The `up`
+receipt adds a `System account rotated` section with the new generation and the creds' expiry, and
+its JSON carries them as `result.rotatedSystemAccount`, which is `null` on an `up` that did not
+rotate.
+
 A rotation is a stopped, fresh boot, and anything that is not one refuses it, all for the same reason
 (the on-disk material and the broker it runs on must never end up on different generations):
 
-- a live mesh, because the running broker would keep serving the retired account;
+- a live mesh, because the running broker would keep serving the retired account. On a controller
+  stack any running member refuses it `LIFECYCLE_BLOCKED`, and the refusal names
+  `cotal down --yes`;
 - an open mesh, whether that comes from `--open` or from `broker.auth: false` in a manifest, which
   has no system account at all;
 - `--restore`, because reinstating a trust root and superseding it in one command leaves no way to
@@ -5310,7 +5317,10 @@ A hosted verb the manager refuses reports the outcome and code as other commands
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
 denied credential, a step in the wrong state or a program that does not validate, is refused, exit
 2. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
-`cotal run show <runId>` as the next step. Any other refusal of `start`, `resume`, `answer` or
+`cotal run show <runId>` as the next step. A manager activates at most 8 runs at once, counting
+each `start` or `resume` until its run is recorded. One more is refused `LIFECYCLE_BLOCKED`, exit 2,
+before anything is written; the refusal names the runs still activating, and the next step is to
+wait until one has activated and run it again. Any other refusal of `start`, `resume`, `answer` or
 `amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
 
 An unpinned hosted verb run by the operator reads the space's service registry first. When it
@@ -5322,8 +5332,12 @@ the manager's answer deadline.
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
 run is recorded; a program that does not validate is refused with every problem listed. A program
 file that cannot be read is refused with `TARGET_NOT_FOUND`, exit 2, by every verb that takes one.
+A `start` interrupted with Ctrl-C or `SIGTERM` after its request went out reports outcome `unknown`,
+because the manager may already have recorded the run, and exits 130 or 143. List the runs with
+`cotal run ps` before starting it again.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the
-source is the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
+source is the recorded program, so no `--file` is taken. A run recorded `completed` or `failed` is
+refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. An open pause prints its question
 under `Needs an answer`, and only then does Next offer `answer`. A pause counts as open while its
@@ -5364,7 +5378,8 @@ required ([workflows](workflows.md)).
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
-`answer`, and a revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. An
+`answer` with `TARGET_NOT_FOUND`, also when it is sent before the run records the first, and a
+revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. An
 answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
@@ -5374,7 +5389,9 @@ value it filed or that none was given, any artifact and the answer id. With `--j
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
-answer refuses an amend. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
+answer refuses an amend. The run records an accepted answer a moment after `answer` returns, and an
+amend sent in between is refused with a message saying the answer is not recorded yet; amend again
+once `run show` lists it. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
 edited program against a run's journal, from this terminal under a read credential (`--local`
 only; the manager serves no run-migrate command): it prints whether the migration is admissible,
 every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
@@ -5584,7 +5601,11 @@ cotal r check <run-id> ./edited.cotal.js
 cotal r revoke <run-id> --local --by <actor> --reason '<text>'
 ```
 
-Start takes a positional source file. Resume uses the host's recorded program. Hosted answers
+Start takes a positional source file. A run verb that reads a source file refuses an empty one or
+one that is not valid UTF-8 with `SCHEMA_INVALID`, before it checks or sends anything, because a
+run's source must not be empty and its text is never replaced. A hosted start sends the program to
+the manager in one message, so a program over the broker's message limit (`max_payload`) is refused
+`UNSUPPORTED` with its size and the limit, and nothing is sent. Resume uses the host's recorded program. Hosted answers
 and amendments are attributed to the authenticated caller, never a supplied name. Check reads
 the recorded journal through the existing local check; it commits no migration. Revocation keeps
 the existing local trust and explicit actor/reason requirements and does not cancel a task.
@@ -5607,7 +5628,13 @@ loop counts or an execution schedule. Simulation uses the native simulator with 
 script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
 `artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
-simulator stamps `at` from virtual time. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
+simulator stamps `at` from virtual time. When the script has no result for an effect, the
+simulation does not complete: it exits 5 with `OPERATION_FAILED`, the message names the step and the
+entry to add, and `target.step` carries the step. When the program itself fails under the script,
+as a checkpoint scripted `expired` under the default `onExpiry: "fail"` does with L4007, the
+simulation completes and exits 0. Its program outcome is failed, with the step and that step's
+outcome, or the last step the program settled before its own code failed, and the language's error.
+JSON carries this as `result.outcome` and `result.failure`. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
 plain output and contact no broker.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and

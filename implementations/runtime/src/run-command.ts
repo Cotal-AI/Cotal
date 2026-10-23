@@ -66,7 +66,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, commandFailureReport, failureEnvelope, presentationOf, recordOperationSpace, renderReport, terminalWidth, writeEnvelope, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -628,11 +628,41 @@ const REFUSED_BEFORE_EFFECT: Readonly<Record<string, RefusalCode>> = {
 function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined): CommandFailure {
   const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
   const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
-  const code = err?.code === undefined ? undefined : REFUSED_BEFORE_EFFECT[err.code];
-  const remedy = err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
+  // A manager at its launch limit refuses `resource-exhausted` before writing anything, and says
+  // so with `not-executed`.
+  const busy = err?.code === "resource-exhausted" && err.outcome === "not-executed";
+  const code = err?.code === undefined ? undefined : busy ? "LIFECYCLE_BLOCKED" : REFUSED_BEFORE_EFFECT[err.code];
+  const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run ps lists a run once it has` }
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
   if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
+}
+
+/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
+function payloadRefused(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
+  return false;
+}
+
+/** While a hosted start's request may be with the manager, a SIGINT or SIGTERM reports that the run
+ *  may already be recorded and exits as the signal would. The manager does not stop on the caller's
+ *  signal, so the process used to die silently with the run started, and a retry started a second
+ *  one. Returns the release. */
+function reportInterruptedStart(values: RunValues, space: string): () => void {
+  const exit = (signal: "SIGINT" | "SIGTERM"): void => {
+    const failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "interrupted after the start request was sent, so the manager may already have recorded the run", {
+      target: { space }, remedy: "list the recorded runs with cotal run ps before starting it again",
+    });
+    if (values.json) writeEnvelope(failureEnvelope("run", failure));
+    process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const onInterrupt = () => exit("SIGINT");
+  const onTerminate = () => exit("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+  return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
 }
 
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
@@ -666,10 +696,23 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
-    const r = await invokeRepairingSplit(nc, t.space, service, command, args, {
-      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
-      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
-    });
+    const interrupt = command === "run-start" ? reportInterruptedStart(values, t.space) : undefined;
+    let r: Awaited<ReturnType<typeof invokeRepairingSplit>>;
+    try {
+      r = await invokeRepairingSplit(nc, t.space, service, command, args, {
+        deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+        ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+      });
+    } catch (e) {
+      if (!payloadRefused(e)) throw e;
+      const source = command === "run-start" && typeof args?.source === "string" ? args.source : undefined;
+      const limit = `this broker's ${nc.info?.max_payload ?? "unreported"}-byte message limit`;
+      throw new CommandFailure("refused", "UNSUPPORTED", source !== undefined
+        ? `the program is ${Buffer.byteLength(source)} bytes, and the start request that carries it exceeds ${limit}; nothing was sent`
+        : `the ${command} request exceeds ${limit}; nothing was sent`, { target: { space: t.space }, ...(source !== undefined ? { remedy: "shorten the program; a hosted start sends it to the manager in one message" } : {}) });
+    } finally {
+      interrupt?.();
+    }
     if (r.reply.ok !== true) {
       const err = r.reply.error;
       // A validation refusal carries every problem as the language's own records; print them the
@@ -928,9 +971,10 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (values.plain) usage("diagnostic pages produce bounded JSON and take no --plain");
   }
   if ((values["admit-read"] !== undefined || values["admit-publish"] !== undefined) && values.local !== true) usage("admission ceilings belong to the explicit local start");
+  // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.
+  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
-  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");

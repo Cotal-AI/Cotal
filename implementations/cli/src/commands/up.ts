@@ -1127,7 +1127,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const start = async () => {
       try {
         if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
-        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
+        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), foreground: values.foreground === true, presentation }, native);
       } finally { releaseMaintenanceLock(stackLock); }
     };
     if (values.foreground) await holdForegroundStack(meshRoot, start);

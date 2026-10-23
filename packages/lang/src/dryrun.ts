@@ -21,7 +21,7 @@ import { run } from "./interpret.js";
 import { SimHandler, type SimScript } from "./sim.js";
 import { stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
-import type { Journal } from "./journal.js";
+import { Journal } from "./journal.js";
 import type {
   AgentHandleValue,
   AskRequest,
@@ -102,6 +102,14 @@ export interface DryRunReport {
    */
   readonly unusedScript: readonly string[];
   readonly journal: Journal;
+}
+
+/** A dry run whose program failed under its script: what ran up to the fault, and the fault. The
+ *  walk's step count is not reported, because the walk did not finish. */
+export interface DryRunFailure extends Omit<DryRunReport, "steps"> {
+  /** The program's own fault, an L3xxx effect call shape or L4xxx run time error, such as L4007 for a
+   *  checkpoint scripted expired under the default onExpiry "fail". */
+  readonly fault: Error & { readonly code: string };
 }
 
 /**
@@ -185,6 +193,9 @@ export interface DryRunOptions {
   readonly file?: string;
   readonly stepBudget?: number;
   readonly yieldEvery?: number;
+  /** The journal the run records into, for its `runId`. A dry run that does not complete returns no
+   *  report, so this is where a caller reads the step it stopped at. */
+  readonly journal?: Journal;
 }
 
 /**
@@ -200,20 +211,46 @@ export async function dryRun(
   script: SimScript = {},
   options: DryRunOptions = {},
 ): Promise<DryRunReport> {
+  const outcome = await dryRunOutcome(source, script, options);
+  if ("fault" in outcome) throw outcome.fault;
+  return outcome;
+}
+
+/**
+ * {@link dryRun}, except that a program which fails under its script is a completed simulation:
+ * the report of what ran up to the fault is returned with the fault. An unscripted effect (L6xxx)
+ * or any other stop still throws, because that run did not complete.
+ */
+export async function dryRunOutcome(
+  source: string,
+  script: SimScript = {},
+  options: DryRunOptions = {},
+): Promise<DryRunReport | DryRunFailure> {
   const sim = new SimHandler(script);
   const startedAt = sim.now();
   const recorder = new RecordingHandler(sim);
+  const runId = options.runId ?? "dry-run";
+  const journal = options.journal ?? new Journal({ run: runId });
 
-  const result = await run(source, {
-    runId: options.runId ?? "dry-run",
-    handler: recorder,
-    ...(options.seed !== undefined ? { seed: options.seed } : {}),
-    ...(options.file !== undefined ? { file: options.file } : {}),
-    ...(options.stepBudget !== undefined ? { stepBudget: options.stepBudget } : {}),
-    ...(options.yieldEvery !== undefined ? { yieldEvery: options.yieldEvery } : {}),
-  });
+  let steps: number | undefined;
+  let fault: DryRunFailure["fault"] | undefined;
+  try {
+    ({ steps } = await run(source, {
+      runId,
+      handler: recorder,
+      journal,
+      ...(options.seed !== undefined ? { seed: options.seed } : {}),
+      ...(options.file !== undefined ? { file: options.file } : {}),
+      ...(options.stepBudget !== undefined ? { stepBudget: options.stepBudget } : {}),
+      ...(options.yieldEvery !== undefined ? { yieldEvery: options.yieldEvery } : {}),
+    }));
+  } catch (e) {
+    const code = (e as { code?: unknown }).code;
+    if (!(e instanceof Error) || typeof code !== "string" || !/^L[34][0-9]{3}$/.test(code)) throw e;
+    fault = e as DryRunFailure["fault"];
+  }
 
-  const effects: PlannedEffect[] = result.journal.entries().map((e) => ({
+  const effects: PlannedEffect[] = journal.entries().map((e) => ({
     step: `${e.scope}/${e.kind}${e.name === "" ? "" : `:${e.name}`}#${e.occurrence}`,
     kind: e.kind,
     name: e.name,
@@ -248,16 +285,8 @@ export async function dryRun(
     deadline: req.deadline,
   }));
 
-  return {
-    effects,
-    agents,
-    checkpoints,
-    waits,
-    elapsedMs: sim.now() - startedAt,
-    steps: result.steps,
-    unusedScript: sim.unusedScript(),
-    journal: result.journal,
-  };
+  const report = { effects, agents, checkpoints, waits, elapsedMs: sim.now() - startedAt, unusedScript: sim.unusedScript(), journal };
+  return fault !== undefined ? { ...report, fault } : { ...report, steps: steps! };
 }
 
 /** Render a report for a human. The order is the order the run would take. */
