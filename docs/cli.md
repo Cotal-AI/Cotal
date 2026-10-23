@@ -169,6 +169,13 @@ On a terminal, a long value, line, warning or failure wraps at spaces, and each 
 starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
 own and is never split. Help wraps the same way, including the title of `cotal help --all`.
 
+A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
+`persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter
+alone, any other text, Esc or Ctrl-C keeps No, so a word typed at the prompt by mistake never
+confirms a step you cannot undo. `space delete` asks you to type the space's name instead. A
+question that defaults to Yes is a Yes and No choice: the arrow keys move the selection, `y` and `n`
+answer at once, and Enter takes the selection.
+
 A usage line breaks only between options, never between an option and its argument. A ` | ` stays
 on the line before it whenever it fits there. A compact `|`, such as the one in
 `<persona.md>|--prompt`, is a break point too: the line ends right after it, the next line starts
@@ -337,7 +344,8 @@ exit 2. Its remedy names `cotal ext seed` on a released install. A source checko
 connectors unless `COTAL_ALLOW_CHECKOUT_SEED=1` marks a sandboxed release test, and the remedy says
 so.
 
-After successful preparation, the terminal offers Start separately with No selected. An explicit
+After successful preparation, the terminal asks separately whether to start, and only a typed `y`
+or `yes` starts it. An explicit
 `--configure-only` suppresses that question. `--start` skips it; scripts must also pass `--detach`.
 Missing application/runtime prerequisites keep preparation saved and do not launch anything.
 

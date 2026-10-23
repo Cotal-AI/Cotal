@@ -92,7 +92,8 @@ before it writes anything:
 5. **The space name.** For a local space it defaults to the folder's name.
 
 Save writes the answers, Change asks again with your answers kept, and Cancel saves nothing.
-Without `--configure-only`, successful preparation offers Start separately with No selected.
+Without `--configure-only`, successful preparation asks separately whether to start, and only a
+typed `y` or `yes` starts it.
 `--start` requests it directly; scripts also need `--detach`. A denied or uncertain start keeps
 completed preparation saved and names the unmet startup stage.
 Setup then seeds one agent: the generic `default` persona that a bare `cotal spawn` launches,
