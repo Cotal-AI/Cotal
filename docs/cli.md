@@ -623,9 +623,9 @@ the same model there. A store directory Cotal creates gets the private access li
 written like a private secret. Reading a record or checking its path does not check an owner, a mode
 or an access list, and does not refuse a link: a symlink or junction is followed. Size limits, the
 record schema, the regular-file check and the refusal of a link inside a record store's own
-directories still apply. When a service path check refuses a path, the refusal names the option,
-the path that failed, and its owner and mode. A whole-stack failure shows that sentence as its
-native detail.
+directories still apply. When a service path check refuses a path, the refusal names the option
+and each path that failed once, with its reason and one `chmod` that fixes every writable one. A
+whole-stack failure shows that sentence as its native detail.
 
 A fresh prepared static-auth, open or plain-loopback user-auth root starts through the service
 controller. It records its mode, definitions and full instance IDs in the private
