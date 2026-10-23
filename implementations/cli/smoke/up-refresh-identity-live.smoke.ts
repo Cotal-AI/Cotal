@@ -5,7 +5,8 @@
  *
  * The fixture drives the shipped binary against its own isolated broker with a supported
  * multi-space account root. It runs both filename orders, then verifies that an absent requested
- * space and a record rooted elsewhere still refuse.
+ * space and a record rooted elsewhere still refuse. An `up --space` for a space that runs at the
+ * named address from another folder refuses, naming that folder, and offers no other port.
  *
  * Also carries the #1697 `--host` shape refusals (broker-free, first section): a URL typed into
  * `--host` used to be bracketed into `nats://[nats://…]:4222` and either misfired as an unrelated
@@ -30,7 +31,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 13 + 5 + 14; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 3 + 13 + 5 + 14; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -171,6 +172,32 @@ async function foreignRootRefusal(): Promise<void> {
     rmSync(fixture.home, { recursive: true, force: true });
     rmSync(fixture.root, { recursive: true, force: true });
     rmSync(foreignRoot, { recursive: true, force: true });
+  }
+}
+
+/** `up --space` from an unrelated folder at the address its space already runs on: the broker there
+ *  is that space's own, so the refusal names its folder instead of offering a second broker. */
+async function namedSpaceElsewhere(): Promise<void> {
+  const fixture = await makeFixture("elsewhere");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const other = mkdtempSync(join(scratch, "elsewhere-other-"));
+  let started = false;
+  try {
+    const first = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", "home-space"]);
+    started = first.status === 0;
+    check("named-space fixture mesh starts", started, `${first.stdout}${first.stderr}`);
+    if (!started) return;
+    const again = spawnSync(TSX, [CLI, "up", "--server", fixture.server, "--space", "home-space"], { cwd: other, env: fixture.env, encoding: "utf8", timeout: 120_000 });
+    check("up --space from another folder at its running address names the folder it runs from, not another port",
+      again.status === 2 && again.stderr.includes(`space "home-space" runs at ${fixture.server}, started in ${fixture.root}`) &&
+        again.stderr.includes("--space home-space") && !again.stderr.includes("with a free port"), `${again.stdout}${again.stderr}`);
+    started = !(await stop(fixture));
+  } finally {
+    if (started) await stop(fixture);
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
   }
 }
 
@@ -394,7 +421,10 @@ async function hostShapeRefusals(): Promise<void> {
   // starts none); foreign + manual is the refusal state the fixture exists to hold.
   const recordRoot = mkdtempSync(join(scratch, "host-shape-record-root-"));
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
-  const entry = { space: "host-shape", server: "nats://127.0.0.1:4222", root: recordRoot, mode: "open" as const, origin: "manual" as const, ts: new Date(0).toISOString() };
+  // The record names a free port: a broker answering at the recorded address would make `up` report
+  // the space as running elsewhere before the control reaches the manual-registration refusal.
+  const recordPort = await pickFreePort();
+  const entry = { space: "host-shape", server: `nats://127.0.0.1:${recordPort}`, root: recordRoot, mode: "open" as const, origin: "manual" as const, ts: new Date(0).toISOString() };
   recordMesh(entry);
   const out = (r: { stdout: string; stderr: string }) => `${r.stdout}${r.stderr}`;
   try {
@@ -417,7 +447,7 @@ async function hostShapeRefusals(): Promise<void> {
     check("a host:port spelling is refused as a bind host", hostPort.status !== 0 && /is not a valid bind host/.test(out(hostPort)) && /the port comes from --server/.test(out(hostPort)), out(hostPort));
 
     // The real mismatch diagnostic still prints for valid hosts that disagree (and exits, not throws).
-    const mismatch = cotal(fixture, ["up", "--space", "host-shape", "--host", "10.0.0.9", "--server", "nats://127.0.0.1:4222"]);
+    const mismatch = cotal(fixture, ["up", "--space", "host-shape", "--host", "10.0.0.9", "--server", `nats://127.0.0.1:${recordPort}`]);
     check("a --host/--server address mismatch still prints its own diagnostic", mismatch.status !== 0 && /name different addresses/.test(out(mismatch)), out(mismatch));
 
     // CONTROL: a correct bare host passes the shape guard and reaches the registry's own refusal
@@ -437,6 +467,7 @@ try {
   await orderedRefresh("alpha-root", "omega-tenant", ["alpha-root", "omega-tenant"]);
   await orderedRefresh("omega-root", "alpha-tenant", ["alpha-tenant", "omega-root"]);
   await foreignRootRefusal();
+  await namedSpaceElsewhere();
   await storeRecordRepair();
   await preFieldWarning();
   await foregroundCrashKeepsRecord();

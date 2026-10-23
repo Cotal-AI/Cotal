@@ -517,7 +517,8 @@ runs the same space again. A folder whose stack and registrations name more than
 with `CONFLICT` and asks for `--space`. With no
 `--server`, it auto-selects a free port if the default address is taken, and a later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
-stays fail-loud on collision. A background boot also brings up the control plane (delivery daemon in auth
+stays fail-loud on collision. When the broker at that address is the named space's own, started
+from another folder, `up --space` refuses `CONFLICT`, exit 2, naming that folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. A refresh under the flag of a mesh whose manager is live refuses rather
@@ -699,7 +700,9 @@ replacement's instance and launch request before the old instance is retired, an
 definition's revision before the replacement launches. After an `up` cut off in between, the next
 bare `up` or `down` adopts the replacement only when its record carries that launch request and
 revision for the same operation; `down` stops it and `up` reuses it. Any other instance record
-refuses `CONFLICT`, and nothing is adopted. A preserve or resume that
+refuses `CONFLICT`, and nothing is adopted. A stack definition saved for another folder under the
+same space name refuses `CONFLICT`, naming that folder and every stack definition saved for it;
+`space forget` removes them once that folder's stack is stopped. A preserve or resume that
 never recorded its outcome stays with its own maintenance attempt. A member that exits before
 readiness is recorded as failed with its exit code, and the refusal names its log with
 `cotal service logs <definition> --instance <id> --space <space>`.
@@ -1075,7 +1078,9 @@ service registration in that case, so no successor is handed authority while tha
 run; the lease lapses on its TTL. A named `down` is the service stop above and never stops a
 legacy component by its pidfile, so `cotal down manager` or `cotal down web` on a legacy stack is
 refused unless a saved definition has that name. Only bare `cotal down` stops a legacy root's
-components, all together, under the folder you run it in. It takes no `--space`. The
+components, all together, under the folder you run it in. It takes no `--space`. A bare `down` or
+`down --dry-run` whose `--space` names a space whose stack is recorded in another folder refuses
+`TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
 and cannot be combined with service names or `--space`.
 
@@ -1806,7 +1811,12 @@ prepared spaces under their own heading, and `space show` and `use` accept one. 
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
-name.
+name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
+names the space. A bare `cotal up` in a folder that names no space, while the selected space is
+prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start the
+default space there. Forget the space with `cotal space forget <name>`, prepare it again in its new
+folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
+says its recorded folder no longer exists.
 
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. It refuses a space this machine is running with
@@ -1820,7 +1830,16 @@ that `space create` made stays. Forgetting the selected space clears the selecti
 removes the per-space preferences saved under that name, so a later space with the same name starts
 without them, and the receipt lists each removed key and value so you can set them again. If that
 removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it.
-`status` in a forgotten space's root then selects no space and probes no broker.
+Forget also removes the stack definitions `cotal up` saved for the space at its root, with their
+stopped instance records, so another folder can start a stack under the same name. The result lists
+them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
+result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
+names `cotal down --yes` in the root and then `space forget` again.
+`status` in a forgotten space's root then selects no space and probes no broker. When nothing left
+in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
+because a bare `cotal up` there would start the default space `main` in that folder. A command run
+there that finds no broker at the default address says that no space is registered or prepared for
+the folder and names the same step.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.
 It requires the broker's mode to match the registration, and a static connection must
@@ -1862,6 +1881,12 @@ a live process can recreate a stream after the final read. The result
 does not claim that processes stopped, or remove registrations, credentials or local
 files. Open-mode impact and receipt label that any broker client can delete the space.
 `space forget` is not a substitute for live deletion.
+
+The receipt's Next names the route back. On a space this machine started, the broker keeps running
+without the streams, and only a broker start creates them. `cotal down --yes` in its root, or
+`cotal down` on a legacy root, then `cotal up` starts it again with empty streams. Running
+`space forget` after that stop drops it instead. Until then a bare `cotal up` there refuses
+`TARGET_NOT_FOUND`, exit 2, saying the broker no longer holds the streams and naming that restart.
 
 `use <space>` selects the space commands target when none is named. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and

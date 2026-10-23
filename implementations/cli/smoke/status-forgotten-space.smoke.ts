@@ -9,7 +9,7 @@
  * Run: pnpm smoke:status-forgotten-space
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -32,8 +32,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], cwd = root) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -57,10 +57,18 @@ check("no default broker address is reported or probed", !json.stdout.includes("
 const plain = run(["status", "--plain"]);
 check("the report carries no Mesh header for the forgotten space", read(plain) && !/^Mesh: /m.test(plain.stdout), shown(plain));
 check("the report names no default broker address", !plain.stdout.includes("4222") && !plain.stderr.includes("4222"), shown(plain));
-check("the report says how to start or select a space", /cotal up|cotal use/.test(plain.stdout), shown(plain));
+// A bare `up` here would start the default space, which then holds the folder, so the step back is
+// to prepare a space again.
+check("the report names space create for this folder, not a bare up", plain.stdout.includes(`cotal space create <name> --root ${realpathSync.native(root)}\``) && /cotal use <name>/.test(plain.stdout) && !/cotal up\b/.test(plain.stdout), shown(plain));
 
 const components = run(["status", "--components"]);
 check("status --components refuses the unregistered root and probes no default broker", /target\s+refused · unregistered-root/.test(components.stdout) && !components.stdout.includes("4222") && !components.stderr.includes("4222"), shown(components));
+
+// A `.cotal/` with nothing in it names no records, and a bare `up` there is how a space starts.
+const fresh = mkdtempSync(join(home, "fresh-"));
+mkdirSync(join(fresh, ".cotal"));
+const freshPlain = run(["status", "--plain"], fresh);
+check("control: an empty project still names a bare up", read(freshPlain) && /cotal up` there to start one/.test(freshPlain.stdout) && !freshPlain.stdout.includes("space create <name>"), shown(freshPlain));
 
 finish();
 process.exit(process.exitCode ?? 0);

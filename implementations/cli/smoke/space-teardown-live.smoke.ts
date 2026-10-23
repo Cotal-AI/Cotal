@@ -14,6 +14,12 @@
  *  4. Reset after a normal down. `reset store` is offered and removes the store, and `up` starts
  *     again. `reset space` is offered and removes the identity, keeping the prepared record and
  *     the stack journal, and `up` starts again with a new account.
+ *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
+ *     definitions saved for the root, and another folder starts a stack under the same name.
+ *  6. Space delete under a stopped stack. With only the broker running the delete applies, and its
+ *     receipt names `cotal down --yes` and `cotal space forget`. A bare `up` then refuses
+ *     TARGET_NOT_FOUND (exit 2), saying the broker lost the streams and naming the restart, which
+ *     starts the stack again.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -153,6 +159,57 @@ try {
     const fresh = cli(root, "up", "--json");
     check("bare up starts it again", fresh.status === 0, shown(fresh));
     check("with a new account identity", accountDigest(root) !== before && accountDigest(root) !== "absent", { before, after: accountDigest(root) });
+    const last = cli(root, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 5. A forgotten space's stack definitions go with it, so its name starts in another folder.
+  {
+    const space = "tear2";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a second controller root", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("up starts it and down --yes stops it", started.status === 0 && stopped.status === 0, { up: shown(started), down: shown(stopped) });
+    const forgot = cli(home, "space", "forget", space, "--json");
+    check("space forget removes the stack definitions saved for the root",
+      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery"]), shown(forgot));
+    const elsewhere = folder(`${space}b`);
+    const again = cli(home, "space", "create", space, "--root", elsewhere, "--json");
+    anchor(elsewhere);
+    const reused = cli(elsewhere, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
+    const last = cli(elsewhere, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 6. Delete with only the broker running, and the route back.
+  {
+    const space = "tear3";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a third controller root", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    const services = cli(root, "service", "--space", space, "--json");
+    const delivery = (services.env?.result?.instances as { definition: string; instanceId: string }[] | undefined)?.find((row) => row.definition === "stack-delivery")?.instanceId;
+    check("up starts the broker and delivery", started.status === 0 && typeof delivery === "string", { up: shown(started), services: shown(services) });
+    const stoppedDelivery = cli(root, "service", "stop", "stack-delivery", "--instance", String(delivery), "--space", space, "--yes", "--json");
+    check("the delivery member stops on its own", stoppedDelivery.status === 0, shown(stoppedDelivery));
+
+    const deleted = cli(home, "space", "delete", space, "--yes");
+    check("space delete applies with only the broker running", deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), shown(deleted));
+    check("its receipt names the route back: cotal down --yes, or cotal space forget after it",
+      /Next/.test(deleted.stdout) && deleted.stdout.includes("cotal down --yes") && deleted.stdout.includes(`Stop the stack in ${root}`) && deleted.stdout.includes(`cotal space forget ${space}`), shown(deleted));
+    const bare = cli(root, "up", "--json");
+    check("a bare up under the broker that lost the streams refuses TARGET_NOT_FOUND, exit 2", bare.status === 2 && bare.env?.error?.code === "TARGET_NOT_FOUND", shown(bare));
+    check("...saying why, and naming the restart",
+      Boolean(bare.env?.error?.message.includes("no longer holds this space's streams")) && Boolean(bare.env?.error?.remedy?.includes("cotal down --yes, then cotal up")), bare.env?.error);
+    const down = cli(root, "down", "--yes", "--json");
+    const back = cli(root, "up", "--json");
+    check("down --yes, then up, starts the stack again", down.status === 0 && back.status === 0, { down: shown(down), up: shown(back) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
   }

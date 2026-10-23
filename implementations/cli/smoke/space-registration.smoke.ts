@@ -24,7 +24,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -42,6 +42,8 @@ process.env.COTAL_HOME = join(home, ".cotal");
 const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
+await import("../src/lib/broker-service.js");
+const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
 const { stackJournalPath, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -282,13 +284,13 @@ setCurrent("keep");
     await new Promise((done) => { exited.once("exit", done); exited.kill("SIGKILL"); });
     const ts = new Date().toISOString();
     /** One member's instance record. A stopped one carries the generic process-exit receipt. */
-    const member = (space: string, definition: string, pinned: { pid: number; token: string }, stopped: boolean): string => {
+    const member = (space: string, definition: string, pinned: { pid: number; token: string }, stopped: boolean, extra: { kernelStopRequired?: true } = {}): string => {
       const id = randomUUID(), requestId = randomUUID();
       serviceInstanceStore(space).commit(id, undefined, {
         schemaVersion: 1, instanceId: id, definition, definitionRevision: `rev-${definition}`, space, host: processServiceHost(),
         requestId, launchRequestId: requestId, state: stopped ? "stopped" : "running", launcher: requireProcessIdentity(process.pid), process: pinned,
         readiness: stopped ? "not-checked" : "process-running", supervisor: "none", foreground: false, createdAt: ts, updatedAt: ts,
-        ...(stopped ? { processStop: { kind: "process-exit" as const, requestId, process: pinned, signal: "SIGTERM" as const, observedAt: ts } } : {}),
+        ...(stopped ? { processStop: { kind: "process-exit" as const, requestId, process: pinned, signal: "SIGTERM" as const, observedAt: ts } } : {}), ...extra,
       });
       return id;
     };
@@ -305,6 +307,12 @@ setCurrent("keep");
       recordMesh({ space, server: LIVE, root: stackRoot, mode, origin: "up", ts });
       return stackRoot;
     };
+    /** The broker definition `cotal up` saves for a stack at `stackRoot`. Nothing is launched. */
+    const brokerDefinition = (space: string, stackRoot: string) => {
+      const config = join(stackRoot, ".cotal", "server.conf");
+      writeFileSync(config, "", { mode: 0o600 });
+      serviceDefinitionStore(space).commit("stack-broker", undefined, { schemaVersion: 1, space, launch: { type: "adapter", adapter: "nats-broker", options: { root: stackRoot, config, binary: process.execPath, server: LIVE } }, readiness: { type: "adapter", timeoutMs: 30_000 } });
+    };
 
     const runningRoot = stack("stackrun", "open", { broker: member("stackrun", "stack-broker", requireProcessIdentity(process.pid), false) }, "started");
     const before = registryFiles(), selected = getCurrent(), journal = readFileSync(stackJournalPath(runningRoot), "utf8");
@@ -314,20 +322,40 @@ setCurrent("keep");
     check("...and it writes nothing: the registration, the selection and the stack journal stay",
       JSON.stringify(registryFiles()) === JSON.stringify(before) && getCurrent() === selected && readFileSync(stackJournalPath(runningRoot), "utf8") === journal, shown(running));
 
-    stack("stackgone", "open", { broker: member("stackgone", "stack-broker", gonePid, false) }, "started");
+    // The broker crashed: its record requires the exact-exit stop it never got, so its definition stays.
+    const goneRoot = stack("stackgone", "open", { broker: member("stackgone", "stack-broker", gonePid, false, { kernelStopRequired: true }) }, "started");
+    brokerDefinition("stackgone", goneRoot);
     const unsettled = await json(["space", "forget", "stackgone"]);
     const warned = (unsettled.env?.warnings ?? []).filter((w: { code: string }) => w.code === "STACK_MEMBER_UNSETTLED");
     check("a member proven gone with no stop receipt does not block forget, and the output warns",
       unsettled.status === 0 && unsettled.env?.result.kind === "space-forgotten" && findMesh("stackgone") === undefined &&
         warned.length === 1 && /stack-broker/.test(warned[0].message) && /never stopped cleanly/.test(warned[0].message), shown(unsettled));
+    const kept = (unsettled.env?.warnings ?? []).filter((w: { code: string }) => w.code === "STACK_DEFINITIONS_KEPT");
+    check("...its stack definition is kept, and the warning names the route that releases it",
+      kept.length === 1 && /stack-broker/.test(kept[0].message) && kept[0].message.includes(`cotal down --yes in ${goneRoot}, then run cotal space forget stackgone again`) &&
+        unsettled.env?.result.releasedDefinitions.length === 0 && serviceDefinitionStore("stackgone").read("stack-broker") !== undefined, shown(unsettled));
 
     // Only a delivery member is recorded: its generic stop leaves the process-exit receipt this suite
     // can write, where the broker's and the manager's receipts carry native evidence.
-    stack("stackdone", "auth", { delivery: member("stackdone", "stack-delivery", gonePid, true) }, "stopped");
+    const doneRoot = stack("stackdone", "auth", { delivery: member("stackdone", "stack-delivery", gonePid, true) }, "stopped");
+    brokerDefinition("stackdone", doneRoot);
     const settled = await json(["space", "forget", "stackdone"]);
     check("a space whose stack stopped with its receipts is forgotten",
       settled.status === 0 && settled.env?.result.kind === "space-forgotten" && settled.env.result.origin === "up" && findMesh("stackdone") === undefined &&
         settled.env.warnings.length === 0, shown(settled));
+    check("...and the stack definitions saved for its root are removed, so another folder can start the name",
+      JSON.stringify(settled.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("stackdone").read("stack-broker") === undefined, shown(settled));
+
+    // A prepared space releases the definitions saved for its own root, and only those.
+    const prepRoot = realpathSync.native(projectRoot("prepdone")), otherRoot = realpathSync.native(projectRoot("prepother"));
+    for (const [space, at] of [["prepdone", prepRoot], ["prepother", otherRoot]] as const) check(`rig: ${space} is prepared`, (await json(["space", "create", space, "--root", at])).status === 0);
+    brokerDefinition("prepdone", prepRoot);
+    brokerDefinition("prepother", prepRoot);
+    const prepared = await json(["space", "forget", "prepdone"]), other = await json(["space", "forget", "prepother"]);
+    check("forgetting a prepared space removes the stack definitions saved for its root",
+      prepared.status === 0 && JSON.stringify(prepared.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("prepdone").read("stack-broker") === undefined, shown(prepared));
+    check("...and keeps one saved for another folder, without a warning",
+      other.status === 0 && other.env?.result.releasedDefinitions.length === 0 && other.env.warnings.length === 0 && serviceDefinitionStore("prepother").read("stack-broker") !== undefined, shown(other));
   } else console.log("  - controller stack forget cells skipped: service records need Linux machine and boot identity");
 
   const stopped = await json(["space", "forget", "started"]);
@@ -463,6 +491,25 @@ setCurrent("keep");
     check("a --root this account cannot write is PERMISSION_DENIED, exit 2, with nothing written",
       refused(denied, 2, "PERMISSION_DENIED") && (denied.env?.error?.message ?? "").startsWith(`${readOnly} is not writable by this account`) && !existsSync(join(readOnly, ".cotal")) && findPreparedSpace("other") === undefined, shown(denied));
     chmodSync(readOnly, 0o700);
+  }
+  // A prepared folder that is moved keeps none of its space, so a bare up there would start the
+  // default. With that space selected and its recorded folder gone, up refuses and names the step.
+  {
+    const before = join(home, "moving-before"), after = join(home, "moving-after");
+    mkdirSync(before);
+    check("control: create prepares the space that will move", (await json(["space", "create", "moving"], before)).status === 0);
+    renameSync(before, after);
+    const previous = getCurrent();
+    setCurrent("moving");
+    const moved = await json(["up", "--server", DEAD], after);
+    check("a bare up in the moved folder refuses TARGET_UNAVAILABLE, exit 2, naming the gone folder and the step",
+      refused(moved, 2, "TARGET_UNAVAILABLE") && (moved.env?.error?.message ?? "").includes(`"moving" is prepared in ${before}, which no longer exists`) && (moved.env?.error?.remedy ?? "").includes("cotal space forget moving") && findMesh("main") === undefined && !existsSync(join(after, ".cotal", "auth")), shown(moved));
+    const again = await json(["space", "create", "moving"], after);
+    check("create there names the gone folder and says to forget it first",
+      refused(again, 2, "CONFLICT") && (again.env?.error?.message ?? "").endsWith("which no longer exists") && again.env?.error?.remedy === "forget it with `cotal space forget moving`, then run this create again", shown(again));
+    check("control: forget clears the way", (await json(["space", "forget", "moving"])).status === 0);
+    if (previous === undefined) clearCurrent(); else setCurrent(previous);
+    rmSync(after, { recursive: true, force: true });
   }
   check("create takes exactly one name", refused(await json(["space", "create"], spare), 1, "USAGE_INVALID") && refused(await json(["space", "create", "a", "b"], spare), 1, "USAGE_INVALID"));
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));

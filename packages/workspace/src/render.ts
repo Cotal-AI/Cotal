@@ -105,6 +105,10 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   switch (kind) {
     case "unreachable":
+      // Nothing records the default space that was assumed for a folder whose records name no
+      // space, so the folder is what to name, with the step that prepares a space in it again.
+      if (t.namesNoSpace)
+        return parts(`no space is registered or prepared here for ${t.root}`, `prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\``);
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual" || t.origin === "catalog")

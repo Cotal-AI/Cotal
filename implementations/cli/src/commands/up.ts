@@ -20,6 +20,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
+  DEFAULT_SPACE,
   createSpaceAuth,
   serverConfig,
   openServerConfig,
@@ -677,6 +678,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
     const stackSpace = values.space ?? folderSpace();
+    if (values.space === undefined) assertSelectionNotMoved(root, stackSpace);
     recordOperationSpace(stackSpace);
     if (!readMaintenanceJournal(root) && controllerStackApplies(root, stackSpace, values)) {
       const recordedStack = readStackJournal(root);
@@ -1514,6 +1516,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
       seedPersonaAfterUp(root);
       return;
+    }
+    // The broker answering here is the named space's own, started from another folder.
+    const owner = values.space !== undefined ? findMesh(space) : undefined;
+    if (owner && owner.server === server && owner.root !== root) {
+      let controller = false;
+      try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
+      throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server }, remedy: `use it from here with --space ${space}, or stop it with cotal down${controller ? " --yes" : ""} in ${owner.root}` });
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
     // Reaching here with `--rotate-sys` means something IS answering at the requested address and it
@@ -3570,6 +3579,20 @@ function folderSpace(): string {
     if (named.length === 1) return named[0];
   }
   return resolveSpace(process.cwd());
+}
+
+/** A bare `up` in a folder that names no space starts the default space. When the selected space
+ *  is prepared in a folder that no longer exists, as after that folder was moved, the default is not
+ *  what was meant, so `up` refuses with the step that prepares the selection here. */
+function assertSelectionNotMoved(root: string, space: string): void {
+  if (space !== DEFAULT_SPACE || soleSpaceOf(authDir(root)) !== undefined || preparedSpaceAt(root) || localMeshesForRoot(root).length || readStackJournal(root)) return;
+  const current = getCurrent();
+  const prepared = current === undefined || current === space ? undefined : findPreparedSpace(current);
+  if (!prepared || existsSync(prepared.root)) return;
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which no longer exists, and this folder names no space, so up did not start "${space}" here`, {
+    target: { root, space: current, preparedRoot: prepared.root },
+    remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
+  });
 }
 
 function realpathSafe(p: string): string {

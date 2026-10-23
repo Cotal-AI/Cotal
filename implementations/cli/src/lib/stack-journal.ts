@@ -6,11 +6,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
-import { serviceDefinitionStore } from "./service-definitions.js";
+import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -378,6 +378,45 @@ export function stackMemberFor(space: string, name: string): string | undefined 
   const role = ({ nats: "broker", broker: "broker", auth: "auth", delivery: "delivery", manager: "manager" } as Record<string, StackRole | undefined>)[name];
   if (!role) return undefined;
   try { return serviceDefinitionStore(space).read(STACK_DEFINITION[role]) ? STACK_DEFINITION[role] : undefined; } catch { return undefined; }
+}
+
+/** The controller stack definitions saved for `space` that start a stack at `root`. */
+export function stackDefinitionsAt(space: string, root: string): ServiceDefinitionSnapshot[] {
+  const store = serviceDefinitionStore(space);
+  return STACK_ROLES.flatMap((role) => {
+    const row = store.read(STACK_DEFINITION[role]), launch = row?.record.value.launch;
+    return row && launch?.type === "adapter" && launch.adapter === STACK_ADAPTER[role] && launch.options.root === root ? [row] : [];
+  });
+}
+
+/** Remove the controller stack definitions saved for `space` at `root`, with their stopped instance
+ *  records, as `service remove` does, so that another folder can start a stack under the same name.
+ *  A definition saved for another root is left alone. Nothing is removed while the root holds
+ *  preserved state, which resumes from them, or while any of their instances is not removable;
+ *  `kept` names them, why, and the route that removes them. */
+export function releaseStackDefinitions(root: string, space: string): { released: string[]; kept?: { names: string[]; why: string } } {
+  let owned: ServiceDefinitionSnapshot[];
+  try { owned = stackDefinitionsAt(space, root); } catch (error) { return { released: [], kept: { names: [], why: `${(error as Error).message}; inspect them with cotal service --space ${space}` } }; }
+  if (!owned.length) return { released: [] };
+  const names = owned.map((row) => row.name);
+  let preserved: boolean;
+  try { preserved = existsSync(root) && readMaintenanceJournal(root) !== undefined; } catch { preserved = true; }
+  if (preserved) return { released: [], kept: { names, why: `${root} holds preserved state that resumes from them` } };
+  try {
+    for (const row of owned) removableServiceInstances(space, row.name);
+  } catch (error) {
+    const route = existsSync(root) ? `stop the stack with cotal down --yes in ${root}, then run cotal space forget ${space} again`
+      : isCommandFailure(error) && error.remedy || `inspect them with cotal service --space ${space}`;
+    return { released: [], kept: { names, why: `${(error as Error).message}; ${route}` } };
+  }
+  const store = serviceDefinitionStore(space), released: string[] = [];
+  try {
+    for (const row of owned) { store.commit(row.name, row, undefined, () => removeStoppedInstanceRecords(space, row.name)); released.push(row.name); }
+  } catch (error) {
+    if (!released.length) throw error;
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "some stack definitions were removed, but another changed before its removal", { target: { space, root }, changed: released.map((name) => ({ kind: "service-definition", name })), remedy: `inspect the rest with cotal service --space ${space}` });
+  }
+  return { released };
 }
 
 /** Legacy pidfile records under the root that may front a process, excluding the settled records

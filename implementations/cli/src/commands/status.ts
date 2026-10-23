@@ -90,13 +90,13 @@ type Selected = { ok: true; target: MeshTarget } | { ok: false; error: unknown }
  *  forgotten. The resolver gives it the default broker address, which any broker may hold, so
  *  status selects no space for it and dials nothing. */
 class UnregisteredRoot {
-  constructor(readonly root: string) {}
+  constructor(readonly root: string, readonly namesNoSpace: boolean) {}
 }
 
 function resolveSelected(cwd: string, values: FlagValues<typeof statusFlags>): Selected {
   try {
     const target = resolveMeshTarget(cwd, { server: values.server, space: values.space });
-    return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root) } : { ok: true, target };
+    return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root, target.namesNoSpace === true) } : { ok: true, target };
   } catch (e) {
     return { ok: false, error: e };
   }
@@ -854,7 +854,11 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     }
     if (e instanceof UnregisteredRoot) {
       const message = `no space is registered or prepared here for ${e.root}`;
-      hints.push(`${message} - run \`${cmd} up\` there to start one, or select a space with \`${cmd} use <name>\``);
+      // A bare `up` in a folder whose records name no space starts the default space there, which
+      // then holds the folder, so the step that brings a forgotten space back is to prepare it again.
+      hints.push(e.namesNoSpace
+        ? `${message} - prepare one there with \`${cmd} space create <name> --root ${e.root}\`, or select a space with \`${cmd} use <name>\``
+        : `${message} - run \`${cmd} up\` there to start one, or select a space with \`${cmd} use <name>\``);
       return { resolved: false, code: "unregistered-root", message };
     }
     if (!isWorkspaceTargetError(e)) throw e;

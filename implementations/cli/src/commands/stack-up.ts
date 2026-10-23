@@ -11,8 +11,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { JetStreamApiError } from "@nats-io/jetstream";
-import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
+import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
+import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getCurrent, getSpaceAuth, hasUserAuthState,
   homeCotalDir, isCommandFailure, loadMeshes, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
@@ -27,7 +27,7 @@ import { prepareProcessService, removeStoppedInstanceRecords, settleExitedInstan
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -212,8 +212,12 @@ function ensureDefinition(space: string, role: StackRole, input: ServiceDefiniti
   const wanted = input.launch;
   if (existing) {
     const launch = existing.record.value.launch;
-    if (launch.type !== "adapter" || wanted.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== root)
+    if (launch.type !== "adapter" || wanted.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== root) {
+      const other = launch.type === "adapter" && launch.adapter === STACK_ADAPTER[role] && typeof launch.options.root === "string" ? launch.options.root : undefined;
+      if (other) throw new CommandFailure("refused", "CONFLICT", `the saved ${name} definition belongs to the stack at ${other}; it was not replaced`, { target: { space, definition: name, root: other },
+        remedy: `if ${other} no longer runs ${space}, remove the stack definitions saved for it (${stackDefinitionsAt(space, other).map((row) => row.name).join(", ")}) with cotal service remove <name> --space ${space} --yes` });
       throw new CommandFailure("refused", "CONFLICT", "a saved definition under a stack name belongs to another adapter or root; it was not replaced", { target: { space, definition: name }, remedy: `inspect cotal service show ${name} --space ${space}` });
+    }
     if (JSON.stringify(launch.options) === JSON.stringify(wanted.options)) return existing;
     // A running member keeps the definition it was launched from; it is reused, never redefined.
     if (serviceInstances(space, name).some((row) => observeServiceProcess(row.record.value) === "running")) return existing;
@@ -408,11 +412,14 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   let failedRole: StackRole | undefined;
   let failedStage: "broker-streams" | "broker-registration" | undefined;
   let launch: { path: string; sha256: string } | undefined;
+  // Only a broker this call starts gets the space's streams created.
+  let brokerReused = false;
   try {
     // Broker. Trust and configuration are prepared only when this broker is not already serving
     // under its own recorded instance, never as an adapter planning step.
     const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
     const brokerRunning = brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running";
+    brokerReused = brokerRunning;
     if (!brokerRunning && await isReachable(server, { timeoutMs: 1500 })) {
       // Name the space this machine registered at the address. A first start can take another
       // address; a stack that ran keeps its recorded one, so whatever answers there must stop first.
@@ -531,7 +538,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       await start("manager", manager);
     }
     if (!loginBlock) settle("completed");
-  } catch (error) {
+  } catch (caught) {
+    // `cotal space delete` removes the streams from a broker that keeps running, and a reused broker
+    // gets none back, so the stack has to restart for its broker start to create them.
+    const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)
+      ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the running broker no longer holds this space's streams, as after cotal space delete, and up creates them only when it starts the broker", { remedy: "restart the stack with cotal down --yes, then cotal up, which creates them again, empty" })
+      : caught;
     const failure = isCommandFailure(error) ? error : undefined;
     const uncertain = failure === undefined || failure.outcome === "unknown";
     const pending = failedRole ? journal.members.find((row) => row.role === failedRole) : journal.members.find((row) => row.state === "planned");
