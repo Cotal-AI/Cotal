@@ -15,7 +15,7 @@ import { JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, hasUserAuthState,
-  homeCotalDir, isCommandFailure, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
+  homeCotalDir, isCommandFailure, loadMeshes, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
   stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
@@ -409,7 +409,20 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // under its own recorded instance, never as an adapter planning step.
     const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
     const brokerRunning = brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running";
-    if (!brokerRunning && await isReachable(server, { timeoutMs: 1500 })) throw new CommandFailure("refused", "CONFLICT", "something already answers at the stack's broker address without this stack's broker instance; it was not adopted or stopped", { target: { root, space, server } });
+    if (!brokerRunning && await isReachable(server, { timeoutMs: 1500 })) {
+      // Name the space this machine registered at the address. A first start can take another
+      // address; a stack that ran keeps its recorded one, so whatever answers there must stop first.
+      const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server === server);
+      const local = holder && (holder.origin === undefined || holder.origin === "up");
+      const stopHolder = holder ? local ? `stop space ${holder.space} with cotal down from ${holder.root}` : `stop the broker of space ${holder.space}` : `stop what answers at ${server}`;
+      const address = new URL(server);
+      throw new CommandFailure("refused", "CONFLICT", `something already answers at the stack's broker address ${server}${holder ? `, where space ${holder.space} is registered` : ""}, without this stack's broker instance; it was not adopted or stopped`, {
+        target: { root, space, server, ...(holder ? { registered: { space: holder.space, root: holder.root } } : {}) },
+        remedy: previous === undefined
+          ? `start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or ${stopHolder} and run cotal up again`
+          : `${stopHolder}, then run bare cotal up from ${root}; this stack keeps its recorded address`,
+      });
+    }
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
     if (!brokerRunning) {
       prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });

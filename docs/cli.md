@@ -611,7 +611,10 @@ when a completed stop removed its mesh registration. Bare `up` reuses that addre
 conflicting `--server` or `--open` refuses before effects. A journal whose stack never launched a
 member pins neither, as when its first `up` was refused because another broker already answers at
 the address. The next `up` plans it as a first start, with that address or another `--server`, and
-`down` reports that nothing runs there. Legacy-only options refuse rather than switching launchers.
+`down` reports that nothing runs there. That refusal names the address and any space this machine
+registered there. Its next step for a first start is another `--server` or stopping that space. For a
+stack that ran, it is stopping that space and running bare `cotal up`, because the stack keeps its
+address. Legacy-only options refuse rather than switching launchers.
 `up -f`, recovery and existing legacy roots retain their native paths; those paths refuse the
 new JSON/plain flags. A legacy root is one with no stack journal that is neither prepared nor
 registered for the controller, such as a folder an earlier release started and a normal `down` then
