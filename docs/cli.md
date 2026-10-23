@@ -347,7 +347,9 @@ pin in the suggested spawn command rather than silently selecting another manage
 command when its returned tokens are safe to put in a shell command. Preparation remains saved
 after a denied or uncertain start. Unknown outcomes are not retried; the setup heading is not
 shown as healthy and the next command inspects the original startup before attachment. JSON stdout has
-one envelope; native startup output is not parsed or echoed as readiness evidence. Fresh prepared
+one envelope. A confirmed local startup refusal keeps its code and diagnostic in
+`result.startup.failure` and the setup report. Interrupted startup or an incomplete child result
+remains unknown. Native startup output is not parsed or echoed as readiness evidence. Fresh prepared
 static-auth, open and plain-loopback user-auth roots use the controller stack described under `up`.
 Manifest startup retains its native launch path.
 
@@ -497,7 +499,9 @@ stops the folder's stack, and `down --space` is not a remote replacement for tha
 running mesh records, else the one prepared there, else `main`. A second `up` in the same folder
 runs the same space again. A folder whose stack and registrations name more than one space refuses
 with `CONFLICT` and asks for `--space`. With no
-`--server`, it auto-selects a free port if the default address is taken, and a later `cotal up` of
+`--server`, a fresh local stack selects a free port if the default address is occupied or
+reserved by another registered space, including one whose broker is stopped. It saves the chosen
+address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
 stays fail-loud on collision. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots

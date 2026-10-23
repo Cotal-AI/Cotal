@@ -162,7 +162,7 @@ interface SetupStartup {
   stack: SetupStackStartResult | null;
   agent: ManagedLaunchResult | null;
   joinedAt: string | null;
-  failure: { code: ErrorCode; outcome: Outcome; target: unknown } | null;
+  failure: { code: ErrorCode; outcome: Outcome; target: unknown; message?: string } | null;
 }
 
 interface SetupResult {
@@ -664,8 +664,9 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       const unknown = known === undefined || known.outcome === "unknown";
       startup.state = unknown ? "unknown" : known.outcome === "refused" ? "refused" : known.outcome === "failed" ? "failed" : "partial";
       const failureTarget = setupFailureCoordinates(known?.target, inputs.space);
-      startup.failure = { code: known?.code ?? "OPERATION_UNKNOWN", outcome: known?.outcome ?? "unknown", target: failureTarget };
-      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
+      const diagnostic = known && startup.stackAttempted && !startup.stack ? known.message : undefined;
+      startup.failure = { code: known?.code ?? "OPERATION_UNKNOWN", outcome: known?.outcome ?? "unknown", target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) };
+      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
       writeResult(opts.presentation, { command: "setup", target, result, warnings, failure }, setupView);
       return;
     }
@@ -867,12 +868,17 @@ function startupSection(s: SetupStartup): Report["sections"][number] {
     : s.state === "partial" || s.state === "preparation-incomplete" ? { text: "Startup incomplete; preparation remains saved", tone: "waiting", mark: "!" }
     : s.state === "declined" ? { text: "Start declined; preparation saved", tone: "hint" }
     : { text: "Configure only; no startup requested", tone: "hint" };
+  const localStartup: Cell = s.failure?.outcome === "refused" ? "Command refused"
+    : s.failure?.outcome === "failed" ? "Command failed"
+    : s.failure?.outcome === "partial" ? "Command returned a partial result"
+    : { text: "Command outcome unconfirmed", tone: "waiting" };
   const rows: [string, Cell][] = [
     ["Startup", label],
     ...(s.requestedManagerInstanceId ? [["Requested manager", s.requestedManagerInstanceId] as [string, Cell]] : []),
-    ...(s.stack ? [["Local startup", "Native up returned; exit status is not a stack-readiness receipt"] as [string, Cell], ["Selected manager", s.stack.managerInstanceId] as [string, Cell]] : s.stackAttempted ? [["Local startup", { text: "Command outcome unconfirmed", tone: "waiting" }] as [string, Cell]] : []),
+    ...(s.stack ? [["Local startup", "Native up returned; exit status is not a stack-readiness receipt"] as [string, Cell], ["Selected manager", s.stack.managerInstanceId] as [string, Cell]] : s.stackAttempted ? [["Local startup", localStartup] as [string, Cell]] : []),
     ...(s.agent ? [["Agent", s.agent.name], ["Identity", s.agent.id], ["Lifecycle", s.agent.lifecycleUid], ["Manager receipt", s.agent.managerInstanceId], ["Joined receipt time", s.joinedAt ?? "not recorded"], ["Application", s.agent.harness], ["Runtime", s.agent.runtime]].map(([key, value]): [string, Cell] => [key!, value!]) : []),
     ...(s.failure ? [["Cause", s.failure.code] as [string, Cell]] : []),
+    ...(s.failure?.message ? [["Detail", s.failure.message] as [string, Cell]] : []),
   ];
   return { title: "Start", blocks: [{ kind: "fields", rows }, ...(s.agent ? [{ kind: "lines" as const, lines: [{ text: "The manager confirmed the recorded presence join, not task completion or current whole-stack health.", tone: "hint" as const }] }] : [])] };
 }

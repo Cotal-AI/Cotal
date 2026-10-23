@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Command, ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, canonicalRoot, identityRecord, loadManagerInstanceIdentity } from "@cotal-ai/workspace";
+import { z } from "zod";
+import { BOUNDARY_CODES, USAGE_CODES, CommandFailure, canonicalRoot, exitCode, identityRecord, isCommandFailure, loadManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { cliVersion } from "../lib/version.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { checkLocalSpace } from "./space-registration.js";
@@ -17,6 +18,14 @@ export interface SetupStackStartResult {
   managerInstanceId: string;
   coordinator: Coordinator;
 }
+
+const startupFailure = z.strictObject({
+  type: z.literal("setup-start-failure"),
+  root: z.string().max(4096), space: z.string().max(512), pid: z.number().int().positive(),
+  outcome: z.enum(["refused", "failed", "partial", "unknown"]),
+  code: z.enum([...USAGE_CODES, ...BOUNDARY_CODES, "OPERATION_FAILED", "OPERATION_PARTIAL", "OPERATION_UNKNOWN"]),
+  message: z.string().min(1).max(8192), remedy: z.string().max(8192).optional(),
+});
 
 function validateChild(args: ParsedArgs): void {
   if (args.positionals.length || Object.keys(args.values).some((key) => !["root", "space", "expected-version"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "setup startup requires only its explicit root, space and caller version");
@@ -37,8 +46,17 @@ export const setupStartEntry: Command = {
   flags: ["root", "space", "expected-version"].map((name) => ({ name, type: "string" as const })),
   validate: validateChild,
   async run(args) {
-    validateChild(args);
-    await up({ values: { space: String(args.values.space), root: String(args.values.root), detach: true }, positionals: [], raw: [] });
+    try {
+      validateChild(args);
+      await up({ values: { space: String(args.values.space), root: String(args.values.root), detach: true }, positionals: [], raw: [] });
+    } catch (error) {
+      // Flush only classified command diagnostics. Raw exceptions and native detail bodies stay private.
+      if (isCommandFailure(error) && process.send && process.connected) {
+        const receipt = startupFailure.safeParse({ type: "setup-start-failure", root: args.values.root, space: args.values.space, pid: process.pid, outcome: error.outcome, code: error.code, message: error.message, ...(error.remedy ? { remedy: error.remedy } : {}) });
+        if (receipt.success) await new Promise<void>((resolve) => process.send!(receipt.data, () => resolve()));
+      }
+      throw error;
+    }
   },
 };
 
@@ -50,15 +68,17 @@ export async function startSetupLocalStack(root: string, space: string): Promise
   const args = [...self, "__setup-start", "--root", root, "--space", space, "--expected-version", cliVersion()];
   const coordinator = await new Promise<Coordinator>((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
-    try { child = spawn(executable, args, { cwd: root, env: { ...process.env, COTAL_NO_PROMPT: "1" }, detached: true, stdio: "ignore", windowsHide: true }); }
+    try { child = spawn(executable, args, { cwd: root, env: { ...process.env, COTAL_NO_PROMPT: "1" }, detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true }); }
     catch { reject(new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the native setup startup child could not be created; no other invocation was tried")); return; }
     let identity: Coordinator | undefined, settled = false;
+    let receipt: z.infer<typeof startupFailure> | undefined, invalidReceipt = false;
     const finish = (error?: CommandFailure) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", interrupt);
+      if (child.connected) child.disconnect();
       child.unref();
       if (error) reject(error); else if (identity) resolve(identity);
       else reject(new CommandFailure("unknown", "OPERATION_UNKNOWN", "the startup child returned without a usable original coordinator identity; no readiness was inferred"));
@@ -79,7 +99,23 @@ export async function startSetupLocalStack(root: string, space: string): Promise
       }
     });
     child.once("error", () => finish(identity ? unknown("the original startup coordinator reported an error after creation; its stack effects are unconfirmed") : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the native startup coordinator was not created; no alternative executable was used")));
-    child.once("exit", (code, signal) => finish(code === 0 && signal === null ? undefined : unknown("the native startup command did not return successfully; partial stack startup was not treated as no effect")));
+    child.on("message", (message) => {
+      const parsed = startupFailure.safeParse(message);
+      if (!parsed.success || receipt || parsed.data.root !== root || parsed.data.space !== space || parsed.data.pid !== child.pid) invalidReceipt = true;
+      else receipt = parsed.data;
+    });
+    // Close follows the IPC channel closing, so a flushed failure is read before classification.
+    child.once("close", (code, signal) => {
+      if (!invalidReceipt && receipt && signal === null) {
+        try {
+          if (exitCode(receipt.outcome, receipt.code) === code) {
+            finish(new CommandFailure(receipt.outcome, receipt.code, receipt.message, { target: { root, space, coordinator: identity ?? null }, ...(receipt.remedy ? { remedy: receipt.remedy } : {}) }));
+            return;
+          }
+        } catch { /* An inconsistent classification is not a confirmed native result. */ }
+      }
+      finish(code === 0 && signal === null && !receipt && !invalidReceipt ? undefined : unknown("the native startup command did not return a matching classified result; partial stack startup was not treated as no effect"));
+    });
   });
   const manager = loadManagerInstanceIdentity(root, space);
   if (!manager) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native up returned, but this root has no manager instance for a safe launch pin; no class or sibling fallback was used", { target: { root, space, coordinator }, remedy: "inspect the selected space and original startup before another attempt" });
