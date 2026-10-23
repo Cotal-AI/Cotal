@@ -51,7 +51,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import {
-  CotalEndpoint, SERVICE_AUTHORITY_MAX_BYTES, unansweredRequest, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
+  CotalEndpoint, EpEnvelopeError, SERVICE_AUTHORITY_MAX_BYTES, unansweredRequest, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
   writeSecretFileAtomic, type SecretStore,
 } from "@cotal-ai/core";
 import {
@@ -301,6 +301,7 @@ try {
     return { bound, decided, pid };
   };
 
+  let probeCalls = 0;
   const probeMachine = async () => {
     const tokenResponse = await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } });
     if (!tokenResponse.ok) throw new Error("fixture IdP refused the probe");
@@ -316,6 +317,7 @@ try {
     caller.on("warning", () => {}); caller.on("error", () => {});
     try {
       await caller.start();
+      probeCalls++;
       return await caller.invokeService("ai.cotal.machine", "machine-status", undefined, { instanceId: identityOf(ON)!.instanceId, deadlineMs: 3000 });
     } finally { await caller.stop(); }
   };
@@ -353,6 +355,12 @@ try {
           accountPublicKey: id.accountPublicKey, endpoint: id.endpoint, instanceId: id.instanceId, target: { kind: "instance" } } });
       if (status.result.state !== "status" || status.result.status.state !== "ready") throw new Error("fixture service is not ready");
       const witness = status.result.status.witness;
+      const live = await statusS(ON);
+      check("C15 instrument: daemon is connected at the same instance before the denied call", stateOf(live) === "connected" && resultOf(live).instanceId === id.instanceId);
+      const beforeCalls = probeCalls;
+      let denied = false;
+      try { await probeMachine(); } catch (e) { denied = e instanceof EpEnvelopeError && e.code === "permission-denied"; }
+      check("C15 exactly one ungranted invoke is permission-denied while connected", denied && probeCalls === beforeCalls + 1);
       const granted = await host({ v: 1, kind: "service-endpoint-host", operation: "caller-grant", requestId: rid(), granter: { kind: "owner", owner: fixture.owner },
         input: { grantee: { owner: fixture.owner, actor: "probe", lifecycleUid: fixture.callerUid },
           service: { endpoint: id.endpoint, instanceId: id.instanceId, approvalDigest: witness.approvalDigest },
@@ -360,7 +368,7 @@ try {
       check("C15 instrument: owner explicitly granted the exact instance and command", granted.state === "granted");
       if (granted.state !== "granted") throw new Error("fixture caller grant refused");
       const reply = await probeMachine();
-      check("C15 machine-status answers void from the registered daemon instance", reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === id.instanceId);
+      check("C15 exactly one granted invoke answers void from the registered daemon instance", probeCalls === beforeCalls + 2 && reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === id.instanceId);
     });
 
     await cell("C3 a second connect shares the connection", async () => {

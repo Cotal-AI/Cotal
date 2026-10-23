@@ -3174,8 +3174,9 @@ ended connection is remembered only until the daemon stops.
 drains the responder and closes the connection, and stopping the daemon closes all of them.
 
 The service answers its existing `machine-status` command with `null`. This is a liveness response;
-it contains no vitals, hostname or machine metadata. Its stock Describe schema is explicitly public,
-but callers still need broker-enforced access to the selected instance and command. Connecting the
+it contains no vitals, hostname or machine metadata. Its stock Describe answer is explicitly public:
+it identifies the endpoint and derived owner token and includes the protocol and command schemas.
+Callers still need broker-enforced invoke access to the selected instance and command. Connecting the
 daemon grants no caller access. Owner approval, operator name binding and caller grants remain
 separate actions. An authority that does not publish its issuer identity cannot support this
 serving connection; the daemon refuses rather than trusting a decoded token or using Manager

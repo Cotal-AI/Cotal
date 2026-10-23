@@ -19,8 +19,8 @@
  *
  * The stock guest seam verifies each pulled credential against the registered authority's issuer
  * and keys and this daemon's embedded closure. Each opened transport binds the existing void
- * `machine-status` responder before ready. Its descriptor is explicitly public schema; broker
- * caller grants still control access. It reports no vitals or machine metadata. No token, proof
+ * `machine-status` responder before ready. Its public descriptor includes the endpoint, derived
+ * owner token and command schemas; broker caller grants still control invoke access. It reports no vitals or machine metadata. No token, proof
  * or provider text leaves this module; every message is fixed text.
  */
 import { join } from "node:path";
