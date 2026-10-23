@@ -342,7 +342,9 @@ async function validateManifest(
   if (flags["restore-only"] === "registry" && manifest.selection !== "registry" &&
       !manifest.streams.some((entry) => entry.stream === spaceBackupInventory(manifest.space).registry[0]))
     throw new Error("artifact does not contain the registry component");
-  if (manifest.space !== ready.space) throw new Error(`backup belongs to space ${JSON.stringify(manifest.space)}, not ${JSON.stringify(ready.space)}`);
+  // Checked before any transition, so the preserved cut is unchanged: a refusal, not an unknown outcome.
+  if (manifest.space !== ready.space)
+    throw new CommandFailure("refused", "CONFLICT", `backup belongs to space ${JSON.stringify(manifest.space)}, not ${JSON.stringify(ready.space)}; the preserved cut was not changed`, { target: { space: ready.space, backupSpace: manifest.space }, remedy: `restore it on the root that preserved ${JSON.stringify(manifest.space)}, or use a backup of ${JSON.stringify(ready.space)}` });
   if (manifest.mode !== ready.mode) throw new Error(`backup auth mode ${manifest.mode} does not match preserved source mode ${ready.mode}`);
   if (flags.space && flags.space !== manifest.space) throw new Error(`--space ${JSON.stringify(flags.space)} does not match backup space ${JSON.stringify(manifest.space)}`);
   if (flags.open && manifest.mode !== "open") throw new Error("--open conflicts with the backup auth mode");

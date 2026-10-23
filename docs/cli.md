@@ -1396,10 +1396,11 @@ returns one `backup restore` receipt: the restore attempt, space, root, selectio
 process and whether the manager, delivery and auth service started. The restore follows the
 artifact's own selection, and `--only registry` narrows a full artifact to the registry. Any other
 `--only` value is refused, because the restore could not honor it. The space, broker and runtime
-come from the preserved cut, so no selector can rebind them. A receipt means the active journal was
-written. Its `seatResume` field says whether retained seats were handed to the manager's resume
-(`requested`) or dropped by a registry restore (`not-requested`). It does not confirm that any seat
-joined. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
+come from the preserved cut, so no selector can rebind them. An artifact of another space refuses
+`CONFLICT` (exit 2) and names both spaces; the preserved cut is not changed. A receipt means the
+active journal was written. Its `seatResume` field says whether retained seats were handed to the
+manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
+confirm that any seat joined. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
 state from the attempt, and `up --restore` refuses the same way. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
