@@ -22,11 +22,11 @@ import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
-import { watch, watchFlags, validateWatchArguments } from "./commands/watch.js";
+import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
 import { persona, personaComplete, personaFlags } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
-import { config, configFlags } from "./commands/config.js";
+import { config, configComplete, configFlags } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
 import { mint } from "./commands/mint.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
@@ -133,6 +133,7 @@ const baseCommands: Command[] = [
     examples: ["cotal config", "cotal config get harness", "cotal config set harness opencode", "cotal config set persona reviewer --space demo", "cotal config unset color"],
     reads: true,
     run: config,
+    complete: configComplete,
   },
   {
     kind: "command",
@@ -830,6 +831,7 @@ const baseCommands: Command[] = [
     reads: true,
     examples: ["cotal watch", "cotal watch --view events", "cotal watch --plain"],
     run: watch,
+    complete: watchComplete,
   },
   {
     kind: "command",

@@ -5,7 +5,7 @@
  * Registered here, in the composition root, because the CLI package must not depend on an extension.
  * The bundle is imported inside `run` through its narrow subpath, so no other command loads it.
  */
-import { registry, type Command, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Command, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type Cell, type Report } from "@cotal-ai/workspace";
 
 const searchFlag = { name: "search", type: "string", value: "<query>", description: "show the sections that best match a query" } as const;
@@ -37,6 +37,16 @@ interface DocsSearchResult {
   readonly hits: readonly { readonly slug: string; readonly page: string; readonly heading: string; readonly text: string }[];
 }
 
+/** Every page name `docs <page>` reads. */
+const pageSlugs = (d: Docs): string[] => ["spec", "lang", "schema", ...d.docsIndex().pages.map((p) => p.slug)];
+
+/** The page names for the one positional; `--search` takes free text. */
+async function docsComplete(argv: string[]): Promise<CompletionResult> {
+  const words = argv.filter((word, index) => !word.startsWith("-") && argv[index - 1] !== "--search");
+  if (argv[argv.length - 2] === "--search" || words.length !== 1) return { items: [], directive: "nofiles" };
+  return { items: pageSlugs(await import("@cotal-ai/connector-core/docs")).map((value) => ({ value })), directive: "nofiles" };
+}
+
 async function docs(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof docsFlags>;
   const presentation = presentationOf(v);
@@ -51,8 +61,7 @@ async function docs(args: ParsedArgs): Promise<void> {
   if (page !== undefined) {
     const read = await d.readDocsPage(page, { refresh: v.refresh });
     if (!read) {
-      const slugs = ["spec", "lang", "schema", ...d.docsIndex().pages.map((p) => p.slug)];
-      throw usage(`no docs page "${page}"; pages: ${slugs.join(", ")}`);
+      throw usage(`no docs page "${page}"; pages: ${pageSlugs(d).join(", ")}`);
     }
     const result: DocsPageResult = { kind: "docs-page", version: read.version, slug: read.page.slug, title: read.page.title, source: read.source, refresh: read.refresh, body: read.page.body };
     writeResult(presentation, { command: "docs", target: null, result }, pageView);
@@ -118,6 +127,7 @@ const docsCommand: Command = {
   examples: ["cotal docs", "cotal docs architecture", "cotal docs --search allowSubscribe", "cotal docs spec --refresh"],
   reads: true,
   run: docs,
+  complete: docsComplete,
 };
 
 registry.register(docsCommand);

@@ -1,7 +1,8 @@
 import { writeSync } from "node:fs";
-import { CotalEndpoint, chatWildcard, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, chatWildcard, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
 import { connectOrExit, connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { completingFlagValue } from "../lib/completion.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
 
@@ -11,6 +12,14 @@ export const watchFlags = [
   jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
+
+/** The `--view` values as help names them, `feed` for the activity view. */
+export function watchComplete(argv: string[]): CompletionResult {
+  const flag = completingFlagValue(argv, watchFlags);
+  if (flag?.name === "view") return { items: watchViews.map((view) => ({ value: view === "activity" ? "feed" : view })), directive: "nofiles" };
+  if (flag) return { items: [], directive: "nofiles" };
+  return { items: watchFlags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), directive: "nofiles" };
+}
 
 export function validateWatchArguments(args: ParsedArgs): void {
   presentationOf(args.values);

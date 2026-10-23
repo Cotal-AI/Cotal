@@ -21,6 +21,7 @@ import {
   type Report,
   type Section,
 } from "@cotal-ai/workspace";
+import { completingFlagValue } from "../lib/completion.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
@@ -298,6 +299,7 @@ function spaceView(s: SpaceDetail): Report {
 
 /** Argument completion: the subcommand, then registered names. */
 export function spaceComplete(argv: string[]): CompletionResult {
+  if (completingFlagValue(argv, spaceFlags)?.name === "mode") return { items: ["auth", "open", "user"].map((value) => ({ value })), directive: "nofiles" };
   if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }, { value: "delete" }], directive: "nofiles" };
   if ((argv[0] === "show" || argv[0] === "forget") && argv.length === 2)
     return { items: [...loadMeshes().map((m) => ({ value: m.space })), ...loadPreparedSpaces().map((p) => ({ value: p.space }))], directive: "nofiles" };

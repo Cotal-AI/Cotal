@@ -50,7 +50,8 @@ interface KeySpec {
   fromEnv?(name: string, raw: string): string | undefined;
 }
 
-const COLOR_VALUES = ["auto", "always", "never"] as const;
+/** The values `color` takes. */
+export const COLOR_VALUES = ["auto", "always", "never"] as const;
 
 /** A detach key spelled `ctrl-<char>` or `^<char>`: a letter, or one of `@ [ \ ] ^ _`. */
 export function parseDetachKey(spec: string): { byte: number; label: string } | undefined {

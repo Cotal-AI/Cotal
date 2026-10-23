@@ -204,6 +204,13 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("completion offers the registered names after space show", ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(names.stdout)), shown(names));
   const useNames = run(["__complete", "use", ""]);
   check("completion offers the registered names after use", ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(useNames.stdout)), shown(useNames));
+  // A --space value is a space on every command, so each completes the names use does.
+  for (const words of [["status"], ["watch"], ["down"], ["team", "boot"], ["config", "set"]]) {
+    const spaces = run(["__complete", ...words, "--space", ""]);
+    check(`completion offers the registered names for ${words.join(" ")} --space`, ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(spaces.stdout)) && !/^--/m.test(spaces.stdout) && spaces.stdout.trimEnd().endsWith(":nofiles"), shown(spaces));
+  }
+  const modes = run(["__complete", "space", "add", "x", "--mode", ""]);
+  check("completion offers auth, open and user after space add --mode", ["auth", "open", "user"].every((n) => new RegExp(`^${n}$`, "m").test(modes.stdout)), shown(modes));
 }
 
 // ── A record that does not parse ─────────────────────────────────────────────────────────────────────

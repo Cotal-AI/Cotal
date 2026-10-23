@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
-import type { FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
+import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
+  COLOR_VALUES,
   CommandFailure,
   PREFERENCE_KEYS,
   describeLayer,
@@ -27,6 +28,7 @@ import {
   type Report,
   type ResolvedPreference,
 } from "@cotal-ai/workspace";
+import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { personaNameProblem } from "../lib/persona-files.js";
 
 export const configFlags = [
@@ -156,10 +158,28 @@ export function checkHarness(value: string): void {
   if (problem) throw usage(problem);
 }
 
+/** The harnesses this workstation knows: the official connectors and any installed one. */
+function workstationHarnesses(): string[] {
+  return knownHarnesses(loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name)));
+}
+
 function harnessProblem(value: string): string | undefined {
-  const installed = loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name));
-  const known = knownHarnesses(installed);
+  const known = workstationHarnesses();
   return known.includes(value) ? undefined : `no harness ${JSON.stringify(value)}; known harnesses: ${known.join(", ")}`;
+}
+
+/** `get`, `set` and `unset`, then a key, then for `set` the values a key takes when the CLI knows them. */
+export function configComplete(argv: string[]): CompletionResult {
+  if (completingFlagValue(argv, configFlags)) return { items: [], directive: "nofiles" };
+  const words = positionalsForCompletion(argv, configFlags);
+  if (words.length <= 1) return { items: ["get", "set", "unset"].map((value) => ({ value })), directive: "nofiles" };
+  if (!["get", "set", "unset"].includes(words[0]!)) return { items: [], directive: "nofiles" };
+  if (words.length === 2) return { items: PREFERENCE_KEYS.map((key) => ({ value: key, description: preferenceInfo(key).about })), directive: "nofiles" };
+  if (words.length === 3 && words[0] === "set") {
+    const values = words[1] === "color" ? [...COLOR_VALUES] : words[1] === "harness" ? workstationHarnesses() : [];
+    return { items: values.map((value) => ({ value })), directive: "nofiles" };
+  }
+  return { items: [], directive: "nofiles" };
 }
 
 /** A persona default is a catalog name or a persona file path, the two forms a launch resolves (a path

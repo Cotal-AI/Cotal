@@ -4967,8 +4967,10 @@ cotal completion script powershell | Out-String | Invoke-Expression
 ```
 
 `completion script` writes raw shell code and takes no `--json` or `--plain`. Generation is
-offline. The stable hidden `__complete` entry reads registered command specifications and local
-persona files. It does not contact the mesh or refresh extensions.
+offline. The stable hidden `__complete` entry reads registered command specifications, local
+persona files, the registered and prepared spaces, the preference keys and this version's docs page
+names. A `--space` value completes from those spaces on every command. It does not contact the mesh
+or refresh extensions.
 
 In bash and zsh, a file argument such as `team check <file>`, `up -f <file>` or `--channels <path>`
 completes from the shell's own file names. A value with a fixed set of choices does not offer files.

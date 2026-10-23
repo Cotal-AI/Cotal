@@ -9,7 +9,7 @@ import {
   type ParsedArgs,
   type Subcommand,
 } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
 import { commandSurface } from "../ext-loader.js";
@@ -102,7 +102,10 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     emit(flags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), "nofiles");
     return;
   }
-  if (!cmd?.complete) {
+  // A `--space` value names a space on every command, so it completes from the local registered and
+  // prepared spaces, as positional `use` does.
+  const spaceValue = context?.valueFlag?.name === "space" && !word.startsWith("-");
+  if (!spaceValue && !cmd?.complete) {
     const cursor = context?.positionals.find((item) => item.index === argv.length - 1);
     const children = parent?.subcommands?.filter((item) => !item.hidden);
     if (cursor && children?.length) emit(children.map((item) => ({ value: item.name, description: item.summary })), "nofiles");
@@ -111,7 +114,9 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     return;
   }
   try {
-    const res = await cmd.complete(argv);
+    const res: CompletionResult = spaceValue
+      ? { items: [...new Set([...loadMeshes(), ...loadPreparedSpaces()].map((item) => item.space))].map((value) => ({ value })) }
+      : await cmd!.complete!(argv);
     emit(res.items, res.directive ?? "nofiles");
   } catch (e) {
     // No fallback: a completer that can't produce its authoritative set (e.g. a malformed agent
