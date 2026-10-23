@@ -51,7 +51,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 61;
+const EXPECTED = 62;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -391,6 +391,12 @@ try {
   const badRole = await run(["send", "-r", "bad role!", "x", "--json"]);
   check("`cotal send -r` with a role that is not one NATS-safe token is USAGE_INVALID, exit 1, with the role rule",
     badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);
+  // A name no participant can carry used to wait out the presence lookup; a legal display name still gets it.
+  const [backslash, long, legal] = await Promise.all([["a\\b"], ["n".repeat(129)], ["Bad Name!"]].map(([to]) => run(["send", "-t", to!, "x", "--json"])));
+  check("`cotal send -t` with a name the endpoint refuses is USAGE_INVALID with the name rule; a legal display name is looked up",
+    backslash.code === 1 && backslash.stdout.includes('"code":"USAGE_INVALID"') && backslash.stdout.includes('is reserved (a Windows path separator)')
+      && long.code === 1 && long.stdout.includes("exceeds the 128-character limit")
+      && legal.code === 2 && legal.stdout.includes('"code":"TARGET_NOT_FOUND"'), { backslash, long, legal });
   const wildcard = await run(["send", "-c", "team.*", "x", "--json"]);
   check("`cotal send -c` with a wildcard says to name one concrete channel", wildcard.code === 1 && wildcard.stdout.includes("name one concrete channel, without wildcards"), wildcard);
   const starred = await run(["send", "-c", "gen*", "x", "--json"]);

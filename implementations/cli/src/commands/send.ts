@@ -2,8 +2,10 @@ import { hostname, userInfo } from "node:os";
 import { readFileSync } from "node:fs";
 import {
   resolvePeer,
+  assertValidName,
   assertValidRole,
   isPublishPermissionDenied,
+  parsePrincipalKey,
   resolveAuthProvider,
   effectiveDeliveryClass,
   effectiveReplay,
@@ -98,9 +100,12 @@ export function sendArguments(args: ParsedArgs): SendInput {
       const problem = concreteChannelProblem(destination.target);
       if (problem) throw new Error(problem);
     } else if (destination.mode === "ask") assertValidRole(destination.target);
-    else if (/[\/\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("not an agent address");
+    else if (/[\/\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("use an agent name or full instance id, not a roster label");
+    // No participant can carry a name the endpoint refuses, so it is refused before the presence wait.
+    // The lookup trims the name, and an instance id is not held to the name rule.
+    else if (!parsePrincipalKey(destination.target)) assertValidName(destination.target.trim());
   } catch (error) {
-    throw new CommandFailure("refused", "USAGE_INVALID", destination.mode === "dm" ? "use an agent name or full instance id, not a roster label" : (error as Error).message);
+    throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
   }
   if (values["reply-to"] !== undefined && (destination.mode !== "dm" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");
