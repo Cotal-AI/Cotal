@@ -81,7 +81,7 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
   const send = async (request: RecordedHostRequest): Promise<ServiceEndpointCall> => {
     let answer: ServiceHostResult;
     try { answer = await post(request); }
-    catch (e) { throw new Error(`${e instanceof Error ? e.message : String(e)}; the request is recorded as ${request.requestId}: send it again with --request-id ${request.requestId}`); }
+    catch (e) { throw new Error(`${e instanceof Error ? e.message : String(e)}; the request is recorded as ${request.requestId}: send it again with \`cotal service-endpoint ${sub} ${subject} --request-id ${request.requestId}\``); }
     return { request: sub, subject, requestId: request.requestId, answer };
   };
   const replayId = values["request-id"];
