@@ -2224,10 +2224,12 @@ presentation and is not a stable parsing target. `meshes add` and `meshes rm` re
 
 A registry record this build cannot use is refused by name, never rendered and never skipped. One
 that does not parse, or is missing a field every consumer reads (`server`, `mode`, `root`, `ts`,
-`space`), makes every registry command exit 1 with the file's path and what is wrong with it.
-Remove the file or restore the record; nothing repairs or invents a field for you. A registry
-directory that exists but cannot be read, such as one without read permission or a regular file in
-its place, also makes every command that reads the registry exit 1 with its path and the read
+`space`), makes every command that reads the registry refuse with `SCHEMA_INVALID`, exit 1, before
+it acts. The refusal names the file under `target` without repeating its stored values; `meshes`
+also says what is wrong with it. `status` is the exception: it lists the readable records, names the
+file and exits 4. Remove the file or restore the record; nothing repairs or invents a field for you.
+A registry directory that exists but cannot be read, such as one without read permission or a
+regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
 error. Only an absent directory is an empty registry. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
 parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps

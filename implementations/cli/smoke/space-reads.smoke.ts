@@ -4,7 +4,8 @@
  * binary reads the records a real `up`, `meshes add` or catalog sync leaves. A real broker answers
  * for one space; another points at a port nothing listens on; a discovered one points at a listener
  * that counts connections, so the suite can show a read never dials it.
- * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID.
+ * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID, and so does
+ * every other command that reads the registry, changing nothing.
  *
  * Needs `nats-server` on PATH.
  *
@@ -210,11 +211,14 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
 {
   const file = join(meshesDir(), "space.6f6d656761.json");
   writeFileSync(file, '{"space":"omega"');
-  for (const args of [["space"], ["space", "show", "alpha"]]) {
+  const selected = getCurrent();
+  const elsewhere = mkdtempSync(join(home, "create-root-"));
+  for (const args of [["space"], ["space", "show", "alpha"], ["use"], ["use", "alpha"], ["space", "forget", "alpha"], ["space", "create", "zeta", "--root", elsewhere], ["send", "-c", "general", "hi"], ["persona"]]) {
     const r = json(args);
     check(`cotal ${args.join(" ")} refuses a record that does not parse with SCHEMA_INVALID, exit 1, naming the file`, r.status === 1 && r.env?.outcome === "refused" && r.env.error?.code === "SCHEMA_INVALID" && String(r.env.error.message).includes(file), shown(r));
   }
   rmSync(file);
+  check("those refusals changed nothing: alpha is registered, the selection is kept and zeta was not prepared", findMesh("alpha") !== undefined && getCurrent() === selected && !existsSync(join(elsewhere, ".cotal")), { selected, now: getCurrent() });
 }
 
 // The broker and the listener would keep the process alive past the last cell.
