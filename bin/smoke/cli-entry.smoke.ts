@@ -17,7 +17,7 @@
  * Run: pnpm smoke:cli-entry
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -235,6 +235,25 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
   const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
+  for (const sub of ["list", "show", "edit", "new", "rm"]) {
+    const help = cotal(["help", "personas", sub]);
+    check(`help personas ${sub} prints that subcommand's help`, help.status === 0 && help.stdout.includes(`cotal personas ${sub}`), shown(help));
+  }
+  // A catalog folder its owner made read-only stays read-only. Root writes through the mode, so the
+  // cell runs only for an ordinary POSIX user.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    let agents = "";
+    const locked = (home: string) => {
+      seeded(home);
+      agents = join(home, "..", ".cotal", "agents");
+      chmodSync(agents, 0o500);
+    };
+    const refusedCreate = cotal(["persona", "create", "locked", "--prompt", "x", "--subscribe", ""], locked, noSeed);
+    const after = { mode: (statSync(agents).mode & 0o777).toString(8), files: readdirSync(agents).sort() };
+    chmodSync(agents, 0o700);
+    check("persona create refuses a read-only catalog with PERMISSION_DENIED and leaves it as it was",
+      refusedCreate.status === 2 && /PERMISSION_DENIED/.test(refusedCreate.stderr) && after.mode === "500" && after.files.join() === "default.md", { ...shown(refusedCreate), after });
+  }
 }
 
 // ── Unknown words, prefixes, uninstalled seeded commands ──────────────────────────────────────────

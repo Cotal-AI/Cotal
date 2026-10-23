@@ -705,6 +705,13 @@ const baseCommands: Command[] = [
     usage:
       'personas <list [-v] [--running] | show <name> | edit <name> | new <name> (--prompt <t>|--from <f>) --subscribe <a,b|""> [--role <r>] [--model <m>] | rm <name> --force>',
     positionals: "<list | show <name> | edit <name> | new <name> | rm <name>>",
+    subcommands: [
+      { name: "list", flagNames: ["space", "server", "creds", "verbose", "running"], summary: "list the local personas", usage: "cotal personas list [-v] [--running]" },
+      { name: "show", flagNames: ["space", "server"], summary: "print one persona file", usage: "cotal personas show <name>" },
+      { name: "edit", flagNames: ["space", "server"], summary: "edit one persona in a private draft", usage: "cotal personas edit <name>" },
+      { name: "new", flagNames: ["space", "server", "prompt", "from", "subscribe", "role", "model", "force"], summary: "create a persona from a prompt or a body file", usage: 'cotal personas new <name> (--prompt <t>|--from <f>) --subscribe <a,b|""> [--role <r>] [--model <m>] [--force]' },
+      { name: "rm", flagNames: ["space", "server", "force"], summary: "delete one persona", usage: "cotal personas rm <name> --force" },
+    ],
     flags: [
       ...targetFlags,
       { name: "role", type: "string", value: "<r>", description: "new: the persona's role" },
@@ -714,7 +721,7 @@ const baseCommands: Command[] = [
       { name: "subscribe", type: "string", value: '<a,b|"">', description: 'new: channels the persona reads ("" = none) - required' },
       { name: "verbose", type: "boolean", short: "v", description: "list: include role/model/description" },
       { name: "running", type: "boolean", description: "list: mark personas live on the mesh" },
-      { name: "force", type: "boolean", description: "rm: required - delete without prompting" },
+      { name: "force", type: "boolean", description: "rm: required - delete without prompting; new: overwrite an existing persona" },
     ],
     run: personas,
     complete: personasComplete,

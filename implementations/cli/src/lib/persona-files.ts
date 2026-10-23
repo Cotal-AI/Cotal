@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
@@ -82,9 +82,18 @@ function sameSource(a: PersonaSource | undefined, b: PersonaSource | undefined):
   return a === undefined ? b === undefined : b !== undefined && a.ino === b.ino && a.dev === b.dev && a.mtimeMs === b.mtimeMs && a.bytes.equals(b.bytes);
 }
 
+/** A catalog folder its owner made read-only is refused as it is: hardening it would undo the lock. */
+function assertCatalogWritable(dir: string): void {
+  if (!existsSync(dir)) return;
+  try { accessSync(dir, constants.W_OK); }
+  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${dir}\` to change its personas` }); }
+}
+
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock. */
 export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined): void {
-  mkSecretDir(dirname(path));
+  const dir = dirname(path);
+  assertCatalogWritable(dir);
+  mkSecretDir(dir);
   const lockPath = join(realpathSync(dirname(path)), `.${basename(path)}.lock`);
   const lock = acquireLock(lockPath, { label: "local persona write", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another local persona write holds the catalog lock") });
   try {
@@ -126,6 +135,7 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
     throw new CommandFailure("refused", "USAGE_INVALID", "persona edit opens an editor, --no-input forbids one, as does --json", { remedy: "edit interactively without --json or --no-input" });
   const source = requirePersonaSource(path);
   validatePersona(source.bytes, path);
+  assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   const edited = withDraft(name, draft => {

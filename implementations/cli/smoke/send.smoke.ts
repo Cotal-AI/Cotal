@@ -48,7 +48,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 44;
+const EXPECTED = 46;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -303,6 +303,15 @@ try {
     got.some((m) => m.route === "DM" && m.text === explicitText && m.fromId === explicitPrincipal && m.fromName === expectedSender),
     got,
   );
+  // Without --server the credential goes to the broker its space is registered at, never the default address.
+  const registeredText = `registered-${randomUUID().slice(0, 6)}`;
+  const registered = await run(["send", "-t", "bob", registeredText, "--space", space, "--creds", explicitCreds]);
+  await wait(400);
+  check("explicit creds without --server reach the broker the space is registered at",
+    registered.code === 0 && got.some((m) => m.route === "DM" && m.text === registeredText && m.fromId === explicitPrincipal), registered.stderr);
+  const unregistered = await run(["send", "-t", "bob", "x", "--space", "not-registered", "--creds", explicitCreds]);
+  check("explicit creds for a space not registered here are refused before any dial, TARGET_NOT_FOUND, exit 2",
+    unregistered.code === 2 && unregistered.stderr.includes("TARGET_NOT_FOUND") && unregistered.stderr.includes('space "not-registered" is not registered here, so nothing was dialed'), unregistered.stderr);
 
   const missing = await run(["send", "-t", "nobody-here", "x"]);
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);

@@ -1771,6 +1771,11 @@ exits 0. A script, a `--json` caller and `--no-input` are not asked: the command
 `TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
 in `error.remedy`, apart from `error.message`.
 
+`--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
+the `--space` is registered at, `main` when no space is named, and keeps that registration's TLS
+requirement. A space not registered here is refused with `TARGET_NOT_FOUND`, exit 2, before
+anything is dialed. The default address is never assumed for a credential.
+
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
 anything is written. The old `spawn -f` manifest spelling no longer deploys;
@@ -2962,7 +2967,9 @@ Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `
 `--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
 must name the requested persona and keep their original bytes. They cannot be combined with
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
-including `--subscribe ""` for no channels, and accepts `--role` and `--model`.
+including `--subscribe ""` for no channels, and accepts `--role` and `--model`. `--harness` must
+name a harness this machine knows, as `config set harness` requires, or creation refuses with
+`USAGE_INVALID` and writes nothing.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
 persona is one: its file is `default.md` and its agents launch as `default_agent`.
@@ -2972,6 +2979,8 @@ preferences). A successful editor exit and valid definition are required before 
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
 CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
+Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
+with `PERMISSION_DENIED`, and leave it and its files as they were.
 `--json` and `--no-input` refuse editing before an editor opens.
 
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
