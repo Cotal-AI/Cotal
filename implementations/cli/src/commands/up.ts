@@ -97,6 +97,7 @@ import {
   preloadSpaceAccounts,
   putSpaceAuth,
   canonicalRoot,
+  rootPathProblem,
   clearCurrent,
   findMesh,
   findPreparedSpace,
@@ -389,7 +390,13 @@ export function validateUpArguments(args: ParsedArgs): void {
       throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then use cotal up --root .; to start the home stack, run up from home itself" });
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
-  if (!(args.values.file && args.values["dry-run"] === true)) assertUpRootWritable(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot());
+  if (!(args.values.file && args.values["dry-run"] === true)) {
+    const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot();
+    // A path with a control character or a bidirectional formatting mark is refused before any write.
+    const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
+    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
+    assertUpRootWritable(root);
+  }
 }
 
 /** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder

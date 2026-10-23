@@ -7,6 +7,7 @@ import {
   jwtIssuedAt,
   mkSecretDir,
   newIdentity,
+  oneLine,
   validateSpaceAuthForRead,
   writeSecretFile,
   writeSecretFileAtomic,
@@ -328,6 +329,18 @@ export function cotalDirProblem(root: string): string | undefined {
     return undefined;
   }
   return stat.isDirectory() ? undefined : `${path} is a ${stat.isFile() ? "file" : "special file"}, not a directory, so it cannot hold this folder's Cotal records`;
+}
+
+/** Why a project folder's path cannot hold a stack: it contains a control character, such as a tab or a
+ *  newline, which a stack journal does not record, or a bidirectional formatting mark, which can make
+ *  one path display as another. The path is named as {@link oneLine} shows it. Undefined when it can. */
+export function rootPathProblem(root: string): string | undefined {
+  const found = /[\p{Cc}\p{Bidi_Control}]/u.exec(root)?.[0];
+  if (found === undefined) return undefined;
+  const code = found.codePointAt(0)!, hex = code.toString(16).toUpperCase().padStart(4, "0");
+  const names: Record<number, string> = { 9: "a tab", 10: "a newline", 13: "a carriage return", 27: "an escape character", 127: "a delete character" };
+  const name = names[code] ?? (/\p{Cc}/u.test(found) ? `the control character U+${hex}` : `the bidirectional formatting mark U+${hex}`);
+  return `the folder path ${oneLine(root)} contains ${name}, and a project path may hold neither control characters nor bidirectional formatting marks`;
 }
 
 /** Where `<root>/.cotal` leads when it is a symlink, such as a link to another project's `.cotal`.

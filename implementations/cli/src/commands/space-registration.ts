@@ -9,6 +9,7 @@ import {
   checkDiscoveryDocument,
   cotalDirLink,
   stackJournalPath,
+  rootPathProblem,
   clearCurrent,
   discoveryDocumentUrl,
   findMesh,
@@ -401,6 +402,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
     throw refuse("USAGE_INVALID", "a space name is 1 to 200 letters, digits, underscores or hyphens, which `cotal up` needs to start it", target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
+  // Such a space could be prepared but never started: its first `up` would refuse to record the root.
+  const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
+  if (pathProblem) throw refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, `rename the folder without those characters, or create the space in another folder with ${flag} <dir>`);
   const here = (other: string): boolean => canonicalRoot(other) === canonicalRoot(root);
   const registered = findMesh(name);
   if (registered) {

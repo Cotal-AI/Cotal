@@ -10,9 +10,10 @@
  * moved folder is told to move back, and to move aside first any folders found at the old path.
  * `space create` in a copy refuses; where the folder its journal names holds no journal, as for a
  * copy from another machine, the refusal and status name `space create --adopt`, which rewrites the
- * journal to name the copy and its store, and prepares the space there.
- A legacy root after its `down` names the address its last
- * start configured, which a bare `cotal up` there starts again.
+ * journal to name the copy and its store, and prepares the space there. A folder renamed from a path
+ * with a control character, where `cotal up` refuses to start, is told only to adopt the journal. A
+ * legacy root after its `down` names the address its last start configured, which a bare `cotal up`
+ * there starts again.
  *
  * The journal is written by hand in the shape `cotal up` leaves when its broker never started; the
  * resolver reads only its server and space fields. Driven through the built binary in a sandboxed COTAL_HOME.
@@ -163,6 +164,19 @@ rmSync(linked, { recursive: true, force: true });
   check("the space is then prepared there, to start with cotal up", (preparedThere.envelope?.result?.selected?.message ?? "").includes(`"la07" is prepared but not started`), shown(preparedThere));
   check("rig: forget the adopted space", run(["space", "forget", "la07", "--json"], brought).status === 0);
   rmSync(brought, { recursive: true, force: true });
+}
+// A journal recorded in a folder whose path held a tab, before up refused such a path, and then renamed.
+{
+  const renamed = `${root}-renamed`, path = join(renamed, ".cotal", "stack-controller.json");
+  spawnSync("cp", ["-a", root, renamed]);
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), root: `${root}\tx` }, null, 2) + "\n", { mode: 0o600 });
+  const up = run(["up", "--json"], renamed);
+  check("up there refuses CONFLICT and names only the adopt command, since up refuses the recorded path",
+    up.status === 2 && up.envelope?.error?.code === "CONFLICT" && (up.envelope.error.message ?? "").includes("so this folder was moved from there") && up.envelope.error.remedy === `to run it from this folder, adopt it with cotal space create la07 --adopt --root ${renamed}; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`, shown(up));
+  const adopted = run(["space", "create", "la07", "--adopt", "--json"], renamed);
+  check("--adopt there rewrites the journal to name this folder", adopted.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { root: string }).root === renamed, shown(adopted));
+  check("rig: forget the adopted space", run(["space", "forget", "la07", "--json"], renamed).status === 0);
+  rmSync(renamed, { recursive: true, force: true });
 }
 writeFileSync(join(copy, ".cotal", "stack-controller.json"), JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: copy, space: "la07" }) + "\n", { mode: 0o600 });
 const malformed = run(["up", "--json"], copy);
