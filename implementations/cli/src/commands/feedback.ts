@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { resolve } from "node:path";
 import type { FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
@@ -97,9 +98,22 @@ export async function feedback(args: ParsedArgs): Promise<void> {
     if (!email || email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email)) throw new CommandFailure("refused", "USAGE_INVALID", "the public intake needs a traceable contact email; none was sent", { remedy: "pass --email <contact>; no environment setup is required" });
     body.email = email;
   }
+  // Node's fetch reports a connection that never opened on this channel, with the same error it
+  // gives as the failure's cause. No request byte was written on such a connection.
+  const unopened = new WeakSet<object>();
+  const onConnectError = (message: unknown) => { const { error } = message as { error?: unknown }; if (typeof error === "object" && error !== null) unopened.add(error); };
+  subscribe("undici:client:connectError", onConnectError);
   let response: Response;
   try { response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(20_000) }); }
-  catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "feedback acceptance is unconfirmed; the request may have reached the intake and was not retried", { target, remedy: "check the original intake before submitting again; network, URL, response-body and credential details were not printed" }); }
+  catch (error) {
+    const cause = (error as { cause?: unknown } | null)?.cause;
+    if (typeof cause === "object" && cause !== null && unopened.has(cause)) {
+      const code = (cause as { code?: unknown }).code;
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no connection to the intake opened, so the report was not sent", { target, remedy: `check that ${url.origin} is reachable and serves ${url.protocol === "https:" ? "HTTPS" : "HTTP"}, then submit again`, ...(typeof code === "string" && /^[A-Z0-9_]{1,64}$/.test(code) ? { native: { code } } : {}) });
+    }
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "feedback acceptance is unconfirmed; the request may have reached the intake and was not retried", { target, remedy: "check the original intake before submitting again; network, URL, response-body and credential details were not printed" });
+  }
+  finally { unsubscribe("undici:client:connectError", onConnectError); }
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
     const codes: Record<number, RefusalCode> = { 400: "SCHEMA_INVALID", 401: "AUTH_REQUIRED", 403: "PERMISSION_DENIED", 404: "TARGET_NOT_FOUND", 413: "SCHEMA_INVALID", 422: "SCHEMA_INVALID", 429: "TARGET_UNAVAILABLE" };

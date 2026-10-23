@@ -4997,7 +4997,11 @@ protection policy; unsupported environments refuse rather than weakening that po
 `--url` can select a self-hosted intake. Remote intake requires HTTPS; HTTP is limited to literal
 loopback development hosts. URL credentials and fragments are refused, and redirects are not
 followed. One request has a 20-second deadline and is never automatically retried or rerouted to
-a different credential/intake. A network or unconfirmed server outcome can mean the report
+a different credential/intake.
+
+A connection that never opens sends nothing: a refused connection, a failed DNS lookup or a failed
+TLS handshake refuses with `TARGET_UNAVAILABLE` and the native error code. A timeout or a broken
+connection after the request was written, or an unconfirmed server outcome, can mean the report
 arrived: inspect the original intake before sending it again.
 
 JSON/plain receipts report the intake origin, HTTP acceptance and a bounded record ID when the
