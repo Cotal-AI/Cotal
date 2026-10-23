@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { dryRun, LangErrors, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { dryRunOutcome, Journal, journalEntryKeyString, LangErrors, validate, type SimScript } from "@cotal-ai/lang";
+import { CommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 
 export interface OfflineValues {
   json?: boolean;
@@ -80,6 +80,47 @@ function callSites(ast: unknown, source: string): { call: string; line: number }
   });
 }
 
+/** A language error's message as its paragraphs: the first is its code and title, the second its
+ *  cause, and a later one may start with "Fix: ". */
+function faultParts(error: unknown): { title: string; cause?: string; fix?: string } {
+  const [title = "", cause, ...rest] = String((error as Error)?.message ?? error).split(/\n\s*\n/).map((p) => oneLine(p.trim().replace(/\s*\n\s*/g, " ")));
+  const fix = rest.find((p) => p.startsWith("Fix: "))?.slice(5).split(/\. /)[0];
+  return { title, ...(cause !== undefined ? { cause } : {}), ...(fix !== undefined ? { fix } : {}) };
+}
+
+/** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
+ *  the program, and `target.step` names the step it stopped at. */
+function simulationFailure(error: unknown, file: string, journal: Journal): CommandFailure {
+  const code = (error as { code?: unknown }).code;
+  const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
+  const failed = journal.entries().findLast((e) => e.state === "settled" && e.status === "failed" && e.error?.code === native);
+  const step = failed === undefined ? undefined : journalEntryKeyString(failed);
+  const { title, cause, fix } = faultParts(error);
+  const why = (cause ?? title).replace(/\.$/, "");
+  const remedy = fix ?? (native?.startsWith("L6") ? "script a result for that step; unscripted effects are not invented" : undefined);
+  return new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${why.charAt(0).toLowerCase()}${why.slice(1)}`, {
+    target: { file, ...(step !== undefined ? { step } : {}) }, ...(native !== undefined ? { native: { code: native } } : {}), ...(remedy !== undefined ? { remedy } : {}),
+  });
+}
+
+/** Where and how a simulated program failed under its script. `step` is the step the journal
+ *  records failing with the fault's code, or for L4007 the checkpoint whose expiry raised it, with
+ *  that step's outcome. A fault from the program's own code has no step; `after` names the last
+ *  step it settled. */
+function programFailure(fault: Error & { code: string }, journal: Journal) {
+  const settled = journal.entries().filter((e) => e.state === "settled");
+  const failed = settled.findLast((e) => e.status === "failed" && e.error?.code === fault.code);
+  const last = settled.at(-1);
+  const expired = fault.code === "L4007" && last?.kind === "checkpoint" && (last.result as { outcome?: unknown } | null | undefined)?.outcome === "expired" ? last : undefined;
+  const at = failed ?? expired;
+  const { title, cause, fix } = faultParts(fault);
+  return {
+    code: fault.code, title: title.replace(/^L[0-9]+\s+/, ""), cause: cause ?? null, fix: fix ?? null,
+    step: at === undefined ? null : journalEntryKeyString(at), stepOutcome: failed ? "failed" : expired ? "expired" : null,
+    after: at === undefined && last !== undefined ? journalEntryKeyString(last) : null,
+  };
+}
+
 /** Offline commands never resolve a mesh or execute a supplied JavaScript handler. */
 export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", file: string, values: OfflineValues): Promise<void> {
   const presentation = presentationOf(values);
@@ -120,14 +161,23 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     return;
   }
   const script = scriptOf(values.handler);
-  let report: Awaited<ReturnType<typeof dryRun>>;
-  try { report = await dryRun(source, script, { file }); }
-  catch (error) {
-    const code = (error as { code?: unknown }).code;
-    throw new CommandFailure("failed", "OPERATION_FAILED", "the offline simulation did not complete; unscripted effects are not invented", { target: { file }, ...(typeof code === "string" && /^L[0-9]+$/.test(code) ? { native: { code } } : {}) });
-  }
-  const result = { kind: "workflow-simulation", steps: report.steps, elapsedMs: report.elapsedMs, effects: report.effects, agents: report.agents, waits: report.waits, checkpoints: report.checkpoints, unusedScript: report.unusedScript };
-  writeResult(presentation, { command: "run", target: { file }, result, warnings }, (r): Report => ({ sections: [
-    { title: "Workflow simulated", blocks: [{ kind: "fields", rows: [["File", file], ["Steps", String(r.steps)], ["Virtual time", `${r.elapsedMs} ms`], ["Unused script entries", String(r.unusedScript.length)]] }, r.effects.length ? { kind: "table", columns: [{ key: "step", label: "Step" }, { key: "kind", label: "Effect" }, { key: "status", label: "Simulated result" }], rows: r.effects.map((effect) => ({ step: effect.step, kind: effect.kind, status: effect.status })) } : { kind: "lines", lines: ["No simulated effects."] }, { kind: "lines", lines: [{ text: "Scripted results only. No agents were launched and no broker was contacted. This does not establish live readiness.", tone: "hint" }] }] },
-  ] }));
+  const journal = new Journal({ run: "dry-run" });
+  let report: Awaited<ReturnType<typeof dryRunOutcome>>;
+  try { report = await dryRunOutcome(source, script, { file, journal }); }
+  catch (error) { throw simulationFailure(error, file, journal); }
+  // A program that fails under its script is a completed simulation, and the failure is its outcome.
+  const failure = "fault" in report ? programFailure(report.fault, journal) : null;
+  const result = { kind: "workflow-simulation", outcome: failure ? "failed" : "completed", failure, steps: "fault" in report ? null : report.steps, elapsedMs: report.elapsedMs, effects: report.effects, agents: report.agents, waits: report.waits, checkpoints: report.checkpoints, unusedScript: report.unusedScript };
+  writeResult(presentation, { command: "run", target: { file }, result, warnings }, (r): Report => {
+    const failed = r.failure;
+    const outcome = !failed ? "completed" : failed.step !== null ? `failed at ${failed.step} (${failed.stepOutcome})` : failed.after !== null ? `failed after ${failed.after}` : "failed";
+    return { sections: [
+      { title: "Workflow simulated", blocks: [
+        { kind: "fields", rows: [["File", file], ["Program outcome", outcome], ...(r.steps !== null ? [["Steps", String(r.steps)] as [string, string]] : []), ["Virtual time", `${r.elapsedMs} ms`], ["Unused script entries", String(r.unusedScript.length)]] },
+        r.effects.length ? { kind: "table", columns: [{ key: "step", label: "Step" }, { key: "kind", label: "Effect" }, { key: "status", label: "Simulated result" }], rows: r.effects.map((effect) => ({ step: effect.step, kind: effect.kind, status: failed?.step === effect.step ? { text: `${failed.stepOutcome}, ${failed.code}`, tone: "failed" as const } : effect.status })) } : { kind: "lines", lines: ["No simulated effects."] },
+        ...(failed ? [{ kind: "lines" as const, lines: [{ text: `${failed.code} ${failed.title}`, tone: "failed" as const }, ...(failed.cause !== null ? [`  ${failed.cause}`] : []), ...(failed.fix !== null ? [`  fix: ${failed.fix}`] : []), { text: "This failure is the program's own outcome under the script. Change the program, or script other results to simulate a different path.", tone: "hint" as const }] }] : []),
+        { kind: "lines", lines: [{ text: "Scripted results only. No agents were launched and no broker was contacted. This does not establish live readiness.", tone: "hint" }] },
+      ] },
+    ] };
+  });
 }

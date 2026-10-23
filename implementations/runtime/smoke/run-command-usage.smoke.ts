@@ -175,10 +175,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
   const program = join(dir, "p.cotal.js");
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
-  const simulate = (script: unknown) => {
+  const simulate = (script: unknown, values: Record<string, string | boolean> = {}) => {
     const handler = join(dir, "results.json");
     writeFileSync(handler, JSON.stringify(script));
-    return runWorkflow({ values: { handler }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
+    return runWorkflow({ values: { handler, ...values }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
   };
   const scriptRefusal = (got: unknown, says: string) =>
     isCommandFailure(got) && got.code === "SCHEMA_INVALID" && exitCode(got.outcome, got.code) === 1 && got.message.includes(says);
@@ -188,6 +188,25 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
+  // A simulation that stops says why and where: a missing entry is the script's gap, named with the
+  // entry to add. An expired gate under the default onExpiry is a completed simulation whose program
+  // failed with L4007 at that gate.
+  const missing = await simulate({});
+  c("a script with no result for an effect names the step and the entry to add",
+    isCommandFailure(missing) && missing.code === "OPERATION_FAILED" && missing.message.includes('no checkpoints entry for "go" (step /checkpoint:go#0)')
+      && (missing.detail().remedy ?? "").includes('{ checkpoints: { "go": <result> } }') && (missing.target as { step?: string } | undefined)?.step === "/checkpoint:go#0", missing);
+  writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s" });\n');
+  const out: string[] = [];
+  const write = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => { out.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  let expired: unknown;
+  try { expired = await simulate({ checkpoints: { go: { status: "expired" } } }, { json: true }); }
+  finally { process.stdout.write = write; }
+  let envelope: { outcome?: string; result?: { outcome?: string; failure?: { code?: string; step?: string; stepOutcome?: string }; effects?: { step: string }[] } } | undefined;
+  try { envelope = JSON.parse(out.join("")); } catch { envelope = undefined; }
+  c("a gate scripted expired under the default onExpiry is a completed simulation whose program failed at that gate with L4007",
+    expired === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "failed" && envelope.result.failure?.code === "L4007"
+      && envelope.result.failure.step === "/checkpoint:go#0" && envelope.result.failure.stepOutcome === "expired" && envelope.result.effects?.some((e) => e.step === "/checkpoint:go#0") === true, { expired, envelope });
   rmSync(dir, { recursive: true, force: true });
 }
 

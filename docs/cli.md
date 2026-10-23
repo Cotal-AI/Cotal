@@ -5579,7 +5579,13 @@ loop counts or an execution schedule. Simulation uses the native simulator with 
 script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
 `artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
-simulator stamps `at` from virtual time. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
+simulator stamps `at` from virtual time. When the script has no result for an effect, the
+simulation does not complete: it exits 5 with `OPERATION_FAILED`, the message names the step and the
+entry to add, and `target.step` carries the step. When the program itself fails under the script,
+as a checkpoint scripted `expired` under the default `onExpiry: "fail"` does with L4007, the
+simulation completes and exits 0. Its program outcome is failed, with the step and that step's
+outcome, or the last step the program settled before its own code failed, and the language's error.
+JSON carries this as `result.outcome` and `result.failure`. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
 plain output and contact no broker.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and
