@@ -134,9 +134,10 @@ ok("a data part WITH data still renders its JSON (unchanged behaviour)",
 // REGRESSION VECTOR. A data-bearing EXTENSION kind was already visible through the old expression,
 // which rendered `{"x":1}` for this exact part. A first version of the renderer sent every non-core
 // kind straight to the marker and threw that away — removing information while claiming to add it.
-// Core is explicit that an unknown extension kind still falls back to its `data` on purpose
-// (`packages/core/src/parts.ts:12-13`). The cell pins BOTH halves, because either alone passes on a
-// defect: the data must survive, and the kind must be named beside it.
+// The browser's no-renderer branch in `src/web/parts.js` keeps an extension's JSON on purpose;
+// core's `partText` in `packages/core/src/parts.ts` returns only the unrenderable marker for that
+// kind without a registered renderer. The cell pins BOTH halves, because either alone passes on
+// a defect: the data must survive, and the kind must be named beside it.
 const ext = render([{ kind: "com.acme.snapshot", data: { x: 1 } }]);
 ok("a data-bearing extension keeps its data (it was visible before; dropping it is a regression)",
   ext.includes('{"x":1}'), { got: ext });

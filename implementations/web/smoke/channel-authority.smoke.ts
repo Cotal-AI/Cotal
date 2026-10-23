@@ -9,9 +9,9 @@
  * per-channel counts, unread badges and the transcript were all keyed on the publisher's claim.
  *
  * ⚠️ `.rest` IS NOT ALWAYS A CHANNEL. On `chat` it is; on `inst` it is the RECIPIENT and on `svc`
- * the ROUTE (`packages/core/src/subjects.ts:593-604`). Forwarding it ungated would label a DM's
- * recipient as a channel, so the kind-gate is load-bearing rather than defensive, and it is driven
- * below rather than asserted.
+ * the ROUTE (see `parseSubject` and `ParsedSubject.rest` in `packages/core/src/subjects.ts`).
+ * Forwarding it ungated would label a DM's recipient as a channel, so the kind-gate is load-bearing
+ * rather than defensive, and it is driven below rather than asserted.
  *
  * WHAT IS DRIVEN, AND WHAT IS NOT.
  *   - Block 1 drives the real `parseSubject` / `chatSubject` from `@cotal-ai/core`.
@@ -270,8 +270,8 @@ check("and it is the statement multiChannelHistory returns: a map over the rows 
 // that only checked "did not throw", or that the field is non-empty, would pass on the defect.
 //
 // EACH PATTERN IS ANCHORED ON SOMETHING UNIQUE TO ITS STATEMENT, AND THAT IS NOT FUSSINESS — it was
-// measured. A looser `for (const e of activity) if (…` matched app.js:218, an unrelated name-cache
-// loop, because `exec` returns the FIRST match. **The extraction cell passed on that wrong statement
+// measured. A looser `for (const e of activity) if (…` matched an unrelated name-cache loop in
+// `app.js`, because `exec` returns the FIRST match. **The extraction cell passed on that wrong statement
 // and the EXECUTION cell is what went red**, which is the whole argument for executing rather than
 // matching: a text-only suite would have been green while measuring a line that has nothing to do
 // with channel authority. The assignment half is left loose on purpose, so a mutation that keeps the

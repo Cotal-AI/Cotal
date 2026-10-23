@@ -15,12 +15,13 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { acceptedBucket, acceptedKey, acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
 
 /**
- * Origin binding for the candidate issued rail (SPEC 678-695, 3084-3094): a JetStream read
- * delivers stored bytes to a caller-chosen destination the broker does NOT confine to the
- * requester's `pub.allow`. This measures which of those paths actually reach an endpoint's
- * QUEUED `one`-class serve subscription shape, one of the three an endpoint opens per command
- * (endpoint-serve.ts:551-553 also opens non-queued `all` and `inst`), and whether the frame is
- * distinguishable from a conforming request. Test-only; no production code is attached.
+ * Origin binding for the candidate issued rail (SPEC §9, "Consumer-delivery confused deputy on
+ * the read grants"): a JetStream read delivers stored bytes to a caller-chosen destination the broker
+ * does NOT confine to the requester's `pub.allow`. This measures which of those paths actually reach
+ * an endpoint's QUEUED `one`-class serve subscription shape, one of the three it opens per command
+ * (`serveEndpoint`'s per-command rail loop in `endpoint-serve.ts` also opens non-queued `all` and
+ * `inst`), and whether the frame is distinguishable from a conforming request. Test-only;
+ * no production code is attached.
  */
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -187,8 +188,9 @@ try {
     const frame = await seen(frames, stored);
     observations.push({ vector: "pull MSG.NEXT reply subject", reachedServeShape: !!frame, frame: frame ?? null });
     assert.ok(frame, "the deputy's stored bytes reached the endpoint's real serve subscription");
-    // SPEC 690-693 defers this to test: a redelivered message RETAINS its original captured
-    // subject, so what the serve handler parses is the chat subject, never the victim rail.
+    // SPEC §9, "Consumer-delivery confused deputy on the read grants", defers this to test:
+    // a redelivered message RETAINS its original captured subject, so what the serve handler
+    // parses is the chat subject, never the victim rail.
     assert.equal(frame.subject, filter, "measured: the redelivered frame retains its captured subject");
     assert.notEqual(frame.subject, rail);
   });
@@ -253,10 +255,11 @@ try {
 
   await check("push delivery reaches none of the three production serve shapes", async () => {
     // Review finding: the cells above measure the QUEUED `one` shape, and the push-consumer cell
-    // sets deliver_group to match that queue. endpoint-serve.ts:551-553 also opens `all` and
-    // `inst` with NO queue group, and a push consumer with no deliver_group is an ordinary core
-    // publish that a plain subscriber would receive. That is the case most likely to break the
-    // interest-gating conclusion, and it was the one member never measured.
+    // sets deliver_group to match that queue. `serveEndpoint`'s per-command rail loop in
+    // `endpoint-serve.ts` also opens `all` and `inst` with NO queue group, and a push consumer
+    // with no deliver_group is an ordinary core publish that a plain subscriber would receive.
+    // That is the case most likely to break the interest-gating conclusion, and it was the one
+    // member never measured.
     const instId = "i".repeat(26);
     const allRail = `cotal.${space}.ep.v1.all.manager.run-start.local.victim.${uid}.${generation}.${nonce}`;
     const instRail = `cotal.${space}.ep.v1.inst.manager.${instId}.run-start.local.victim.${uid}.${generation}.${nonce}`;
