@@ -211,7 +211,9 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
   const read = (shell: string, path: string): string | undefined | null => {
     const text = readText(path);
     if (typeof text !== "object") return text;
-    unread.push({ code: "COMPLETION_UNREADABLE", target: { shell }, message: `${path} could not be read: ${isCommandFailure(text) ? text.message : text.code ?? text.message}` });
+    const reason = isCommandFailure(text) ? text.message : text.code ?? text.message;
+    // A refusal that already names the file, such as a symlink's, is not prefixed with it again.
+    unread.push({ code: "COMPLETION_UNREADABLE", target: { shell }, message: reason.startsWith(path) ? reason : `${path} could not be read: ${reason}` });
     return null;
   };
   const shells = Object.keys(SCRIPTS).map((shell): ShellCompletion => {

@@ -2,12 +2,13 @@
  * `cotal completion`: the status of each shell's stub, `completion script <shell>` as raw shell code,
  * and the refusal of the form it replaced (`completion <shell>`), driven through the built binary in
  * a fresh sandbox per case. HOME, XDG_CONFIG_HOME and COTAL_HOME are sandboxed, so the status reads
- * and `completion install` writes only there.
+ * and `completion install` writes only there. A symlinked startup file is refused by name with the
+ * line to add where it points.
  *
  * Run: pnpm smoke:completion-status
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -181,6 +182,22 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
     const lockedEnv = locked.stdout.startsWith("{") ? JSON.parse(locked.stdout) : undefined;
     check("an rc file it cannot read is a warning too, not an unknown outcome", locked.status === 4 && lockedEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message.includes(rc)) === true, shown(locked));
   }
+}
+
+// ── a symlinked startup file, as stow links one, is named and never written through ─────────────────
+// It used to get "could not be opened safely" with no path, no mention of the link and no next step.
+if (process.platform !== "win32") {
+  const s = sandbox("/bin/bash");
+  const rc = join(s.home, ".bashrc");
+  const linked = join(s.home, "dotfiles-bashrc");
+  writeFileSync(linked, "# mine\n");
+  symlinkSync(linked, rc);
+  const refused = s.run(["completion", "install", "bash"]);
+  check("install refuses a symlinked rc, exit 2, naming it and the link, with nothing written", refused.status === 2 && refused.stderr.includes(`${rc} is a symlink`) && !existsSync(join(s.xdg, "cotal")) && readFileSync(linked, "utf8") === "# mine\n", shown(refused));
+  check("the refusal gives the line to add to the file the link points to", refused.stderr.includes("add this line to the file it points to yourself: source <(cotal completion script bash)"), shown(refused));
+  const report = s.run(["completion", "--json"]);
+  const reportEnv = report.stdout.startsWith("{") ? JSON.parse(report.stdout) : undefined;
+  check("the report warns that the rc is a symlink", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message === `${rc} is a symlink, which completion does not follow; its contents were not printed`) === true, shown(report));
 }
 
 // ── install refuses before it writes ────────────────────────────────────────────────────────────────
