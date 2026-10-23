@@ -1771,6 +1771,11 @@ exits 0. A script, a `--json` caller and `--no-input` are not asked: the command
 `TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
 in `error.remedy`, apart from `error.message`.
 
+`--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
+the `--space` is registered at, `main` when no space is named, and keeps that registration's TLS
+requirement. A space not registered here is refused with `TARGET_NOT_FOUND`, exit 2, before
+anything is dialed. The default address is never assumed for a credential.
+
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
 anything is written. The old `spawn -f` manifest spelling no longer deploys;

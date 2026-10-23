@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
 import {
-  DEFAULT_SERVER,
   DEFAULT_SPACE,
   DEV_OWNER,
   assertLifecycleToken,
@@ -476,9 +475,9 @@ export async function mintControlInstrument(
  * Resolve where a mesh-touching command connects + with what creds, THROWING {@link ConnectRefusal}
  * on every refusal instead of ending the process. {@link connectOrExit} is this plus the printing
  * and the exit; a caller that must survive a refusal (a reconnect loop) calls this one.
- *  • Explicit `--creds` → a RAW off-registry connection, except when the target is a known
- *    per-user-auth mesh. Those refuse static creds fail-closed because old local creds remain
- *    broker-valid but are the wrong identity plane after the flip.
+ *  • Explicit `--creds` → a RAW connection to `--server`, or to the address its space is registered
+ *    at, except when the target is a known per-user-auth mesh. Those refuse static creds fail-closed
+ *    because old local creds remain broker-valid but are the wrong identity plane after the flip.
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune unless readOnly is requested.
  */
@@ -491,14 +490,25 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // its `recorded.server === server` match miss every non-4222 user mesh, letting a static --creds
     // slip past the flip.
     refuseStaticCredsForKnownUserAuth(space, flags.server, "--creds");
-    const server = flags.server ?? DEFAULT_SERVER;
+    // The credential goes only to a broker the caller paired it with: `--server`, or the address the
+    // space is registered at. The default address is never assumed for it.
+    const recorded = flags.server === undefined ? findMesh(space) : undefined;
+    const server = flags.server ?? recorded?.server;
+    if (server === undefined)
+      throw new ConnectRefusal(
+        `✗ --creds needs --server <url> or a registered --space: ${flags.space === undefined ? "the default space" : "space"} "${space}" is not registered here, so nothing was dialed`,
+        "  pass the broker this credential belongs to with --server <url>",
+        { code: "TARGET_NOT_FOUND" },
+      );
     if (!existsSync(flags.creds)) throw new ConnectRefusal(`✗ creds file not found: ${flags.creds}`, undefined, { code: "USAGE_INVALID" });
     const creds = readFileSync(flags.creds, "utf8");
-    // An explicit `--creds` file is an off-registry connect: no mesh record, so no recorded TLS
-    // intent to inherit. It stays non-strict, and that is a real (documented) gap rather than a
-    // safe default - a `--creds` connect to a TLS broker still upgrades, but is downgradeable.
-    await reachableOrThrow(server, { creds });
-    return { server, space, tls: false, creds };
+    // A broker taken from the space's record keeps its recorded TLS requirement. With `--server` the
+    // connect is off-registry: no recorded TLS intent to inherit. It stays non-strict, and that is a
+    // real (documented) gap rather than a safe default - a `--creds` connect to a TLS broker still
+    // upgrades, but is downgradeable.
+    const tls = recorded?.tlsRequired === true;
+    await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
+    return { server, space, tls, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
   // both is as deliberate as `--creds`, but an open broker has no creds to pass — connect bare,
