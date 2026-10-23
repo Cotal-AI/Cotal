@@ -14,11 +14,11 @@ registerHooks({
     if (!new URL(url).pathname.endsWith("/packages/core/dist/endpoint.js")) return loaded;
     if (loaded.format !== "module" || loaded.source == null) throw new Error("unexpected core probe module format");
     const source = typeof loaded.source === "string" ? loaded.source : Buffer.from(loaded.source).toString("utf8");
-    const anchor = "function classifyProbeFailure(e, opts, authRequired = false) {";
+    const anchor = 'function classifyProbeFailure(e, opts, authRequired = false, otherwise = "unreachable") {';
     if (source.split(anchor).length !== 2) throw new Error("native probe classifier anchor is not unique");
     write({ kind: "module-matched", sourceSha256: createHash("sha256").update(source).digest("hex") });
-    const replacement = `function classifyProbeFailure(e, opts, authRequired = false) {
-      const result = __cotalOriginalProbeFailure(e, opts, authRequired);
+    const replacement = `function classifyProbeFailure(e, opts, authRequired = false, otherwise = "unreachable") {
+      const result = __cotalOriginalProbeFailure(e, opts, authRequired, otherwise);
       const tag = value => typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : "other";
       __cotalProbeAppend(process.env.SMOKE_WHO_PROBE_TRACE, JSON.stringify({
         kind: "classification", reason: result.ok ? "ok" : result.reason,
@@ -30,7 +30,7 @@ registerHooks({
       }) + "\\n");
       return result;
     }
-    function __cotalOriginalProbeFailure(e, opts, authRequired) {`;
+    function __cotalOriginalProbeFailure(e, opts, authRequired, otherwise) {`;
     return { ...loaded, source: 'import { appendFileSync as __cotalProbeAppend } from "node:fs";\n' + source.replace(anchor, replacement), shortCircuit: true };
   },
 });

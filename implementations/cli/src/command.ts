@@ -44,6 +44,7 @@ import { chooseMeshTarget } from "./lib/choose-target.js";
 import { ConfirmationRequired } from "./lib/confirmation-required.js";
 import { MissingFlags } from "./lib/missing-flags.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
+import { managerChoiceFailure, rosterOf } from "./lib/manager-choice.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
@@ -496,12 +497,16 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
-    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(e, scope.space), json, parsed.values.plain === true);
+    // A refused manager selection among several live managers becomes the choice: each manager
+    // and the command again with `--on` for it.
+    const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
+    const choice = async (failure: CommandFailure) => (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? failure;
+    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(e.failure(), scope.space), json, parsed.values.plain === true);
+      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure()), scope.space), json, parsed.values.plain === true);
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
         failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json, parsed.values.plain === true);
@@ -518,6 +523,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (isWorkspaceTargetError(e)) {
       console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
       if (process.env.COTAL_DEBUG && e instanceof Error && e.stack) console.error(c.dim(e.stack));
+      process.exit(1);
+    }
+    // A command without structured output shows the same choice and keeps its exit 1.
+    const restated = isConnectRefusal(e) ? await managerChoiceFailure(e.failure(), () => rosterOf(target), argv) : undefined;
+    if (restated) {
+      writeSync(2, `${renderReport(commandFailureReport(restated), parsed.values.plain === true ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
       process.exit(1);
     }
     // Every other command failure (a broker permission denial, a missing --creds file, a failed

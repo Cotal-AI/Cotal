@@ -23,6 +23,8 @@
  *   G: the remote space's OWN split records — refused with the combination message.
  *   I: an unreadable auth/auth.json — refused on the store's parse message before any exchange.
  *   H: no trust text may name auth/auth.json in F's output.
+ *   J: with two of the owner's managers up, an unpinned `ps` lists each one with its host and
+ *      gives the command again with `--on` for each.
  *
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/supervise-remote-dial.json
  */
@@ -32,7 +34,7 @@ import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } 
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer as createHttpServer } from "node:http";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,6 +92,7 @@ const { registerRemoteManagerAuthority } = await import("../../implementations/m
 const { superviseTarget } = await import("../../implementations/manager/src/commands.js");
 const { runWorkflow } = await import("../../implementations/runtime/src/run-command.js");
 const { Manager } = await import("../../implementations/manager/src/manager.js");
+const { loadOrCreateRemoteManagerIdentity } = await import("../../implementations/manager/src/remote-authority.js");
 
 const auth = await createSpaceAuth(space);
 saveSpaceAuth(authDir(root), auth);
@@ -462,6 +465,60 @@ try {
   // validated it as this space's would print one of the trust texts. Assert on the MESSAGE.
   ok("H: the wrong-space monolith is never used as this space's trust (no trust text names auth/auth.json)",
     !/corrupt or mislabeled|cannot be combined|space trust bundle \(auth\/auth\.json\)/.test(fLine), fLine.slice(-600));
+
+  // J: two of the owner's managers live at once. An unpinned managed verb cannot choose between
+  // them, so its refusal lists each one with the host its presence reports, and the caller's own
+  // command again with `--on` for each. The caller registered the space as `cotal meshes add --from`
+  // does, with the sentinel under its own user-auth state dir. `ps` needs the admin scope. The
+  // earlier cells leave registrations the exchange still counts as live, so the cell finds its own
+  // two managers among the rows by their instance ids.
+  grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  const scratch = (label: string): string => {
+    const path = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}supervise-${label}-${fixtureId}-`));
+    releaseRoots.push(path);
+    return path;
+  };
+  const twoManagers: ChildProcess[] = [];
+  const twoIds: string[] = [];
+  for (const label of ["J1", "J2"]) {
+    const cellRoot = scratch("two-root"), cellHome = scratch("two-home");
+    mkdirSync(join(cellRoot, ".cotal"), { recursive: true });
+    recordMesh({ space, server: trustServer, root: cellRoot, mode: "user", userAuth: trustUserAuth, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
+    cpSync(trustHome, cellHome, { recursive: true });
+    const child = spawnProc(tsxBin, [cliBin, "supervise", "--space", space], { cwd: cellRoot, env: childHomeEnv(cellHome), stdio: ["ignore", "pipe", "pipe"] });
+    kids.push(child);
+    twoManagers.push(child);
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    for (let i = 0; i < 1_200 && !/✓ manager up/.test(output) && child.exitCode === null; i++) await sleep(100);
+    must(`J: manager ${label} is up`, /✓ manager up/.test(output), output.slice(-600));
+    twoIds.push(loadOrCreateRemoteManagerIdentity(cellRoot, space).instanceId);
+  }
+  const callerRoot = scratch("caller-root"), callerHome = scratch("caller-home");
+  mkdirSync(join(callerRoot, ".cotal"), { recursive: true });
+  const callerDir = userAuthStateDir(callerRoot, space);
+  mkdirSync(callerDir, { recursive: true, mode: 0o700 });
+  const sentinelCredsPath = join(callerDir, "sentinel.creds");
+  writeFileSync(sentinelCredsPath, callout!.sentinelCreds, { mode: 0o600 });
+  recordMesh({ space, server: trustServer, root: callerRoot, mode: "user", userAuth: { ...trustUserAuth, sentinelCredsPath }, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
+  cpSync(trustHome, callerHome, { recursive: true });
+  const ps = await new Promise<{ code: number | null; err: string }>((resolveRun) => {
+    const child = spawnProc(tsxBin, [cliBin, "ps", "--space", space], { cwd: callerRoot, env: childHomeEnv(callerHome), stdio: ["ignore", "ignore", "pipe"] });
+    kids.push(child);
+    let err = "";
+    child.stderr?.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+    child.on("close", (code) => resolveRun({ code, err }));
+  });
+  ok("J: an unpinned ps with several live managers refuses as PERMISSION_DENIED, exit 2",
+    ps.code === 2 && /Code:\s+PERMISSION_DENIED/.test(ps.err) && /\d+ of your managers are live/.test(ps.err), ps);
+  const hosts = new Map([...(ps.err.split("Live managers")[1] ?? "").matchAll(/^\s+(\S+)\s+(\S+)\s/gm)].map((m) => [m[1]!, m[2]!]));
+  ok("J: the refusal lists each of its live managers on its own row, with the host its presence reports",
+    twoIds.length === 2 && twoIds.every((id) => hosts.get(id) === hostname()), { twoIds, err: ps.err.slice(-900) });
+  ok("J: its Next reruns the caller's own ps with --on for each of them",
+    twoIds.length === 2 && twoIds.every((id) => ps.err.includes(`ps --space ${space} --on ${id}`)), ps.err.slice(-600));
+  for (const child of twoManagers) child.kill("SIGTERM");
+  await Promise.all(twoManagers.map((child) => awaitExit(child, 15_000)));
 
   await teardown();
   const remainingArtifacts = [brokerStore, root, home, xdg, ...releaseRoots].filter((path) => existsSync(path)).length;

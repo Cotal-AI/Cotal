@@ -2461,7 +2461,10 @@ cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] 
 
 Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
 activity, attention mode, harness, model and host, as its presence reports them. Infrastructure
-endpoints are hidden unless `--all` asks for them; the report says how many it hid.
+endpoints are hidden unless `--all` asks for them; the report says how many it hid. In a user-auth
+space, `--all` shows each of your managers as a `manager/manager` row whose id ends in
+`manager_<instanceId>`, the id `--on` takes, with its host and its runtime in the activity, such as
+`supervisor (tmux)`.
 
 `managed` says whether a manager runs the seat. With no manager on the roster it is `false` for
 every row and no manager is asked. Otherwise every registered manager is asked for its seats, and a
@@ -2849,7 +2852,9 @@ run from a managed seat's shell selects the manager that launched the seat (`COT
 and any other caller's selection must be unique. Discovery and the command use that instance route.
 The caller gains no registry read or scatter permission. An absent, ambiguous or unauthorized
 selection refuses before sending the command. With several of your managers live, the refusal lists
-their instance ids so you can pass one to `--on`. By default, when every manager you registered has
+each one on its own row with its instance id, host, activity and the time its process started, and
+its Next gives your command again with `--on <instanceId>` for each. The code stays
+`PERMISSION_DENIED` and the exit 2. `who --all` lists the same managers at any time. By default, when every manager you registered has
 exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
 
 A trusted hosted composition may opt into an [interactive local primary](embedding.md#interactive-manager-primary).

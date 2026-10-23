@@ -22,7 +22,7 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
 }
 
 /** `value` as one POSIX shell word, quoted when a shell would split or expand it. */
-const shellWord = (value: string): string => /^[A-Za-z0-9_./:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+export const shellWord = (value: string): string => /^[A-Za-z0-9_./:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 
 /** The operator instrument holds request rows for the manager endpoint only, so the broker refuses
  *  its call to any other endpoint before execution. A paired caller file for that endpoint can make

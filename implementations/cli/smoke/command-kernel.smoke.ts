@@ -1191,4 +1191,34 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+{
+  // A refused selection among several live managers is restated as the choice, with each manager
+  // and the caller's own command again with `--on` for it. Other failures pass through untouched.
+  const { CommandFailure, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
+  const { managerChoiceFailure } = await import("../src/lib/manager-choice.js");
+  const { displayCmd } = await import("../src/lib/self-exec.js");
+  const refusal = new CommandFailure("refused", "PERMISSION_DENIED", 'signed in, but the exchange for actor "cli" (view "manager-caller") was refused: manager-caller selection found 2 live remote manager candidates for owner u_own (aaa1, bbb2); exactly one is required, so name one with --on <instanceId>');
+  const roster = [
+    { card: { id: "u_own.manager_aaa1", name: "manager", kind: "endpoint", meta: { host: "box-a" } }, status: "idle", activity: "supervisor (orca)", runtime: { id: "r", startedAt: Date.UTC(2026, 9, 1), source: "process" }, ts: 0 },
+    { card: { id: "u_own.manager_bbb2", name: "manager", kind: "endpoint" }, status: "idle", ts: 0 },
+  ] as unknown as import("@cotal-ai/core").Presence[];
+  const restated = await managerChoiceFailure(refusal, async () => roster, ["stop", "--name", "x y", "--json"]);
+  assert.ok(restated, "the several-live refusal is restated");
+  assert.equal(restated.outcome, "refused", "the outcome is kept");
+  assert.equal(restated.code, "PERMISSION_DENIED", "the code is kept");
+  assert.deepEqual((restated.native?.detail as { managers: unknown }).managers, [
+    { instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", since: "2026-10-01T00:00:00.000Z" },
+    { instanceId: "bbb2", host: null, activity: null, since: null },
+  ], "each manager carries what its presence reports, and nothing it does not");
+  assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on aaa1 or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager");
+  const shown = renderReport(commandFailureReport(restated), "plain");
+  assert.match(shown, /Live managers[\s\S]*aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row");
+  const unread = await managerChoiceFailure(refusal, async () => { throw new Error("no roster"); }, ["ps"]);
+  assert.deepEqual((unread?.native?.detail as { managers: { instanceId: string }[] }).managers.map((m) => m.instanceId), ["aaa1", "bbb2"], "an unreadable roster still names the instance ids");
+  let read = false;
+  const other = await managerChoiceFailure(new CommandFailure("refused", "PERMISSION_DENIED", "manager-caller selection found no manager candidate for owner u_own"), async () => { read = true; return roster; }, ["ps"]);
+  assert.equal(other, undefined, "any other refusal passes through");
+  assert.equal(read, false, "and reads no roster");
+}
+
 console.log("✓ command-kernel smoke passed");
