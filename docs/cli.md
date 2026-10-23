@@ -2022,7 +2022,9 @@ refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorde
 `cotal space create <space> --root <root>`, which prepares the journal's space there again so that
 `cotal up` starts it. That is the state after an `up` that failed to start or a `space forget`, and the
 command never dials the default address instead. `status` there reads the machine, selects no space
-and probes no broker.
+and probes no broker. A legacy root after its `down`, which drops its registration, is refused the
+same way, naming the address in the broker configuration its last start rendered and the bare
+`cotal up` there that starts it at that address again.
 
 With no `--space`, `--server` or `--creds`, nothing selected and no project in the folder, a command
 that several running spaces could serve asks which one when it runs in a terminal. The answer is the
@@ -2971,6 +2973,10 @@ the same way and names bare `cotal up`, which starts it again.
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
 entry, is the route that does.
+
+`ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
+manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
+header.
 
 The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
 one envelope whose `result` is:
@@ -4349,12 +4355,19 @@ them in a `CHANNELS_DENIED` warning. DM history and `--since` by sequence are no
 user-auth identity. A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.
 
-`--follow` prints the window and then each new message until interrupted. With `--json` each line is
-one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
-The first record is a `snapshot` holding the window, then one `event` per message. A `gap` record
-says the connection was re-established and messages sent while it was down are not shown. An
-`error` record names a failure on the live feed, and an `end` record closes the stream. The exit
-code is the snapshot's.
+`--follow` prints the window and then each new message until interrupted. A lost connection is
+reported in one line while the follow re-establishes it, so a follow outlives a broker restart. A
+credential that can no longer connect ends the follow. It may have expired, or the broker may now
+reject it, as after `reset space`. The follow then ends with the refusal a one-shot command with that
+credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `--creds` on a
+static-auth space the follow mints its own credential from the space's trust, so when the broker
+rejects it the Next says to run the follow again, which mints one from the current trust. With
+`--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
+The first record is a `snapshot` holding the window, then one `event` per message. An `error`
+record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
+`gap` record says the connection was re-established and messages sent while it was down are not
+shown. An `end` record always closes the stream. The exit code is the snapshot's, or the refusal's
+when the credential ended the follow.
 
 `history clear` purges retained history from every channel in the selected space; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
@@ -4377,7 +4390,10 @@ cotal console [--plain] [--space <s>]
 
 A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. The
 line stream is also what a pipe gets. On `--plain`, and under a locale that is not UTF-8, it writes
-no status marks and its punctuation in ASCII. On a
+no status marks and its punctuation in ASCII. The line stream reports a lost connection in one line
+while it re-establishes it. A credential that can no longer connect ends it with the refusal a
+one-shot command with that credential gets, as [`history --follow`](#history) does. Ctrl-C or
+SIGTERM ends either view at any time. On a
 user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
 `admin`. Inside the TUI, operator control (`D` kill, `:spawn`, `:status`, `:purge`) rides the
 same per-action instrument path as `cotal stop` and `cotal ps`, never the observer; a raw

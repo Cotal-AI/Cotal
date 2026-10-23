@@ -139,6 +139,9 @@ export interface MeshTargetErrorDetails {
   home?: string;
   /** For `not-started` on a prepared space: its root no longer exists, so `up` cannot start it there. */
   rootMissing?: boolean;
+  /** For `not-started` on a root with no registration: `server` is the broker its last start
+   *  configured, which a bare `cotal up` there starts again. */
+  lastRun?: boolean;
 }
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
@@ -371,6 +374,36 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   }
 }
 
+/** The `host:` and `port:` a rendered broker configuration names, as a broker URL. */
+function renderedServer(path: string): string | undefined {
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.size > 64 * 1024) return undefined;
+    const text = readFileSync(path, "utf8");
+    const host = /^host:\s*(\S+)\s*$/m.exec(text)?.[1], port = /^port:\s*(\d+)\s*$/m.exec(text)?.[1];
+    return host && port ? `nats://${host.includes(":") ? `[${host}]` : host}:${port}` : undefined;
+  } catch { return undefined; }
+}
+
+/** Whether the root holds a broker account, readable or not. */
+export function rootHoldsAccount(root: string): boolean {
+  try { const inventory = accountInventory(authDir(root)); return inventory.spaces.length > 0 || inventory.corrupt.length > 0; }
+  catch { return true; }
+}
+
+/** The broker this root's last start rendered: `.cotal/auth/server.conf` in static auth when the root
+ *  holds an account, else `.cotal/server-open.conf` in open mode. Undefined when neither names one.
+ *  A legacy `down` drops the registration that kept the root's broker address, and this file
+ *  outlives it. */
+export function retainedLegacyBroker(root: string): { server: string; open: boolean } | undefined {
+  if (rootHoldsAccount(root)) {
+    const server = renderedServer(join(authDir(root), "server.conf"));
+    return server ? { server, open: false } : undefined;
+  }
+  const server = renderedServer(join(root, ".cotal", "server-open.conf"));
+  return server ? { server, open: true } : undefined;
+}
+
 /** The selection is the target from every folder. Inside a project whose root has registered spaces
  *  and none of them is the selection, say so before the command acts, with the `--space` that
  *  targets this folder's space instead. */
@@ -502,6 +535,11 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     const prepared = preparedSpaceAt(root);
     if (prepared) notStarted(prepared.space);
     if (stack) throw new MeshTargetError("not-started", `the stack in ${root} recorded a broker, and no space is registered for it here`, { root, ...stack });
+    // Nor is a root whose last start left its broker configuration: a legacy `down` dropped the
+    // registration that named that broker, and the default port may hold another mesh, which would
+    // be handed this root's credentials.
+    const retained = retainedLegacyBroker(root);
+    if (retained) throw new MeshTargetError("not-started", `the mesh in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true });
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the

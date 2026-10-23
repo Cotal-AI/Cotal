@@ -1,5 +1,6 @@
 import { CotalEndpoint, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
+  brokerAddressForDisplay,
   CommandFailure,
   connectOrThrow,
   endpointAuth,
@@ -16,10 +17,12 @@ import {
   writeStreamRecord,
   type Cell,
   type Connection,
+  type ConnectRefusal,
   type OutputWarning,
   type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
+import { credentialEnded } from "../lib/connect.js";
 import { shownTime } from "../lib/shown-time.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
@@ -352,11 +355,12 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
 }
 
 /** The live half of `--follow`: taps the selection's subjects, re-taps after the connection is
- *  re-established (a rebuild drops the old subscriptions), and records that gap. */
+ *  re-established (a rebuild drops the old subscriptions), and records that gap. A dropped
+ *  connection whose credential can no longer connect ends it with that credential's refusal. */
 function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefined, dms: boolean) {
-  const queue: { item?: HistoryItem; gap?: string; error?: string }[] = [];
+  const queue: { item?: HistoryItem; gap?: string; error?: string; lost?: true }[] = [];
   let wake: (() => void) | undefined;
-  const push = (entry: { item?: HistoryItem; gap?: string; error?: string }) => {
+  const push = (entry: { item?: HistoryItem; gap?: string; error?: string; lost?: true }) => {
     queue.push(entry);
     wake?.();
   };
@@ -374,6 +378,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
   ep.on("connection", ({ connected }: { connected: boolean }) => {
     if (!connected) {
       down = true;
+      push({ lost: true });
       return;
     }
     if (!down) return;
@@ -404,28 +409,48 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
         const scoped = typeof cell === "string" ? `[${conn.space}] ${cell}` : { ...cell, text: `[${conn.space}] ${cell.text}` };
         process.stdout.write(`${renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [scoped] }] }] }, presentation === "rich" ? "rich" : "plain", terminalWidth(process.stdout))}\n`);
       };
+      let refusal: ConnectRefusal | undefined;
+      // While the connection is down, one line says so and the raw failures that follow are not shown.
+      let outage = false;
       for (;;) {
         while (queue.length) {
           const entry = queue.shift()!;
-          if (entry.item) {
+          // A failure on the feed or a dropped connection ends the follow once its credential can no
+          // longer connect, before that failure is shown.
+          if (entry.lost || entry.error) refusal = await credentialEnded(conn);
+          if (refusal) break;
+          if (entry.lost) {
+            if (outage) continue;
+            outage = true;
+            const lost = `the connection to ${brokerAddressForDisplay(conn.server) ?? "the broker"} was lost; re-establishing it`;
+            if (presentation === "json") writeStreamRecord(streamRecord("history", "error", target, { code: "TARGET_UNAVAILABLE", message: lost }));
+            else line({ text: lost, tone: "waiting" });
+          } else if (entry.item) {
             if (seen.has(entry.item.id) || !match(entry.item)) continue;
             remember(entry.item.id);
             names.set(entry.item.from.id, entry.item.from.name);
             if (presentation === "json") writeStreamRecord(streamRecord("history", "event", target, entry.item));
             else line(itemLine(entry.item, names));
           } else if (entry.gap) {
+            outage = false;
             if (presentation === "json") writeStreamRecord(streamRecord("history", "gap", target, { reason: entry.gap }));
             else line({ text: `gap: ${entry.gap}`, tone: "waiting" });
-          } else if (entry.error) {
+          } else if (entry.error && !outage) {
             if (presentation === "json") writeStreamRecord(streamRecord("history", "error", target, { code: "OPERATION_FAILED", message: entry.error }));
             else process.stderr.write(`${c.red(oneLine(`[${conn.space}] ! ${entry.error}`))}\n`);
           }
         }
-        if (ended || stopped()) break;
+        if (refusal || ended || stopped()) break;
         await new Promise<void>((resolve) => (wake = resolve));
         wake = undefined;
       }
-      if (presentation === "json") writeStreamRecord(streamRecord("history", "end", target, { reason: ended ?? "stopped" }));
+      if (refusal && presentation !== "json") throw refusal.failure();
+      if (refusal) {
+        const failure = refusal.failure();
+        writeStreamRecord(streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
+        process.exitCode = exitCode(failure.outcome, failure.code);
+      }
+      if (presentation === "json") writeStreamRecord(streamRecord("history", "end", target, { reason: refusal ? "refused" : ended ?? "stopped" }));
     },
   };
 }

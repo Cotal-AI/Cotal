@@ -176,6 +176,29 @@ check(
 
 await view.stop();
 
+// ---- stop after the connection is closed for good ----
+{
+  // The real endpoint keeps a membership watch's own stop pending until its broker consumer is
+  // deleted, which a closed connection cannot do, and settles it from the endpoint's own stop.
+  class ClosedForGood extends MockEndpoint {
+    private settle?: () => void;
+    async readMembership(): Promise<{ asOf: undefined; members: [] }> {
+      return { asOf: undefined, members: [] };
+    }
+    async watchMembership(): Promise<{ stop(): Promise<void> }> {
+      return { stop: () => new Promise<void>((resolve) => { this.settle = resolve; }) };
+    }
+    override async stop(): Promise<void> {
+      this.settle?.();
+    }
+  }
+  const closed = new MeshView(new ClosedForGood() as unknown as CotalEndpoint);
+  await closed.start();
+  await wait(20);
+  const stopped = await Promise.race([closed.stop().then(() => true), wait(2_000).then(() => false)]);
+  check("stop returns when only the endpoint's stop settles the membership watch (Ctrl-C after the connection is gone)", stopped);
+}
+
 // ---- the line stream (console --plain and pipes): ASCII on --plain and under a non-UTF-8 locale ----
 /** The lines one runLog prints for a join and two feed entries, under `LC_ALL=locale`. */
 async function streamLines(plain: boolean, locale: string): Promise<string[]> {

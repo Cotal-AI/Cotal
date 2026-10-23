@@ -528,6 +528,42 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     s12cElapsed < 2_000,
     { s12cElapsed },
   );
+
+  // A broker still accepts a credential until the last second of its life ends, so a credential
+  // that has passed its own expiry is refused without a dial. A peer that takes any CONNECT stands
+  // in for that broker.
+  let lenientDials = 0;
+  const lenientSrv = createServer((sock) => {
+    lenientDials++;
+    sock.on("error", () => { /* client tears down after its probe; not a test failure */ });
+    sock.write('INFO {"server_id":"s12d","version":"2.12.0","proto":1,"headers":true,"max_payload":1048576,"auth_required":true,"nonce":"bm9uY2U"}\r\n');
+    sock.on("data", (d: Buffer) => {
+      if (d.includes("PING")) {
+        try { sock.write("PONG\r\n"); } catch { /* client gone */ }
+      }
+    });
+  });
+  const lenientPort = await new Promise<number>((resolve) => {
+    lenientSrv.listen(0, "127.0.0.1", () => resolve((lenientSrv.address() as { port: number }).port));
+  });
+  const lenient = `nats://127.0.0.1:${lenientPort}`;
+  const { createSpaceAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
+  const s12dAuth = await createSpaceAuth("s12d");
+  const current = await mintCreds(s12dAuth, newIdentity(), "observer", { expiresInSeconds: 600 });
+  const brief = await mintCreds(s12dAuth, newIdentity(), "observer", { expiresInSeconds: 1 });
+  let s12dControl = true;
+  try { await reachableOrThrow(lenient, { creds: current }); } catch { s12dControl = false; }
+  check("S12 control: a peer that takes any CONNECT accepts a current credential", s12dControl && lenientDials > 0, { lenientDials });
+  await new Promise((resolve) => setTimeout(resolve, 2_100));
+  const dialsBefore = lenientDials;
+  let s12d: InstanceType<typeof ConnectRefusal> | undefined;
+  try { await reachableOrThrow(lenient, { creds: brief }); } catch (e) { s12d = e instanceof ConnectRefusal ? e : undefined; }
+  check(
+    "S12 expired credential: refused AUTH_REQUIRED as credential death before any dial, where the broker would still take it",
+    s12d?.code === "AUTH_REQUIRED" && s12d.message.includes("credential EXPIRED at") && lenientDials === dialsBefore,
+    { code: s12d?.code, message: s12d?.message, dials: lenientDials - dialsBefore },
+  );
+  lenientSrv.close();
 }
 
 // ── One sweep per control resolve (#3872) ────────────────────────────────────────────────────────

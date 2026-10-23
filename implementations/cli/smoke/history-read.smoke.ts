@@ -39,6 +39,7 @@ import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, te
 import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
+import { credentialEnded } from "../src/lib/connect.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -288,6 +289,34 @@ try {
   await fp.exited;
   check("--follow --plain appends each matching message as a line", shownLine && fp.lines.some((l) => /#ops\s+bob: a plain line/.test(l)) && !fp.lines.some((l) => l.includes("filtered out")), fp.lines.slice(-4));
   check("a followed line shows the local time, not the ISO time", fp.lines.some((l) => /bob: a plain line/.test(l) && !/^\d{4}-\d\d-\d\dT/.test(l)), fp.lines.slice(-4));
+
+  // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.
+  const brief = join(home, "brief.creds");
+  writeFileSync(brief, await mintCreds(auth, newIdentity(), "observer", { expiresInSeconds: 8 }), { mode: 0o600 });
+  const briefArgs = ["--creds", brief, "--space", space, "--server", servers];
+  const fj = follow(["history", "general", "--follow", "--json", ...briefArgs]);
+  const fl = follow(["history", "general", "--follow", "--plain", ...briefArgs]);
+  const briefSnap = await fj.until((l) => l.includes('"type":"snapshot"')) && await fl.until((l) => /replay to new members/.test(l));
+  const ended = await Promise.race([Promise.all([fj.exited, fl.exited]), wait(40_000).then(() => undefined)]);
+  const once = await run(["history", "general", "--json", ...briefArgs]);
+  const briefRecords = fj.lines.map((l) => JSON.parse(l) as { type: string; data: { code?: string; message?: string; remedy?: string; reason?: string } });
+  const refusal = briefRecords.filter((r) => r.type === "error");
+  check("an expired credential ends a --json follow: one AUTH_REQUIRED error record with the one-shot's message and Next, then end, exit 2",
+    briefSnap && ended?.[0] === 2 && once.envelope?.error?.code === "AUTH_REQUIRED" && refusal.length === 1 && refusal[0]?.data.code === "AUTH_REQUIRED" && refusal[0].data.message === once.envelope.error.message && refusal[0].data.remedy === once.envelope.error.remedy && briefRecords.at(-1)?.type === "end" && briefRecords.at(-1)?.data.reason === "refused",
+    { ended, records: fj.lines.slice(-3), stderr: fj.stderr(), once: shown(once) });
+  check("an expired credential ends a --plain follow with the one-shot's refusal and no re-establishing line, exit 2",
+    ended?.[1] === 2 && once.envelope?.error !== undefined && fl.stderr().includes(once.envelope.error.message) && fl.stderr().includes(once.envelope.error.remedy ?? "?") && !/re-establish|Authentication Expired/.test(fl.stderr() + fl.lines.join("\n")),
+    { ended, lines: fl.lines.slice(-3), stderr: fl.stderr() });
+
+  // A credential the broker rejects, as after `reset space` replaced the trust it was minted from.
+  // Given as a file it ends a follow with the one-shot's Next; minted by the follow from the space's
+  // trust, the Next says to run it again.
+  const rejected = await mintCreds(await createSpaceAuth(space), newIdentity(), "observer");
+  const given = await credentialEnded({ server: servers, space, tls: false, creds: rejected });
+  const minted = await credentialEnded({ server: servers, space, tls: false, creds: rejected, auth });
+  check("a rejected --creds file ends a follow PERMISSION_DENIED with the one-shot's Next", given?.code === "PERMISSION_DENIED" && given.failure().remedy === foreign.envelope?.error?.remedy, { given: given?.failure(), oneShot: foreign.envelope?.error });
+  check("a rejected credential the follow minted ends it PERMISSION_DENIED saying to run it again",
+    minted?.code === "PERMISSION_DENIED" && minted.failure().message === given?.failure().message && /run it again/.test(minted.failure().remedy ?? ""), minted?.failure());
 
   // A followed line is drawn for the terminal it is shown in, as the window above it is.
   const tty = nodePty([BIN, "history", "--follow", "--grep", "wrapped"], { cwd: shell, env: isolatedEnv as Record<string, string>, cols: 60, rows: 30 });
