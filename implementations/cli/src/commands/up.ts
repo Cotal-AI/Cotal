@@ -984,12 +984,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (!values.file && controllerStackApplies(meshRoot, values.space ?? folderSpace(), values)) {
     const stackSpace = values.space ?? folderSpace();
     recordOperationSpace(stackSpace);
-    const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
     const stackLock = acquireStackOperationLock(meshRoot);
     const native = controllerStackNative();
     try {
+      const savedServer = readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server;
+      const requestedServer = values.server ?? savedServer ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
+      const stackServer = values.server !== undefined || savedServer !== undefined
+        ? requestedServer
+        : await freshStackServer(requestedServer, values.host);
       if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
       await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
     } finally { releaseMaintenanceLock(stackLock); }
@@ -3849,18 +3853,43 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
   });
 }
 
+/** Choose only a first implicit address. A saved or explicitly requested address is never moved.
+ * The broker still validates and binds its own listener; this inspection cannot reserve the port. */
+async function freshStackServer(server: string, bindHost?: string): Promise<string> {
+  const url = new URL(server);
+  const host = (bindHost ?? url.hostname).replace(/^\[|\]$/g, "");
+  const reserved = new Set(loadMeshes().map((mesh) => {
+    const address = new URL(mesh.server);
+    return `${address.hostname}:${address.port || "4222"}`;
+  }));
+  let candidate = server;
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const address = new URL(candidate);
+    if (!reserved.has(`${address.hostname}:${address.port || "4222"}`)) {
+      try {
+        await freePort(host, Number(address.port) || 4222);
+        return candidate;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+      }
+    }
+    candidate = await serverWithFreePort(server, host);
+  }
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no unreserved local broker address could be selected; no broker was started");
+}
+
 async function serverWithFreePort(server: string, host: string): Promise<string> {
   const url = new URL(server);
   url.port = String(await freePort(host));
   return url.toString();
 }
 
-function freePort(host: string): Promise<number> {
+function freePort(host: string, requestedPort = 0): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
     srv.unref();
     srv.once("error", reject);
-    srv.listen(0, host, () => {
+    srv.listen(requestedPort, host, () => {
       const addr = srv.address();
       const port = typeof addr === "object" && addr ? addr.port : undefined;
       srv.close((err) => {
