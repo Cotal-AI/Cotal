@@ -3380,7 +3380,9 @@ set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVA
 and names the setting to fix. The draft's private folder is made in the temporary directory
 (`TMPDIR`). One this account cannot write refuses with `PERMISSION_DENIED`, and one that is missing
 or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made. A
-successful editor exit and valid definition are required before saving. A changed
+successful editor exit and valid definition are required before saving. A draft that fails
+validation is refused with `SCHEMA_INVALID` and the reason, and an editor that exits non-zero fails
+with `OPERATION_FAILED`. Both keep the draft and name its path, so the edit is not lost. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
 refusal says which one happened and keeps your edited draft in its private folder, naming it, so
 the edit is not lost. Local

@@ -9,12 +9,13 @@
  * The kernel cells run the src kernel over a fixture command in a child, because a classified failure
  * ends the process. The persona cells run the built binary: `persona create` over an existing file
  * refuses with a target-less CONFLICT on a prepared space, and a `--file` the agent-file rules refuse
- * names the field and the reason. No broker is started.
+ * names the field and the reason. An edit that is not saved keeps its draft and names it. No broker
+ * is started.
  *
  * Run: pnpm smoke:operation-space
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
@@ -103,6 +104,22 @@ for (const [label, text, reason] of [
   const message = refused.envelope?.error?.message ?? "";
   check(`a --file with ${label} is SCHEMA_INVALID naming the file and the reason`,
     refused.status === 1 && refused.envelope?.error?.code === "SCHEMA_INVALID" && message.includes(`invalid persona definition ${badFile}: ${reason}`) && !message.includes("secret-value"), shown(refused));
+}
+// An edit that is not saved keeps its draft and names it: a draft the agent-file rules refuse says
+// why, and an editor that exits non-zero keeps what it wrote. The catalog file is unchanged.
+const drafts = join(home, "drafts");
+mkdirSync(drafts);
+const editorScript = (file: string, body: string) => { const path = join(home, file); writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 }); return path; };
+const saved = readFileSync(persona, "utf8");
+for (const [label, editor, status, says] of [
+  ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
+  ["an editor that exits 3", editorScript("ed-exit", 'printf -- "---\\nname: rev\\nrole: changed\\n---\\nx\\n" > "$1"; exit 3'), 5, "editor exited with status 3 - not saved"],
+] as const) {
+  const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
+  const kept = readdirSync(drafts).map((dir) => join(drafts, dir, "rev.md")).filter((path) => existsSync(path));
+  check(`persona edit with ${label} keeps the draft, names it and leaves the catalog file unchanged`,
+    edit.status === status && edit.stderr.includes(says) && kept.length === 1 && edit.stderr.includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
+  for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
 }
 
 finish();

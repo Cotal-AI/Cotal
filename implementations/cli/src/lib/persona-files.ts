@@ -190,6 +190,8 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
+  // A draft the editor may have changed and that was not saved is kept, and the failure names it.
+  let keep = false;
   withDraft(name, draft => {
     writeSecretFile(draft, source.bytes);
     const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
@@ -200,18 +202,31 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} ${result.status === 127 ? "was not found" : "could not be run"} - not saved`, {
         remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; the value runs as a shell command, so quote a path that holds spaces",
       });
-    if (result.error || result.status !== 0)
-      throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`);
+    if (result.error) throw new CommandFailure("failed", "OPERATION_FAILED", "the editor could not be started - not saved");
+    if (result.status !== 0) {
+      keep = true;
+      throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`, {
+        remedy: `your draft is kept in ${draft}; remove ${dirname(draft)} when you are done`,
+      });
+    }
     const edited = requirePersonaSource(draft).bytes;
-    validatePersona(edited, path);
+    try { validatePersona(edited, draft); }
+    catch (error) {
+      if (!isCommandFailure(error)) throw error;
+      keep = true;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message} - not saved`, {
+        remedy: `your edit is kept in ${draft}; correct it, run cotal persona edit ${name} again and paste it in, then remove ${dirname(draft)}`,
+      });
+    }
     try { commitPersona(path, source, edited); }
     catch (error) {
       if (!isCommandFailure(error) || error.code !== "CONFLICT") throw error;
       // The edit was not saved, so the draft stays and the refusal says where it is.
       const removed = readPersonaSource(path) === undefined;
+      keep = true;
       throw new CommandFailure("refused", "CONFLICT", error.message, {
         remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
       });
     }
-  }, (error) => isCommandFailure(error) && error.code === "CONFLICT");
+  }, () => keep);
 }
