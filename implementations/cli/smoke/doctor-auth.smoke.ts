@@ -15,7 +15,7 @@
  * Run: pnpm smoke:doctor-auth
  */
 import { strict as nodeAssert } from "node:assert";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -195,6 +195,26 @@ try {
     assert.equal(envelope?.outcome, "ok", "the diagnosis ends ok");
     assert.equal(code, 0, "exit 0");
     assert.match((await runDoctor({})).text, /No local credential findings/, "the text report says so");
+  }
+
+  // A file other accounts can open is named by its mode, with the chmod that fixes it, and a file
+  // the NATS client cannot parse is a finding although its claims are legible.
+  {
+    const shared = join(agents, "bob.creds");
+    const crlf = join(agents, "dave.creds");
+    writeFileSync(shared, bounded, { mode: 0o600 });
+    chmodSync(shared, 0o644);
+    writeFileSync(crlf, bounded.replace(/\n/g, "\r\n"), { mode: 0o600 });
+    const { envelope, code } = await runDoctor({ json: true });
+    if (process.platform !== "win32") {
+      assert.equal(item(envelope!, "bob.creds")?.problem, "the credential file is not private to you (mode 0644)", "a 0644 credential is named by its mode, not as a parse failure");
+      assert.equal(item(envelope!, "bob.creds")?.repair, `chmod 600 ${shared}`, "its repair is the chmod that makes it private");
+    }
+    assert.equal(item(envelope!, "dave.creds")?.problem, "the NATS client cannot parse it: it has Windows (CRLF) line endings", "a CRLF credential is a finding, as --creds refuses it");
+    assert.match(item(envelope!, "dave.creds")?.repair ?? "", /^save it with LF line endings/, "its repair says how to fix the line endings");
+    assert.equal(code, 5, "the findings exit 5");
+    rmSync(shared);
+    rmSync(crlf);
   }
 
   // Refusals: no `auth` word, and an unknown space that must never read as healthy or open.

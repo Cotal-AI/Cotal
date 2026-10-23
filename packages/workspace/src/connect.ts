@@ -1,8 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync, type Stats } from "node:fs";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
   assertLifecycleToken,
+  credsProblem,
   instancePinnedInstrumentCapabilities,
   isReachable,
   managerCallerBinding,
@@ -30,6 +31,7 @@ import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type Resolv
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type RefusalCode } from "./output.js";
+import { credentialFileExposure } from "./protected-records.js";
 import type { MeshTargetErrorCode } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
 
@@ -329,26 +331,37 @@ export class ConnectRefusal extends Error {
   readonly code: RefusalCode;
   /** The sentence as its message and remedy, when it was written in two parts. */
   readonly parts: WorkspaceErrorParts | undefined;
-  constructor(readonly rendered: string, readonly hint: string | undefined, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode; parts?: WorkspaceErrorParts }) {
+  /** What the refusal is about, such as the file it names, for a structured command's `target`. */
+  readonly target: Record<string, unknown> | undefined;
+  constructor(readonly rendered: string, readonly hint: string | undefined, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode; parts?: WorkspaceErrorParts; target?: Record<string, unknown> }) {
     super(rendered, options);
     this.name = "ConnectRefusal";
     this.kind = options.kind ?? "permanent";
     this.code = options.code;
     this.parts = options.parts;
+    this.target = options.target;
   }
 
   /** This refusal as a command's classified failure under its code: the message, and the remedy
    *  apart from it. */
   failure(): CommandFailure {
     const remedy = this.parts?.remedy ?? this.hint?.trim();
-    return new CommandFailure("refused", this.code, this.parts?.message ?? this.rendered.replace(/^✗ /, ""), remedy ? { remedy } : {});
+    return new CommandFailure("refused", this.code, this.parts?.message ?? this.rendered.replace(/^✗ /, ""), { ...(remedy ? { remedy } : {}), ...(this.target ? { target: this.target } : {}) });
   }
 }
 
 /** A refusal over a workspace failure: the one-line sentence for a terminal, its parts for a
  *  structured command. */
 function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
-  return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e) });
+  const target = e.kind === "target" ? spaceRootTarget(e.error.details) : e.kind === "preflight" ? spaceRootTarget(e.target) : undefined;
+  return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e), ...(target ? { target } : {}) });
+}
+
+/** The space and root a failure names, as a structured refusal's `target`, or undefined when it
+ *  names neither. A script reads which space refused from it rather than from the message. */
+export function spaceRootTarget(at: { space?: string; root?: string }): { space?: string; root?: string } | undefined {
+  const target = { ...(at.space === undefined ? {} : { space: at.space }), ...(at.root === undefined ? {} : { root: at.root }) };
+  return Object.keys(target).length ? target : undefined;
 }
 
 export function isConnectRefusal(e: unknown): e is ConnectRefusal {
@@ -500,8 +513,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         "  pass the broker this credential belongs to with --server <url>",
         { code: "TARGET_NOT_FOUND" },
       );
-    if (!existsSync(flags.creds)) throw new ConnectRefusal(`✗ creds file not found: ${flags.creds}`, undefined, { code: "USAGE_INVALID" });
-    const creds = readFileSync(flags.creds, "utf8");
+    const creds = readCredsFile(flags.creds);
     // A broker taken from the space's record keeps its recorded TLS requirement. With `--server` the
     // connect is off-registry: no recorded TLS intent to inherit. It stays non-strict, and that is a
     // real (documented) gap rather than a safe default - a `--creds` connect to a TLS broker still
@@ -739,6 +751,43 @@ async function userConnect(target: MeshTarget): Promise<Connection> {
     ...(target.policy ? { policy: target.policy } : {}),
     epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
   };
+}
+
+/** Read a `--creds` file and check it before anything is dialed, so a missing, unreadable or
+ *  malformed file is refused naming the file and what is wrong with it, rather than reaching a
+ *  serving broker as an unreachable one. A file other accounts can read is still used, with a
+ *  warning on stderr: the private-file rule refuses only the credentials Cotal keeps itself. */
+export function readCredsFile(path: string): string {
+  const refuse = (problem: string, code: RefusalCode, remedy: string) =>
+    new ConnectRefusal(`✗ creds file ${problem}`, `  ${remedy}`, { code, parts: { message: `creds file ${problem}`, remedy }, target: { path } });
+  let stat: Stats;
+  let text: string;
+  try {
+    stat = statSync(path);
+    if (!stat.isFile()) throw refuse(`${path} is not a regular file`, "SCHEMA_INVALID", "pass the credential file itself");
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    if (isConnectRefusal(e)) throw e;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw refuse(`not found: ${path}`, "TARGET_NOT_FOUND", "check the path; `cotal auth mint <label> --out <file>` writes a credential file");
+    throw refuse(`${path} could not be read (${code ?? "read failed"})`, code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : "SCHEMA_INVALID", "check the file's owner and permissions");
+  }
+  const problem = credsProblem(text);
+  if (problem) throw refuse(`${path} cannot be used: ${problem.message}`, "SCHEMA_INVALID", problem.code === "crlf"
+    ? `save it with LF line endings, for example with \`dos2unix ${path}\``
+    : "pass the complete credential file as it was issued; `cotal auth mint <label> --out <file>` writes a new one");
+  const exposure = credentialFileExposure(path, stat);
+  if (exposure) console.error(c.yellow(`! creds file ${path} ${exposure.reason}; ${exposure.remedy}`));
+  return text;
+}
+
+/** {@link readCredsFile} with the exiting disposition. */
+export function readCredsFileOrExit(path: string): string {
+  try {
+    return readCredsFile(path);
+  } catch (e) {
+    exitOnRefusal(e);
+  }
 }
 
 /** Reachability check for a RAW (off-registry) connection — one plain sentence, never a registry/

@@ -1,5 +1,4 @@
 import { userInfo } from "node:os";
-import { readFileSync } from "node:fs";
 import * as readline from "node:readline";
 import {
   CotalEndpoint,
@@ -20,7 +19,7 @@ import {
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { findMesh, inputDisabledByFlag, refreshRegistrationPolicy, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
+import { findMesh, inputDisabledByFlag, readCredsFileOrExit, refreshRegistrationPolicy, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
@@ -75,7 +74,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readFileSync(values.creds, "utf8") : undefined,
+    creds: values.creds ? readCredsFileOrExit(values.creds) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /

@@ -1,8 +1,9 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join } from "node:path";
 import {
   credentialLifetime,
+  credsProblem,
   CotalEndpoint,
   inspectCredHealth,
   mintCreds,
@@ -15,7 +16,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, accountInventory, canonicalRoot, isCommandFailure, jsonFlag, plainFlag, presentationOf, readLocalRecordSource, renewalRecordPath, writeResult,
+  CommandFailure, accountInventory, canonicalRoot, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, presentationOf, readLocalRecordSource, renewalRecordPath, writeResult,
   agentCredsDir,
   authDir,
   CONNECTION_EVICTOR_CREDS_KIND,
@@ -128,7 +129,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     issuedAt: Number.isFinite(row.health?.iat) ? row.health!.iat! : null,
     expiresAt: Number.isFinite(row.health?.exp) ? row.health!.exp! : null,
     renewAt: Number.isFinite(row.health?.renewAt) ? row.health!.renewAt! : null,
-    problem: row.health?.state === "unreadable" ? "credential parsing failed; raw diagnostic omitted" : row.problem ?? null,
+    problem: row.problem ?? null,
     repair: row.repair ?? null, superseded: row.superseded === true,
   }));
   const findings = items.filter((row) => row.problem !== null).length;
@@ -334,12 +335,24 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
 
 function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily): CredReport {
   let health: CredHealth;
+  // A cause the operator can act on, reported in place of the generic parse finding. Its text is
+  // fixed and never quotes the file.
+  let named: { problem: string; repair?: string } | undefined;
   try {
     const bytes = readLocalRecordSource(path, 1024 * 1024, true);
     if (!bytes) return { label, kind, path };
-    health = inspectCredHealth(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    const creds = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    // The NATS client's own parse, the check `--creds` makes, so a file whose claims are legible but
+    // that the client cannot present is not called healthy.
+    const unusable = credsProblem(creds);
+    if (unusable) named = { problem: `the NATS client cannot parse it: ${unusable.message}`, ...(unusable.code === "crlf" ? { repair: `save it with LF line endings, for example with \`dos2unix ${path}\`` } : {}) };
+    health = unusable ? { state: "unreadable", error: unusable.message } : inspectCredHealth(creds);
   } catch (error) {
     if (isCommandFailure(error) && error.code === "UNSUPPORTED") throw error;
+    // The private read refuses a file other accounts can open, so name that rather than a parse.
+    let exposure: ReturnType<typeof credentialFileExposure>;
+    try { const stat = lstatSync(path); exposure = stat.isFile() ? credentialFileExposure(path, stat) : undefined; } catch { exposure = undefined; }
+    if (exposure) named = { problem: `the credential file ${exposure.reason}`, repair: exposure.remedy };
     health = { state: "unreadable", error: "protected credential could not be read or parsed" };
   }
   const r: CredReport = { label, kind, path, health };
@@ -367,10 +380,10 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
   }
   switch (health.state) {
     case "unreadable":
-      r.problem = `unreadable credential file (${health.error})`;
+      r.problem = named?.problem ?? "credential parsing failed; raw diagnostic omitted";
       // Unreadable material cannot be re-signed, so the honest agent remedy here is the respawn
       // the old code gave to every case — this is the ONE case it fitted.
-      r.repair = kind === "agent" && live?.role !== "superseded" ? agentUnrenewableRepair() : repair;
+      r.repair = named?.repair ?? (kind === "agent" && live?.role !== "superseded" ? agentUnrenewableRepair() : repair);
       break;
     case "expired":
       // #1576 ASK 3. A SUPERSEDED incarnation is expected to be expired — that is what supersession

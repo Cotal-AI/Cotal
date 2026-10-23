@@ -149,6 +149,9 @@ A command whose `structured output` line also names `plain` takes `--plain`, whi
 report as plain lines: no color, no marks, ASCII labels. Plain writes these punctuation marks in
 ASCII wherever they appear: `·` and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§`
 as `section`. Other characters, such as the letters of a name or a message, are written as they are.
+Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, then `LANG` decide,
+reports and error lines draw their marks and punctuation as plain does, and keep their color. With
+none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
 terminal is written as one labeled record per row, so no value is cut off.
 
@@ -1731,18 +1734,22 @@ so is a bare `space show` with nothing selected. Each entry under `prepared` has
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. With
 `--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
-holds the space's trust, `open` otherwise. With `--file`, a user-auth connection bundle exported
+holds the space's trust, `open` otherwise. `--root` defaults to this project. Outside one it is
+required, and leaving it out is a one-line `USAGE_INVALID` refusal whose remedy says what to pass:
+an open space keeps no credentials there, so any folder will do. With `--file`, a user-auth connection bundle exported
 where the space runs supplies the login pins and the server, unless `--server` names another
 address for that broker; `--from` fetches the space's discovery
 document instead, after you agree to the fetch, and needs a terminal. Before anything is written,
 `space add` checks that the address may carry credentials, that the trust composes, that the
 broker enforces the mode, and that the credentials open the space; a user-auth space's exchange
-must answer as the issuer it pins. On a terminal it then shows what it will trust and asks; `--yes`
+must answer as the issuer it pins. An open broker answers for any name, so an open space must also
+be one the broker serves, as its streams show. A name it does not serve is refused with
+`TARGET_NOT_FOUND`, exit 2, naming the spaces it does serve. On a terminal it then shows what it will trust and asks; `--yes`
 skips that question, but not the confirmation of fetched pins. It never changes the selection.
 
 A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
-input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`, `UNSUPPORTED`,
-`AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
+input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `DEPENDENCY_UNAVAILABLE`,
+`UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
 registered is a `CONFLICT`, and its remedy offers `--force` only for a registration added by hand.
 A broker that requires auth, with a `--root` that holds another space's trust, is a
 `DEPENDENCY_UNAVAILABLE` that names the space the folder holds.
@@ -1860,12 +1867,19 @@ that several running spaces could serve asks which one when it runs in a termina
 target of that one run, and the selection stays as it is; cancelling the question does nothing and
 exits 0. A script, a `--json` caller and `--no-input` are not asked: the command refuses with
 `TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
-in `error.remedy`, apart from `error.message`.
+in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
+`target` when they are known, as for a prepared space that is not started.
 
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
 the `--space` is registered at, `main` when no space is named, and keeps that registration's TLS
 requirement. A space not registered here is refused with `TARGET_NOT_FOUND`, exit 2, before
 anything is dialed. The default address is never assumed for a credential.
+The file is read and checked with the NATS client's own parser before anything is dialed, and the
+refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A directory, an empty file and
+a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
+no seed block, an invalid seed, or Windows (CRLF) line endings. A file that other accounts can read
+is still used, with a warning on stderr that gives the `chmod 600` command. `join --creds` reads its
+file the same way.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
@@ -4507,6 +4521,10 @@ lists.
 
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.
+A credential file that other accounts can open is a finding that names its mode, with `chmod 600`
+on the file as its repair. Each file is also parsed the way `--creds` checks one, so a file the NATS
+client cannot parse is a finding even when its claims are legible, such as one with Windows (CRLF)
+line endings.
 A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
 signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential,
 such as one `auth mint` wrote without `--expires-in` or `--expires-at`, stays a finding until it is

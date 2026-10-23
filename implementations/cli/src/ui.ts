@@ -1,5 +1,5 @@
 import { formatAge, presenceAges, presenceText, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
-import { c, findCotalRoot, readMaintenanceJournal, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { c, findCotalRoot, localeIsUtf8, plainPunctuation, readMaintenanceJournal, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 
 // The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
 // Re-exported so the CLI's many importers keep resolving them from here.
@@ -12,9 +12,12 @@ export function hang(prefix: string, text: string | readonly string[], width: nu
 }
 
 /** A `✗` failure or `↳` hint on stderr, wrapped at spaces to the terminal, each continuation line
- *  under the text. */
+ *  under the text. Under a locale that is not UTF-8 it is written as plain writes it: `!` for the
+ *  failure mark and the punctuation in ASCII. */
 export function stderrLine(prefix: string, text: string, paint: (s: string) => string): void {
-  for (const line of hang(prefix, text, terminalWidth(process.stderr))) console.error(paint(line));
+  const ascii = !localeIsUtf8();
+  const lead = ascii ? plainPunctuation(prefix.replace("✗", "!")) : prefix;
+  for (const line of hang(lead, ascii ? plainPunctuation(text) : text, terminalWidth(process.stderr))) console.error(paint(line));
 }
 
 export function statusBadge(status: PresenceStatus): string {

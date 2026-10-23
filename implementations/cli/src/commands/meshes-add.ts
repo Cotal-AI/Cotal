@@ -166,7 +166,7 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
   }
   const root = findCotalRoot(cwd);
   if (!isDir(join(root, ".cotal")) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
-    return bad("✗ --root <dir> is required outside a mesh project - it is the folder whose .cotal/auth holds this mesh's credentials and whose .cotal/agents holds its personas", "USAGE_INVALID");
+    return bad("✗ --root <dir> is required outside a mesh project - it is the folder whose .cotal/agents holds the space's personas, and for an auth space whose .cotal/auth holds its trust", "USAGE_INVALID");
   return good(root);
 }
 

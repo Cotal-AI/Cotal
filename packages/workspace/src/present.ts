@@ -99,18 +99,37 @@ export function displayWidth(text: string): number {
  *  other characters of the content itself, such as the letters of a name. */
 const PLAIN_PUNCTUATION: Readonly<Record<string, string>> = { "·": "-", "…": "...", "→": "->", "↳": "->", "—": "-", "–": "-" };
 
+/** `text` with its punctuation in ASCII, as plain writes it. */
+export function plainPunctuation(text: string): string {
+  return text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, "section ");
+}
+
+/** Whether the locale's character set is UTF-8. POSIX takes the character type from `LC_ALL`, else
+ *  `LC_CTYPE`, else `LANG`, the first that is set and not empty. With none set the answer is yes,
+ *  as common Node CLIs read it, so only a locale that names another character set, such as `C` or
+ *  ISO-8859-1, draws rich output's marks and punctuation as plain does. A Windows console takes
+ *  Unicode whatever these say. */
+export function localeIsUtf8(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (process.platform === "win32") return true;
+  const locale = env.LC_ALL || env.LC_CTYPE || env.LANG;
+  return !locale || /utf-?8/i.test(locale);
+}
+
+/** Whether `style` draws marks: rich style does, under a UTF-8 locale. */
+const marks = (style: Style): boolean => style === "rich" && localeIsUtf8();
+
 const textOf = (cell: Cell, style: Style): string => {
   const text = oneLine(typeof cell === "string" ? cell : cell.text);
-  return style === "plain" ? text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, "section ") : text;
+  return marks(style) ? text : plainPunctuation(text);
 };
 
 /** One cell as `style` draws it. The width it occupies is that of its escaped text, plus the mark
- *  and a space in rich style. */
+ *  and a space when the style draws marks. */
 function draw(cell: Cell, style: Style): { shown: string; width: number } {
   const text = textOf(cell, style);
   if (typeof cell !== "string" && cell.mark && !cell.text.trim()) throw new Error(`internal error: the mark ${cell.mark} names no state in words`);
   if (typeof cell === "string" || style === "plain") return { shown: text, width: displayWidth(text) };
-  const marked = cell.mark ? `${oneLine(cell.mark)} ${text}` : text;
+  const marked = cell.mark && marks(style) ? `${oneLine(cell.mark)} ${text}` : text;
   return { shown: cell.tone ? tones[cell.tone](marked) : marked, width: displayWidth(marked) };
 }
 
@@ -138,7 +157,7 @@ export function wrapWords(text: string | readonly string[], width: number): stri
 function drawWrapped(cell: Cell, style: Style, width: number, hang = 0): string[] {
   const text = textOf(cell, style);
   const lead = /^ */.exec(text)![0];
-  const markWidth = typeof cell !== "string" && cell.mark && style === "rich" ? displayWidth(oneLine(cell.mark)) + 1 : 0;
+  const markWidth = typeof cell !== "string" && cell.mark && marks(style) ? displayWidth(oneLine(cell.mark)) + 1 : 0;
   const [first = "", ...rest] = wrapWords(text.slice(lead.length), width - lead.length - markWidth - hang);
   const piece = (words: string): Cell => (typeof cell === "string" ? words : { text: words, ...(cell.tone ? { tone: cell.tone } : {}) });
   return [
@@ -289,7 +308,7 @@ export function writeResult<R>(
     const say = (cell: Styled, hang: number) => { for (const line of drawWrapped(cell, presentation, errWidth, hang)) console.error(line); };
     for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
     if (error) {
-      say({ text: `${presentation === "plain" ? "!" : "✗"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
+      say({ text: `${marks(presentation) ? "✗" : "!"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
       if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2);
     }
   }

@@ -17,7 +17,7 @@
  * Run: pnpm smoke:send
  */
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,7 @@ import {
   channelBucket,
   CotalEndpoint,
   createSpaceAuth,
+  credsProblem,
   DEV_OWNER,
   dmDurable,
   isReachable,
@@ -48,7 +49,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 46;
+const EXPECTED = 50;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -312,6 +313,28 @@ try {
   const unregistered = await run(["send", "-t", "bob", "x", "--space", "not-registered", "--creds", explicitCreds]);
   check("explicit creds for a space not registered here are refused before any dial, TARGET_NOT_FOUND, exit 2",
     unregistered.code === 2 && unregistered.stderr.includes("TARGET_NOT_FOUND") && unregistered.stderr.includes('space "not-registered" is not registered here, so nothing was dialed'), unregistered.stderr);
+  // The file is checked before any dial, so a serving broker is never reported unreachable over it.
+  const crlfCreds = join(tmp, "crlf.creds");
+  writeFileSync(crlfCreds, readFileSync(explicitCreds, "utf8").replace(/\n/g, "\r\n"), { mode: 0o600 });
+  const crlf = await run(["send", "-t", "bob", "x", "--space", space, "--server", servers, "--creds", crlfCreds]);
+  check("a creds file with CRLF line endings is refused naming the file and the cause, SCHEMA_INVALID, exit 1",
+    crlf.code === 1 && crlf.stderr.includes("SCHEMA_INVALID") && crlf.stderr.includes(`creds file ${crlfCreds} cannot be used: it has Windows (CRLF) line endings`) && !/can't reach/.test(crlf.stderr), crlf.stderr);
+  const minted = readFileSync(explicitCreds, "utf8");
+  const shapes = [minted, "", minted.slice(0, 200), minted.slice(0, minted.indexOf("-----BEGIN USER NKEY SEED")), minted.replace(/\nSU[A-Z0-9]+\n/, "\nSUNOTASEED\n"), minted.replace(/\n/g, "\r\n")];
+  const codes = shapes.map((text) => credsProblem(text)?.code ?? "ok");
+  check("the pre-dial check names each malformed shape and passes the minted file",
+    JSON.stringify(codes) === JSON.stringify(["ok", "empty", "no-jwt-block", "no-seed-block", "invalid-seed", "crlf"]), codes);
+  const absent = await run(["send", "-t", "bob", "x", "--space", space, "--server", servers, "--creds", join(tmp, "absent.creds")]);
+  check("a missing creds file is TARGET_NOT_FOUND, exit 2, without the command's help",
+    absent.code === 2 && absent.stderr.includes("TARGET_NOT_FOUND") && absent.stderr.includes("creds file not found:") && !absent.stderr.includes("Usage"), absent.stderr);
+  const sharedCreds = join(tmp, "shared.creds");
+  writeFileSync(sharedCreds, readFileSync(explicitCreds));
+  chmodSync(sharedCreds, 0o644);
+  const sharedText = `shared-${randomUUID().slice(0, 6)}`;
+  const shared = await run(["send", "-t", "bob", sharedText, "--space", space, "--server", servers, "--creds", sharedCreds]);
+  await wait(400);
+  check("a creds file other accounts can read is still used, with a warning that names chmod 600",
+    shared.code === 0 && got.some((m) => m.route === "DM" && m.text === sharedText) && (process.platform === "win32" || shared.stderr.includes(`creds file ${sharedCreds} is not private to you (mode 0644); chmod 600 ${sharedCreds}`)), shared.stderr);
 
   const missing = await run(["send", "-t", "nobody-here", "x"]);
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);

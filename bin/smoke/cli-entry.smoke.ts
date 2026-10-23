@@ -229,6 +229,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const r = cotal(argv, undefined, forced);
     check(`cotal ${argv.join(" ")} prints with no ANSI color`, r.status === 0 && r.stdout.length > 0 && !ansi.test(r.stdout), shown(r));
   }
+  // Under a locale whose character set is not UTF-8, marks and punctuation are written as plain writes
+  // them. An empty variable counts as unset, and with none set the marks stay UTF-8.
+  const nonAscii = /[^\x00-\x7f]/;
+  const locales: [Record<string, string>, boolean][] = [
+    [{}, false], [{ LC_ALL: "C.UTF-8" }, false], [{ LC_ALL: "en_US.utf8" }, false], [{ LC_CTYPE: "C.UTF-8", LANG: "C" }, false],
+    [{ LC_ALL: "C" }, true], [{ LC_ALL: "POSIX" }, true], [{ LC_ALL: "en_US.ISO-8859-1" }, true], [{ LC_ALL: "C", LANG: "C.UTF-8" }, true], [{ LANG: "C" }, true],
+  ];
+  for (const [set, ascii] of locales) {
+    const env = { LC_ALL: "", LC_CTYPE: "", LANG: "", ...set };
+    const named = Object.entries(set).map(([key, value]) => `${key}=${value}`).join(" ") || "no locale variable";
+    const help = cotal(["help"], undefined, env);
+    const error = cotal(["nope"], undefined, env);
+    check(`under ${named} help and an error are ${ascii ? "ASCII" : "drawn with UTF-8 marks"}`,
+      help.status === 0 && error.status === 1 && nonAscii.test(help.stdout + error.stderr) === !ascii && error.stderr.startsWith(ascii ? "! unknown command: nope" : "✗ unknown command: nope"), { help: help.stdout.slice(0, 200), error: shown(error) });
+  }
   for (const value of ["0", "false", "FALSE", "False"]) {
     const r = cotal(["help"], undefined, { FORCE_COLOR: value });
     check(`FORCE_COLOR=${value} turns color off`, r.status === 0 && r.stdout.length > 0 && !ansi.test(r.stdout), shown(r));

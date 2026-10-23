@@ -7,6 +7,7 @@
  * Run: pnpm smoke:present
  */
 process.env.FORCE_COLOR = "1"; // the rich style must have color to withhold; read per call
+process.env.LC_ALL = "C.UTF-8"; // the rich style draws marks under a UTF-8 locale; read per call
 
 const {
   displayWidth,
@@ -81,6 +82,14 @@ check("plain has no ANSI even when color is forced", !ansi.test(plain), plain);
 check("rich colors when color is on", ansi.test(rich), rich);
 check("plain draws no marks", !plain.includes("●") && !plain.includes("⨯"), plain);
 check("rich draws the marks", rich.includes("●") && rich.includes("⨯"), rich);
+process.env.LC_ALL = "C";
+const asciiRich = renderReport(report, "rich");
+const saved = { LC_ALL: "C.UTF-8", LC_CTYPE: process.env.LC_CTYPE, LANG: process.env.LANG };
+for (const key of ["LC_ALL", "LC_CTYPE", "LANG"]) delete process.env[key];
+const unsetRich = renderReport(report, "rich");
+for (const [key, value] of Object.entries(saved)) if (value !== undefined) process.env[key] = value;
+check("under a locale that is not UTF-8, rich keeps its color and is otherwise plain", ansi.test(asciiRich) && asciiRich.replace(/\x1b\[[0-9;]*m/g, "") === plain, asciiRich);
+check("with no locale variable set, rich draws the marks", unsetRich === rich, unsetRich);
 for (const word of ["working", "failed", "NAME", "space:", "alpha", "yes", "run cotal ps"])
   check(`plain keeps the word ${word}`, plain.includes(word), plain);
 check("untrusted cell content is escaped in plain", plain.includes("\\u001b[2Jspoof") && !plain.includes("\x1b[2J"), plain);
