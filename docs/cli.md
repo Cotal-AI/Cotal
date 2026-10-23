@@ -3968,7 +3968,8 @@ are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; t
 preserved and never printed in the receipt. A file that cannot be read is refused with its path,
 `TARGET_NOT_FOUND` when it does not exist.
 No destination, several destinations, several body sources or an empty message is refused. A lone
-`-` is refused too, because stdin is read only through `--stdin` or `--file -`.
+`-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
+`--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
 `name one concrete channel, without wildcards`, and a channel or role name outside the grammar is

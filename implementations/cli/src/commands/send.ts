@@ -80,8 +80,12 @@ export function sendArguments(args: ParsedArgs): SendInput {
   const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
   // A remedy reruns the destination the caller gave.
   const flag = destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t";
-  const again = (body: string) => `run cotal send ${destination.target.trim() ? `${flag} ${shellWord(destination.target)}` : "-t <agent>"} ${body}`;
-  if (!destination.target.trim() || args.positionals.length > 1 || bodies !== 1 || values.file === "")
+  if (!destination.target.trim()) {
+    const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
+    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `run cotal send ${flag} <${what}> "<message>"` });
+  }
+  const again = (body: string) => `run cotal send ${flag} ${shellWord(destination.target)} ${body}`;
+  if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
   if (args.positionals[0] === "-")

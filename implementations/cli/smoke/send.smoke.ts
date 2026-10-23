@@ -51,7 +51,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 60;
+const EXPECTED = 61;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -373,6 +373,14 @@ try {
   const empty = await run(["send", "-c", "general", "", "--json"]);
   check("an empty quoted body says the message is empty and suggests the same channel",
     empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run cotal send -c general \\"<message>\\"'), empty);
+  // An empty recipient used to be told to choose one body, with a `-t` remedy whatever flag was given.
+  const blanks = await Promise.all([["-t", ""], ["--to=", null], ["-r", ""], ["-c", "#"]].map(([option, value]) => run(["send", option!, ...(value === null ? [] : [value!]), "x", "--json"])));
+  check("an empty --to, --role or --channel value is refused for that flag, with a remedy that keeps it",
+    blanks.every((r) => r.code === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && !r.stdout.includes("exactly one body"))
+      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('run cotal send -t <agent> \\"<message>\\"')
+      && blanks[1]!.stdout.includes('"message":"--to/-t is empty;')
+      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('run cotal send -r <role> \\"<message>\\"')
+      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('run cotal send -c <channel> \\"<message>\\"'), blanks);
   // A channel or role name the subject rules refuse gets their reason; only a wildcard gets the wildcard one.
   const unsafe = await run(["send", "-c", "kanäle", "x", "--json"]);
   check("`cotal send -c` with a name that is not NATS-safe is USAGE_INVALID, exit 1, naming the segment",
