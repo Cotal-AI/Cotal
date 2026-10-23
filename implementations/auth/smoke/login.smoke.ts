@@ -894,5 +894,91 @@ console.log("G) caller cancellation (AbortSignal): stops this local sign-in, rev
   stall.close();
 }
 
+// ---- the in-process JWT hold ----
+console.log("H) /token is posted once per (IdP, session) within the hold, never for a failure");
+{
+  // A loopback IdP that counts /token hits per session and mints whatever `exp` the cell asks for.
+  const hits: Record<string, number> = {};
+  let expIn = 900; // seconds from now; Better Auth's default JWT lifetime is 15 minutes
+  let status = 200;
+  let body: unknown;
+  const mint = (sub: string) =>
+    `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub, iss: "x", exp: Math.floor(Date.now() / 1000) + expIn })).toString("base64url")}.sig`;
+  let tokenGate: Promise<void> | undefined;
+  const idp = createServer(async (req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    const send = (s: number, b: unknown) => { res.writeHead(s, { "content-type": "application/json" }).end(JSON.stringify(b)); };
+    if (route === "/api/auth/device/code")
+      return send(200, { device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 60, interval: 1 });
+    if (route === "/api/auth/device/token") return send(200, { access_token: "hold-cancel", expires_in: 3600 });
+    const session = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    hits[session] = (hits[session] ?? 0) + 1;
+    if (tokenGate) await tokenGate;
+    send(status, body ?? { token: mint(`user-${session}`) });
+  });
+  await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
+  const hBase = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/api/auth`;
+
+  const a1 = await fetchIdpJwt(hBase, "hold-a");
+  const a2 = await fetchIdpJwt(hBase, "hold-a");
+  const a3 = await fetchIdpJwt(`${hBase}/`, "hold-a"); // the key normalizes the IdP URL
+  check("three sequential calls for one session post /token once and hand back the same JWT", hits["hold-a"] === 1 && a1 === a2 && a2 === a3, hits);
+  await fetchIdpJwt(hBase, "hold-b");
+  check("another session is its own entry", hits["hold-b"] === 1 && hits["hold-a"] === 1, hits);
+
+  const burst = await Promise.all(Array.from({ length: 8 }, () => fetchIdpJwt(hBase, "hold-c")));
+  check("eight concurrent callers share one request", hits["hold-c"] === 1 && new Set(burst).size === 1, hits);
+
+  expIn = 31; // held for exp minus the 30 s margin: about one second
+  await fetchIdpJwt(hBase, "hold-short");
+  await fetchIdpJwt(hBase, "hold-short");
+  check("a JWT is held no longer than its exp minus the margin", hits["hold-short"] === 1, hits);
+  await new Promise((r) => setTimeout(r, 1300));
+  await fetchIdpJwt(hBase, "hold-short");
+  check("… and is fetched again once that passes", hits["hold-short"] === 2, hits);
+
+  expIn = 20; // inside the margin: nothing to hold
+  await fetchIdpJwt(hBase, "hold-none");
+  await fetchIdpJwt(hBase, "hold-none");
+  check("a JWT expiring inside the margin is never held", hits["hold-none"] === 2, hits);
+  expIn = 900;
+
+  body = { token: "not-a-jwt" };
+  await fetchIdpJwt(hBase, "hold-opaque");
+  await fetchIdpJwt(hBase, "hold-opaque");
+  check("a /token value with no decodable exp is never held", hits["hold-opaque"] === 2, hits);
+  body = undefined;
+
+  status = 429;
+  await rejects("a rate-limited /token is the same HTTP error as before", () => fetchIdpJwt(hBase, "hold-429"), "/token failed (HTTP 429)");
+  await rejects("… and is not held: the next call posts again", () => fetchIdpJwt(hBase, "hold-429"), "HTTP 429");
+  status = 200;
+  await fetchIdpJwt(hBase, "hold-429");
+  check("… and succeeds as soon as the IdP does", hits["hold-429"] === 3, hits);
+
+  status = 401;
+  await rejects("a 401 keeps its recovery message", () => fetchIdpJwt(hBase, "hold-401"), "run `cotal login --idp");
+  status = 200;
+
+  // One caller's abort rejects nobody else: a cancellable call (the login proof) makes its own
+  // request instead of sharing one with a concurrent caller that has no signal.
+  {
+    let release!: () => void;
+    tokenGate = new Promise<void>((r) => { release = r; });
+    const ac = new AbortController();
+    const cancellable = establishIdpSession({ dir: mkdtempSync(join(tmpdir(), "cotal-login-smoke-hold-")), idpUrl: hBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    while ((hits["hold-cancel"] ?? 0) === 0) await new Promise((r) => setTimeout(r, 20));
+    const plain = fetchIdpJwt(hBase, "hold-cancel").then((jwt) => ({ jwt }), (e) => ({ err: String(e) }));
+    while ((hits["hold-cancel"] ?? 0) < 2) await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+    const cancelled = await cancellable;
+    release();
+    const plainResult = await plain;
+    check("a cancellable call makes its own request, so its abort rejects nobody else", cancelled instanceof IdpLoginCancelled && "jwt" in plainResult && hits["hold-cancel"] === 2, { cancelled: String(cancelled), plainResult, hits });
+    tokenGate = undefined;
+  }
+  idp.close();
+}
+
 console.log(`\nlogin smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

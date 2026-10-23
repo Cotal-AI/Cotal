@@ -167,8 +167,9 @@ one pin: the other caller adopts it when it names the same IdP and is refused wh
 URL pinned from it and the catalog link below must use HTTPS. Plain HTTP is accepted only on a
 loopback IP literal such as `127.0.0.1`, never on `localhost`, whose resolution would choose the
 keys the mesh trusts. After that,
-any command works: cached IdP session → fresh IdP proof per connect (so IdP-side
-revocation bites here too) → the configured exchange turns it into a short-lived Cotal bearer →
+any command works: cached IdP session → IdP proof, fetched per connect and reused in memory for
+at most a minute (so IdP-side revocation bites within a minute) → the configured exchange turns it
+into a short-lived Cotal bearer →
 the broker's **auth callout** checks the bearer and the ledger at connect time and mints
 a scoped credential on the spot. Every bearer also names a **root credential** row in the
 space's credential ledger, proved live at each connect, so revoking that one credential
