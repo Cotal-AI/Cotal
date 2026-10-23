@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { homedir, release } from "node:os";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { findSubcommand, type Command, type Registry } from "@cotal-ai/core";
 import {
   effectiveTelemetry,
   extensionProvides,
+  homeCotalDir,
   loadExtensionsManifest,
   markTelemetryInstallEvent,
   markTelemetryNoticeShown,
@@ -113,9 +116,30 @@ function subcommandName(cmd: Command, words: readonly string[]): string | null {
   return findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name ?? null;
 }
 
+/**
+ * The account hash sent at `regular`: sha256 of the IdP URL and the subject id of this home's
+ * cached sign-in, cut to 32 hex characters, so one person counts once across machines and
+ * workspaces. The id itself is never sent. `null` with no cached sign-in, and on any read problem;
+ * with several sign-ins, the first by IdP URL.
+ */
+export function accountHash(): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(homeCotalDir(), "idp-sessions.json"), "utf8")) as { sessions?: Record<string, { sub?: unknown } | null> };
+    const accounts = Object.entries(parsed.sessions ?? {})
+      .filter((entry): entry is [string, { sub: string }] => typeof entry[1]?.sub === "string" && entry[1].sub !== "")
+      .map(([idp, session]) => `${idp}\n${session.sub}`)
+      .sort();
+    return accounts.length === 0 ? null : createHash("sha256").update(accounts[0]!).digest("hex").slice(0, 32);
+  } catch {
+    return null;
+  }
+}
+
 interface Pending {
   readonly level: Exclude<TelemetryLevel, "off">;
   readonly settings: TelemetrySettings;
+  /** At `regular`, {@link accountHash}; `null` at `minimal`. */
+  readonly account: string | null;
   readonly command: string;
   readonly subcommand: string | null;
   readonly flags: string[];
@@ -160,6 +184,7 @@ export function armTelemetry(registry: Registry, cmd: Command, words: readonly s
   pending = {
     level: effective.level,
     settings,
+    account: effective.level === "regular" ? accountHash() : null,
     command: cmd.name,
     subcommand: raw ? null : subcommandName(cmd, words),
     flags: raw ? [] : flagNames(cmd, words),
@@ -223,6 +248,7 @@ function commandEvent(p: Pending, exitCode: number, now: Date) {
   const error = outcome === "ok" ? undefined : p.error;
   return {
     ...minimal,
+    account: p.account,
     subcommand: p.subcommand,
     flags: p.flags,
     errorCode,
@@ -263,6 +289,7 @@ function installEvent(registry: Registry, p: Pending, now: Date) {
   return {
     ...base(p),
     event: "install" as const,
+    account: p.account,
     osRelease: release(),
     packageManager: packageManager(),
     installMethod: installMethod(),

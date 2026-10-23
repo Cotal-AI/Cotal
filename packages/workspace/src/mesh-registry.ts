@@ -205,6 +205,13 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
  *  `cwd` there) — or you have sandboxed the registry label, not the launch surface. */
 export function homeCotalDir(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
+  return userCotalDir();
+}
+
+/** The OS user's own Cotal directory, which `COTAL_HOME` never redirects: POSIX `~/.cotal`, Windows
+ *  `%LOCALAPPDATA%\Cotal`. Telemetry keeps its settings here, so every workspace one person runs
+ *  under their own account shares one install id. */
+export function userCotalDir(): string {
   if (process.platform === "win32" && process.env.LOCALAPPDATA)
     return join(process.env.LOCALAPPDATA, "Cotal");
   return join(homedir(), ".cotal");

@@ -24,17 +24,21 @@ The environment outranks the file: `DO_NOT_TRACK=1` or `COTAL_TELEMETRY_DISABLED
 and `COTAL_TELEMETRY=off|minimal|regular` names a level. Any other `COTAL_TELEMETRY` value refuses
 with `USAGE_INVALID`. `cotal telemetry` names the source of the level in force.
 
-The settings live in `<home>/telemetry.json` (`~/.cotal/telemetry.json`, or under `COTAL_HOME`),
-mode `0600`: the level, a random install id (uuid v4), the file's creation time, and the times of
-the one-time notice and the last install event. A file that does not validate refuses every
-command with `SCHEMA_INVALID` and is never replaced.
+The settings live in the OS user's own Cotal directory, `~/.cotal/telemetry.json`
+(`%LOCALAPPDATA%\Cotal\telemetry.json` on Windows), mode `0600`: the level, a random install id
+(uuid v4), the file's creation time, and the times of the one-time notice and the last install
+event. `COTAL_HOME` does not move this file, so every workspace one person runs under their own
+account reports the same install id. A file that does not validate refuses every command with
+`SCHEMA_INVALID` and is never replaced.
 
 ## Never sent
 
 Arguments, flag values, paths, mesh, space, agent, user and host names, environment values,
 prompts, messages and any other content. The error text of a failure is sent at `regular` only
 after masking (see `errorMessage` below). The install id identifies the settings file, not a person
-or machine. The daemon, manager, connectors and workflow runtime send nothing; neither do internal
+or machine. The `account` field at `regular` is a hash of the cached sign-in's IdP URL and subject
+id; the id itself, the email and the name behind it are never sent. The daemon, manager,
+connectors and workflow runtime send nothing; neither do internal
 entries, hidden daemon runners, `agent-bearer` and `cotal telemetry` itself.
 
 The intake sees the IP address every request comes from, as any web server does. It uses it for a
@@ -73,6 +77,7 @@ At `regular` the event also carries:
 
 | Field | Type | Meaning |
 |---|---|---|
+| `account` | string or `null` | A sha256 hash of the IdP URL and subject id of the home's cached sign-in, cut to 32 hex characters, so one person counts once across machines; with several sign-ins, the first by IdP URL. `null` without a sign-in. |
 | `subcommand` | string or `null` | The registered subcommand the first positional names (`ext add`, `daemon status`), never a user value. |
 | `flags` | string array, at most 32 | Flag names as typed (`--json`, `-j`, `--server`), values stripped; an unknown flag counts by name. |
 | `errorCode` | string or `null` | The typed code of a refusal or failure (`USAGE_INVALID`, `AUTH_REQUIRED`, `OPERATION_PARTIAL`); `null` on success or when the exit carried no code. |
@@ -90,6 +95,7 @@ and `ci` as above, and:
 
 | Field | Type | Meaning |
 |---|---|---|
+| `account` | string or `null` | As in the `command` event. |
 | `osRelease` | string | `os.release()`. |
 | `packageManager` | string or `null` | The agent in `npm_config_user_agent` as `name@major` (`npm@10`, `pnpm@9`), when a package manager ran the command. |
 | `installMethod` | `"installer"`, `"npm"` or `"unknown"` | `installer` under the launcher `get.cotal.ai` writes, `npm` when the binary runs from a `node_modules` tree. |

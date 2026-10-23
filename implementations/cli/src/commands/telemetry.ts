@@ -13,7 +13,7 @@ import {
   type TelemetryLevel,
   type TelemetrySource,
 } from "@cotal-ai/workspace";
-import { telemetryUrl } from "../telemetry.js";
+import { accountHash, telemetryUrl } from "../telemetry.js";
 
 export const telemetryFlags = [jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
@@ -24,6 +24,8 @@ export interface TelemetryResult {
   readonly level: TelemetryLevel;
   readonly source: TelemetrySource;
   readonly installId: string | null;
+  /** The account hash sent at `regular` (see docs/telemetry.md); `null` otherwise. */
+  readonly account: string | null;
   readonly url: string;
   readonly file: string;
 }
@@ -47,6 +49,7 @@ export async function telemetry(args: ParsedArgs): Promise<void> {
     level: state.level,
     source: state.source,
     installId: state.level === "off" ? null : state.settings?.installId ?? null,
+    account: state.level === "regular" ? accountHash() : null,
     url: telemetryUrl(),
     file: telemetrySettingsPath(),
   };
@@ -72,6 +75,7 @@ function view(r: TelemetryResult): Report {
               ["level", { text: r.level, tone: r.level === "off" ? "hint" : "selected" }],
               ["set by", SOURCE_TEXT[r.source]],
               ["install id", r.installId ?? { text: "none", tone: "hint" }],
+              ["account", r.account ?? { text: "none", tone: "hint" }],
               ["sent to", r.url],
               ["file", r.file],
             ],

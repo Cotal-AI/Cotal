@@ -10,6 +10,7 @@
  * Run: pnpm smoke:telemetry
  */
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -84,8 +85,8 @@ const settled = () => wait(150);
 
 const COMMON = ["v", "installId", "level", "event", "version", "os", "arch", "node", "ci"];
 const MINIMAL = [...COMMON, "command", "outcome", "exitCode", "durationMs"];
-const REGULAR = [...MINIMAL, "subcommand", "flags", "errorCode", "errorMessage", "errorStack", "interactive", "shell", "terminal"];
-const INSTALL = [...COMMON, "osRelease", "packageManager", "installMethod", "connectors", "extensions", "runtimes", "meshes", "hostedMesh", "uptimeDays"];
+const REGULAR = [...MINIMAL, "account", "subcommand", "flags", "errorCode", "errorMessage", "errorStack", "interactive", "shell", "terminal"];
+const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMethod", "connectors", "extensions", "runtimes", "meshes", "hostedMesh", "uptimeDays"];
 
 // ---- regular: the first command of the day sends the install event, then its own ----
 {
@@ -239,6 +240,42 @@ const INSTALL = [...COMMON, "osRelease", "packageManager", "installMethod", "con
   p.onData((d) => (out += d));
   await new Promise<void>((resolve) => p.onExit(() => resolve()));
   check("no notice at minimal", !clean(out).includes("Cotal collects") && minimal.settings().noticeShownAt === undefined, clean(out).slice(0, 300));
+}
+
+// ---- one install id per OS user: COTAL_HOME does not move the settings file ----
+{
+  const s = sandbox();
+  const first = await s.run(["version"]);
+  await settled();
+  const elsewhere = join(s.home, "workspace-home");
+  const moved = await s.run(["version"], { COTAL_HOME: elsewhere });
+  await settled();
+  check("a command under another COTAL_HOME reads the home's settings file and sends the same install id", first.status === 0 && moved.status === 0 && moved.sent.length === 1 && moved.sent[0]?.installId === s.settings().installId, { first: first.sent[0]?.installId, moved: moved.sent[0]?.installId });
+  check("…and writes no telemetry.json under that COTAL_HOME", !existsSync(join(elsewhere, "telemetry.json")), elsewhere);
+  const status = await s.run(["telemetry", "--json"], { COTAL_HOME: elsewhere });
+  const result = status.envelope?.result as Body | undefined;
+  check("cotal telemetry under that COTAL_HOME names the home's file", status.status === 0 && result?.file === s.settingsPath && result?.installId === s.settings().installId, result);
+}
+
+// ---- the account hash: a cached sign-in's IdP URL and subject id, hashed, at regular only ----
+{
+  const s = sandbox();
+  const none = await s.run(["version"]);
+  await settled();
+  check("without a cached sign-in the regular events carry account null", none.sent.length === 2 && none.sent[0]?.account === null && none.sent[1]?.account === null, none.sent.map((b) => b.account));
+  const idp = "https://idp.example/api/auth";
+  const sub = "user_0123456789";
+  mkdirSync(join(s.home, ".cotal"), { recursive: true });
+  writeFileSync(join(s.home, ".cotal", "idp-sessions.json"), JSON.stringify({ sessions: { [idp]: { token: "not-a-real-token", expiresAt: Date.now() + 3_600_000, sub } } }));
+  const expected = createHash("sha256").update(`${idp}\n${sub}`).digest("hex").slice(0, 32);
+  const signedIn = await s.run(["version"]);
+  await settled();
+  check("with a cached sign-in the command event carries the 32-character hash of the IdP URL and subject id, never either value", signedIn.sent.length === 1 && signedIn.sent[0]?.account === expected && !JSON.stringify(signedIn.sent).includes(sub) && !JSON.stringify(signedIn.sent).includes("not-a-real-token"), signedIn.sent[0]);
+  const status = await s.run(["telemetry", "--json"]);
+  check("cotal telemetry reports the same hash", status.status === 0 && (status.envelope?.result as Body | undefined)?.account === expected, status.envelope?.result);
+  const minimal = await s.run(["version"], { COTAL_TELEMETRY: "minimal" });
+  await settled();
+  check("minimal sends no account field", minimal.sent.length === 1 && !("account" in (minimal.sent[0] ?? {})), keysOf(minimal.sent[0]));
 }
 
 finish();
