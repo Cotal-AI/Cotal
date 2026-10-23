@@ -98,7 +98,7 @@ const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 const owned = new Set<number>();
 
-type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string } };
+type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string; cause?: { code?: string; detail?: string } } };
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
@@ -197,6 +197,8 @@ try {
     check("up --no-manager starts the settled stack again", restarted.status === 0, shown(restarted));
     const ps = cli(root, "ps", "--json");
     check("ps on a --no-manager stack refuses TARGET_UNAVAILABLE, exit 2", ps.status === 2 && ps.env?.error?.code === "TARGET_UNAVAILABLE" && !ps.env.error.message.includes("SPEC"), shown(ps));
+    check("...and its native detail says the manager has no live instance, with no spec rule in it",
+      ps.env?.error?.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' && ps.env.error.remedy === "start the stack's manager with bare cotal up; a stack started with --no-manager has none", shown(ps));
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
