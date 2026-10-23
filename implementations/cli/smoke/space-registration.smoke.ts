@@ -358,6 +358,12 @@ setCurrent("keep");
   // Recorded once create has been checked for making its .cotal, so whatever starts in it is stopped
   // with the suite.
   const sandbox = recordSmokeSandbox({ root: fresh, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  // Before its first up the root has no controller stack, and `down --yes` there gives the answer a
+  // bare `down` gives instead of refusing --yes.
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
+  const unstarted = await run(["down", "--yes"], {}, fresh);
+  check("down --yes on the prepared root that never started says its stack is not running and exits 0",
+    unstarted.status === 0 && /is not running/.test(unstarted.stdout), shown(unstarted));
 
   const spare = join(home, "spare");
   mkdirSync(spare);

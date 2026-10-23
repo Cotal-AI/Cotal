@@ -950,8 +950,8 @@ preview, `cotal down --dry-run --with-agents`, shows the no-op.
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
 accept the new named-service JSON/plain/yes apply receipt flags, except that `--json` and
-`--plain` show the no-op of a stack that is already stopped. A bare stop of such a root needs
-no `--yes`, so `cotal down --yes` there is refused and stops nothing; run `cotal down` without it.
+`--plain` show the no-op of a stack that is already stopped. A bare stop of such a root asks for no
+confirmation, and `--yes` there changes nothing, so `cotal down --yes` stops a stack on any root.
 Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
 a real isolated project root and refuses pending maintenance transitions, any valid or

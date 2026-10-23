@@ -147,7 +147,6 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
-  if (args.values.yes !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--yes applies only to a controller stack, and this root has none; a bare stop here needs no --yes, and nothing was stopped", { remedy: "run `cotal down` from this root without --yes" });
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && stoppedLegacyStack())) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview or a stack that is already stopped; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
 }
 
@@ -246,10 +245,10 @@ function previewWholeStack(args: ParsedArgs): void {
   ] }));
 }
 
-/** A bare stop, its preview included: no flag beyond --dry-run, --with-agents and the presentation
- *  flags. */
+/** A bare stop, its preview included: no flag beyond --dry-run, --with-agents, --yes and the
+ *  presentation flags. */
 function bareStop(values: ParsedArgs["values"]): boolean {
-  return Object.entries(values).every(([name, value]) => ["dry-run", "with-agents", "json", "plain"].includes(name) || value === undefined || Array.isArray(value) && value.length === 0);
+  return Object.entries(values).every(([name, value]) => ["dry-run", "with-agents", "yes", "json", "plain"].includes(name) || value === undefined || Array.isArray(value) && value.length === 0);
 }
 
 /** Whether any process record (`*.pid`) remains in `<root>/.cotal`. */
