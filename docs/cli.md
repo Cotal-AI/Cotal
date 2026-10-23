@@ -2648,6 +2648,8 @@ This reads one protected native handle artifact or a bounded array of artifacts 
 `--space`, it shows unverified public scope, holder and declared expiry claims. Signatures,
 issuer authority, parent links, holder currency and revocation remain not checked. No broker
 is contacted or credential issued. Signature bytes and original signed artifacts are never printed.
+A handle is a signed JSON grant, so a file that is not JSON, such as a NATS credential file, refuses
+`SCHEMA_INVALID` and says what it is.
 The human report shows at most 50 scope rows and names omissions; JSON retains public metadata.
 
 An explicit `--space` selects online inspection on a registered static-auth space whose root
