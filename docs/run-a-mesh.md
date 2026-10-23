@@ -523,7 +523,9 @@ is a certificate authority for the mesh rather than a client of it: anyone who r
 impersonate any agent, read every retained channel and DM, change ACLs, and keep issuing
 themselves credentials. There is no per-machine revocation; undoing it means rotating the signing
 key and re-minting every credential in the space. Copy it only to machines you would trust with
-the whole mesh. `cotal auth mint` on its own does not substitute here: registering an `auth` mesh needs
+the whole mesh. A machine that should not hold it does not register the space: it uses a credential
+the owner mints with `cotal auth mint` where the space runs, passed with `--creds <file> --server <url>`,
+and the refusals of `space add` say so. `cotal auth mint` on its own does not substitute here: registering an `auth` mesh needs
 signing material that composes, which a minted user credential is not. The
 broker is probed before the record is written, so a bad address or a credential that mesh will not
 accept fails at registration rather than at your first `spawn` (`--force` records it without verifying,

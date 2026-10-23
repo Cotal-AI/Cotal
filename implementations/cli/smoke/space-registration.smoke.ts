@@ -221,6 +221,11 @@ setCurrent("keep");
   check("its refusal and the copy cost it names are one line", (wantsAuth.env?.error?.message ?? "").includes("signing seed") && !(wantsAuth.env?.error?.message ?? "").includes("\n"), wantsAuth.env?.error?.message);
   const noTrust = await json(["space", "add", "a2", "--server", AUTH_LIVE, "--mode", "auth", "--root", root]);
   check("an auth claim with no trust under --root is DEPENDENCY_UNAVAILABLE", refused(noTrust, 2, "DEPENDENCY_UNAVAILABLE"), shown(noTrust));
+  // A machine without the signing seed is told what it can use instead, and is not offered `--mode
+  // open`, which a broker that requires auth refuses.
+  const seedless = (m: string) => m.includes("`cotal auth mint`") && m.includes("`--creds <file> --server <url>`") && !m.includes("--mode open");
+  check("…naming an owner's minted credential with --creds, not --mode open", seedless(noTrust.env?.error?.message ?? ""), noTrust.env?.error?.message);
+  check("the open claim's refusal names the same route", seedless(wantsAuth.env?.error?.message ?? ""), wantsAuth.env?.error?.message);
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);
