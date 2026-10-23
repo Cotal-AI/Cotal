@@ -409,7 +409,9 @@ rather than read as absent. A process record's read error names the record's pat
 ### Machine files
 
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:
-`~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`.
+`~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`. A `COTAL_HOME`
+that names a file, or a path under one, stops every command except help and shell completion with
+`SCHEMA_INVALID`, naming the variable: point it at a directory or unset it.
 
 `COTAL_HOME` overrides **this tree only**: the registry, current pointer and onboard marker, and
 records such as prepared spaces and service records. It is not a full workstation sandbox. Broker launch policy, the JetStream
