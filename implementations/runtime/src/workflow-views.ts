@@ -67,10 +67,23 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
   ] }));
 }
 
+/** What an answer or amendment filed, as the caller sent it, which the host records under the
+ *  answer id it returns. `value` is absent when none was given. */
+export interface ReceiptAnswer { readonly step: string; readonly value?: unknown; readonly artifact?: string }
+
 /** `runId` is the run the caller named, for an answer or amendment whose result does not repeat it. */
-export function runReceipt(action: string, space: string | undefined, result: unknown, values: OutputValues, runId = result && typeof result === "object" && "runId" in result && typeof result.runId === "string" ? result.runId : undefined): void {
-  writeResult(presentationOf(values), { command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null, ...(runId ? { run: runId } : {}) }, result: { kind: "run-receipt", action, result } }, () => ({ sections: [
-    { title: action === "start" ? "Workflow started" : action === "resume" ? "Workflow resumed" : action === "amend" ? "Amendment recorded" : "Answer accepted", blocks: [{ kind: "fields", rows: [["Space", space ?? "not reported"], ...(runId ? [["Run", runId]] as [string, string][] : []), ...(values.on ? [["Requested manager", values.on]] as [string, string][] : [])] }, { kind: "lines", lines: [{ text: "The native host accepted this operation. This receipt does not claim workflow completion.", tone: "hint" }] }] },
+export function runReceipt(action: string, space: string | undefined, result: unknown, values: OutputValues, runId = result && typeof result === "object" && "runId" in result && typeof result.runId === "string" ? result.runId : undefined, answer?: ReceiptAnswer): void {
+  const reply = result && typeof result === "object" ? result as { answerId?: unknown; supersedes?: unknown } : {};
+  const valueGiven = answer !== undefined && Object.hasOwn(answer, "value");
+  const answerRows: [string, string][] = answer === undefined ? [] : [
+    ["Step", answer.step],
+    ["Value", valueGiven ? JSON.stringify(answer.value) : "no value; --value was not given"],
+    ...(answer.artifact !== undefined ? [["Artifact", answer.artifact]] as [string, string][] : []),
+    ...(typeof reply.answerId === "string" ? [["Answer id", reply.answerId]] as [string, string][] : []),
+    ...(typeof reply.supersedes === "string" ? [["Supersedes", reply.supersedes]] as [string, string][] : []),
+  ];
+  writeResult(presentationOf(values), { command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null, ...(runId ? { run: runId } : {}) }, result: { kind: "run-receipt", action, result, ...(answer ? { answer: { ...answer, valueGiven } } : {}) } }, () => ({ sections: [
+    { title: action === "start" ? "Workflow started" : action === "resume" ? "Workflow resumed" : action === "amend" ? "Amendment recorded" : "Answer accepted", blocks: [{ kind: "fields", rows: [["Space", space ?? "not reported"], ...(runId ? [["Run", runId]] as [string, string][] : []), ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ...answerRows] }, { kind: "lines", lines: [{ text: "The native host accepted this operation. This receipt does not claim workflow completion.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show ${runToken(runId)}${managerPin(values)}`, description: "Read the recorded outcome and pending requests" }] }] },
   ] }));
 }

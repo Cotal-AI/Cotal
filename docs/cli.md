@@ -5125,8 +5125,11 @@ required ([workflows](workflows.md)).
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
-`answer`. `amend` records a changed position on a settled checkpoint or `ask`: it files a new
-answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
+`answer`. An answer without `--value` carries no value: the step settles as answered, and the
+program's checkpoint result has no `value`. The receipt of `answer` and `amend` names the step, the
+value it filed or that none was given, any artifact and the answer id. With `--json` they are in
+`result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
+position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
 answer refuses an amend. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
 edited program against a run's journal, from this terminal under a read credential (`--local`
