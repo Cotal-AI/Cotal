@@ -20,7 +20,7 @@ import {
   stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
-import { brokerListenAddress } from "../lib/broker-service.js";
+import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -464,6 +464,18 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         remedy: previous === undefined
           ? `start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or ${stopHolder} and run cotal up again`
           : `${stopHolder}, then run bare cotal up from ${root}; this stack keeps its recorded address`,
+      });
+    }
+    // A program that holds the address without answering NATS, such as a web server, is refused here
+    // too, before any broker instance is recorded, so a first start names another address.
+    const bindError = brokerRunning ? undefined : await listenerBindError(server);
+    if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
+      const { host, port } = brokerListenAddress(server), address = new URL(server);
+      throw new CommandFailure("refused", "CONFLICT", `another process holds the stack's broker address ${host}:${port} (bind failed: address already in use); no broker was launched`, {
+        target: { root, space, server, bindError: bindError.code },
+        remedy: previous === undefined
+          ? `start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or stop the process listening on ${host}:${port} and run cotal up again`
+          : `stop the process listening on ${host}:${port}, then run bare cotal up from ${root}; this stack keeps its recorded address`,
       });
     }
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;

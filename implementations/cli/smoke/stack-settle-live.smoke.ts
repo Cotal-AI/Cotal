@@ -13,7 +13,9 @@
  *     finds that stack's broker answering refuses CONFLICT naming the address and that space, with a
  *     next step to another `--server`; its `down` stops nothing, `reset space` finds nothing to reset,
  *     and its next `up` starts at another address. Once it ran, a third space's broker at that
- *     address makes its bare `up` name stopping that space, and it keeps the address.
+ *     address makes its bare `up` name stopping that space, and it keeps the address. A first `up`
+ *     refused at a port another program holds names another `--server`, records no broker instance
+ *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -272,6 +274,26 @@ try {
     check("down --yes stops the moved stack again", cli(second, "down", "--yes", "--json").status === 0);
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", stopped.status === 0, shown(stopped));
+  }
+
+  // 3b. A first up refused at a port another program holds pins nothing.
+  {
+    const space = "heldfirst";
+    const root = prepare(space);
+    const holder = createServer();
+    const port = await listenOn(holder, await freePort());
+    const refused = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    track(space);
+    check("a first up at a port another program holds refuses CONFLICT, exit 2, naming the address and bind error", refused.status === 2 && refused.env?.error?.code === "CONFLICT" && refused.env.error.message.includes(`127.0.0.1:${port}`) && refused.env.error.message.includes("address already in use"), shown(refused));
+    check("its next step is another --server, or stopping that program", Boolean(refused.env?.error?.remedy?.includes("cotal up --server nats://127.0.0.1:<port>") && refused.env.error.remedy.includes(`stop the process listening on 127.0.0.1:${port}`)), shown(refused));
+    check("no broker instance was recorded", serviceInstances(space, "stack-broker").length === 0, serviceInstances(space, "stack-broker").map((row) => row.record.value.state));
+    const nothing = cli(root, "down", "--yes", "--json");
+    check("down --yes there stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
+    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    track(space);
+    check("the next up starts at another address while the program still holds the first", moved.status === 0, shown(moved));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    await new Promise<void>((done) => holder.close(() => done()));
   }
 
   // 4. An orphan manager, member names and the delivery-aware marker (B2-01, B2-03, B2-07, B2-08).

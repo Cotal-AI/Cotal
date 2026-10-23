@@ -639,12 +639,12 @@ another root says so and names that root.
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
 conflicting `--server` or `--open` refuses before effects. A journal whose stack never launched a
-member pins neither, as when its first `up` was refused because another broker already answers at
-the address. The next `up` plans it as a first start, with that address or another `--server`, and
-`down` reports that nothing runs there. That refusal names the address and any space this machine
-registered there. Its next step for a first start is another `--server` or stopping that space. For a
-stack that ran, it is stopping that space and running bare `cotal up`, because the stack keeps its
-address. A stack whose broker does not listen on its recorded address,
+member pins neither, as when its first `up` was refused because another broker answers at the
+address or another program holds it. The next `up` plans it as a first start, with that address or
+another `--server`, and `down` reports that nothing runs there. That refusal names the address and
+any space this machine registered there. Its next step for a first start is another `--server`, or
+stopping that space or program. For a stack that ran, it is stopping that space or program and
+running bare `cotal up`, because the stack keeps its address. A stack whose broker does not listen on its recorded address,
 because a bind host recorded beside it names another address, or because no bind host was recorded
 and the address is not `127.0.0.1`, cannot be reached and pins no bind host. `up` there refuses
 `CONFLICT` before anything starts and names `cotal up --host <host>` with the address's own host,
@@ -726,9 +726,10 @@ create the space's streams, `up` stops that broker again, so the next `up` start
 fails `OPERATION_FAILED`, exit 5, and names the cause when the broker's log shows it ran out of
 open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log.
 
-Before it launches a broker, the controller binds the recorded broker address once. When another
-process holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches
-nothing; the stack keeps its recorded address. A text `up` prints one `Starting <definition>` line
+Before it launches a broker, the controller binds the broker address once. When another process
+holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches nothing. A
+first start names another `--server` as its next step, and a stack that ran keeps its recorded
+address. A text `up` prints one `Starting <definition>` line
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's
 Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager after `--no-manager`,
 and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, so a bare
