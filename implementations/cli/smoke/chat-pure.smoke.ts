@@ -124,6 +124,11 @@ check("a \"constructor\" key → refused", refused(req({ type: "roster", constru
 check("a missing required field → refused", refused(req({ type: "send", text: "hi" }), "r1", /requires the field "channel"/));
 check("send.text must be a string", refused(req({ type: "send", text: 5, channel: "general" }), "r1"));
 check("a wildcard channel is refused", refused(req({ type: "join", channel: "team.*" }), "r1") && refused(req({ type: "join", channel: "team.>" }), "r1"));
+check("a channel holding * or > gets the sentence cotal send -c gives, never a list naming '*' and '>' as allowed",
+  ["gen*", "team.*", "team.>"].every((channel) => refused(req({ type: "send", text: "x", channel }), "r1", /^name one concrete channel, without wildcards$/)));
+check("a channel outside the grammar gets the rule it breaks, naming the segment",
+  refused(req({ type: "join", channel: "gen eral" }), "r1", /^invalid channel "gen eral": segment "gen eral" must be a NATS-safe token/));
+check("a channel that is not a string says so, naming the field", refused(req({ type: "channelInfo", channel: 5 }), "r1", /^channelInfo\.channel must be a string$/));
 check("mentions must be an array of non-empty strings", refused(req({ type: "send", text: "x", channel: "general", mentions: [""] }), "r1") && refused(req({ type: "send", text: "x", channel: "general", mentions: "bob" }), "r1"));
 check("dm.replyTo longer than MAX_MESSAGE_ID → refused", refused(req({ type: "dm", to: "bob", text: "x", replyTo: "m".repeat(MAX_MESSAGE_ID + 1) }), "r1"));
 check("dm.to empty → refused", refused(req({ type: "dm", to: "", text: "x" }), "r1"));

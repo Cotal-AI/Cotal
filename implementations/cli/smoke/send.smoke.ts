@@ -51,7 +51,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 59;
+const EXPECTED = 60;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -385,6 +385,9 @@ try {
     badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);
   const wildcard = await run(["send", "-c", "team.*", "x", "--json"]);
   check("`cotal send -c` with a wildcard says to name one concrete channel", wildcard.code === 1 && wildcard.stdout.includes("name one concrete channel, without wildcards"), wildcard);
+  const starred = await run(["send", "-c", "gen*", "x", "--json"]);
+  check("`cotal send -c` with * inside a segment gets the wildcard sentence, not a rule that lists '*' and '>'",
+    starred.code === 1 && starred.stdout.includes("name one concrete channel, without wildcards") && !starred.stdout.includes("'*', or '>'"), starred);
 
   // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.
   const bigFile = join(storeDir, "big.txt");

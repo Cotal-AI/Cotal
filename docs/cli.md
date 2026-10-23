@@ -3843,8 +3843,9 @@ preserved and never printed in the receipt. A file that cannot be read is refuse
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`.
 The recipient grammar is checked before connector installation or target preparation. Channel
-and role names use the native subject grammar; a channel publication cannot name a wildcard, and a
-channel or role name outside the grammar is refused with the rule it breaks.
+and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
+`name one concrete channel, without wildcards`, and a channel or role name outside the grammar is
+refused with the rule it breaks.
 A direct target resolves by its full identity or an unambiguous name. A name collision refuses
 with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, and a target that is not
 present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
@@ -4018,7 +4019,7 @@ id that follows the first request's result. Requests run one at a time in arriva
 refusal waits its turn too, so every `result` and `error` record comes back in the order its line
 arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
 by its id. A missing field, a field the type does not take or a malformed value refuses with
-`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and a role a
+`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and is refused with the sentence `cotal send -c` gives for that name. A role must be a
 valid role name.
 
 | `type` | Fields | Result |

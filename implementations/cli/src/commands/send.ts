@@ -2,9 +2,7 @@ import { hostname, userInfo } from "node:os";
 import { readFileSync } from "node:fs";
 import {
   resolvePeer,
-  assertValidChannel,
   assertValidRole,
-  isConcreteChannel,
   isPublishPermissionDenied,
   resolveAuthProvider,
   effectiveDeliveryClass,
@@ -21,6 +19,7 @@ import {
 import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
@@ -92,8 +91,8 @@ export function sendArguments(args: ParsedArgs): SendInput {
   // A channel or role name the subject rules refuse gets their reason, which names what is at fault.
   try {
     if (destination.mode === "msg") {
-      assertValidChannel(destination.target);
-      if (!isConcreteChannel(destination.target)) throw new Error("name one concrete channel, without wildcards");
+      const problem = concreteChannelProblem(destination.target);
+      if (problem) throw new Error(problem);
     } else if (destination.mode === "ask") assertValidRole(destination.target);
     else if (/[\/\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("not an agent address");
   } catch (error) {
