@@ -4,16 +4,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   chatStream,
-  mintCreds,
-  newIdentity,
   spaceBackupInventory,
   type SpaceBackupSelection,
-  mintLifecycleUid,
 } from "@cotal-ai/core";
 import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -173,13 +170,10 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
     const auth = loadSoleSpaceAuth(authDir(root));
     assert.ok(auth, "authenticated scenario has SpaceAuth");
     // Real messages on a message-class stream: without them the post-replay count comparison below
-    // would be a vacuous 0 === 0 and could not witness a duplicated restore.
-    const senderPath = join(root, "sender.creds");
-    writeFileSync(senderPath, await mintCreds(auth, newIdentity(), "agent", {
-      allowPublish: ["seeded"], allowSubscribe: ["seeded"], lifecycleUid: mintLifecycleUid(),
-    }), { mode: 0o600 });
+    // would be a vacuous 0 === 0 and could not witness a duplicated restore. A one-shot send runs
+    // on the credential this root records; an agent `--creds` file may not read the roster it needs.
     for (const text of seeded)
-      must(`seed chat ${JSON.stringify(text)}`, run("send", "msg", "seeded", text, "--space", space, "--server", server, "--creds", senderPath));
+      must(`seed chat ${JSON.stringify(text)}`, run("send", "--channel", "seeded", text, "--space", space));
 
     must("preserve cut", run("down", "--preserve-state"));
     must("full backup", run("backup", "create", artifact));
