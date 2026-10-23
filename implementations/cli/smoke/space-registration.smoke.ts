@@ -628,11 +628,15 @@ setCurrent("keep");
 
 // ── An explicit --store-dir, checked before anything is written ────────────────────────────────────────
 // A regular file, or a path under one, is a usage refusal that names it, on up and on backup restore.
-// None of them writes a stack journal.
+// A directory other local accounts can write in the store's existing path refuses as a project root
+// does; world write refuses on every host. None of them writes a stack journal.
 {
   const storeRoot = projectRoot("store-checks");
   const file = join(home, "store-file");
   writeFileSync(file, "x");
+  const exposed = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-store-")));
+  // Called through the module so this section adds no import to the file's shared import line.
+  (await import("node:fs")).chmodSync(exposed, 0o777);
   const asFile = await json(["up", "--server", DEAD, "--store-dir", file], storeRoot);
   check("up --store-dir naming a regular file is USAGE_INVALID, exit 1, naming it as not a directory",
     refused(asFile, 1, "USAGE_INVALID") && (asFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`), shown(asFile));
@@ -642,7 +646,12 @@ setCurrent("keep");
   const restoreFile = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", file], storeRoot);
   check("backup restore --store-dir naming a regular file is the same USAGE_INVALID, exit 1",
     refused(restoreFile, 1, "USAGE_INVALID") && (restoreFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`), shown(restoreFile));
+  const writable = await json(["up", "--server", DEAD, "--store-dir", join(exposed, "store")], storeRoot);
+  check("up --store-dir in a directory every account can write is PERMISSION_DENIED, exit 2, naming it with its chmod",
+    refused(writable, 2, "PERMISSION_DENIED") && (writable.env?.error?.message ?? "").includes(`${exposed} is writable by every local account`) &&
+      writable.env?.error?.remedy === `chmod o-w ${exposed}` && !existsSync(join(exposed, "store")), shown(writable));
   check("no store refusal wrote a stack journal", !existsSync(stackJournalPath(storeRoot)));
+  rmSync(exposed, { recursive: true, force: true });
 }
 
 finish();

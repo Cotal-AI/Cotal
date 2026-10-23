@@ -573,8 +573,10 @@ project's `.cotal`, such as a generated configuration, a credential, a process m
 a seat record or one of those logs, is never written through a symlink.
 
 An explicit `--store-dir` on `up`, `up --restore` or `backup restore` must name a directory or a
-path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it before
-anything is written. A non-empty directory is accepted, since it may hold an existing store.
+path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it. The
+existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
+writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
+is written. A non-empty directory is accepted, since it may hold an existing store.
 A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
 that is not a regular file is refused and left unchanged. A private directory is set to `0700`
 through its path, which follows a symlink; this step does not refuse a symlinked `~/.cotal` or
