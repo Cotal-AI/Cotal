@@ -635,6 +635,12 @@ function managerRefusal(command: string, space: string, args: Record<string, unk
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
 }
 
+/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
+function payloadRefused(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
+  return false;
+}
+
 /** While a hosted start's request may be with the manager, a SIGINT or SIGTERM reports that the run
  *  may already be recorded and exits as the signal would. The manager does not stop on the caller's
  *  signal, so the process used to die silently with the run started, and a retry started a second
@@ -693,6 +699,13 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
         deadlineMs: RUN_LAUNCH_DEADLINE_MS,
         ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
       });
+    } catch (e) {
+      if (!payloadRefused(e)) throw e;
+      const source = command === "run-start" && typeof args?.source === "string" ? args.source : undefined;
+      const limit = `this broker's ${nc.info?.max_payload ?? "unreported"}-byte message limit`;
+      throw new CommandFailure("refused", "UNSUPPORTED", source !== undefined
+        ? `the program is ${Buffer.byteLength(source)} bytes, and the start request that carries it exceeds ${limit}; nothing was sent`
+        : `the ${command} request exceeds ${limit}; nothing was sent`, { target: { space: t.space }, ...(source !== undefined ? { remedy: "shorten the program; a hosted start sends it to the manager in one message" } : {}) });
     } finally {
       interrupt?.();
     }
