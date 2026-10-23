@@ -7,7 +7,7 @@ import { oneLine } from "@cotal-ai/core";
 import { shownTime } from "../lib/shown-time.js";
 import type { AdmittedChatSession, ChannelInfo, ConnectionReport, HistoryPage, PublishResult, Result, RosterView, SessionMessage } from "./session.js";
 import {
-  applyEnded, applyPublishResult, applySlashResult, heardFrom, personLabel, replyToLatest, sharedNames, type ChatState, type Person, type Recipient, type SlashCommand,
+  addNotice, applyEnded, applyPublishResult, applySlashResult, heardFrom, personLabel, replyToLatest, sharedNames, slashHelp, type ChatState, type Person, type Recipient, type SlashCommand,
 } from "./view.js";
 
 export async function publish(session: AdmittedChatSession, to: Recipient, text: string): Promise<PublishResult> {
@@ -114,6 +114,9 @@ async function runSlashUnguarded(session: AdmittedChatSession, state: ChatState,
     case "reply":
       // Local: it picks the recipient and talks to no one.
       return done(replyToLatest(state));
+    case "help":
+      // Local, like /reply.
+      return done(addNotice(state, "hint", slashHelp));
     case "quit":
       // The view turns /quit into a `leave` intent; this branch serves a caller that routes the
       // parsed command directly. Either way the session is closed once and the summary shown.

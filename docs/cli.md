@@ -1965,8 +1965,8 @@ Full instance IDs and execution hosts stay visible. Process observations and his
 are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
 endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
-legacy rows and the stored-state hint are omitted, and when the stack does not answer, Next offers
-`cotal up --root <root>`. Unreadable
+legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
+process is gone, Next offers `cotal up --root <root>` first. Unreadable
 service record families make the report partial instead of becoming empty lists. Warnings retain
 a classified cause code, such as unsupported host observation, without native diagnostic bodies. These reads
 import no provider and start, stop, adopt or repair nothing. `--all` extends broker checks; this
@@ -2526,6 +2526,7 @@ A part `who` could not read makes the run `partial` (exit 4): a roster snapshot 
 (`ROSTER_ERROR`), or a manager census it could not read in full (`MANAGERS_UNREAD`, and the warnings
 `ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
 never shown an empty roster.
+A mesh where nobody is present is a complete roster: `who` says so and exits 0.
 
 `who` watches the roster and the channel registry on every mesh so it can report those states. On a
 static-auth or user-auth mesh the credential `who` connects with may not delete its watch consumers,
@@ -2793,7 +2794,9 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
-runs, so there are no managed agents to list. Bare `cotal up` adds the manager.
+runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A stack manager whose
+process died stays registered, so `ps` waits out the manager's answer deadline first, then refuses
+the same way and names bare `cotal up`, which starts it again.
 
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
@@ -3760,7 +3763,8 @@ argument, `--file/-f <path>`, or explicit `--stdin`; `--file -` reads stdin as `
 are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; their content is
 preserved and never printed in the receipt. A file that cannot be read is refused with its path,
 `TARGET_NOT_FOUND` when it does not exist.
-No destination, several destinations, several body sources or an empty message is refused.
+No destination, several destinations, several body sources or an empty message is refused. A lone
+`-` is refused too, because stdin is read only through `--stdin` or `--file -`.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar; a channel publication cannot name a wildcard.
 A direct target resolves by its full identity or an unambiguous name. A name collision refuses
@@ -3838,6 +3842,10 @@ The mesh is resolved once, and its recorded auth mode picks the admission. No ot
 | static | The space's manager admits the session and mints its own credential ([Static chat sessions](control-surface.md#static-chat-sessions)) | 15 minutes, never renewed |
 | user | The auth service admits it under your own `cli` grant; sign in with `cotal login` first | Up to 8 hours, never extended |
 
+A static or user session shows its end time in the banner, and says when it ends a minute before.
+After a session ends, `--plain` answers every line with how to leave, and `/quit` or the end of
+input leaves.
+
 A named channel is the session's initial channel. On a static or user-auth mesh it is also the
 session's whole read and post list, so a session opened without one can send and receive direct
 messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`
@@ -3859,9 +3867,11 @@ In `--plain`, a line you type becomes the draft, and it is sent only when you an
 question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
 name without `@`, is refused with that list of forms, and the numbered list opens. In the list, an
-empty line keeps the current recipient. `:multi` starts a message of several lines, which a line
+empty line keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
-starts with `/`.
+starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view.
+`/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
+daemon, it reads them the way `cotal history` does.
 
 A direct message to an agent the roster shows offline is stored, and the view adds a notice that
 the agent receives it when it reconnects, as [`send`](#send) warns. `--stdio` carries that roster
@@ -6119,6 +6129,11 @@ A selected reference is disclosed on stderr and in `result.resolution`, with its
 resolved native class, instance and epoch. The CLI holds its cooperative writer lock and checks
 the same bytes before invocation. `--on` must agree with a saved instance pin. A missing pinned
 instance does not fall back to the class queue. Unknown native effects are not blindly retried.
+
+Both read the endpoint's contract first, and so does `auth mint --endpoint`. When no instance
+answers that read within 10 seconds, the command refuses with `TARGET_UNAVAILABLE`: nothing is
+serving the endpoint, or nothing could reach this caller. Its Next says to start the service that
+serves the endpoint. Nothing was invoked or issued.
 
 A reference's file credential uses the [paired native caller adapter](#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A

@@ -37,15 +37,16 @@ import { parseRecipient } from "../src/chat/picker.js";
 import { runPlain } from "../src/chat/plain.js";
 import type { AdmittedChatSession, CloseReport, SessionEvent, SessionIdentity } from "../src/chat/session.js";
 import { dispatch, parseRequestLine } from "../src/chat/stdio.js";
-import { closeSummary } from "../src/chat/view.js";
+import { ENDING_NOTICE_MS, closeSummary } from "../src/chat/view.js";
+import { shownTime } from "../src/lib/shown-time.js";
 import { closeExitCode } from "../src/commands/chat.js";
 import { stdoutError } from "../src/lib/stdout-owner.js";
 
 const identity: SessionIdentity = { mode: "open", space: "front-end-space", principal: "local.k3j2", lifecycleUid: "01HZZZABCDEF", label: "me", allowSubscribe: [">"], allowPublish: [">"] };
 
 /** A stand-in that records its closes. With `chatter`, it reports a channel message every 10 ms
- *  until it is closed, so a front end keeps writing. */
-function standIn(close: CloseReport, chatter = false): { session: AdmittedChatSession; closes: () => number } {
+ *  until it is closed, so a front end keeps writing. `emit` reports one event to the front end. */
+function standIn(close: CloseReport, chatter = false, as: SessionIdentity = identity): { session: AdmittedChatSession; closes: () => number; emit: (e: SessionEvent) => void } {
   const listeners = new Set<(e: SessionEvent) => void>();
   let closes = 0;
   let n = 0;
@@ -57,12 +58,12 @@ function standIn(close: CloseReport, chatter = false): { session: AdmittedChatSe
     }, 10)
     : undefined;
   const session = {
-    identity: () => identity,
+    identity: () => as,
     subscribe: (l: (e: SessionEvent) => void) => { listeners.add(l); return () => { listeners.delete(l); }; },
     surfaced: () => {},
     close: async () => { closes++; clearInterval(timer); return close; },
   } as unknown as AdmittedChatSession;
-  return { session, closes: () => closes };
+  return { session, closes: () => closes, emit: (e) => { for (const l of listeners) l(e); } };
 }
 
 const mode = process.argv[2];
@@ -210,6 +211,69 @@ if (mode === "plain" || mode === "stdio") {
     check("a disconnected session told its inbox is gone ends itself with the reason, and its close carries it",
       ended?.type === "connection" && /inbox is gone/.test(ended.reason ?? "") && report.lost === ended.reason, { ended, report });
     check("...and that close exits 5", closeExitCode(report) === 5, report);
+  }
+
+  console.log("6. --plain says when a session ends, warns before it, and /quit leaves one that ended");
+  {
+    const close: CloseReport = { retirement: "retired", connectionClosed: "confirmed", message: "" };
+    // Due in 300 ms: the end is a minute and 300 ms away.
+    const expiresAt = Date.now() + ENDING_NOTICE_MS + 300;
+    const { session, closes, emit } = standIn(close, false, { ...identity, mode: "static", expiresAt });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let printed = "";
+    output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    const at = shownTime(expiresAt);
+    check("the banner says when the session ends", printed.includes(`static session (ends at ${at}; credential valid until then)`), printed);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    check("a minute before its end, the session says when it ends", printed.includes(`this session ends at ${at}; open a new session to keep chatting after that`), printed);
+    emit({ type: "connection", state: "ended", reason: "the session reached its expiry" });
+    input.write("hello\n");
+    input.write("/quit\n");
+    // Input stays open: only /quit can end this run.
+    const state = await Promise.race([run, new Promise<undefined>((resolve) => setTimeout(resolve, 5_000))]);
+    check("after the session ended, /quit leaves while input is still open, and the session closes once", state?.ended === close && closes() === 1, { closes: closes(), printed });
+    check("...and a line before it is told /quit leaves", printed.includes("session ended; type /quit or end input (Ctrl-D) to leave"), printed);
+    input.end();
+    await run;
+  }
+
+  console.log("7. /quit leaves --plain from the recipient list");
+  {
+    const close: CloseReport = { retirement: "retired", connectionClosed: "confirmed", message: "" };
+    const { session, closes } = standIn(close);
+    // The list reads the session's connection and roster; neither is needed to list nothing.
+    Object.assign(session, { connection: async () => ({ outcome: "failed", message: "not read" }), roster: async () => ({ outcome: "failed", message: "not read" }) });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let printed = "";
+    output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    // A target without `@` is refused, and the numbered list opens.
+    input.write(":to manager\n");
+    input.write("/quit\n");
+    const state = await Promise.race([run, new Promise<undefined>((resolve) => setTimeout(resolve, 5_000))]);
+    check("/quit in the recipient list leaves while input is still open, and the session closes once", state?.ended === close && closes() === 1, { closes: closes(), printed });
+    check("...and the list says /quit leaves", printed.includes("empty line cancels, /quit leaves"), printed);
+    input.end();
+    await run;
+  }
+
+  console.log("8. /history on an open mesh reads the channel itself; the other modes ask the delivery daemon");
+  {
+    const reads: string[] = [];
+    const page = { items: [], complete: true };
+    const endpoint = Object.assign(new EventEmitter(), {
+      channelHistoryPage: async () => { reads.push("channelHistoryPage"); return page; },
+      readHistory: async () => { reads.push("readHistory"); return page; },
+    }) as unknown as CotalEndpoint;
+    const retire = async (): Promise<CloseReport> => ({ retirement: "retired", connectionClosed: "confirmed", message: "" });
+    const open = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "open" }, retire }).history("general", 50);
+    check("an open session's /history reads the channel's stream, which needs no delivery daemon", open.outcome === "ok" && reads.join() === "channelHistoryPage", { open, reads });
+    reads.length = 0;
+    const admitted = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire }).history("general", 50);
+    check("a static session's /history still reads through the delivery daemon", admitted.outcome === "ok" && reads.join() === "readHistory", { admitted, reads });
   }
 
   finish();

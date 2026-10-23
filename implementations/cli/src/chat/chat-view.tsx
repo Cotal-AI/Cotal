@@ -17,6 +17,7 @@ import {
   applyEvent,
   applyKey,
   composerRows,
+  endingNotice,
   headerRows,
   heardFrom,
   initialState,
@@ -108,6 +109,14 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
       unsubscribe();
     };
   }, [stdout, session, update]);
+
+  // A session with a set end says so a minute before it.
+  useEffect(() => {
+    const ending = endingNotice(session.identity());
+    if (!ending) return;
+    const timer = setTimeout(() => update(addNotice(latest.current, "waiting", ending.text)), Math.max(0, ending.at - Date.now()));
+    return () => clearTimeout(timer);
+  }, [session, update]);
 
   // Acknowledge only after the frame that shows the messages has been committed.
   useEffect(() => {

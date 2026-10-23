@@ -1334,8 +1334,10 @@ function nextActions(r: StatusResult): Section {
     items.push({ command: `${cmd} use`, description: "Choose another space" });
     if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }
-  // A local controller stack that does not answer restarts its stopped members from its own records.
-  if (r.selected.resolved && r.selected.connection !== "ok" && r.selected.connection !== "reachable" && r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space)
+  // A local controller stack that does not answer, or one with a member whose process is gone,
+  // restarts its stopped members from its own records.
+  const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && row.observedProcess === "gone") === true;
+  if (r.selected.resolved && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable") && r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space)
     items.unshift({ command: `${cmd} up --root ${r.selected.root}`, description: "Restart this stack's stopped members from its recorded inputs" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
   return { title: "Next", blocks: [{ kind: "commands", items }, ...r.hints.map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };

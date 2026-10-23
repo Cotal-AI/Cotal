@@ -361,6 +361,22 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews", { space: "s" }), unknown, "only a refusal gains the caller-file remedy");
 }
 
+// --- a contract read no instance answered says so, and names how to start what serves it ----------
+// `auth mint --endpoint`, `ep describe` and `ep invoke` read the contract first, and with nothing
+// serving the endpoint that read used to end as a failed read with no Next.
+{
+  const { EP_UNANSWERED, EpEnvelopeError } = await import("@cotal-ai/core");
+  const { endpointFailure } = await import("../src/lib/endpoint-errors.js");
+  const target = { space: "s", endpoint: "com.example.reviews" };
+  const silent = new EpEnvelopeError("deadline-exceeded", "no describe reply from com.example.reviews within 10000ms on the ep rail", [{ kind: EP_UNANSWERED, endpoint: "com.example.reviews", command: "describe", rail: "ep" }]);
+  const read = endpointFailure(silent, target, false);
+  assert.equal(`${read.outcome}/${read.code}`, "refused/TARGET_UNAVAILABLE", "an unanswered contract read is an unavailable target");
+  assert.equal(read.message, "no instance of com.example.reviews answered its contract read, so nothing is serving it or none could be reached", "the refusal says no instance answered");
+  assert.equal(read.remedy, "start the service that serves com.example.reviews, then run the command again; cotal service --space s lists this space's services", "its Next names how to start what serves it");
+  assert.equal(endpointFailure(silent, target, true).outcome, "unknown", "an unanswered call that may have run stays unknown");
+  assert.equal(endpointFailure(new EpEnvelopeError("deadline-exceeded", "the closure walk exhausted its budget"), target, false).code, "OPERATION_FAILED", "a deadline without the unanswered marker stays a failed read");
+}
+
 // --- a paired caller's issuance intent reads back as `auth mint --endpoint` wrote it --------------
 // The mint writes the record `standaloneCallerIntent` returns, and describe and invoke read the file
 // back through it. It used to return the endpoint's wire token, which that second read refused.

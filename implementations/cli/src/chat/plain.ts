@@ -27,6 +27,7 @@ import {
   addNotice,
   applyEvent,
   applyPublishResult,
+  endingNotice,
   headerRows,
   heardFrom,
   initialState,
@@ -96,12 +97,15 @@ export async function runPlain(opts: {
       case "compose": print(`[to ${recipientLabel(state.recipient)}] type a message, /command, :to, :multi`); break;
       case "confirm": print(`send to ${recipientLabel(mode.to)}? y = send, anything else = keep as draft`); break;
       case "multi": print("(multi-line: end with a line containing only .)"); break;
-      case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels"); break;
+      case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels, /quit leaves"); break;
       case "confirm-leave": print("you have an unsent draft. y = discard and leave, anything else = keep editing"); break;
     }
   };
 
   for (const r of headerRows(state)) print(r.text);
+  // A session with a set end says so a minute before it.
+  const ending = endingNotice(state.identity);
+  const endingTimer = ending ? setTimeout(() => { state = addNotice(state, "waiting", ending.text); flush(); }, Math.max(0, ending.at - Date.now())) : undefined;
 
   const unsubscribe = session.subscribe((event: SessionEvent) => {
     if (event.type === "message") unacked.push(event.message.deliveryKey);
@@ -164,7 +168,10 @@ export async function runPlain(opts: {
   const handle = async (raw: string): Promise<void> => {
     const line = raw.replace(/\r$/, "");
     if (state.endedByEvent && mode.kind !== "confirm-leave") {
-      state = addNotice(state, "failed", "session ended; end input (Ctrl-D) to leave, then open a new session");
+      // An ended session takes only leaving, the way /quit leaves a live one.
+      const parsed = line.startsWith("/") ? parseSlash(line) : undefined;
+      if (parsed?.ok && parsed.command.name === "quit") return state.draft ? void (mode = { kind: "confirm-leave" }) : leave();
+      state = addNotice(state, "failed", "session ended; type /quit or end input (Ctrl-D) to leave, then open a new session");
       return;
     }
     switch (mode.kind) {
@@ -189,6 +196,12 @@ export async function runPlain(opts: {
       case "pick": {
         const t = line.trim();
         if (!t) { mode = { kind: "compose" }; return; }
+        // /quit leaves from the list as it does from the composer.
+        const slash = t.startsWith("/") ? parseSlash(t) : undefined;
+        if (slash?.ok && slash.command.name === "quit") {
+          mode = state.draft ? { kind: "confirm-leave" } : { kind: "compose" };
+          return state.draft ? undefined : leave();
+        }
         const n = Number(t);
         if (Number.isInteger(n) && n >= 1 && n <= mode.choices.length) return choose(mode.choices[n - 1]!.recipient);
         const parsed = parseRecipient(t);
@@ -215,7 +228,7 @@ export async function runPlain(opts: {
           if (!parsed.ok) { state = addNotice(state, "failed", parsed.error); return; }
           if (parsed.command.name === "quit") return state.draft ? void (mode = { kind: "confirm-leave" }) : leave();
           if (state.connection !== "connected" && !runsOffline(parsed.command)) {
-            state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami and /reply run now");
+            state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami, /reply and /help run now");
             return;
           }
           const { state: next, ack } = await runSlash(session, state, parsed.command);
@@ -242,6 +255,7 @@ export async function runPlain(opts: {
     // has ended; the draft is reported, not sent.
     if (!leaving && state.draft) print(`unsent draft discarded at end of input (${[...state.draft].length} characters; content not repeated)`);
   } finally {
+    clearTimeout(endingTimer);
     input.off("close", endOnClose);
     unsubscribe();
     rl.close();

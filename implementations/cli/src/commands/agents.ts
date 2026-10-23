@@ -744,8 +744,9 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   const target = { space: t.space, scope: "all-managers" };
   const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
   // An empty manager registry on this root's own controller stack, whose manager does not run, is
-  // a known boundary with a remedy; the registry's own failure stays the cause.
-  if (!scatter.ok && scatter.code === "failed-precondition" && t.root !== undefined && stackManagerAbsent(t.root, t.space))
+  // a known boundary with a remedy; the registry's own failure stays the cause. So is a registry
+  // that still lists that manager after its process died: no manager answered the read.
+  if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined && stackManagerAbsent(t.root, t.space))
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
   if (!scatter.ok) throw readFailure(scatter, target);
   // Stable ordering: reachable instances first, then by instance id.

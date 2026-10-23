@@ -193,7 +193,7 @@ function submit(state: ChatState): { state: ChatState; intent?: Intent } {
     // /reconnect, /connection and /whoami, which are the ones useful while disconnected, and /reply,
     // which only picks a recipient.
     if (parsed.command.name === "quit") return { state: { ...state, draft: "" }, intent: { kind: "leave" } };
-    if (state.connection !== "connected" && !runsOffline(parsed.command)) return { state: notice(state, "waiting", "not connected: only /reconnect, /connection, /whoami and /reply run now; your line is kept") };
+    if (state.connection !== "connected" && !runsOffline(parsed.command)) return { state: notice(state, "waiting", "not connected: only /reconnect, /connection, /whoami, /reply and /help run now; your line is kept") };
     return { state: { ...state, draft: "" }, intent: { kind: "slash", command: parsed.command } };
   }
   if (state.connection !== "connected") return { state: notice(state, "waiting", "not connected: sending is off; your draft is kept") };
@@ -301,20 +301,24 @@ export type SlashCommand =
   | { readonly name: "connection" }
   | { readonly name: "reconnect" }
   | { readonly name: "reply" }
+  | { readonly name: "help" }
   | { readonly name: "quit" };
 
-/** Whether a slash command runs while disconnected: the reads of this session's own state, and
- *  `/reply`, which only picks a recipient. */
+/** Whether a slash command runs while disconnected: the reads of this session's own state, `/reply`,
+ *  which only picks a recipient, and `/help`. */
 export function runsOffline(command: SlashCommand): boolean {
-  return command.name === "reconnect" || command.name === "connection" || command.name === "whoami" || command.name === "reply";
+  return command.name === "reconnect" || command.name === "connection" || command.name === "whoami" || command.name === "reply" || command.name === "help";
 }
 
-/** The spec's slash set, plus `/whoami` (spec "History and presence reads"), `/reply` and `/quit`. */
+/** The spec's slash set, plus `/whoami` (spec "History and presence reads"), `/reply`, `/help` and `/quit`. */
 export const SLASH_COMMANDS = [
   "/who", "/whoami", "/status <idle|working|waiting> [activity]", "/attention <open|dnd|focus>",
   "/quiet <channel>", "/mute <channel>", "/normal <channel>", "/join <channel>", "/leave <channel>",
-  "/info <channel>", "/history [n]", "/inbox [--peek]", "/connection", "/reconnect", "/reply", "/quit",
+  "/info <channel>", "/history [n]", "/inbox [--peek]", "/connection", "/reconnect", "/reply", "/help", "/quit",
 ] as const;
+
+/** The `/help` answer: every slash command with its arguments. */
+export const slashHelp = `commands: ${SLASH_COMMANDS.join(", ")}. Start a message with // to send a leading /`;
 
 const HISTORY_DEFAULT = 50;
 const HISTORY_MAX = 1000;
@@ -333,10 +337,11 @@ export function parseSlash(line: string): { ok: true; command: SlashCommand } | 
     case "/connection":
     case "/reconnect":
     case "/reply":
+    case "/help":
     case "/quit":
     case "/exit":
       if (rest.length) return { ok: false, error: `${head} takes no arguments` };
-      return { ok: true, command: { name: head === "/exit" ? "quit" : (head.slice(1) as "who" | "whoami" | "connection" | "reconnect" | "reply" | "quit") } };
+      return { ok: true, command: { name: head === "/exit" ? "quit" : (head.slice(1) as "who" | "whoami" | "connection" | "reconnect" | "reply" | "help" | "quit") } };
     case "/status": {
       if (arg !== "idle" && arg !== "working" && arg !== "waiting") return { ok: false, error: "usage: /status <idle|working|waiting> [activity]" };
       const activity = rest.slice(1).join(" ");
@@ -423,13 +428,24 @@ export function heardFrom(state: ChatState): Person[] {
   return state.transcript.flatMap((e) => (e.kind === "message" ? [e.message.from] : []));
 }
 
+/** How long before a session's set end the view says it is ending. */
+export const ENDING_NOTICE_MS = 60_000;
+
+/** The notice a session with a set end gets {@link ENDING_NOTICE_MS} before it, and when it is due.
+ *  Undefined for a session without a set end. */
+export function endingNotice(identity: SessionIdentity): { readonly at: number; readonly text: string } | undefined {
+  if (identity.expiresAt === undefined) return undefined;
+  return { at: identity.expiresAt - ENDING_NOTICE_MS, text: `this session ends at ${shownTime(identity.expiresAt)}; open a new session to keep chatting after that` };
+}
+
 /** The header: the mesh first, as every command's report opens, then who this session is and under
  *  which mode's guarantees. Never a credential. */
 export function headerRows(state: ChatState): Row[] {
   const id = state.identity;
+  const until = id.expiresAt === undefined ? undefined : shownTime(id.expiresAt);
   const mode =
-    id.mode === "user" ? "signed-in session"
-    : id.mode === "static" ? "static session (credential valid until expiry)"
+    id.mode === "user" ? `signed-in session${until ? ` (ends at ${until})` : ""}`
+    : id.mode === "static" ? `static session (${until ? `ends at ${until}; credential valid until then` : "credential valid until expiry"})`
     : "open mesh: routing only, no identity guarantee";
   const conn: Row =
     state.connection === "connected" ? { text: "connected", tone: "ok" }

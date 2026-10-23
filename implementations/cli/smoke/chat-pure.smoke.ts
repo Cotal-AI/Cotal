@@ -24,10 +24,10 @@ import { LineFramer } from "../src/chat/stdio-io.js";
 import { MAX_REQUEST_ID, MAX_REQUEST_LINE, MAX_MESSAGE_ID, INVOKE_DEFAULT_TIMEOUT_MS, INVOKE_MAX_TIMEOUT_MS, messageRecord, parseRequestLine, serializeRecord } from "../src/chat/stdio.js";
 import {
   MAX_DRAFT, MAX_TRANSCRIPT, addNotice, applyEvent, applyKey, applyPublishResult, closeSummary, composerRows, headerRows,
-  initialState, parseSlash, replyTo, replyToLatest, transcriptRows, type ChatState,
+  initialState, parseSlash, replyTo, replyToLatest, runsOffline, transcriptRows, type ChatState,
 } from "../src/chat/view.js";
 import { listChoices } from "../src/chat/picker.js";
-import { rosterLines } from "../src/chat/controller.js";
+import { rosterLines, runSlash } from "../src/chat/controller.js";
 import { ParticipantEngine } from "../src/chat/engine.js";
 import { grantRefusal, resolveDmTarget } from "../src/chat/native-session.js";
 import type { Presence } from "@cotal-ai/core";
@@ -274,6 +274,14 @@ check("/inbox --peek peeks; /inbox x is refused", (sl("/inbox --peek") as { comm
 check("/who takes no arguments", !sl("/who x").ok);
 check("/join needs exactly one channel", !sl("/join").ok && !sl("/join a b").ok && sl("/join a").ok);
 check("/status keeps a multi-word activity", (sl("/status working on it") as { command: { activity?: string } }).command.activity === "on it");
+check("/help is a command, takes no arguments and runs while disconnected",
+  (sl("/help") as { command: { name: string } }).command?.name === "help" && !sl("/help x").ok && runsOffline({ name: "help" }));
+{
+  // /help talks to no one, so a session that answers nothing is enough.
+  const { state: helped } = await runSlash({} as never, s0(), { name: "help" });
+  const shown = transcriptRows(helped, 1000).map((r) => r.text).join("\n");
+  check("/help lists every slash command with its arguments", ["/who", "/history [n]", "/leave <channel>", "/help", "/quit"].every((c) => shown.includes(c)), shown);
+}
 {
   const r = sl("/bogus\u001b[2J");
   check("an unknown command is refused with its name escaped", !r.ok && (r as { error: string }).error.includes("\\u001b") && !(r as { error: string }).error.includes("\u001b"));
