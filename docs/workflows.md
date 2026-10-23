@@ -412,6 +412,15 @@ resume on a host that can perform the step performs it live and continues from t
 back. Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live
 mesh; on a bare broker a pause still resolves, it just cannot expire.
 
+A live pause that nobody answers, such as a `sleep` or a checkpoint timeout, is observed by
+polling: every 2 seconds the driver looks for the broker's timer fire, and every 2 seconds for the
+settlement that fire records. A step therefore ends after its deadline, usually by 2 to 4 seconds
+and later on a loaded host: a live `sleep("1s")` or `sleep("2s")` usually takes about 4 seconds,
+and `sleep("5s")` about 8. Timers whose deadlines fall within one poll can end on the same poll, so
+a live `race` between them is not decided by their written durations: a `sleep("2s")` branch
+declared before a `sleep("1s")` branch can win. The simulator uses virtual time and reports the
+durations as written.
+
 ## Diagnostic inventory
 
 A large inventory can exceed the broker's reply limit. A host that supports page mode can return
