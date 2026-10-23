@@ -66,7 +66,26 @@ try {
   type Records = { plugins: Record<string, Record<string, unknown>[]> };
   const baselineRecords = JSON.parse(readFileSync(recordsPath, "utf8")) as Records;
   const legacyRecord = { ...baselineRecords.plugins["cotal@cotal-mesh"]![0], scope: "local", projectPath: projects[1] };
-  await claudeSetupProvider.refresh!.run({ cotal: cli, skills });
+  // Earlier per-project installs, one in a folder nested inside another project. Claude Code can apply
+  // an update run in the nested folder to the enclosing project, leaving the nested install old.
+  const outer = join(root, "outer");
+  const nested = join(outer, "nested");
+  mkdirSync(nested, { recursive: true });
+  spawnSync("git", ["init", "-q", outer]);
+  for (const project of [outer, nested]) claude(["plugin", "install", "cotal@cotal-mesh", "--scope", "local"], project);
+  const upgraded = await claudeSetupProvider.refresh!.run({ cotal: cli, skills });
+  check("a nested project's install the update does not reach warns and the upgrade completes", () => {
+    const local = (project: string) => (JSON.parse(claude(["plugin", "list", "--json"])) as (Install & { projectPath?: string })[])
+      .find((e) => e.id === "cotal@cotal-mesh" && e.projectPath === project);
+    assert.equal(resolvedVersion(local(outer)!), version());
+    const warning = `warning: cotal@cotal-mesh (local scope, ${nested}) did not load the updated plugin ${version()}; ` +
+      "to remove it, run `claude plugin uninstall cotal@cotal-mesh --scope local` in that directory";
+    assert.equal(upgraded.includes(warning), resolvedVersion(local(nested)!) !== version(), upgraded);
+    claude(["plugin", "uninstall", "cotal@cotal-mesh", "--scope", "local"], nested);
+    assert.equal(local(nested), undefined);
+    assert.ok(local(outer));
+  });
+  claude(["plugin", "uninstall", "cotal@cotal-mesh", "--scope", "local"], outer);
   check("upgrade updates the recorded version and resolved payload", () => {
     const entry = installed();
     assert.notEqual(version(), old);
