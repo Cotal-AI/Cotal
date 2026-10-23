@@ -5003,13 +5003,18 @@ A pause settled with an accepted answer prints its value as JSON plus the record
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
 order the store committed them, so the last is the current position.
 Expired pauses and ordinary steps print no answer line.
+A step whose last journal row recorded an error prints its outcome and the recorded message under
+`Step errors`, a caught failure included, with each control character shown as its `\uXXXX`
+escape. A failure raised by program code outside any step is recorded in no journal row, so the
+view shows only the `failed` state, and a hosted run's cause is in the manager's log.
 `--json` on `ps` or `journal` prints each row the manager answers with (or `--local` reads) as one
 JSON object per line. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
 `journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
 reports; `programHash` is absent for a run with no recorded program), and `revoked` or
 `revocationUnreadable` when the marker says so. A `journal` row is an `activation` or a `step`. A
 step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
-`status` and `errorCode` once settled, and `startedAt` and `endedAt` in epoch milliseconds. An open
+`status` and `errorCode` once settled, the recorded `errorMessage` of a failed or refused step,
+and `startedAt` and `endedAt` in epoch milliseconds. An open
 pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
 settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
@@ -5220,7 +5225,7 @@ verdict. A reopened gate with retained cursor cleanup returns exit 4.
 ### Workflow command forms
 
 `cotal run` (or `cotal r`) lists the authorized workflow records. `run show <run-id>` reads
-recorded state, open requests and the last 20 journal rows. Its JSON result contains the full
+recorded state, open requests, each step's recorded error and the last 20 journal rows. Its JSON result contains the full
 returned status and journal. Revoked admission and unreadable revocation markers remain distinct
 from the record's state. Neither a record nor a receipt is a live agent-progress report.
 
@@ -5251,7 +5256,9 @@ cotal r simulate ./workflow.cotal.js --handler ./results.json
 These three forms are offline and reject mesh or caller selection. Validation checks the
 language. A program that does not validate is refused by all three with every problem listed: its
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
-`result.problems`. Plan lists validated static call sites in source order; it does not evaluate branches,
+`result.problems`. A warning leaves the program valid. All three print it on stderr with its code,
+position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a literal list whose items carry no `id` and
+that passes no `key`, which the run refuses when it reaches it. Plan lists validated static call sites in source order; it does not evaluate branches,
 loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
 script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and

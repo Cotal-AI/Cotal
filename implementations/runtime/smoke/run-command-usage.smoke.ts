@@ -156,6 +156,20 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   rmSync(dir, { recursive: true, force: true });
 }
 
+// A validator warning names its code, position, cause and fix, as a problem does. L3021 on a literal
+// list is a fan-out the run refuses, and the warning used to say only that something was found.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-validate-warning-"));
+  const program = join(dir, "fanout.cotal.js");
+  writeFileSync(program, 'await fanOut(["x", "y"], (x) => sleep("1s", { name: "nap" }), { name: "fo" });\n');
+  reset();
+  await runWorkflow({ values: {}, positionals: ["validate", program], raw: [] });
+  const said = ERR.join(" ").replace(/\s+/g, " ");
+  c("a validator warning names its code, title, position and fix on stderr",
+    said.includes(`L3021 \`fanOut\` has no stable key (${program}:1:7)`) && said.includes("Fix: Pass a key function"), said);
+  rmSync(dir, { recursive: true, force: true });
+}
+
 restore();
 console.log(`run-command-usage: ${ok} ok, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

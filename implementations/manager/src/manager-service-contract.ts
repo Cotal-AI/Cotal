@@ -1056,6 +1056,7 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           outcome: { type: "string" },
           status: { type: "string" },
           errorCode: { type: "string" },
+          errorMessage: { type: "string" },
           startedAt: { type: "number" },
           endedAt: { type: "number" },
           asks: { type: "string" },

@@ -972,6 +972,8 @@ export class MeshHandler {
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ev = req.event;
+    if (!isWaitEvent(ev))
+      throw new Error(`wait() takes an event built by message(channel("<name>")), idle(channel("<name>"), duration), replied(agent) or down(agent), and was given ${JSON.stringify(ev) ?? String(ev)}`);
     const channel = ev.event === "replied" || ev.event === "down" ? undefined : ev.channel;
     if (channel !== undefined && !isConcreteChannel(channel)) {
       throw new Error(`wait() cannot await a wildcard channel ("${channel}"); an await names one channel`);
@@ -3102,6 +3104,16 @@ function compileMatch(pattern: string): RegExp {
     throw new Error(`wait()'s \`matches\` is a bounded regular expression, anchored like every pattern in this repo: ${(e as Error).message}`);
   }
   return new RegExp(pattern);
+}
+
+/** Is `ev` an event descriptor `wait` can observe? The program passes it as a value, so a string or
+ *  a constructor given the wrong argument arrives here unbuilt, and the channel and agent paths
+ *  below would fail on it with a host TypeError that names nothing the program wrote. */
+function isWaitEvent(ev: unknown): ev is WaitRequest["event"] {
+  if (ev === null || typeof ev !== "object") return false;
+  const e = ev as { event?: unknown; channel?: unknown; agent?: unknown };
+  if (e.event === "message" || e.event === "idle") return typeof e.channel === "string";
+  return (e.event === "replied" || e.event === "down") && typeof e.agent === "string";
 }
 
 function decodeMessage(data: Uint8Array): CotalMessage | undefined {

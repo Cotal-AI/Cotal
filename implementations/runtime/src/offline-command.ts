@@ -102,9 +102,11 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     ] }));
     return;
   }
-  const warnings = checked.warnings.map((warning) => ({ code: warning.code, target: { file, span: warning.span }, message: "The language validator reported a warning at this source position." }));
+  // A warning says what it found and how to fix it, as a problem does: L3021 on a literal list is a
+  // fan-out the run will refuse, and a bare position told the author nothing about that.
+  const warnings = checked.warnings.map((warning) => ({ code: warning.code, target: { file, span: warning.span }, message: `${warning.code} ${warning.title} (${warning.span.file}:${warning.span.line}:${warning.span.column}): ${warning.cause} Fix: ${warning.fix}` }));
   if (mode === "validate") {
-    writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-validation", valid: true, warnings: checked.warnings.map((item) => ({ code: item.code, span: item.span })) }, warnings }, () => ({ sections: [
+    writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-validation", valid: true, warnings: checked.warnings.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix })) }, warnings }, () => ({ sections: [
       { title: "Workflow valid", blocks: [{ kind: "fields", rows: [["File", file], ["Warnings", String(warnings.length)]] }, { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime or application was checked.", tone: "hint" }] }] },
       { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal r plan <file>", description: "See validated static call sites" }, { command: "cotal r simulate <file> --handler <results.json>", description: "Exercise the program with explicit scripted results, offline" }] }] },
     ] }));

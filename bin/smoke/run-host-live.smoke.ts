@@ -266,6 +266,18 @@ try {
     c("run-ps lists it on the manager endpoint as completed", row?.endpoint === "manager" && row.state === "completed", ps.data);
   }
 
+  console.log("A2b. a wait on a channel outside the ceiling fails, and run-status says why");
+  {
+    // The same caller holds no channel, so the wait is refused at the effect (SPEC 14.8). The
+    // refusal rides the status reply on its step row, through the manager's closed output schema.
+    const r = await call("run-start", { source: 'await wait(message(channel("build")), { name: "wait-build" });\n', file: "wait.cotal.js" });
+    const waitId = (r.data as { runId?: string } | undefined)?.runId ?? "";
+    const failed = await until(async () => { const v = await status(waitId); return stateOf(v) === "failed" ? v : undefined; }, 15_000);
+    const settled = failed?.journal.findLast((row) => row.kind === "step" && row.state === "settled");
+    c("the failed wait's step row carries the recorded refusal message beside its code",
+      settled?.kind === "step" && settled.errorCode === "L4000" && settled.errorMessage?.includes('is not admitted to read channel "build"') === true, failed?.journal);
+  }
+
   console.log("A3. a checkpoint parks the hosted run; run-answer resolves it from the outside");
   let cpId = "";
   {
@@ -727,7 +739,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 71;
+const EXPECTED_CELLS = 72;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

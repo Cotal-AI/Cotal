@@ -113,6 +113,7 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
     outcome,
     ...(e.status !== undefined ? { status: e.status } : {}),
     ...(e.error?.code ? { errorCode: e.error.code } : {}),
+    ...(e.error?.message ? { errorMessage: e.error.message } : {}),
     startedAt: e.startedAt,
     ...(e.endedAt !== undefined ? { endedAt: e.endedAt } : {}),
     ...(typeof external?.asks === "string" ? { asks: external.asks } : {}),

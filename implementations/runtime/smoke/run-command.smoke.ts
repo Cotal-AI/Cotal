@@ -240,6 +240,10 @@ let P = "";
   c("a failed step keeps its status and error code",
     journalOutcomeOf({ ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "no" } }) === "failed (L4000)",
     journalOutcomeOf({ ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "no" } }));
+  const failedRow = journalStepRow(4, { ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "not admitted" } });
+  c("a failed step row carries the recorded error message beside its code",
+    failedRow.errorCode === "L4000" && failedRow.errorMessage === "not admitted",
+    failedRow);
   const answered = journalStepRow(1, { ...base, result: { outcome: "resolved", value: 42, by: "operator", artifact: "artifact://proof", answerId: "answer-1", at: 123 } });
   c("a resolved pause row carries only the accepted answer facts the journal holds",
     answered.answer?.value === 42 && answered.answer.by === "operator" && answered.answer.artifact === "artifact://proof"
@@ -633,7 +637,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 61;
+const DECLARED = 62;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
