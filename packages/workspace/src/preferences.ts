@@ -224,7 +224,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     const problem = spec.check(value);
     if (problem) throw new CommandFailure("refused", "USAGE_INVALID", `invalid ${key} ${JSON.stringify(value)}: ${problem}`);
   }
-  mkdirSync(globalConfigDir(), { recursive: true });
+  mkdirSync(globalConfigDir(), { recursive: true, mode: 0o700 });
   const lock = acquireLock(`${preferencesPath()}.lock`, { label: "a preferences write", waitMs: 10_000 });
   try {
     const current = readPreferences();

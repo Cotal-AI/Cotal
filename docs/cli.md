@@ -4405,9 +4405,9 @@ Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix 
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
 `cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
 prints only the path, for scripts. The versions shown are the manifest pin recorded at add time.
-On POSIX, the extension writer creates a missing Cotal config directory with mode `0700`, even
-with a group-writable umask, and a missing install prefix with mode `0755` and its `package.json`
-with mode `0644`. Its npm children start with 022 added to your umask. Existing directory
+On POSIX, cotal creates a missing Cotal config directory with mode `0700`, even with a
+group-writable umask, whichever command writes there first. The extension writer creates a missing
+install prefix with mode `0755` and its `package.json` with mode `0644`. Its npm children start with 022 added to your umask. Existing directory
 permissions are not changed. Completion still refuses a pre-existing writable ancestor rather than
 weakening its shell-file ownership checks.
 

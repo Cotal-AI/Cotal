@@ -130,7 +130,7 @@ export function loadExtensionsManifest(): ExtensionsManifest {
  *  truncate the live manifest into corrupt JSON that would then vanish every installed extension. */
 export function saveExtensionsManifest(m: ExtensionsManifest): void {
   const dir = extensionsDir();
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = extensionsManifestPath();
   const tmp = join(dir, `.${basename(path)}.${randomBytes(6).toString("hex")}.tmp`);
   writeFileSync(tmp, `${JSON.stringify(m, null, 2)}\n`, { flag: "wx" });
