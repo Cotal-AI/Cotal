@@ -91,7 +91,8 @@ At any question the CLI asks, Ctrl-D on an empty line or an input that closes ca
 as Ctrl-C does, so the command reports its own cancelled outcome.
 `--no-input` means the run never prompts, opens an editor or opens a browser. A command that would
 prompt behaves as it does without a terminal, `web` prints its link without opening it, and
-`personas edit` is refused. `--json` implies `--no-input`. `--no-color` and `--no-input` work before
+`personas edit` is refused. A refusal for a missing `--yes` names what kept the command from asking:
+`--json`, `--no-input`, `COTAL_NO_PROMPT=1` or no interactive terminal. `--json` implies `--no-input`. `--no-color` and `--no-input` work before
 the command word on every command, and after it on every command except one that takes its words
 raw. After `--` they are ordinary words. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in

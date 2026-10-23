@@ -14,6 +14,7 @@ import {
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { yesRequired } from "../lib/confirmation-required.js";
 import { checkHarness } from "./config.js";
 
 export const personaFlags = [
@@ -85,7 +86,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (sub === "remove") {
     const expected = requirePersonaSource(path);
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw usage(`removing '${name}' at ${path} requires --yes without an interactive terminal`);
+      if (presentation === "json" || !canPrompt()) throw usage(yesRequired(`removing '${name}' at ${path}`, presentation === "json"));
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`Remove '${name}' at ${path}?\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";

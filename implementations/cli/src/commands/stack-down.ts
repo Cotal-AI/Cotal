@@ -14,7 +14,7 @@ import {
   type MaintenanceLock, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
-import { ConfirmationRequired } from "../lib/confirmation-required.js";
+import { ConfirmationRequired, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
@@ -247,7 +247,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, abandonWarnings);
   if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
-  if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
+  if (!values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared
   // while its dependants run; it is recomputed after they stop and refuses on any change then.
   const manager = members.find((member) => member.role === "manager" && member.live);

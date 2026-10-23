@@ -4,6 +4,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
 import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
+import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 
 interface Values { space?: string; server?: string; creds?: string; dms?: boolean; yes?: boolean; json?: boolean; plain?: boolean; "dry-run"?: boolean }
@@ -20,7 +21,7 @@ export async function historyClear(values: Values): Promise<void> {
     writeResult(presentation, { command: "history", target: { space: selected.space, broker: brokerLabel(selected.server) }, result: { kind: "history-clear-preview", dryRun: true, streams, includeDms: values.dms === true, authorization: "not-checked", retainedCounts: "not-checked", purged: false } }, (result): Report => ({ sections: [{ title: "History clear preview", blocks: [{ kind: "fields", rows: [["Space", selected.space], ["Broker", brokerLabel(selected.server)], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"], ["Streams", result.streams.join(", ")], ["Authorization and counts", "not checked"]] }, { kind: "lines", lines: ["Offline target preview only. No connection, purge, agent stop, identity reset or caller issuance was attempted."] }] }] }));
     return;
   }
-  if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", "history clear requires --yes outside an interactive terminal", { remedy: "preview the space-wide scope with cotal history clear --dry-run before confirming it" });
+  if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", yesRequired("history clear", presentation === "json"), { remedy: "preview the space-wide scope with cotal history clear --dry-run before confirming it" });
   const acknowledged: PurgeReceipt[] = [];
   let submitted: string | undefined;
   // A signal from the confirmed clear on ends it where it is, and says what was purged.
