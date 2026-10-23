@@ -1453,9 +1453,9 @@ It keeps one activate and one renew requestId per witness, written to `store` be
 and replays them, with fresh material each time, for as long as the root and the approval allow.
 Concurrent pulls share one request. `credential()` is that same pull answering the validated
 `credential` result without its renewal proof, which never leaves the source, as a copy per caller;
-it is what `authorizeGuestServeGrant` takes. `bearer()` delegates to it, so a
-`bearer()` and a `credential()` in flight together send one request under the same persisted ids,
-and an ended or closed source refuses both the same way. It owns no timer. A transport failure, `rate-limited`, a missing
+it is what `authorizeGuestServeGrant` takes. `bearer()` and `credential()` share one pull, so the
+two in flight together send one request under the same persisted ids, and an ended or closed
+source refuses both the same way. It owns no timer. A transport failure, `rate-limited`, a missing
 or rejected sign-in, or a store failure leaves it `unavailable`, and the next pull replays the same
 request; any other denial from the space ends it, and later pulls send nothing. `state()` reports
 expiries only, errors are fixed sentences, and `close()` aborts a pull in flight.
