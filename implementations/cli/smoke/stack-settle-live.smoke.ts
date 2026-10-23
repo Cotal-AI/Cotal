@@ -43,7 +43,7 @@
  *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
- *     and reuses it.
+ *     and reuses it. After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
  *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
  *     stack, `up` starts it again and a later `down` stops it.
@@ -83,6 +83,7 @@ process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
+const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -552,6 +553,16 @@ try {
     check("bare up after the interrupted redefinition adopts the journaled replacement and reuses it", recovered.status === 0 && row?.instanceId === replacement && row?.state === "reused" && journal?.operation.phase === "completed" && serviceInstances("redefup", "stack-manager").length === 1, shown(recovered));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down then stops the recovered stack", stopped.status === 0 && gone("redefup", "stack-manager"), shown(stopped));
+    // The session ceiling stays with the manager's saved definition, so a bare up does not drop it.
+    const again = cli(root, "up", "--json");
+    track("redefup");
+    const launch = serviceDefinitionStore("redefup").read("stack-manager")?.record.value.launch;
+    check("a bare up after down keeps the --max-sessions 32 an earlier up set, in the definition and the registration",
+      again.status === 0 && launch?.type === "adapter" && launch.options["max-sessions"] === 32 && findMesh("redefup")?.maxSessions === 32 &&
+        serviceInstances("redefup", "stack-manager").some((row) => observeServiceProcess(row.record.value) === "running"),
+      { ...shown(again), options: launch?.type === "adapter" ? launch.options : undefined, registered: findMesh("redefup")?.maxSessions });
+    const last = cli(root, "down", "--yes", "--json");
+    check("down stops it again", last.status === 0 && gone("redefup", "stack-manager"), shown(last));
   }
 
   // 8. An upgrade: this release controls member records an earlier release wrote.
