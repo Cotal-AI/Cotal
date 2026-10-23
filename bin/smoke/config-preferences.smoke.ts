@@ -1,9 +1,9 @@
 /**
  * `cotal config` and the preferences it saves, driven through the built binary in a fresh sandbox:
  * the effective values with their sources and shadowed values, `get`, `set` and `unset` for the user
- * and for one space, the refusals, the named environment tiers, the selected space, an invalid file
- * stopping every command but help and completion without being reset, a linked file stopping them
- * the same way, a stale write refused, two
+ * and for one space, the refusals (a set for a space this machine does not know among them), the named
+ * environment tiers, the selected space, an invalid file stopping every command but help and completion
+ * without being reset, a linked file stopping them the same way, a stale write refused, two
  * concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
  * editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
@@ -84,6 +84,10 @@ const ansi = /\x1b\[/;
   check("get names the winner and the default it shadows", get.status === 0 && s?.value === "opencode" && s.winner?.source === "user" && s.shadowed.length === 1 && s.shadowed[0]!.source === "default" && s.shadowed[0]!.value === "claude", s);
   const again = run(["config", "set", "harness", "opencode", "--json"]);
   check("setting the same value again is a no-op, exit 0, and writes nothing", again.status === 0 && again.envelope?.outcome === "no-op" && saved().revision === 1, shown(again));
+  // A per-space value is saved only for a space this machine knows, so prepare demo first.
+  mkdirSync(join(home, "demo"), { recursive: true });
+  const prepared = run(["space", "create", "demo", "--root", join(home, "demo"), "--json"]);
+  check("setup: demo is prepared", prepared.status === 0 && prepared.envelope?.outcome === "ok", shown(prepared));
   const plainSet = run(["config", "set", "persona", "reviewer", "--space", "demo", "--plain"]);
   check("--space saves a personal value for one space", plainSet.status === 0 && /persona = reviewer in space demo/.test(plainSet.stdout) && saved().spaces.demo?.persona === "reviewer" && saved().revision === 2, shown(plainSet));
   run(["config", "set", "persona", "mine"]);
@@ -109,6 +113,7 @@ const ansi = /\x1b\[/;
     ["an empty persona", ["config", "set", "persona", " "], /invalid persona " ": it cannot be empty/],
     ["a harness no connector provides, naming the known ones", ["config", "set", "harness", "nosuch"], /no harness "nosuch"; known harnesses: .*claude.*opencode/],
     ["color saved for one space", ["config", "set", "color", "never", "--space", "demo"], /color has no per-space value/],
+    ["color saved for a space this machine does not know still names the key", ["config", "set", "color", "never", "--space", "nope"], /color has no per-space value/],
     ["--user with --space", ["config", "get", "harness", "--user", "--space", "demo"], /--user and --space choose different scopes/],
     ["a space name with a space in it", ["config", "--space", "a b"], /"a b" is not a space name/],
     ["get without a key", ["config", "get"], /usage: cotal config get <key>/],
@@ -123,6 +128,12 @@ const ansi = /\x1b\[/;
   }
   const both = run(["config", "--json", "--plain"]);
   check("--json with --plain is refused", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
+  // A value saved for a space that is neither registered nor prepared would never apply.
+  const unknown = run(["config", "set", "persona", "rev", "--space", "nope", "--json"]);
+  check("set for a space that is neither registered nor prepared is refused, naming the known spaces, and writes nothing",
+    unknown.status === 2 && unknown.envelope?.outcome === "refused" && unknown.envelope.error?.code === "TARGET_NOT_FOUND" && /no space named "nope" is registered or prepared here; known spaces: demo$/.test(unknown.envelope.error.message) && fileText() === before, shown(unknown));
+  const unknownUnset = run(["config", "unset", "persona", "--space", "nope", "--json"]);
+  check("unset for an unknown space stays open, so a value left for a gone space can go", unknownUnset.status === 0 && unknownUnset.envelope?.outcome === "no-op" && fileText() === before, shown(unknownUnset));
   // A persona's harness pin takes the same check as the harness preference.
   const pinned = run(["persona", "create", "pinned", "--prompt", "hi", "--subscribe", "", "--harness", "nosuch", "--json"], {}, project);
   check("persona create --harness refuses a harness no connector provides, writing no file",
