@@ -3140,8 +3140,9 @@ or seeding connectors. `--space` and `--server` select the same root used by lau
 space has an offline catalog before it is started. Failed target resolution never falls back
 to the current directory: a `--server` that no registration names reads the project in this
 folder, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing. With
-no space selected and no project here, the refusal says so. Remote `--on` operations refuse as
-unsupported here.
+no space selected and no project here, the refusal says so. With `--on <manager>`, list, show and
+create work on that manager's catalog instead, and edit and remove refuse there, as
+[Personas on an exact manager](#personas-on-an-exact-manager) describes.
 
 A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
 which rule it broke.
