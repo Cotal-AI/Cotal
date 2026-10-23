@@ -99,6 +99,13 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
   );
 }
 
+/** Under COTAL_DEBUG, print the failure's stack and the stack of each error that caused it. */
+function debugStacks(failure: Error): void {
+  if (!process.env.COTAL_DEBUG) return;
+  let error: unknown = failure;
+  for (let depth = 0; error instanceof Error && depth < 8; error = error.cause, depth++) if (error.stack) console.error(c.dim(error.stack));
+}
+
 /** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
  *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
  *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
@@ -111,11 +118,13 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     stderrLine("✗ ", failure.message, c.red);
     if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
     if (!(failure instanceof ConfirmationRequired) && !(failure instanceof MissingFlags)) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+    debugStacks(failure);
     process.exit(1);
   }
   writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}
 `);
   if (json) writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure)));
+  debugStacks(failure);
   process.exit(exitCode(failure.outcome, failure.code));
 }
 
@@ -496,7 +505,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json, parsed.values.plain === true);
       }
       if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true);
-      failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e)), scope.space), json, parsed.values.plain === true);
+      failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true);
     }
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
     // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe
