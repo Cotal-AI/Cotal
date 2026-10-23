@@ -4923,6 +4923,13 @@ Follow-up commands printed by the CLI retain the same explicit pin and fill
 in a returned run ID only when it matches the native run-token shape. Keep the
 pin on later status, answer and resume calls.
 
+A hosted verb the manager refuses reports the outcome and code as other commands do, and with
+`--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
+denied credential, a step in the wrong state or a program that does not validate, is refused, exit
+2. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
+`cotal run show <runId>` as the next step. Any other refusal of `start`, `resume`, `answer` or
+`amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
+
 An unpinned hosted verb run by the operator reads the space's service registry first. When it
 lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
 (exit 2) at once, as `ps` does, and names bare `cotal up` as the next step, instead of waiting out
@@ -4952,7 +4959,7 @@ step row carries its `step` key, the `effect` kind and its `name`, `state`, `out
 pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
 settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
-The run header and errors go to stderr, so stdout carries only rows; an unreadable revocation marker
+The run header goes to stderr, so stdout carries only rows; an unreadable revocation marker
 prints its reason there and still exits 1. The text view is presentation and is not a stable
 parsing target. `--json` on any other verb is refused.
 `ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
