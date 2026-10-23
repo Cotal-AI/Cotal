@@ -626,5 +626,24 @@ setCurrent("keep");
   }
 }
 
+// ── An explicit --store-dir, checked before anything is written ────────────────────────────────────────
+// A regular file, or a path under one, is a usage refusal that names it, on up and on backup restore.
+// None of them writes a stack journal.
+{
+  const storeRoot = projectRoot("store-checks");
+  const file = join(home, "store-file");
+  writeFileSync(file, "x");
+  const asFile = await json(["up", "--server", DEAD, "--store-dir", file], storeRoot);
+  check("up --store-dir naming a regular file is USAGE_INVALID, exit 1, naming it as not a directory",
+    refused(asFile, 1, "USAGE_INVALID") && (asFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`), shown(asFile));
+  const underFile = await json(["up", "--server", DEAD, "--store-dir", join(file, "sub")], storeRoot);
+  check("up --store-dir under a regular file names that file",
+    refused(underFile, 1, "USAGE_INVALID") && (underFile.env?.error?.message ?? "").includes(`${file}, in the --store-dir path ${join(file, "sub")}, is not a directory`), shown(underFile));
+  const restoreFile = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", file], storeRoot);
+  check("backup restore --store-dir naming a regular file is the same USAGE_INVALID, exit 1",
+    refused(restoreFile, 1, "USAGE_INVALID") && (restoreFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`), shown(restoreFile));
+  check("no store refusal wrote a stack journal", !existsSync(stackJournalPath(storeRoot)));
+}
+
 finish();
 process.exit(process.exitCode ?? 0);

@@ -189,6 +189,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
+import { assertStoreDirArgument } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -337,6 +338,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
   parsePositiveIntegerFlag("--max-file-store", args.values["max-file-store"] as string | undefined);
+  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"]);
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
