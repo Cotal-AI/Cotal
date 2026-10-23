@@ -876,7 +876,10 @@ Only a complete confirmed stop removes the delivery credential and local registr
 delivery daemon was already gone, its credential stays: that daemon never released its lease, and
 the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
 The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
-definitions and the journal remain for the next `up`. No descendant, lease or authority cleanup is
+definitions and the journal remain for the next `up`, and the space stays prepared at its root. A
+selection that names it stays, so the next command run without `--space` refuses with
+`TARGET_UNAVAILABLE`, exit 2, and names the root to start it in, rather than reach another space.
+No descendant, lease or authority cleanup is
 implied. A dry run reads records only, takes no lock, does not establish native impact and exits 0;
 its JSON marks `completeness` as `partial`. It lists members in stop order, says when the stop would
 first settle an earlier operation, and names a scope check the real stop would refuse as a warning.

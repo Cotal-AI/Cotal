@@ -475,7 +475,8 @@ running mesh with the right credentials instead of mistaking the cwd for a space
   Neither reaches another mesh.
 - With nothing selected, a project with its own `.cotal/` resolves to that project's mesh;
   otherwise one running mesh is used automatically and several are an error.
-- `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry.
+- `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry. A
+  controller stack's space stays prepared at its root, and a selection that names it stays.
 - `cotal space create <name> [--root <dir>]` names a space before it runs. It records the name
   and root apart from the registry and makes `<root>/.cotal/`, and `cotal up` in that root starts
   the space under that name. Until then a command that targets it refuses, naming the root.
