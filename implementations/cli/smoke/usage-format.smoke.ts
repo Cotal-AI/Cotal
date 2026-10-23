@@ -62,5 +62,21 @@ check("control: the parser's unknown subcommand has the same words", usageShape(
 const json = run(["clean", "--json"]);
 check("control: a command without JSON output still refuses --json as an unknown option", json.status === 1 && /Unknown option '--json'/.test(json.stderr), shown(json));
 
+if (process.platform !== "win32") {
+  // The shell enters a folder and removes it, so the CLI starts with a working folder that is gone.
+  const fromRemoved = (args: string[]) => {
+    const gone = mkdtempSync(join(home, "gone-"));
+    const r = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh", gone, process.execPath, BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
+  const removed = fromRemoved(["status"]);
+  check("a command run from a removed folder has the usage shape and says the folder is gone", usageShape(removed, /this folder no longer exists/) && /cd to an existing folder/.test(removed.stderr), shown(removed));
+  const removedJson = fromRemoved(["status", "--json"]);
+  const envelope = removedJson.stdout.startsWith("{") ? JSON.parse(removedJson.stdout) : undefined;
+  check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
+  const version = fromRemoved(["--version"]);
+  check("version still answers from a removed folder", version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
+}
+
 finish();
 process.exit(process.exitCode ?? 0);

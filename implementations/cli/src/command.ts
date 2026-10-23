@@ -470,6 +470,17 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     parsed = parseOrExit(cmd, rest);
   }
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
+  // A working folder removed before this process read it fails every cwd read the command makes, and
+  // Node caches the first read that succeeds. One read here refuses that case before any effect.
+  // Help, version and completion never read the folder.
+  if (!cmd.name.startsWith("__") && !["help", "version", "completion"].includes(cmd.name)) {
+    try {
+      process.cwd();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+    }
+  }
   // A preferences file that does not validate stops every command except help and shell completion,
   // as a broken config file does, so nothing runs on a default the person did not mean. `--help` on a
   // command has already returned above.
