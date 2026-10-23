@@ -59,10 +59,14 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   const base = { kind: "identity" as const, space: t.space, server, mode: t.mode };
   const none = { principal: null, owner: null, actor: null, subject: null, loginExpiresAt: null, grant: null };
   let result: WhoamiResult;
-  // A `--server` no registration names is resolved as open only because this folder holds no trust
-  // for it. That says nothing about the broker, and whoami does not contact it.
-  if (t.source === "flag-server" && t.mode === "open" && findMesh(t.space)?.server !== t.server) {
-    warnings.push({ code: "BROKER_NOT_PROBED", target: { ...target, server }, message: `${server} is not registered here and this folder holds no trust for it; whoami does not contact the broker, so whether it authenticates, and what this identity may do there, is unknown` });
+  // A `--server` this space is not registered at says nothing about the broker there, and whoami does
+  // not contact it. The folder's trust for the space does not reach an address nothing records.
+  const registered = v.server === undefined ? undefined : findMesh(t.space);
+  if (v.server !== undefined && registered?.server !== t.server) {
+    const message = t.mode === "open" && !t.auth
+      ? `${server} is not registered here and this folder holds no trust for it; whoami does not contact the broker, so whether it authenticates, and what this identity may do there, is unknown`
+      : `${server} is not where ${t.space} is registered here; whoami does not contact the broker, so whether it serves ${t.space}, and what this identity may do there, is unknown`;
+    warnings.push({ code: "BROKER_NOT_PROBED", target: { ...target, server }, message });
     result = { ...base, mode: null, identity: { kind: "unknown", ...none }, read: null, post: null, dms: null, capabilities: null };
   } else if (t.mode === "open") {
     result = { ...base, identity: { kind: "open", ...none }, read: "all", post: "all", dms: true, capabilities: "all" };
@@ -107,7 +111,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       completeness: warnings.length ? "partial" : "complete",
       warnings,
       ...(warnings.length ? { partial: result.identity.kind === "unknown"
-        ? { message: "whoami could not tell what this identity may do at that address; the warning names why", remedy: "add the space with `cotal space add <name> --server <url> --root <dir>`, which checks the broker, then run `cotal whoami --space <name>`" }
+        ? { message: "whoami could not tell what this identity may do at that address; the warning names why", remedy: registered ? `run \`cotal whoami --space ${t.space}\` without --server to read it at the address it is registered at` : "add the space with `cotal space add <name> --server <url> --root <dir>`, which checks the broker, then run `cotal whoami --space <name>`" }
         : { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
     },
     (r) => whoamiView(r, assumed),
