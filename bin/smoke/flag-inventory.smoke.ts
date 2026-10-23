@@ -87,6 +87,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "max-file-store:string",
       // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
       "no-manager:boolean",
+      // `--service-endpoints` (2026-10, #4396): hosts the service endpoint authority door and host
+      // route, threaded to the auth-service daemon; every auth-service inventory carries it.
+      "service-endpoints:boolean",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
@@ -207,6 +210,15 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
+  // `service-endpoint` (2026-10, #4396): an owner's decisions and an operator's name binding over the
+  // auth service's host route, plus the reads behind them.
+  "service-endpoint": {
+    flags: [
+      "caller-ceiling:string", "claim:string", "json:boolean:j", "owner:string", "plain:boolean",
+      "request-id:string", "space:string:s",
+    ],
+    positionals: true,
+  },
   // Saved references, discovery and every control-surface verb. `--refresh` on describe refuses
   // because no contract is cached; `--handle`, `--since`, `--lease` and `--result` refuse until
   // their native adapters exist.
@@ -304,7 +316,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // inventories carry it.
       "agent-provisioning-url:string",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
-      "port:string", "server:string", "space:string",
+      "port:string", "server:string", "service-endpoints:boolean", "space:string",
     ],
     positionals: false,
   },
@@ -312,7 +324,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "advertised-server:string", "agent-provisioning-url:string",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
-      "port:string", "server:string", "space:string",
+      "port:string", "server:string", "service-endpoints:boolean", "space:string",
     ],
     positionals: false,
   },
@@ -343,7 +355,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "advertised-server:string", "agent-provisioning-url:string", "exchange-public-port:string",
       "exchange-public-url:string", "exchange-trusted-proxy:boolean", "launch-request:string", "port:string",
-      "ready-file:string", "root:string", "server:string", "service-instance:string", "space:string",
+      "ready-file:string", "root:string", "server:string", "service-endpoints:boolean", "service-instance:string",
+      "space:string",
     ],
     positionals: false,
   },
