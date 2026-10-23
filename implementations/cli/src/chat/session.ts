@@ -156,6 +156,9 @@ export interface CloseReport {
   /** Static mode: the credential stays broker-valid until this epoch ms unless eviction was verified. */
   readonly credentialValidUntil?: number;
   readonly message: string;
+  /** Set when the session ended itself because it could not continue, such as when its inbox was
+   *  gone from the broker after an outage: why. */
+  readonly lost?: string;
 }
 
 export type SessionEvent =

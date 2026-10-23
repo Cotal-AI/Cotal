@@ -1509,6 +1509,7 @@ async function componentEp(
   target: MeshTarget,
   credential: { kind: "static"; auth: SpaceAuth | undefined } | { kind: "user"; bearer: string; sentinelCreds: string },
 ): Promise<{ ep: CotalEndpoint; close(): Promise<void> }> {
+  await requireGreeting(target);
   const id = newIdentity();
   const user = credential.kind === "user";
   // Static/open: ONE lifecycleUid minted and used both in the credential and as the endpoint's own
@@ -1542,6 +1543,15 @@ async function componentEp(
   ep.on("warning", ignoreComponentWarning);
   await ep.start();
   return { ep, close: () => ep.stop().catch(() => {}) };
+}
+
+/** Refuse before a probe dials a broker that does not greet on a socket this check owns. A broker
+ *  that takes the connection and never greets, as a stopped one does, leaves the dial's socket open
+ *  after its timeout, because the client library does not release a connection it never finished,
+ *  and status could then never exit. */
+async function requireGreeting(target: MeshTarget): Promise<void> {
+  if (!(await isReachable(target.server, { ...(target.tlsRequired ? { tls: true } : {}), timeoutMs: 3_000 })))
+    throw new Error(`the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is not answering`);
 }
 
 /** The static arm's one-shot service instrument, unchanged from before the user-mode fix: a fresh
@@ -1600,6 +1610,7 @@ async function managerServiceHealth(
   target: MeshTarget,
   auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } },
 ): Promise<ManagerServiceStatus> {
+  await requireGreeting(target);
   const nc = await dialerFor(target.server)({
     servers: target.server,
     ...standaloneConnectOpts(

@@ -178,10 +178,13 @@ try {
     const after = census();
 
     // WHICH answer — a probe that returns the wrong verdict quickly is not a fixed probe.
+    // A peer that took the connection and sent no greeting in time is there and not answering, the
+    // same `timeout` a dial that ran out of its budget gets, never `unreachable`.
+    const want = label === "slow greeting" ? "timeout" : wantOk ? "ok" : "unreachable";
     check(label === "slow greeting"
-        ? "slow greeting: the gate refused the slow greeting inside the deadline"
-        : `${label}: every probe returned ${wantOk ? "ok" : "unreachable"}`,
-      results.every((r) => r === (wantOk ? "ok" : "unreachable")), results);
+        ? "slow greeting: the gate refused the slow greeting inside the deadline as a timeout"
+        : `${label}: every probe returned ${want}`,
+      results.every((r) => r === want), results);
     // TIMING: the contract deadline was never the broken half, and must not become it.
     check(`${label}: ${N} probes finished inside ${N} deadlines (${elapsed}ms <= ${N * TIMEOUT_MS + 1500}ms)`,
       elapsed <= N * TIMEOUT_MS + 1_500, { elapsed });

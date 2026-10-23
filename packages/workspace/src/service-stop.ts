@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { token, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import { spaceKey } from "./auth-paths.js";
 import { CommandFailure } from "./output.js";
-import { assertRecordIdentity, identityRecord, type ProcessIdentityRecord } from "./pid.js";
+import { assertRecordIdentity, identityRecord, probeLiveness, type ProcessIdentityRecord } from "./pid.js";
 import { decodeLocalJson, protectedLocalDirectory, readLocalRecordSource } from "./protected-records.js";
 import { serviceOperationId, type ServiceAdapterContext } from "./service-adapter.js";
 
@@ -151,8 +151,32 @@ export function releaseRetainedServiceStop(marker: string, stopper: ProcessIdent
   return true;
 }
 
-/** The new controller refuses every existing native reservation, including stale or malformed
- *  ones. It does not reuse the legacy PID-only reclaim path or silently steal another attempt. */
+/** The PID a reservation marker names, or undefined when it is not a plain file that names one. */
+function reservationHolder(marker: string): number | undefined {
+  try {
+    if (!lstatSync(marker).isFile()) return undefined;
+    const text = readLocalRecordSource(marker, 128, true)?.toString("utf8");
+    return text !== undefined && /^[1-9][0-9]{0,9}$/.test(text) ? Number(text) : undefined;
+  } catch { return undefined; }
+}
+
+/** Remove a reservation whose stopper exited before it published a request, such as a `cotal down`
+ *  killed while it prepared the stop. Call only under the service definition hold and only when this
+ *  launch has no published request, so the reservation handed the child nothing. A marker that is
+ *  not a plain file, names no PID, or names a process that runs or cannot be read is kept. */
+export function releaseExitedServiceStopReservation(marker: string): void {
+  let before;
+  try { before = lstatSync(marker); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  const holder = reservationHolder(marker);
+  if (!before.isFile() || holder === undefined || probeLiveness(holder) !== "dead") return;
+  let current;
+  try { current = lstatSync(marker); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  if (current.dev === before.dev && current.ino === before.ino) rmSync(marker);
+}
+
+/** The new controller refuses every existing native reservation that a release above did not
+ *  remove, naming the process it names. It does not reuse the legacy PID-only reclaim path or
+ *  silently steal another attempt. */
 export function reserveNativeServiceStop(marker: string): { stopper: ProcessIdentityRecord; release(): void } {
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "this native stop reservation requires Linux process creation identity; no weaker platform path was selected");
   if (!isAbsolute(marker) || /[\u0000-\u001f\u007f]/u.test(marker)) throw new CommandFailure("refused", "USAGE_INVALID", "a native stop reservation needs its exact protected absolute marker path");
@@ -164,7 +188,11 @@ export function reserveNativeServiceStop(marker: string): { stopper: ProcessIden
   const original = lstatSync(temp);
   try {
     try { linkSync(temp, marker); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a native stop reservation already exists; inspect its original attempt before retrying. No marker was reclaimed or signal sent"); throw error; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const holder = reservationHolder(marker);
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a native stop reservation already exists${holder === undefined ? "" : `, held by pid ${holder}`}; inspect its original attempt before retrying. No marker was reclaimed or signal sent`, { target: { marker, ...(holder === undefined ? {} : { holderPid: holder }) }, ...(holder === undefined ? {} : { remedy: `run the stop again after pid ${holder} exits` }) });
+    }
   } finally { rmSync(temp); }
   return { stopper, release() {
     let current;

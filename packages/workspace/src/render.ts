@@ -97,6 +97,9 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
   }
 }
 
+/** The next step for a broker that took the connection and did not answer in time. */
+const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broker process is not stopped or overloaded and that the link to it is not too slow";
+
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
 function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
@@ -136,11 +139,11 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       );
     case "slow-link":
       // No CA guidance here: the confirm probe never reached a conclusive answer, so there is no
-      // trust evidence to diagnose. The broker answered TCP; only the credentialed connect ran out
-      // of its budget.
+      // trust evidence to diagnose. The broker took the connection, so it is not "not running": it
+      // is stopped, overloaded or behind a slow link.
       return parts(
-        `mesh "${t.space}" at ${server} answered TCP but the credentialed connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the registry entry was kept`,
-        "retry, or raise the connect budget if this link is consistently slow",
+        `mesh "${t.space}" at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the registry entry was kept`,
+        NOT_ANSWERING_REMEDY,
       );
   }
 }
@@ -157,7 +160,7 @@ function reachableParts(
     return parts(`credential EXPIRED at ${server}; bounded lifetime reached (credential death)`, "run `cotal doctor auth` where the mesh runs, or re-mint the credential");
   if (reason === "unreachable") return parts(`can't reach a broker at ${server}`, "is it running? (`cotal up`)");
   if (reason === "timeout")
-    return parts(`the connect to ${server} did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the broker may just be slow to reach`, "retry, or raise the connect budget if this link is consistently slow");
+    return parts(`the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s`, NOT_ANSWERING_REMEDY);
   // `auth-required` is two different user situations with two different repairs, and this path used
   // to collapse them. The registry path never did: `classifyPreflightFailure` branches on the same
   // bit into `creds-rejected` vs `open-wants-auth`. Told "credentials rejected" after sending NO

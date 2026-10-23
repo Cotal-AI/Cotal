@@ -9,10 +9,11 @@
  *   - an error from a write made while owned still reaches the owner when the release is called
  *     between that write's callback and its error event;
  *   - after the release settles, a closed pipe exits through the binary's listener again;
- *   - owned, an EIO reaches the owner; unowned, an EIO is rethrown and exits 1;
- *   - the views that must finish their own shutdown own stdout's errors and attach no listener of
- *     their own to process.stdout.
- * The views themselves (chat, watch, service logs, the service journal) are not driven here.
+ *   - owned, an EIO reaches the owner; unowned, an EIO is reported in one stderr line with no stack
+ *     trace and exits 3, or with the non-zero status the command already set;
+ *   - the views that must finish their own shutdown, and `down`, which must finish its stops, own
+ *     stdout's errors and attach no listener of their own to process.stdout.
+ * The views themselves (chat, watch, service logs, the service journal) and `down` are not driven here.
  *
  * Run: pnpm smoke:stdout-owner
  */
@@ -91,6 +92,10 @@ const children: Record<string, () => Promise<void> | void> = {
   "unowned-eio": () => {
     setTimeout(() => process.stdout.emit("error", eio()), 0);
   },
+  "unowned-eio-status": () => {
+    process.exitCode = 2;
+    setTimeout(() => process.stdout.emit("error", eio()), 0);
+  },
 };
 
 const mode = process.argv[2];
@@ -139,14 +144,17 @@ if (mode !== undefined) {
     const owned = await run("owned-eio", false);
     check("owned, an EIO reaches the owner and is not rethrown", owned.code === 3 && owned.stderr.includes("owner saw EIO") && !owned.stderr.includes("synthetic EIO"), owned);
     const unowned = await run("unowned-eio", false);
-    check("unowned, an EIO is rethrown and exits 1", unowned.code === 1 && unowned.stderr.includes("synthetic EIO"), unowned);
+    check("unowned, an EIO is one stderr line with no stack trace and exits 3",
+      unowned.code === 3 && unowned.stderr === "✗ could not write to stdout: synthetic EIO\n", unowned);
+    const status = await run("unowned-eio-status", false);
+    check("...and keeps a non-zero exit status the command already set", status.code === 2 && status.stderr.includes("could not write to stdout"), status);
   }
 
-  console.log("4. the views that close their own work own stdout's errors");
+  console.log("4. the views and the command that close their own work own stdout's errors");
   {
     const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
     const direct = /process\.stdout\.(?:on|once|prependListener|prependOnceListener|addListener)\(\s*"error"/;
-    for (const file of ["chat/frontend.ts", "watch-json.ts", "commands/service-log-follow.ts", "lib/service-journal.ts"]) {
+    for (const file of ["chat/frontend.ts", "watch-json.ts", "commands/service-log-follow.ts", "lib/service-journal.ts", "commands/down.ts"]) {
       const text = readFileSync(join(src, file), "utf8");
       check(`${file} owns stdout's errors and adds no listener of its own`, /\bownStdoutErrors\(/.test(text) && !direct.test(text));
     }

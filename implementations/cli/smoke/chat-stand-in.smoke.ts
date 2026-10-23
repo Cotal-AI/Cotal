@@ -16,13 +16,17 @@
  *   - the native session refuses a send, join or channel mode outside its grant without calling the
  *     endpoint, and still reaches the endpoint for a granted channel;
  *   - a typed DM target that parses as a principal is sent to that principal, absent and unheard,
- *     and the present peer whose display name spells it receives nothing.
+ *     and the present peer whose display name spells it receives nothing;
+ *   - a disconnected native session whose endpoint warns that the session's consumer is gone ends
+ *     itself with that reason, and the close exits 5.
  * Admission, retirement, delivery and every broker behavior are NOT covered here.
  *
  * Run: pnpm smoke:chat-stand-in
  */
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { JetStreamApiError } from "@nats-io/jetstream";
 import { fileURLToPath } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import type { CotalEndpoint } from "@cotal-ai/core";
@@ -164,6 +168,34 @@ if (mode === "plain" || mode === "stdio") {
     check("a --stdio dm whose to parses as a principal is sent to that principal, absent and unheard",
       viaStdio?.outcome === "stored" && stdioRecipient?.id === "u_z.alice" && sent.join() === "u_z.alice,u_z.alice", { line, viaStdio, sent });
     check("the peer whose display name spells the principal received nothing", !sent.includes("u_d.mallory"), sent);
+  }
+
+  console.log("5. a reconnect that finds the session's inbox gone ends the session with that reason");
+  {
+    const consumerGone = new JetStreamApiError({ code: 404, err_code: 10014, description: "consumer not found" });
+    const lostSession = () => {
+      const endpoint = Object.assign(new EventEmitter(), { stop: async () => {} }) as unknown as CotalEndpoint;
+      const session = new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "retired" }) });
+      const events: SessionEvent[] = [];
+      session.subscribe((e) => events.push(e));
+      return { endpoint: endpoint as unknown as EventEmitter, session, events };
+    };
+    const connected = lostSession();
+    connected.endpoint.emit("warning", consumerGone);
+    const other = lostSession();
+    other.endpoint.emit("connection", { connected: false });
+    other.endpoint.emit("warning", new Error("connection refused"));
+    await new Promise((resolve) => setImmediate(resolve));
+    check("a connected session, or a disconnected one with another warning, keeps running",
+      [connected, other].every((s) => !s.events.some((e) => e.type === "connection" && e.state === "ended")), [connected.events, other.events]);
+    const lost = lostSession();
+    lost.endpoint.emit("connection", { connected: false });
+    lost.endpoint.emit("warning", consumerGone);
+    const report = await lost.session.close();
+    const ended = lost.events.find((e) => e.type === "connection" && e.state === "ended");
+    check("a disconnected session told its inbox is gone ends itself with the reason, and its close carries it",
+      ended?.type === "connection" && /inbox is gone/.test(ended.reason ?? "") && report.lost === ended.reason, { ended, report });
+    check("...and that close exits 5", closeExitCode(report) === 5, report);
   }
 
   finish();

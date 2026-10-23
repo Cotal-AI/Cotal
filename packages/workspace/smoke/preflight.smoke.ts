@@ -481,8 +481,8 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   }
   const s12bElapsed = Date.now() - t12b0;
   check(
-    "S12 held-open plain peer: a peer that never greets is the unreachable sentence, not the timeout one (#2156: the gate now requires the greeting on a socket it owns)",
-    s12bMsg !== undefined && s12bMsg.includes("is it running") && !s12bMsg.includes("did not complete within"),
+    "S12 held-open plain peer: a peer that took the connection and never greets is not answering, not \"is it running\" (the gate still requires the greeting on a socket it owns, #2156)",
+    s12bMsg !== undefined && s12bMsg.includes("is not answering") && s12bMsg.includes("did not complete within") && !s12bMsg.includes("is it running"),
     s12bMsg,
   );
   check(

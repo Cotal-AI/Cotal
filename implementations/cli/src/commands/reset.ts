@@ -64,7 +64,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
   try {
     store = safeStoreCleanupPath(root, mesh.storeDir);
     maintenance = readMaintenanceJournal(root);
-    possibleProcesses = liveMeshProcesses(root, space);
+    possibleProcesses = liveMeshProcesses(root, space, true);
     serviceOwners = serviceInstances(space).map(instanceProjection).map((row) => ({ instanceId: row.instanceId, process: row.observedProcess, supervisor: row.supervisorRecord.mechanism }));
     serviceCensus = readLocalServiceCensus(space);
     additiveRecords = listLedgerFiles(root, { requireReadable: true });

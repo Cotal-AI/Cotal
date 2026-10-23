@@ -205,6 +205,11 @@ A command with a JSON output exits by its outcome, with or without `--json`:
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure.
 
+Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
+the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
+partway, so check what it did before you retry. A reader that closes the output early, as `| head`
+does, ends the command quietly with the status it had already set, or 0.
+
 ## Commands
 
 | Area | Command | Purpose |
@@ -667,7 +672,14 @@ removes the request, the stop reservation and a `--with-agents` shutdown intent 
 armed, records the manager `failed`, and stops the rest of the stack with a `STOP_ABANDONED` warning.
 Whether that manager stopped or released its agents' seats is not confirmed, and a seat that runs
 outside the manager process may still run. It needs `--yes` and refuses `--dry-run` and
-`--with-agents`. When `up`
+`--with-agents`. A `down` that exits while it stops a member, because it was killed or its terminal
+closed, leaves that member `stopping`. When that member is the manager and its request was not yet
+published, the manager was handed nothing: the next bare `up` or `down` returns the record to what
+its process shows, and the next stop releases the reservation that `down` took once its pid has
+exited. When it is the broker or the delivery daemon, whose stop is a signal to its recorded
+process, the refusal names the same `--abandon-stop` command once that process is gone. That
+command records the member `failed` and stops the rest of the stack with a `STOP_ABANDONED`
+warning. Whether the stop caused the exit is not confirmed. When `up`
 redefines a member because its launch options changed, the journal records the
 replacement's instance and launch request before the old instance is retired, and the new
 definition's revision before the replacement launches. After an `up` cut off in between, the next
@@ -842,6 +854,9 @@ and the manager's log both name the credential and this repair.
 
 ## down
 
+Every `down` runs to its end when the reader of its output goes away, as `| head` does. It
+keeps stopping, writes nothing more, and exits with the stop's own status.
+
 `down <service-name>` routes one saved owned definition through the
 same selection, confirmation, reservation, native manager-impact and stop controller as
 `service stop`. Use `--instance <full-id>` when selection needs a full instance pin. `--yes`,
@@ -940,12 +955,14 @@ normalizes away names one path for every space and is read as that path. The ref
 record by name, path under the root and pid, and its next step names the pids and paths to check.
 It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
 `LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first. Its
-preview, `cotal down --dry-run --with-agents`, shows the no-op.
+preview, `cotal down --dry-run --with-agents`, shows the no-op. When the stack's last completed
+`down` took `--with-agents`, or the root never started a stack, no agent of it can remain, and
+`--with-agents` reports the same no-op.
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
 accept the new named-service JSON/plain/yes apply receipt flags, except that `--json` and
-`--plain` show the no-op of a stack that is already stopped. A bare stop of such a root needs
-no `--yes`, so `cotal down --yes` there is refused and stops nothing; run `cotal down` without it.
+`--plain` show the no-op of a stack that is already stopped. A bare stop of such a root asks for no
+confirmation, and `--yes` there changes nothing, so `cotal down --yes` stops a stack on any root.
 Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
 a real isolated project root and refuses pending maintenance transitions, any valid or
@@ -1238,7 +1255,9 @@ One configurable cleanup verb; every target requires `--force`.
   address, mode or space.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
-running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). A
+running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). On a
+controller root, a member whose process is gone counts as stopped once a completed `down` recorded it
+as already stopped, so `down --yes` after a crash is enough. A
 record counts as stopped only when it is absent, empty, or names a pid the kernel reports gone, so
 unattributable content, a removal reservation, or a pid whose liveness cannot be read refuses. They
 also refuse outright on a root that holds accounts for several spaces: the store and the broker
@@ -1271,8 +1290,10 @@ reset keeps both, so a later `up` starts it again. A stack none of whose members
 no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
-`cotal down` from its root, or `cotal up` and then `cotal down --yes` when a member exited
-without a recorded stop. A legacy root has no stack journal, and its `down` drops the registration
+`cotal down` from its root. A member that exited without a recorded stop, as after a crash, is
+settled by `cotal down --yes`: it finds the member gone and records it as already stopped, and the
+reset then accepts it. Only a member that no completed `down` recorded that way needs `cotal up` and
+then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
 a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
 `reset space`, with `--store-dir <dir>` when the registration records a custom store.
@@ -2091,7 +2112,8 @@ unreadable extensions manifest is refused while loading the command surface, bef
 can run. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
-`running · service unchecked`.
+`running · service unchecked`. A broker that takes the connection and does not answer, as a
+stopped one does, leaves it unchecked too, and `status` still exits.
 
 The local auth reader uses a stripped signer only when both split trust records are absent.
 The load refuses dangling and looping links at either record even when an older stripped signer is present.
@@ -2165,7 +2187,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
 means the component record is live but its service/readiness surface did not answer or is not ready.
 Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
-absent component or a clean zero. A PID record that exists but cannot be read, or exists under both
+absent component or a clean zero. A broker that takes the connection and does not answer, as a
+stopped one does, refuses the manager and delivery probes, and the pass still exits. A PID record that exists but cannot be read, or exists under both
 its current and a pre-upgrade name, refuses only its own row. A record that its component removes
 while the pass runs reads as `absent`.
 
@@ -3810,7 +3833,9 @@ A session that ends by leaving, by end of input or at its lifetime exits 0 when 
 close was confirmed and it was retired, or was an open-mesh session with nothing to retire. It exits
 4 when its connection close was confirmed and its retirement was requested but not confirmed. It
 exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
-was observed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
+space restarted and retired it while the connection was down, ends by itself with that reason and
+exits 5 when its close is confirmed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
 input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
 signal that arrives before the view starts is held: no session is opened if admission has not
 begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
@@ -3907,7 +3932,8 @@ to redeliver. When a write waits for stdout to drain, or more than 4 MiB of reco
 session stops reading stdin until stdout drains.
 
 `end` is the last record. Its `reason` is `input closed` when stdin ended or a signal ended input,
-and `session ended` when the session ended by itself, for example at a static session's expiry.
+and `session ended` when the session ended by itself, for example at a static session's expiry. A
+session that could not reconnect gives that reason instead, and its `close` carries it as `lost`.
 When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
 `requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
 `message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
@@ -4542,7 +4568,9 @@ cotal team remove <deployment-id>   # retire a returned deployment
 cotal topology view -f cotal.yaml   # validate + view the access graph, change nothing
 ```
 
-`up -f` brings up a new broker and applies the manifest. On a root that holds a stack preserved by
+`up -f` brings up a new broker and applies the manifest. When the manifest's space is already
+running from the same folder, it exits 1 and names `cotal team deploy <file>`, which adds all-new
+channels and agents, and `cotal down` before another `up -f`. On a root that holds a stack preserved by
 `down --preserve-state`, it refuses `LIFECYCLE_BLOCKED` (exit 2) and starts nothing; bare
 `cotal up` resumes that stack. `team deploy` requires a registered,
 running mesh and applies additively: all-new live channel-only manifests, or bounded all-new agent
@@ -5070,7 +5098,8 @@ controls. Leaving with `q`, Esc or Ctrl-C stops only this observer.
 Use `--view events` or `--view messages` to select a feed, or press `f` to change it in the
 terminal. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most
 300 entries. A reported turn ending is not task completion. An interrupted feed keeps its
-last observations and reports the gap instead of showing them as current.
+last observations and reports the gap instead of showing them as current. When the connection
+comes back, after a broker restart too, the feed resumes and reports the transition as a gap.
 
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
 are not supported by that stream. Authenticated observer views keep direct messages out of
@@ -5961,7 +5990,9 @@ confirmation defaults to cancel and shows every affected identity, lifecycle and
 action. Scripts require `--yes`. The offline `--dry-run` still imports no provider and performs no
 native impact query; it is not stop authorization.
 
-The native stop reserves its original PID custody without reclaiming an existing reservation.
+The native stop reserves its original PID custody. It reclaims an existing reservation only when
+the pid it names has exited and no request was published for this launch, and otherwise refuses and
+names that pid.
 It rechecks the confirmed scope, binds the full service/launch/stop request and both process creation
 identities, and uses the existing native shutdown intent for agent reap. The child rechecks the
 same complete scope before accepting. Changed or incomplete scope refuses without a broader policy.

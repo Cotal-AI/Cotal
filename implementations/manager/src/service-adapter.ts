@@ -6,7 +6,7 @@ import {
   colorEnabled, commandIsCotalSupervisor, controllerAttemptBinding, cutController, localProcessPath, maintenanceAdmitsStackWork, publishServiceStopRequest,
   readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, removePidPair, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
   clearAbandonedServiceStopRequest, disarmManagerShutdownIntent, managerShutdownIntentArmedBy,
-  reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
+  releaseExitedServiceStopReservation, reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
   stopReservationPath, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
   type ServiceAdapterStopAbandonment, type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopRefusal, type ServiceAdapterStopResult,
   type ServicePreset,
@@ -63,6 +63,11 @@ async function prepareStop(context: ServiceAdapterStopContext): Promise<ServiceA
  *  native returned receipt and the exact process exit can release it. There is no force kill. */
 async function stop(context: ServiceAdapterStopContext & { requestId: string; plan: ServiceAdapterStopPlan }): Promise<ServiceAdapterStopResult> {
   const root = String(context.options.root), pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: context.space });
+  // A reservation whose stopper exited before it published a request handed this launch nothing, so
+  // it is released under the definition hold rather than refusing every later stop.
+  let published: boolean;
+  try { published = readServiceStopRequest(context) !== undefined; } catch { published = true; }
+  if (!published) releaseExitedServiceStopReservation(stopReservationPath(pidPath));
   const reservation = reserveNativeServiceStop(stopReservationPath(pidPath));
   let submitted = false, releasable = true;
   try {

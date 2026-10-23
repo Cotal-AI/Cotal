@@ -110,7 +110,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     const maintenance = readMaintenanceJournal(root);
     if (maintenance)
       throw new Error(`clean ${target} is refused while maintenance state is ${maintenance.state}; use the recorded restore recovery or fallback-cleanup command`);
-    const running = liveMeshProcess(root);
+    const running = liveMeshProcess(root, undefined, true);
     if (running) {
       console.error(c.red(`✗ the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``));
       process.exitCode = 1;
@@ -160,8 +160,8 @@ export async function purgeHistory(values: { server?: string; space?: string; cr
  *  or undefined when everything is stopped. A stale pidfile (recorded pid proven dead) does not
  *  block: a crashed broker must not wedge its own cleanup. Liveness rides the shared hardened
  *  probe (`pidfileState`): pid > 0 only, EPERM counts as alive. */
-export function liveMeshProcess(root: string, space?: string): string | undefined {
-  return liveMeshProcesses(root, space)[0];
+export function liveMeshProcess(root: string, space?: string, settledByDown = false): string | undefined {
+  return liveMeshProcesses(root, space, settledByDown)[0];
 }
 
 /**
@@ -193,23 +193,28 @@ export function liveMeshOwner(root: string, space?: string): string | undefined 
 /** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
  *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
  *  DIFFERENT tenant on a multi-space root, and the derivation throws outright on an unreadable or
- *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
-export function liveMeshProcesses(root: string, space?: string): string[] {
+ *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure.
+ *  `settledByDown` is for the commands that remove the store, as {@link liveStackMembers} says. */
+export function liveMeshProcesses(root: string, space?: string, settledByDown = false): string[] {
   const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
   const running: string[] = [];
   for (const component of localProcessSurface()) {
     const record = possiblyRunning(component, context);
     if (record) running.push(record);
   }
-  return [...running, ...liveStackMembers(root)];
+  return [...running, ...liveStackMembers(root, undefined, true, settledByDown)];
 }
 
 /** The members of the controller stack recorded at this root that may still run. A member counts as
  *  live unless its process is gone and its record carries the stop receipt its role requires.
  *  Backup, reset store and reset space share this rule. With `unreceipted` false, a member whose
- *  process is proven gone does not count even without its receipt, as `space forget` asks. */
-function liveStackMembers(root: string, space?: string, unreceipted = true): string[] {
-  return stackMembers(root, space).filter((row) => !row.gone || unreceipted && !row.receipted).map((row) => `${row.label}${row.gone ? ", no stop receipt" : ""}`);
+ *  process is proven gone does not count even without its receipt, as `space forget` asks. With
+ *  `settledByDown`, which reset and clean pass because they remove the store rather than keep it, a
+ *  gone member also counts as stopped when the stack's last whole-stack operation is a completed
+ *  `down` that recorded it already stopped: after a crash that `down` has nothing left to stop, and
+ *  only a full restart could add a receipt. */
+function liveStackMembers(root: string, space?: string, unreceipted = true, settledByDown = false): string[] {
+  return stackMembers(root, space, settledByDown).filter((row) => !row.gone || unreceipted && !row.receipted).map((row) => `${row.label}${row.gone ? ", no stop receipt" : ""}`);
 }
 
 /** The members of the controller stack recorded at this root for `space` whose process is proven
@@ -222,15 +227,18 @@ export function unsettledStackMembers(root: string, space: string): string[] {
  *  stack's own recorded space. A space derived from the root's pidfiles or accounts can name another
  *  tenant, or the default, once the stack is stopped. `space` limits the answer to that space's
  *  stack. */
-function stackMembers(root: string, space?: string): { label: string; gone: boolean; receipted: boolean }[] {
+function stackMembers(root: string, space?: string, settledByDown = false): { label: string; gone: boolean; receipted: boolean }[] {
   const stack = readStackJournal(root);
   if (!stack || space !== undefined && stack.journal.space !== space) return [];
+  const { operation, members } = stack.journal;
+  const down = settledByDown && operation.kind === "down" && operation.phase === "completed";
   return Object.values(STACK_DEFINITION).flatMap((definition) => serviceInstances(stack.journal.space, definition).map((row) => {
     const value = row.record.value;
     return {
       label: `${definition}, instance ${row.name}`,
       gone: ["gone", "previous-boot"].includes(observeServiceProcess(value)),
-      receipted: value.state === "stopped" && Boolean(value.nativeStop ?? value.kernelStop ?? value.processStop),
+      receipted: value.state === "stopped" && Boolean(value.nativeStop ?? value.kernelStop ?? value.processStop)
+        || down && members.some((member) => member.instanceId === row.name && member.state === "already-stopped"),
     };
   }));
 }

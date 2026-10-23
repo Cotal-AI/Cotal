@@ -212,6 +212,13 @@ export class MeshView extends EventEmitter {
     this.error = e.message;
     this.dirty = true;
   };
+  /** A rebuilt connection clears the fault that dropped the old one, so the view reports itself
+   *  connected again instead of keeping that error for good. */
+  private readonly onConnection = (s: { connected: boolean }) => {
+    this.connected = s.connected;
+    if (s.connected) this.error = undefined;
+    this.dirty = true;
+  };
   private readonly onWarning = (e: Error) => {
     this.warning = e.message;
     this.dirty = true;
@@ -233,6 +240,7 @@ export class MeshView extends EventEmitter {
     // The error listener MUST be attached before start() — async faults surface as events.
     this.ep.on("error", this.onError);
     this.ep.on("warning", this.onWarning);
+    this.ep.on("connection", this.onConnection);
     this.ep.on("roster", this.onRoster);
     this.ep.on("presence", this.onPresence);
     await this.ep.start();
@@ -259,6 +267,7 @@ export class MeshView extends EventEmitter {
     this.pending.clear();
     this.ep.off("error", this.onError);
     this.ep.off("warning", this.onWarning);
+    this.ep.off("connection", this.onConnection);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
     clearTimeout(this.membershipTimer);

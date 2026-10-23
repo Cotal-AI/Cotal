@@ -47,6 +47,14 @@
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
  *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
  *     stack, `up` starts it again and a later `down` stops it.
+ *  9. A `down` killed mid-stop. Killed while the broker's record is `stopping`, it leaves a broker
+ *     that is gone under an unconfirmed request: the next `down` refuses and names
+ *     `down --abandon-stop <request> --yes`, which records the broker failed with a warning, and
+ *     `up` then `down` cycle the stack. Killed while the manager's record is `stopping` and before
+ *     its request is published, the next bare `down` stops the stack and releases the reservation
+ *     that killed `down` took.
+ * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
+ *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -324,10 +332,11 @@ try {
     await until(() => members.every((pid) => pid === null || !alive(pid)), 10_000);
     const settled = cli(root, "down", "--yes", "--json");
     check("down --yes records every crashed member as stopped and exits 0", settled.status === 0 && ["ok", "no-op"].includes(settled.env?.outcome ?? ""), shown(settled));
-    // A member that crashed has no recorded stop, so reset names the restart that records one.
-    const unreceipted = cli(root, "reset", "store", space, "--dry-run", "--json");
-    const verdict = unreceipted.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
-    check("reset store --dry-run after crashes refuses in its verdict and names cotal up then cotal down", unreceipted.status === 0 && verdict?.offered === false && Boolean(verdict.remedy?.includes("cotal up")) && Boolean(verdict.remedy?.includes("cotal down")), shown(unreceipted));
+    // That down recorded every crashed member as already stopped, so the reset, which removes the
+    // store rather than keeps it, is offered without a restart.
+    const afterCrash = cli(root, "reset", "store", space, "--dry-run", "--json");
+    const verdict = afterCrash.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
+    check("reset store --dry-run after crashes and down --yes offers the apply", afterCrash.status === 0 && verdict?.offered === true, shown(afterCrash));
     // The killed daemon never released shard 0. That down kept its credential, so the repair up
     // recognises the row as the dead daemon's, waits out its TTL and starts delivery.
     check("down --yes after a delivery crash keeps the delivery credential", settled.env?.result?.cleanup === "registration-removed-delivery-credential-kept", settled.env?.result?.cleanup);
@@ -570,6 +579,78 @@ try {
     check("up starts that stopped stack again", restarted.status === 0 && serviceInstances("upgraded", "stack-manager").some((row) => observeServiceProcess(row.record.value) === "running"), shown(restarted));
     const final = cli(root, "down", "--yes", "--json");
     check("a later down stops it", final.status === 0 && gone("upgraded", "stack-manager"), shown(final));
+  }
+
+  // 9. A down killed mid-stop, once the named member's record reads `stopping`.
+  const killDownAt = async (root: string, space: string, definition: string): Promise<string | undefined> => {
+    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes", "--json"], { cwd: root, env });
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes", "--json"], { cwd: root, env, stdio: "ignore" });
+    const stopping = () => serviceInstances(space, definition)[0]?.record.value;
+    const end = Date.now() + 120_000;
+    while (Date.now() < end && child.exitCode === null && stopping()?.state !== "stopping") await sleep(2);
+    const request = stopping()?.state === "stopping" ? stopping()!.requestId : undefined;
+    child.kill("SIGKILL");
+    await exited(child);
+    return request;
+  };
+  {
+    const space = "killedbroker";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    check(`${space}: up starts the stack`, started.status === 0, shown(started));
+    const request = await killDownAt(root, space, "stack-broker");
+    await until(() => gone(space, "stack-broker"), 10_000);
+    check(`${space}: the killed down left the broker stopping under its request, with its process gone`, request !== undefined && serviceInstances(space, "stack-broker")[0]?.record.value.state === "stopping" && gone(space, "stack-broker"), { request });
+    const refused = cli(root, "down", "--yes", "--json");
+    check(`${space}: the next down refuses and names the abandon command for that request`, refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(refused.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`)), shown(refused));
+    const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
+    const warned = abandoned.env?.warnings?.find((warning) => warning.code === "STOP_ABANDONED");
+    check(`${space}: down --abandon-stop records the broker failed with a warning`, abandoned.status === 0 && warned?.target?.requestId === request && serviceInstances(space, "stack-broker")[0]?.record.value.state === "failed", { ...shown(abandoned), warned });
+    const restarted = cli(root, "up", "--json");
+    track(space);
+    const final = cli(root, "down", "--yes", "--json");
+    check(`${space}: up then down cycle the stack`, restarted.status === 0 && final.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), { up: shown(restarted), down: shown(final) });
+  }
+  {
+    const space = "killedmanager";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    check(`${space}: up starts the stack`, started.status === 0, shown(started));
+    const manager = serviceInstances(space, "stack-manager")[0], states = serviceInstanceStore(space).directory();
+    const request = await killDownAt(root, space, "stack-manager");
+    let published: boolean;
+    try { published = manager !== undefined && states !== undefined && readServiceStopRequest({ space, instanceId: manager.name, launchRequestId: manager.record.value.launchRequestId, stateDirectory: states }) !== undefined; } catch { published = true; }
+    check(`${space}: the killed down left the manager stopping with no request published`, request !== undefined && !published && serviceInstances(space, "stack-manager")[0]?.record.value.state === "stopping", { request, published });
+    const marker = stopReservationPath(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space }));
+    const stopped = cli(root, "down", "--yes", "--json");
+    let reserved = true;
+    try { lstatSync(marker); } catch { reserved = false; }
+    check(`${space}: the next bare down stops the stack and releases that down's reservation`, stopped.status === 0 && gone(space, "stack-manager") && gone(space, "stack-broker") && !reserved, { ...shown(stopped), reserved });
+    const restarted = cli(root, "up", "--json");
+    track(space);
+    const final = cli(root, "down", "--yes", "--json");
+    check(`${space}: up then down cycle the stack`, restarted.status === 0 && final.status === 0 && gone(space, "stack-manager"), { up: shown(restarted), down: shown(final) });
+  }
+
+  // 10. A repeated down --with-agents.
+  {
+    const space = "repeatreap";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const reaped = cli(root, "down", "--with-agents", "--yes", "--json");
+    const again = cli(root, "down", "--with-agents", "--yes", "--json");
+    check(`${space}: a repeat of a completed down --with-agents is a no-op, exit 0`, started.status === 0 && reaped.status === 0 && again.status === 0 && again.env?.outcome === "no-op", { up: shown(started), first: shown(reaped), again: shown(again) });
+    const restarted = cli(root, "up", "--json");
+    track(space);
+    const spared = cli(root, "down", "--yes", "--json");
+    const refused = cli(root, "down", "--with-agents", "--yes", "--json");
+    check(`${space}: after a down without --with-agents it still refuses LIFECYCLE_BLOCKED`, restarted.status === 0 && spared.status === 0 && refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED", { up: shown(restarted), down: shown(spared), refused: shown(refused) });
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
