@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, hasUserAuthState,
+  CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getCurrent, getSpaceAuth, hasUserAuthState,
   homeCotalDir, isCommandFailure, loadMeshes, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
   stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
@@ -253,6 +253,9 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   const { journal, changed, allReused, admittedRestore, settled } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
+  // The start keeps another selected space; the receipt says so, as a legacy `up` does.
+  const current = getCurrent();
+  const keptCurrent = current && current !== space && (findMesh(current) || findPreparedSpace(current)) ? current : undefined;
   const written: { what: string; path: string }[] = [];
   const warnings: OutputWarning[] = settled ? [{ code: "OPERATION_SETTLED", target: { root, space, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [];
   try {
@@ -269,7 +272,8 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
       managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: "cotal up", description: "Add the manager to this stack" },
       { command: "cotal down", description: "Stop every recorded member" },
     ] }] }];
-    return { ...view, sections: [...view.sections, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...next] };
+    const kept: Report["sections"] = keptCurrent ? [{ blocks: [{ kind: "lines", lines: [{ text: `"${space}" up; current is still "${keptCurrent}" - \`cotal use ${space}\` to switch`, tone: "hint" }] }] }] : [];
+    return { ...view, sections: [...view.sections, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...kept, ...next] };
   });
 }
 
