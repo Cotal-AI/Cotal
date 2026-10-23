@@ -197,21 +197,25 @@ if (publicAuthority) assert.ok(manager instanceof publicApi!.Manager, "native ch
 await manager.start();
 // Fixture-only refusal boundary: stop new renewal entries and drain admitted calls before
 // sampling the last-good pair. The real renewal implementation still performs every call.
+// The run-driver and standing schedules pause separately: a recovery call only needs the
+// standing family held, and a held drive must keep renewing its own short-TTL driver.
 const hostedRuns = (manager as unknown as { runHosting: { renew(): Promise<void> } }).runHosting;
 const renewRuns = hostedRuns.renew.bind(hostedRuns);
-const renewalFlights = new Set<Promise<void>>();
+const runFlights = new Set<Promise<void>>();
+const standingFlights = new Set<Promise<void>>();
 let pauseRunRenewals = false;
+let pauseStandingRenewals = false;
 const renewalOwner = manager as any;
 const renewStanding = renewalOwner.renewRemoteStandingBundle.bind(manager);
-function trackedRenewal(renew: () => Promise<void>): Promise<void> {
-  if (pauseRunRenewals) return Promise.resolve();
+function trackedRenewal(paused: boolean, flights: Set<Promise<void>>, renew: () => Promise<void>): Promise<void> {
+  if (paused) return Promise.resolve();
   const flight = renew();
-  renewalFlights.add(flight);
-  void flight.then(() => renewalFlights.delete(flight), () => renewalFlights.delete(flight));
+  flights.add(flight);
+  void flight.then(() => flights.delete(flight), () => flights.delete(flight));
   return flight;
 }
-hostedRuns.renew = () => trackedRenewal(renewRuns);
-renewalOwner.renewRemoteStandingBundle = (force = false) => trackedRenewal(() => renewStanding(force));
+hostedRuns.renew = () => trackedRenewal(pauseRunRenewals, runFlights, renewRuns);
+renewalOwner.renewRemoteStandingBundle = (force = false) => trackedRenewal(pauseStandingRenewals, standingFlights, () => renewStanding(force));
 console.log(`MANAGER_READY:${mgrIdentity.instanceId}:${registered.processEpoch}`);
 
 // FIXTURE-ONLY observation seam: on a `PROBE <runId>` stdin line, report bounded non-secret
@@ -283,8 +287,13 @@ async function probe(runId: string) {
 const witnesses = new Map<string, string>();
 async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUME_RENEWALS" | "PREPARE_RECOVERY", runId: string) {
   if (op === "PAUSE_RENEWALS" || op === "RESUME_RENEWALS" || op === "PREPARE_RECOVERY") {
-    pauseRunRenewals = op !== "RESUME_RENEWALS";
-    if (pauseRunRenewals) await Promise.allSettled([...renewalFlights]);
+    // A recovery call holds only the standing family, whose reconnect would cut the call's serve
+    // connection. Holding the run-driver too let a resumed drive's 10s driver expire during the
+    // call, and the drive was released at its next append.
+    pauseStandingRenewals = op !== "RESUME_RENEWALS";
+    pauseRunRenewals = op === "PAUSE_RENEWALS";
+    const held = op === "PAUSE_RENEWALS" ? [standingFlights, runFlights] : [standingFlights];
+    if (pauseStandingRenewals) await Promise.allSettled(held.flatMap((flights) => [...flights]));
     let prepared = false;
     let error: string | undefined;
     if (op === "PREPARE_RECOVERY") {
@@ -327,7 +336,7 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
       } catch (e) { error = `${phase}: ${(e as Error).message}`; }
       finally { clearTimeout(timer); void events.return?.(); }
     }
-    console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, paused: pauseRunRenewals, inFlight: renewalFlights.size, prepared, error })}`);
+    console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, paused: pauseStandingRenewals, inFlight: held.reduce((n, flights) => n + flights.size, 0), prepared, error })}`);
     return;
   }
   const meta = (creds: string) => { const c = credsClaims(creds); return { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account }; };
