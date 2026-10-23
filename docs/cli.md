@@ -5035,8 +5035,10 @@ language. A program that does not validate is refused by all three with every pr
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
 `result.problems`. Plan lists validated static call sites in source order; it does not evaluate branches,
 loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
-script. It executes no JavaScript handler and invents no unscripted outcome. A simulation does
-not establish live authority, installed applications or readiness. All three support JSON and
+script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
+checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
+`artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
+simulator stamps `at` from virtual time. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
 plain output and contact no broker.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and
