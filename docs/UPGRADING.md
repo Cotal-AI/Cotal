@@ -1182,7 +1182,7 @@ old message no longer matches.
 
 Pass the injected store to `reloadStoreIdentityOf`, or call `injectedSecretStoreIdentity(store)`.
 
-## Manager-service authority policy flag in 0.75.0
+## Manager-service authority policy flag in 0.76.0
 
 `handleManagerServiceAuthority` from `@cotal-ai/auth` no longer reads `allowManagerAuthority` from
 its policy argument, and the field is removed. Both exchange faces set it to `true`, so it never
