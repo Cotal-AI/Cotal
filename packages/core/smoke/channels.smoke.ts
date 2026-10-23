@@ -2,6 +2,8 @@
  * Channel-registry test (open mode — no auth). Spins up its OWN nats-server and verifies the
  * registry + replay mechanism end-to-end:
  *   - registry round-trip: seed → read, effective-replay precedence, merge-on-write, validation;
+ *   - concurrent writers on different fields all keep their field, and a write that keeps losing
+ *     the revision race refuses rather than overwriting;
  *   - replay on join: a replay channel backfills history (as `historical`), a no-replay one doesn't;
  *   - the tail drop: pre-join history on a no-replay channel is suppressed (not leaked live);
  *   - dynamic join/leave: consumers.update mid-session, idempotent re-join, can't-leave-last;
@@ -16,9 +18,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream } from "@nats-io/jetstream";
+import type { KV } from "@nats-io/kv";
 import {
   CotalEndpoint, seedChannelRegistry, readChannelRegistry, deleteChannels, clearChannel, effectiveReplay, effectiveDeliveryClass,
-  ensureDefaultDeliveryClass, validateChannelConfig, mintLifecycleUid,
+  ensureDefaultDeliveryClass, validateChannelConfig, mintLifecycleUid, openChannelRegistry, writeChannelConfig, writeChannelDefaults,
+  ChannelRegistryConflict,
   isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -77,6 +81,40 @@ try {
   await seedChannelRegistry({ servers, space, file: { channels: { review: { description: "Critique v2" } } } });
   const reg2 = await readChannelRegistry({ servers, space });
   check("merge-on-write keeps other fields", reg2.channels?.review.description === "Critique v2" && reg2.channels?.review.instructions === "Be specific.");
+  // Writers setting different fields at once all land: a write that loses the revision race reads
+  // the entry again and merges again.
+  {
+    const nc = await connect({ servers });
+    try {
+      const kv = await openChannelRegistry(nc, space);
+      await Promise.all([{ description: "D" }, { instructions: "I" }, { replayWindow: "2h" }, { replay: false }, { deliveryClass: "durable" as const }]
+        .map((patch) => writeChannelConfig(kv, "race", patch)));
+      const raced = (await readChannelRegistry({ servers, space })).channels?.race;
+      check("five concurrent writers on different fields of one channel all keep their field",
+        raced?.description === "D" && raced.instructions === "I" && raced.replayWindow === "2h" && raced.replay === false && raced.deliveryClass === "durable", raced);
+      const defaultsKv = await openChannelRegistry(nc, `${space}-race`, { create: true });
+      await Promise.all([writeChannelDefaults(defaultsKv, { replayWindow: "1h" }), writeChannelDefaults(defaultsKv, { deliveryClass: "live" }), writeChannelDefaults(defaultsKv, { replay: true })]);
+      const racedDefaults = (await readChannelRegistry({ servers, space: `${space}-race` })).defaults;
+      check("concurrent defaults writers all keep their field", racedDefaults?.replayWindow === "1h" && racedDefaults.deliveryClass === "live" && racedDefaults.replay === true, racedDefaults);
+    } finally {
+      await nc.drain();
+    }
+  }
+  // A key other writers keep changing refuses rather than overwriting, and any other failure is itself.
+  {
+    let writes = 0;
+    const casLoss = Object.assign(new Error("wrong last sequence"), { code: 10071 });
+    const contested = {
+      get: async () => ({ key: "x", revision: 1, operation: "PUT", json: () => ({}) }),
+      update: async () => { throw casLoss; },
+      put: async () => { writes++; return 1; },
+    } as unknown as KV;
+    await assert.rejects(writeChannelConfig(contested, "x", { description: "y" }), ChannelRegistryConflict);
+    check("a write that keeps losing the revision race throws ChannelRegistryConflict and writes nothing", writes === 0);
+    const down = { get: async () => null, put: async () => { throw new Error("broker down"); } } as unknown as KV;
+    await assert.rejects(writeChannelConfig(down, "x", { description: "y" }), /broker down/);
+    check("a write failure that is not a lost race propagates as itself", true);
+  }
   const specialChannels = Object.fromEntries([
     ["__proto__", { description: "Prototype token" }],
     ["constructor", { description: "Constructor token" }],
