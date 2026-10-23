@@ -1,5 +1,5 @@
-import { CotalEndpoint } from "@cotal-ai/core";
-import { endpointAuth, type Connection } from "@cotal-ai/workspace";
+import { CotalEndpoint, isPublishPermissionDenied } from "@cotal-ai/core";
+import { CommandFailure, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
 
@@ -33,7 +33,8 @@ export async function resolveConnect(values: ConnectValues): Promise<Connection>
  *  inactive threshold. `watch` keeps both watches for every credential, for a caller that reports
  *  the watch's own state (`cotal who`); that caller waits for the presence replay itself, on its own
  *  bound. `throwOnRefusal` hands connection refusals to the command kernel, and `report` takes
- *  endpoint errors and warnings instead of printing them. */
+ *  endpoint errors and warnings instead of printing them. A credential the broker will not let read
+ *  a bucket once is refused with `PERMISSION_DENIED`. */
 export async function openTransient(
   values: ConnectValues,
   name: string,
@@ -63,6 +64,11 @@ export async function openTransient(
     if (!readOnce && !opts.watch) await ep.waitForPresenceSnapshot();
   } catch (e) {
     await ep.stop().catch(() => {});
+    if (readOnce && !opts.watch && isPublishPermissionDenied(e))
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read the presence or channel registry of ${conn.space}: ${(e as Error).message}`, {
+        target: { space: conn.space },
+        remedy: values.creds === undefined ? `use a credential that may read both in ${conn.space}` : `run it without --creds to use the credential this machine records for ${conn.space}, or use one that may read both`,
+      });
     throw e;
   }
   return { ep, space: conn.space, connection: conn };

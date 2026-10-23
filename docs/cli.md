@@ -3640,7 +3640,10 @@ bearer, which has no batched read of those buckets, so it watches them instead, 
 consumer stays on the broker for five minutes after the send exits. A sustained send rate there can
 reach the broker's limit of 1000 consumers per stream, and the broker refuses further sends until
 the old consumers expire. A channel send also reads that channel's policy, with one Direct Get on a
-static or open mesh and with one more scan consumer on a user-auth mesh.
+static or open mesh and with one more scan consumer on a user-auth mesh. A `--creds` credential
+that may not read the roster and the channel registry that way, such as one from `cotal auth mint`,
+refuses with `PERMISSION_DENIED` (exit 2) before anything is sent, and the remedy says to run
+without `--creds`.
 
 A recipient can still answer a `send --to` or `send --role` with `cotal_dm` or from a `chat`
 session. On a static or open mesh every send has its own principal under the same display name, so
