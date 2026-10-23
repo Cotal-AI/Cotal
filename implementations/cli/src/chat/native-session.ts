@@ -220,6 +220,12 @@ export class NativeChatSession implements AdmittedChatSession {
     }
   }
 
+  async resolveDm(to: DmTarget): Promise<Result<{ readonly id: string; readonly name: string }>> {
+    const ep = this.inputs.endpoint;
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal);
+    return "outcome" in recipient ? recipient : { outcome: "ok", value: recipient };
+  }
+
   async dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult> {
     const ep = this.inputs.endpoint;
     const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal);

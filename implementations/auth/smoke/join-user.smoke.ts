@@ -166,7 +166,8 @@ if (process.platform !== "linux") {
     await sender?.stop();
     await witness?.stop();
     clearInterval(leaseTimer);
-    await daemon?.releaseDeliveryLease(0, leaseRevision);
+    // A renew still in flight can move the row past `leaseRevision`, refusing the release.
+    await daemon?.releaseDeliveryLease(0, leaseRevision).catch(() => {});
     await daemon?.stop();
     await prov?.stop();
     await service?.close();

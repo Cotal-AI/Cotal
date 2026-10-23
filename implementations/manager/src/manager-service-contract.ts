@@ -974,6 +974,10 @@ const RUN_ROW_SCHEMA = {
     holder: { type: "string" },
     epoch: { type: "integer", minimum: 0 },
     journalHigh: { type: "integer", minimum: -1 },
+    failure: {
+      type: "object", additionalProperties: false, required: ["message"],
+      properties: { code: { type: "string", pattern: "^L[0-9]{4}$" }, message: { type: "string" } },
+    },
     startedAt: { type: "number" },
     programHash: { type: "string" },
     forkedFrom: {

@@ -36,6 +36,8 @@ import {
   assertJournalTailIntact,
   RunJournalTailTruncated,
   type RunStatusValue,
+  type RunFailure,
+  runFailureOf,
   RunSuperseded,
   RunJournalStalled,
   StaleLeaseToken,
@@ -751,7 +753,7 @@ async function drive(
     // A program that FAILED is a fact about the program, and the run record is where a reader looks
     // for it. Recorded, then re-raised: swallowing it here would leave the caller believing the
     // driver finished normally.
-    await noteFinal(req, "failed", appender.journalHigh, specRevision, statusRevision);
+    await noteFinal(req, "failed", appender.journalHigh, specRevision, statusRevision, runFailureOf(e));
     throw e;
   }
 }
@@ -780,6 +782,7 @@ async function note(
   journalHigh: number,
   observedSpecRevision: number,
   expectedRevision: number | undefined,
+  failure?: RunFailure,
 ): Promise<number> {
   return await writeRunStatus(
     req.kv,
@@ -793,6 +796,7 @@ async function note(
       fencingToken: req.lease.fencingToken,
       journalHigh,
       at: req.handler.now(),
+      ...(failure !== undefined ? { failure } : {}),
     },
     expectedRevision,
   );
@@ -820,9 +824,10 @@ async function noteFinal(
   journalHigh: number,
   observedSpecRevision: number,
   expectedRevision: number | undefined,
+  failure?: RunFailure,
 ): Promise<void> {
   try {
-    await note(req, state, journalHigh, observedSpecRevision, expectedRevision);
+    await note(req, state, journalHigh, observedSpecRevision, expectedRevision, failure);
   } catch (e) {
     console.error(
       `run ${req.runId}: the "${state}" status write did not land (${(e as Error).message}); `

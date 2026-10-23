@@ -95,8 +95,8 @@
     {
       "name": "an unreadable marker leaves the record's own state in the STATE column",
       "file": "implementations/runtime/src/workflow-views.ts",
-      "find": "row.revocationUnreadable !== undefined ? { text: \"revocation not checked\", tone: \"waiting\" } : recordedState(row.state)",
-      "replace": "recordedState(row.state)",
+      "find": "row.revocationUnreadable !== undefined ? { text: \"revocation not checked\", tone: \"waiting\" } : recordedState(row.state, row.failure)",
+      "replace": "recordedState(row.state, row.failure)",
       "cell": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "expectRed": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "note": "The shape the panel measured at 1d3b9099: the row keeps `running` for a run whose marker nobody read, so `awk '{print $3}'` reads the word #1621 was filed about."

@@ -123,6 +123,11 @@ check("...and Object.prototype is untouched", ({} as Record<string, unknown>).po
 check("a \"constructor\" key → refused", refused(req({ type: "roster", constructor: 1 }), "r1", /constructor/));
 check("a missing required field → refused", refused(req({ type: "send", text: "hi" }), "r1", /requires the field "channel"/));
 check("send.text must be a string", refused(req({ type: "send", text: 5, channel: "general" }), "r1"));
+check("an empty or blank message body is refused with the sentence cotal send gives, for send, dm and anycast",
+  ["", "  \n"].every((text) => refused(req({ type: "send", text, channel: "general" }), "r1", /^the message is empty$/)
+    && refused(req({ type: "dm", to: "bob", text }), "r1", /^the message is empty$/)
+    && refused(req({ type: "anycast", role: "reviewer", text }), "r1", /^the message is empty$/)));
+check("a body with text around spaces is kept as sent", (() => { const p = parseRequestLine(req({ type: "send", text: " hi ", channel: "general" })); return p.ok && p.request.type === "send" && p.request.text === " hi "; })());
 check("a wildcard channel is refused", refused(req({ type: "join", channel: "team.*" }), "r1") && refused(req({ type: "join", channel: "team.>" }), "r1"));
 check("a channel holding * or > gets the sentence cotal send -c gives, never a list naming '*' and '>' as allowed",
   ["gen*", "team.*", "team.>"].every((channel) => refused(req({ type: "send", text: "x", channel }), "r1", /^name one concrete channel, without wildcards$/)));

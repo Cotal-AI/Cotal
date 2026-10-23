@@ -314,7 +314,7 @@ try {
   // typed `spawn -f ... --on <id>` was pinned to nothing and never told. Manifest deploys are now
   // `team deploy`, which has no `--on` at all.
   for (const [what, argv, refusal] of [
-    ["a foreground spawn", ["spawn", "no-such-persona", "--foreground", "--on", IID1, "--space", space], /direct --foreground execution takes no structured receipt, manager credential or manager pin/],
+    ["a foreground spawn", ["spawn", "no-such-persona", "--foreground", "--on", IID1, "--space", space], /a spawn in this terminal takes no structured receipt, manager credential or manager pin/],
     ["a manifest deploy", ["team", "deploy", "no-such-manifest.yaml", "--on", IID1, "--space", space], /Unknown option '--on'/],
   ] as const) {
     const r = await cotal([...argv], root1);

@@ -18,3 +18,7 @@ export function callerHarness(space: string): string | undefined {
   const winner = resolvePreference("harness", { space, preferences: cachedPreferences() }).winner;
   return winner && winner.source !== "default" ? winner.value : undefined;
 }
+
+/** Whether a spawn runs through a manager: only when the caller asks for one with `--detach` or
+ *  `--on`. Any other spawn runs the application in this terminal, on every kind of mesh. */
+export const spawnUsesManager = (values: { detach?: boolean; on?: string }): boolean => values.detach === true || values.on !== undefined;
