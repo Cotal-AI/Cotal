@@ -269,6 +269,18 @@ try {
   const ttyLines = clean(ttyOut).split(/\r?\n/);
   check("a followed line wraps at word boundaries in a 60-column terminal", clean(ttyOut).includes("papa") && ttyLines.every((l) => l.length <= 60) && words.split(" ").every((w) => ttyLines.some((l) => new RegExp(`\\b${w}\\b`).test(l))), ttyLines.slice(-6));
 
+  // `--limit` bounds messages, and one message can be close to a megabyte, so a row shows the first
+  // 500 characters and names the cut. `--json` carries the text as it was sent.
+  const long = `long ${"y".repeat(5000)}`;
+  await bob.multicast(long, { channel: "ops" });
+  await wait(500);
+  const longPlain = await run(["history", "ops", "--limit", "1", "--plain"]);
+  const longJson = await run(["history", "ops", "--limit", "1", "--json"]);
+  check("a plain row shows the first 500 characters of a long message and names its size; --json keeps the whole text",
+    longPlain.status === 0 && longPlain.stdout.includes(`long ${"y".repeat(495)}`) && !longPlain.stdout.includes("y".repeat(496))
+      && longPlain.stdout.includes("cut from 5005 bytes; --json carries the whole text") && texts(longJson)[0] === long,
+    { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
+
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {
     const cap = BACKUP_MAX_MSGS_PER_SUBJECT;
