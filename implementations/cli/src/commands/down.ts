@@ -97,6 +97,7 @@ import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, stackDown, validateStackDownArguments } from "./stack-down.js";
 import { recordedProcessLine } from "../lib/stack-journal.js";
+import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -146,7 +147,6 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
-  if (args.values.yes !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--yes applies only to a controller stack, and this root has none; a bare stop here needs no --yes, and nothing was stopped", { remedy: "run `cotal down` from this root without --yes" });
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && stoppedLegacyStack())) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview or a stack that is already stopped; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
 }
 
@@ -245,10 +245,10 @@ function previewWholeStack(args: ParsedArgs): void {
   ] }));
 }
 
-/** A bare stop, its preview included: no flag beyond --dry-run, --with-agents and the presentation
- *  flags. */
+/** A bare stop, its preview included: no flag beyond --dry-run, --with-agents, --yes and the
+ *  presentation flags. */
 function bareStop(values: ParsedArgs["values"]): boolean {
-  return Object.entries(values).every(([name, value]) => ["dry-run", "with-agents", "json", "plain"].includes(name) || value === undefined || Array.isArray(value) && value.length === 0);
+  return Object.entries(values).every(([name, value]) => ["dry-run", "with-agents", "yes", "json", "plain"].includes(name) || value === undefined || Array.isArray(value) && value.length === 0);
 }
 
 /** Whether any process record (`*.pid`) remains in `<root>/.cotal`. */
@@ -259,18 +259,20 @@ const pidRecordsUnder = (root: string): boolean => readdirSync(join(root, ".cota
  *  remains at the top of its `.cotal`. The root still holds the broker configuration a start rendered
  *  there (`server-open.conf`, or `auth/server.conf` in auth mode) or a space prepared there. When the
  *  root names its space, none of that space's saved services runs either. Undefined when any of that
- *  is missing, so bare down refuses rather than guess. `nothingRunning` reads every other record a
- *  local-process descriptor names under the root, for any space, before it answers. */
-function stoppedLegacyStack(): { root: string; space?: string } | undefined {
+ *  is missing, so bare down refuses rather than guess. `started` says whether a start rendered that
+ *  broker configuration. `nothingRunning` reads every other record a local-process descriptor names
+ *  under the root, for any space, before it answers. */
+function stoppedLegacyStack(): { root: string; space?: string; started: boolean } | undefined {
   const root = canonicalRoot(cotalRoot());
   if (root === canonicalRoot(homedir()) || !realDirNoSymlink(root, ".cotal") || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;
   let space: string | undefined;
   try { space = soleSpaceOf(authDir(root)); } catch { return undefined; }
   const prepared = preparedSpaceAt(root);
-  if (!prepared && !existsSync(join(root, ".cotal", "server-open.conf")) && !existsSync(join(authDir(root), "server.conf"))) return undefined;
+  const started = existsSync(join(root, ".cotal", "server-open.conf")) || existsSync(join(authDir(root), "server.conf"));
+  if (!prepared && !started) return undefined;
   space ??= prepared?.space;
   if (space !== undefined && planBareDownServices(space).some((row) => row.action !== "already-stopped")) return undefined;
-  return { root, ...(space === undefined ? {} : { space }) };
+  return { root, ...(space === undefined ? {} : { space }), started };
 }
 
 /** Why bare down found no stack of its own at this root, with the one step that moves it on. */
@@ -364,9 +366,18 @@ function refuseUncontainedRecords(components: readonly LocalProcess[], context: 
   });
 }
 
+/** `cotal down`. It owns stdout's errors for its whole run, so a reader that goes away, as with
+ *  `| head -1`, no longer ends it between a member's stop request and that stop's confirmation. The
+ *  stop runs to its end, and the exit status is the stop's own. */
+export async function down(args: ParsedArgs): Promise<void> {
+  const releaseOutput = ownStdoutErrors(() => {});
+  try { await downCommand(args); }
+  finally { releaseOutput(); }
+}
+
 /** One named service is a thin native-controller alias. The retained bare-stack and manifest
  *  paths below have not yet been replaced by the approved whole-stack controller. */
-export async function down(args: ParsedArgs): Promise<void> {
+async function downCommand(args: ParsedArgs): Promise<void> {
   validateDownArguments(args);
   if (args.positionals.length > 1) return stopNamedServiceSet(args);
   if (args.positionals.length) return service(namedStopArguments(args), "down");
@@ -376,7 +387,11 @@ export async function down(args: ParsedArgs): Promise<void> {
   // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
   if (bareStop(args.values)) {
     const stopped = stoppedLegacyStack();
-    if (stopped) return nothingRunning(presentationOf(args.values), stopped, values["with-agents"] === true && values["dry-run"] !== true);
+    // A root that never started a stack never ran a manager, so it has no agents to stop.
+    if (stopped) {
+      const { started, ...target } = stopped;
+      return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && values["dry-run"] !== true && started);
+    }
   }
   if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) return previewWholeStack(args);
   if (values["preserve-state"] && values["with-agents"])

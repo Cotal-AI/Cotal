@@ -112,8 +112,13 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   let store: ReturnType<typeof safeStoreCleanupPath>;
   try { store = safeStoreCleanupPath(root, target.storeDir); }
   catch { throw new CommandFailure("refused", "CONFLICT", "the recorded store path is not one real directory the reset may remove; nothing was removed", { target: { ...where, storeDir: target.storeDir ?? null } }); }
-  let maintenance: ReturnType<typeof readMaintenanceJournal>, running: string[], legacy: boolean;
-  try { maintenance = readMaintenanceJournal(root); running = liveMeshProcesses(root, space); legacy = target.source === "registration" && readStackJournal(root)?.journal.space !== space; }
+  let maintenance: ReturnType<typeof readMaintenanceJournal>, running: string[], legacy: boolean, stoppedByDown: boolean;
+  try {
+    maintenance = readMaintenanceJournal(root); running = liveMeshProcesses(root, space, true);
+    const stack = readStackJournal(root)?.journal;
+    legacy = target.source === "registration" && stack?.space !== space;
+    stoppedByDown = stack?.operation.kind === "down" && stack.operation.phase === "completed";
+  }
   catch { throw new CommandFailure("refused", "CONFLICT", "the root's maintenance journal or process records could not be read; nothing was removed", { target: where }); }
   // A legacy root's `down` drops its registration, so no reset can select it afterwards. The step
   // after that stop is the clean the reset runs, from the root, naming only a custom store.
@@ -123,9 +128,13 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
     : `remove its store and identity with cotal clean all${storeFlag} --force there`;
   if (maintenance)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this root retains a maintenance attempt in state ${maintenance.state}; a reset does not override it`, { target: where, remedy: "finish it, or recover it with its recorded restore recovery or fallback cleanup, before a reset" });
+  // A `down` records a member that exited without a stop as already stopped, which settles it for a
+  // reset. One that a completed `down` did not record gets its receipt only from a full restart.
   if (running.length)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the space may still run here (${running.join("; ")}); nothing was removed`, { target: { ...where, processes: running }, remedy: running.some((row) => row.includes("no stop receipt"))
-      ? `a member exited without a recorded stop: start the stack with cotal up and stop it with cotal down --yes from ${root}, then run ${review}`
+      ? stoppedByDown
+        ? `a member exited without a recorded stop: start the stack with cotal up and stop it with cotal down --yes from ${root}, then run ${review}`
+        : `a member exited without a recorded stop: record it with cotal down --yes from ${root}, then run ${review}`
       : `stop it with cotal down from ${root}, then ${afterStop}` });
   try {
     assertNoRecordedServiceOwner(space);

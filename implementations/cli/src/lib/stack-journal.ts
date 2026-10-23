@@ -9,7 +9,7 @@ import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, cano
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
-import { abandonRetainedNativeStop, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -244,7 +244,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : inspect(row.name) });
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -269,7 +269,9 @@ export const abandonRemedy = (requestId: string): string => `once its process an
 
 /** Abandon the one member stop that retains `requestId`, on an operator's explicit request, under that
  *  member's definition lock, before a `down` classifies the members. The caller holds the root's
- *  maintenance lock. No member retaining it refuses `TARGET_NOT_FOUND`, and nothing is written. */
+ *  maintenance lock. A native stop is abandoned through its adapter, and a broker's or another
+ *  member's signal stop once its process is gone. No member retaining it refuses `TARGET_NOT_FOUND`,
+ *  and nothing is written. */
 export async function abandonRetainedStackStop(journal: StackJournal, requestId: string): Promise<{ role: StackRole; row: ServiceInstanceSnapshot; abandonment: ServiceAdapterStopAbandonment }> {
   const store = serviceDefinitionStore(journal.space);
   for (const role of STACK_ROLES.filter((entry) => stackRoleApplies(journal.mode, entry))) {
@@ -277,8 +279,11 @@ export async function abandonRetainedStackStop(journal: StackJournal, requestId:
     if (!definition || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root) continue;
     const hold = store.pin(definition);
     try {
-      const row = serviceInstances(journal.space, definition.name).find((entry) => retainedStopRequest(entry.record.value)?.requestId === requestId);
+      const rows = serviceInstances(journal.space, definition.name);
+      const row = rows.find((entry) => retainedStopRequest(entry.record.value)?.requestId === requestId);
       if (row) return { role, ...await abandonRetainedNativeStop(definition, row, requestId) };
+      const signalled = rows.find((entry) => !entry.record.value.nativeStopRequired && entry.record.value.state === "stopping" && entry.record.value.requestId === requestId);
+      if (signalled) return { role, row: abandonRetainedSignalStop(signalled, requestId), abandonment: { requestId, nativeStop: "abandoned", receipts: [], withAgents: false, cleanup: "not-checked" } };
     } finally { hold.release(); }
   }
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request with that ID; nothing was abandoned", { target: { root: journal.root, space: journal.space, requestId }, remedy: `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });

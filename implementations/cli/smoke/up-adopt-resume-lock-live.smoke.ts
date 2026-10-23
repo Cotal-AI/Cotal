@@ -185,7 +185,7 @@ try {
   // Assert the refusal by NAME. A bare non-zero check would also go red for an unrelated reason and
   // would report this finding for something that is not it.
   ok("the adopt did not fail on a maintenance-lock refusal",
-    !/held by a live owner|recovery is already in progress|maintenance lock/i.test(log),
+    !/held by a live owner|holds this root|recovery is already in progress|maintenance lock/i.test(log),
     { status: recovered.status, log: log.slice(-2000) });
   ok("the adopting resume exited 0", recovered.status === 0, { status: recovered.status, log: log.slice(-2000) });
   ok("…and the finalized resume consumed its maintenance journal", !existsSync(journalPath), journal());
