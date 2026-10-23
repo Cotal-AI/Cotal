@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
 import {
   assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
-  protectedLocalDirectory, protectedPathPolicy, type AccountDatabase, type ProtectedPathPolicy,
+  protectedLocalDirectory, protectedLocalEntry, protectedPathPolicy, type AccountDatabase, type ProtectedPathPolicy,
 } from "../src/protected-records.js";
 
 if (process.platform === "win32") skipSuite("protected paths are POSIX-only");
@@ -200,6 +200,14 @@ try {
   refused(() => protectedLocalDirectory(inner, "the project root", local),
     `the project root is not protected against other local writers: ${inner} and ${grouped} are group-writable and the private-group proof is unavailable: getent is not installed`,
     `chmod g-w ${shellPath(inner)} ${shellPath(grouped)}`, "a real group-writable folder under a group-writable parent");
+  // An entry and its folders are read together, as `npm i -g` under umask 0002 lays out a binary,
+  // so one refusal names all of them with one command.
+  const binary = join(inner, "nats-server");
+  writeFileSync(binary, "", { mode: 0o700 });
+  chmodSync(binary, 0o775);
+  refused(() => protectedLocalEntry(binary, "the declared adapter path binary", local),
+    `the declared adapter path binary is not protected against other local writers: ${binary}, ${inner} and ${grouped} are group-writable and the private-group proof is unavailable: getent is not installed`,
+    `chmod g-w ${shellPath(binary)} ${shellPath(inner)} ${shellPath(grouped)}`, "a real group-writable file in group-writable folders");
   const mixed = join(open, "inner");
   mkdirSync(mixed);
   chmodSync(mixed, 0o770);

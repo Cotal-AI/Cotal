@@ -665,9 +665,10 @@ setCurrent("keep");
 }
 
 // ── An explicit --store-dir, checked before anything is written ────────────────────────────────────────
-// A regular file, or a path under one, is a usage refusal that names it, on up and on backup restore.
-// A directory other local accounts can write in the store's existing path refuses as a project root
-// does; world write refuses on every host. None of them writes a stack journal.
+// A regular file, or a path under one, is a usage refusal that names it, on up and on backup restore,
+// and so is a control directory or a path in one. A directory other local accounts can write in the
+// store's existing path refuses as a project root does; world write refuses on every host. None of
+// them writes a stack journal.
 {
   const storeRoot = projectRoot("store-checks");
   const file = join(home, "store-file");
@@ -688,6 +689,22 @@ setCurrent("keep");
   check("up --store-dir in a directory every account can write is PERMISSION_DENIED, exit 2, naming it with its chmod",
     refused(writable, 2, "PERMISSION_DENIED") && (writable.env?.error?.message ?? "").includes(`${exposed} is writable by every local account`) &&
       writable.env?.error?.remedy === `chmod o-w ${exposed}` && !existsSync(join(exposed, "store")), shown(writable));
+  // A control directory, or a path in one, refuses as usage, other than the root's own default store.
+  const control = join(storeRoot, ".cotal");
+  const asControl = await json(["up", "--server", DEAD, "--store-dir", control], storeRoot);
+  check("up --store-dir naming the root's .cotal is USAGE_INVALID, exit 1, naming the control directory",
+    refused(asControl, 1, "USAGE_INVALID") && (asControl.env?.error?.message ?? "").includes(`the --store-dir path ${control} is the control directory ${control}`) && !existsSync(join(control, "jetstream")), shown(asControl));
+  const homeStore = join(process.env.COTAL_HOME!, "nats");
+  const inHome = await json(["up", "--server", DEAD, "--store-dir", homeStore], storeRoot);
+  check("up --store-dir in the machine home's .cotal is the same refusal",
+    refused(inHome, 1, "USAGE_INVALID") && (inHome.env?.error?.message ?? "").includes(`the --store-dir path ${homeStore} is in the control directory ${process.env.COTAL_HOME}`), shown(inHome));
+  const restoreControl = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", join(control, "auth")], storeRoot);
+  check("backup restore --store-dir in the root's .cotal is the same refusal",
+    refused(restoreControl, 1, "USAGE_INVALID") && (restoreControl.env?.error?.message ?? "").includes(`is in the control directory ${control}`), shown(restoreControl));
+  // The next flag check refuses instead, so the root's own .cotal/nats passed the store check.
+  const ownStore = await json(["up", "--server", DEAD, "--store-dir", join(control, "nats"), "--restore-only", "x"], storeRoot);
+  check("up --store-dir naming the root's own .cotal/nats passes the store check",
+    refused(ownStore, 1, "USAGE_INVALID") && (ownStore.env?.error?.message ?? "").includes("--restore-only takes registry"), shown(ownStore));
   check("no store refusal wrote a stack journal", !existsSync(stackJournalPath(storeRoot)));
   rmSync(exposed, { recursive: true, force: true });
 }

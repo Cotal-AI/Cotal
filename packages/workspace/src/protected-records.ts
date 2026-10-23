@@ -305,6 +305,22 @@ export function assertProtectedEntry(what: string, path: string, stat: EntryStat
  *  whole chain is read, and one refusal names every entry in it that is not protected. `what` names
  *  the path for the refusal, such as "the project root". */
 export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
+  const gaps = directoryChainGaps(path, what, policy);
+  if (gaps.length) throw protectionRefusal(what, gaps);
+}
+
+/** {@link protectedLocalDirectory} for an existing file or directory and every directory above it,
+ *  read together so one refusal names each gap in both. The entry itself is not accepted for being
+ *  a root-owned sticky directory, as an ancestor is. */
+export function protectedLocalEntry(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
+  const entry = lstatSync(path);
+  const gap = requireLocalRecordAccess() === "posix" ? protectionGap(path, entry, { policy }) : undefined;
+  const gaps = [...(gap ? [gap] : []), ...directoryChainGaps(dirname(path), what, policy)];
+  if (gaps.length) throw protectionRefusal(what, gaps);
+}
+
+/** Every gap on `path` and the directories above it, deepest first. */
+function directoryChainGaps(path: string, what: string, policy?: ProtectedPathPolicy): ProtectionGap[] {
   const posix = requireLocalRecordAccess() === "posix";
   const gaps: ProtectionGap[] = [];
   let parent = path;
@@ -317,7 +333,7 @@ export function protectedLocalDirectory(path: string, what = "the path", policy?
     if (next === parent) break;
     parent = next;
   }
-  if (gaps.length) throw protectionRefusal(what, gaps);
+  return gaps;
 }
 
 export function protectedCredentialReference(path: string): void {

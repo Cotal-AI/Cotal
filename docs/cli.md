@@ -585,7 +585,10 @@ An explicit `--store-dir` on `up`, `up --restore` or `backup restore` must name 
 path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it. The
 existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
 writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
-is written. A non-empty directory is accepted, since it may hold an existing store.
+is written. A non-empty directory is accepted, since it may hold an existing store. A control
+directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
+other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
+with credentials and records, or with another root's store, and `reset store` could not remove it.
 A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
 that is not a regular file is refused and left unchanged. A private directory is set to `0700`
 through its path, which follows a symlink; this step does not refuse a symlinked `~/.cotal` or
@@ -4657,7 +4660,9 @@ is not JSON or has no `version` is reported as corrupt, naming the package and i
 
 Removing an extension that owns a running local process is refused with the mesh root and its
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process
-whose lifecycle provider is gone.
+whose lifecycle provider is gone. While it uninstalls, `remove` reserves each process record the package
+declares under every mesh root, and a record folder it creates there is mode `0700`, even with a
+group-writable umask.
 
 Loading an installed extension takes the same locks as `add`, `remove` and `cotal update`. When another
 `cotal` process holds them, the load waits up to five seconds in total (one deadline for both locks)
@@ -6312,7 +6317,10 @@ bounded objects, arrays and scalar fields, with no schema references, regular ex
 coercion, defaults or unknown-option removal. Every object closes its declared fields. An
 unsupported schema refuses rather than being widened. A declared path option and its ancestors
 follow the [`space create`](#selecting-a-space) rule for other local writers; a private file stays
-owner-only.
+owner-only. One refusal names the option's entry and every unsafe directory above it, with one
+`chmod` that fixes them all. `npm i -g` under umask 0002, an ordinary Ubuntu user's default, leaves the bundled
+`nats-server` and its directories group-writable, so where the private-group proof is unavailable,
+`up` refuses the broker's `binary` path and names that `chmod g-w`.
 
 The provider declares foreground, multi-instance and log capabilities. An explicit start records
 its definition revision, full instance, launch request and adapter package/version/declaration
