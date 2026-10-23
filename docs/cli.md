@@ -5002,7 +5002,10 @@ a different credential/intake.
 A connection that never opens sends nothing: a refused connection, a failed DNS lookup or a failed
 TLS handshake refuses with `TARGET_UNAVAILABLE` and the native error code. A timeout or a broken
 connection after the request was written, or an unconfirmed server outcome, can mean the report
-arrived: inspect the original intake before sending it again.
+arrived: inspect the original intake before sending it again. An intake refusal names its cause and
+a next step. HTTP 401 means the key is missing or refused, 404 means the URL is not the intake's
+feedback path, and 429 means the intake is rate limiting submissions. A 429 names the retry time
+when the intake's `Retry-After` header gives one.
 
 JSON/plain receipts report the intake origin, HTTP acceptance and a bounded record ID when the
 server provides one. They do not repeat the submitted summary, details, contact values, key or
