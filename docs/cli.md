@@ -601,7 +601,10 @@ numeric code and status without copying the server's description or changing the
 
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
-conflicting `--server` or `--open` refuses before effects. Legacy-only options refuse rather than switching launchers.
+conflicting `--server` or `--open` refuses before effects. A journal whose stack never launched a
+member pins neither, as when its first `up` was refused because another broker already answers at
+the address. The next `up` plans it as a first start, with that address or another `--server`, and
+`down` reports that nothing runs there. Legacy-only options refuse rather than switching launchers.
 `up -f`, recovery and existing legacy roots retain their native paths; those paths refuse the
 new JSON/plain flags. A legacy root is one with no stack journal that is neither prepared nor
 registered for the controller, such as a folder an earlier release started and a normal `down` then
@@ -1249,14 +1252,15 @@ cotal reset space <space> [--dry-run] [-y|--yes] [--json|--plain]
 Both routes select a space this machine started. A space with a locally started registration is
 selected by it. A controller stack that a completed `down` stopped has no registration; its
 prepared record and stack journal at the same root name its broker address, store and mode, and a
-reset keeps both, so a later `up` starts it again. A stack whose last operation is not a completed
-`down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each refusal names one reason and
-the command that clears it. A space that may still run names `cotal down` from its root, or
-`cotal up` and then `cotal down --yes` when a member exited without a recorded stop. A legacy root
-has no stack journal, and its `down` drops the registration a reset selects, so no reset reaches it
-once stopped. There the step after `cotal down` is `cotal clean store --force` from its root for
-`reset store`, or `cotal clean all --force` for `reset space`, with `--store-dir <dir>` when the
-registration records a custom store.
+reset keeps both, so a later `up` starts it again. A stack none of whose members ever started has
+no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
+operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
+refusal names one reason and the command that clears it. A space that may still run names
+`cotal down` from its root, or `cotal up` and then `cotal down --yes` when a member exited
+without a recorded stop. A legacy root has no stack journal, and its `down` drops the registration
+a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
+`cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
+`reset space`, with `--store-dir <dir>` when the registration records a custom store.
 
 The store dry-run is a local-impact preview that exits 0. It requires a space selected that way, a
 real project `.cotal` and a root readable as one local tenant. It opens with a verdict: the apply is

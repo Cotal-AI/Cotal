@@ -8,7 +8,9 @@
  *  2. Broker crash after start. The next `up` restarts the broker from its records. After a manager
  *     crash, the next `up` relaunches the manager over the pidfile the killed process left.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
- *     launches nothing; once the port is free the same `up` starts.
+ *     launches nothing; once the port is free the same `up` starts. A second space whose first `up`
+ *     finds that stack's broker answering refuses CONFLICT; its `down` stops nothing, `reset space`
+ *     finds nothing to reset, and its next `up` starts at another address.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -215,6 +217,20 @@ try {
     const started = cli(root, "up", "--json");
     track(space);
     check("once the port is free, bare up starts the stack", started.status === 0, shown(started));
+    // Another stack's broker answers at the address: a second space's first up refuses before its
+    // broker is prepared. That stack never launched a member, so its journal pins nothing.
+    const other = "heldport";
+    const second = prepare(other);
+    const blocked = cli(second, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    check("a first up where another stack's broker answers refuses CONFLICT, exit 2", blocked.status === 2 && blocked.env?.error?.code === "CONFLICT" && blocked.env.error.message.includes("something already answers"), shown(blocked));
+    const nothing = cli(second, "down", "--yes", "--json");
+    check("down of that never-started stack stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
+    const reset = cli(second, "reset", "space", other, "--dry-run", "--json");
+    check("reset space finds nothing to reset there and names cotal up", reset.status === 2 && reset.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(reset.env.error.remedy?.includes("cotal up")), shown(reset));
+    const moved = cli(second, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    track(other);
+    check("its next up starts at another address", moved.status === 0, shown(moved));
+    check("down --yes stops the moved stack", cli(second, "down", "--yes", "--json").status === 0);
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", stopped.status === 0, shown(stopped));
   }
