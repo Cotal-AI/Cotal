@@ -10847,9 +10847,9 @@ export class Manager {
    *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
    *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
    *  frontmatter block; a malformed block is refused by name rather than wrapped. A fresh name is
-   *  created with owner = caller. Redefining an EXISTING file is allowed on the privileged tier
-   *  only if `file.owner == caller`, else admin is required. Fail-closed: an ownerless file
-   *  (legacy / operator-written) is admin-only. */
+   *  created with the owner {@link personaOwner} records. Redefining an EXISTING file is allowed on
+   *  the privileged tier only if `file.owner == caller`, else admin is required. Fail-closed: an
+   *  ownerless file (legacy / operator-written) is admin-only. */
   private opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const name = String(args.name ?? "").trim();
@@ -10881,7 +10881,7 @@ export class Manager {
       def = composeWirePersona(
         {
           name,
-          owner: caller,
+          owner: this.personaOwner(caller),
           prompt: persona,
           model,
           role: args.role !== undefined && args.role !== null && String(args.role) !== "" ? String(args.role) : undefined,
@@ -10901,6 +10901,17 @@ export class Manager {
       return { ok: false, error: rejectionText(e) };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** The owner a fresh wire-defined persona records. A user-auth caller's principal is stable, and
+   *  so is one of this manager's own seats for its life. Any other static caller, such as the CLI's
+   *  operator instrument minted for one call, would leave an owner no later call matches, so it
+   *  records none and the file is operator-owned, as a local `persona create` writes it. A peer
+   *  joined with its own credential is such a caller too. */
+  private personaOwner(caller: string): string | undefined {
+    if (this.userMode) return caller;
+    for (const a of this.agents.values()) if (this.managedPrincipal(a) === caller) return caller;
+    return undefined;
   }
 
   /** Whether this caller may READ a catalog card's details (role/model/description/body). Same

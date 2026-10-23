@@ -15,10 +15,11 @@
  *     has no granted row (broker default-deny).
  *  4. BASELINE self-stop: the spawned agent's OWN minted cred (Appendix-B baseline rows) invokes
  *     `stop` with authz-mode `self` and halts itself.
- *  5. definePersona (content-only write, ownership-checked), models (normalized catalogs), purge,
- *     attach (ws url), launch/resume-family negatives (the shared cores answer with the exact
- *     shared-core refusals), and the preservation fence: after `preparePreservation` the ep door
- *     refuses ordinary ops (`unavailable`, the SHARED maintenance fence) until `abortPreservation`.
+ *  5. definePersona (content-only write, ownership-checked; on a static space only the manager's
+ *     own seats own what they define), models (normalized catalogs), purge, attach (ws url),
+ *     launch/resume-family negatives (the shared cores answer with the exact shared-core refusals),
+ *     and the preservation fence: after `preparePreservation` the ep door refuses ordinary ops
+ *     (`unavailable`, the SHARED maintenance fence) until `abortPreservation`.
  *  6. The ep door is the ONLY control door (1d): there is no legacy ctl rail to dual-serve.
  *  7. The 1c.2b operator instrument: a `control-caller-admin` one-shot resolves the surface over
  *     the GENERIC describe/store path (describe-BOUND default currency, no epoch stub) and tears
@@ -687,6 +688,44 @@ try {
 
   console.log("5. definePersona / models / purge / attach / launch + resume negatives");
   {
+    // On a static space only the manager's own seats own what they define. A is a spawn-capable
+    // caller that is not one of them, so its file is operator-owned, as a local persona create is.
+    const rStatic = await A.call("define-persona", { name: "epstatic", persona: "Static body." });
+    const staticPath = join(workspaceRoot, ".cotal", "agents", "epstatic.md");
+    check("a static caller that is not one of the manager's seats defines an operator-owned file",
+      rStatic.reply.ok === true && existsSync(staticPath) && loadAgentFile(staticPath).owner === undefined, rStatic.reply);
+    const rStaticAgain = await A.call("define-persona", { name: "epstatic", persona: "Again." });
+    check("so the same caller's redefine refuses as operator-owned",
+      rStaticAgain.reply.ok === false && String(rStaticAgain.reply.error?.message ?? "").includes("operator-owned"), rStaticAgain.reply);
+    const rStaticShow = await A.call("show-persona", { name: "epstatic" });
+    check("and its show-persona is not-found", rStaticShow.reply.ok === false && rStaticShow.reply.error?.code === "not-found", rStaticShow.reply);
+
+    // One of the manager's own seats keeps its principal for its life, so what it defines is its own.
+    saveAgentFile(join(workspaceRoot, ".cotal", "agents", "seatdef.md"), { name: "seatdef", persona: "A seat that defines.", subscribe: [], capabilities: ["spawn"] });
+    await spawnLive(A.call, { name: "seatdef", agent: "e2e-stub", cwd: repoRoot, events: false });
+    const seatdef = M.agents.get("seatdef")!;
+    const seatCreds = seatdef.secretPaths?.creds ?? agentLifecycleSecretFilePaths(workspaceRoot, space, "seatdef", String(seatdef.lifecycleUid)).creds;
+    const seatNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: readFileSync(seatCreds, "utf8"), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const seatRef = await readAcceptedRow(seatNc, space, seatdef.issued!.acceptedToken);
+      const seatCaller: EpCaller = { owner: DEV_OWNER, actor: seatdef.id, uid: seatdef.lifecycleUid, generation: seatRef.generation } as IssuedCaller;
+      const rSeat = await epCall(seatNc, space, { mode: "one" }, {
+        endpoint: MANAGER_ENDPOINT, command: "define-persona", contract: MANAGER_CONTRACTS["define-persona"], caller: seatCaller,
+        args: { name: "epseat", persona: "Defined by a seat." },
+      }, { deadlineMs: 15_000, currentEpoch: async () => 0 });
+      const seatPath = join(workspaceRoot, ".cotal", "agents", "epseat.md");
+      check("a managed seat's definition on a static space records the seat as its owner",
+        rSeat.reply.ok === true && existsSync(seatPath) && loadAgentFile(seatPath).owner === principalKey(DEV_OWNER, seatdef.id).key, rSeat.reply);
+    } finally {
+      await seatNc.drain().catch(() => seatNc.close());
+    }
+    const seatStopped = await A.call("despawn", { graceful: true }, { actor: seatdef.id, lifecycleUid: seatdef.lifecycleUid });
+    check("the defining seat is cleaned up", seatStopped.reply.ok === true, seatStopped.reply);
+
+    // The cells below grade a definer's ownership, so they run as a user-auth space would: there
+    // every caller's principal is stable, and what it defines is its own.
+    const staticUserMode = M.userMode;
+    M.userMode = true;
     const rDef = await A.call("define-persona", { name: "eppersona", persona: "You are the ep persona.", model: "m9" });
     check("definePersona creates the persona (content-only write)", rDef.reply.ok === true && existsSync(join(workspaceRoot, ".cotal", "agents", "eppersona.md")), rDef.reply);
     // The tool takes no scope argument by design, so a peer cannot name its own channels here. The
@@ -742,6 +781,7 @@ try {
     const rShow = await A.call("show-persona", { name: "eppersona" });
     check("show-persona returns the owned card body",
       rShow.reply.ok === true && (rShow.reply.data as { persona?: string }).persona?.includes("widened by the operator") === true, rShow.reply);
+    M.userMode = staticUserMode;
     const rShowMiss = await A.call("show-persona", { name: "ghost-persona" });
     check("show-persona of an unknown name is not-found",
       rShowMiss.reply.ok === false && rShowMiss.reply.error?.code === "not-found", rShowMiss.reply);
