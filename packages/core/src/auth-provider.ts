@@ -575,10 +575,10 @@ export type ServiceEndpointRenewalState =
   | { readonly state: "ended"; readonly reason: string }
   | { readonly state: "closed" };
 
-/** A service endpoint's renewal source (see {@link AuthProvider.serviceEndpointRenewal}). */
 /** A validated `credential` result without its renewal material: what a guest's serve grant reads. */
 export type ServiceEndpointCredential = Omit<Extract<ServiceAuthorityResult, { state: "credential" }>, "renewalProof" | "renewalExpiresAt">;
 
+/** A service endpoint's renewal source (see {@link AuthProvider.serviceEndpointRenewal}). */
 export interface ServiceEndpointRenewal {
   /** The bearer function: a fresh, unexpired service access bearer. Concurrent calls share one request. */
   bearer(): Promise<string>;

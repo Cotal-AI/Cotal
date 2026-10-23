@@ -1513,6 +1513,11 @@ host-private credentials from the broker owner's
 `mintServiceCallerPayloadObserverCreds({ pub: broker.sys.pub, signingSeed: broker.sys.signingSeed })`.
 Keep that registered SYS signer with the broker owner, never in the data account, a sandbox or a
 participant client. The helper returns an in-memory, at-most-60-second VARZ-only credential.
+The stock root does this itself: `cotal up` retains the system-account signing seed in the root's
+secret store at space creation and at `--rotate-sys`, and the auth service started with
+`--service-endpoints` composes `callerPayload` from it when the record names the trust record's
+system account and the seed derives it; a root with no retained seed opens the engine and door
+without caller issuance and logs why.
 The callback only supplies credentials, owns no authority resource, and may finish after its
 10-second observation deadline has refused the operation. It is not a cancellation callback.
 
