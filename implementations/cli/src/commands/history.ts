@@ -206,15 +206,16 @@ export async function history(args: ParsedArgs): Promise<void> {
       ? { message: `history could not read ${warnings.length === 1 ? "one part" : `${warnings.length} parts`} of what it reports; the warnings name ${warnings.length === 1 ? "it" : "each"}` }
       : undefined;
     const completeness = partial ? "partial" : "complete";
+    const names = new Map(result.items.map((item) => [item.from.id, item.from.name]));
     if (live && presentation === "json") {
       // A follow's snapshot is its first record, and the exit says what `writeResult` would have.
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
       process.exitCode = partial ? exitCode("partial", "OPERATION_PARTIAL") : exitCode("ok");
     } else {
-      writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space));
+      writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names));
     }
     if (!live) return;
-    await live.follow(result.items, (item) => keep(item, undefined, v.from, v.grep), presentation, target, () => stopping);
+    await live.follow(result.items, (item) => keep(item, undefined, v.from, v.grep), presentation, target, names, () => stopping);
   } finally {
     stopping = true;
     await ep.stop().catch(() => {});
@@ -384,7 +385,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
   tapAll();
 
   return {
-    async follow(snapshot: HistoryItem[], match: (item: HistoryItem) => boolean, presentation: "json" | "rich" | "plain", target: unknown, stopped: () => boolean): Promise<void> {
+    async follow(snapshot: HistoryItem[], match: (item: HistoryItem) => boolean, presentation: "json" | "rich" | "plain", target: unknown, names: Map<string, string>, stopped: () => boolean): Promise<void> {
       const seen = new Set(snapshot.map((item) => item.id));
       const remember = (id: string) => {
         seen.add(id);
@@ -409,8 +410,9 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
           if (entry.item) {
             if (seen.has(entry.item.id) || !match(entry.item)) continue;
             remember(entry.item.id);
+            names.set(entry.item.from.id, entry.item.from.name);
             if (presentation === "json") writeStreamRecord(streamRecord("history", "event", target, entry.item));
-            else line(itemLine(entry.item));
+            else line(itemLine(entry.item, names));
           } else if (entry.gap) {
             if (presentation === "json") writeStreamRecord(streamRecord("history", "gap", target, { reason: entry.gap }));
             else line({ text: `gap: ${entry.gap}`, tone: "waiting" });
@@ -428,15 +430,18 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
   };
 }
 
-function where(item: HistoryItem): string {
-  return item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "?"}`;
+/** A DM row shows its recipient's name when a message read so far came from that principal, else
+ *  the principal. */
+function where(item: HistoryItem, names: ReadonlyMap<string, string>): string {
+  if (item.channel !== null) return `#${item.channel}`;
+  return `DM to ${item.to === null ? "?" : names.get(item.to) ?? item.to}`;
 }
 
-function itemLine(item: HistoryItem): Cell {
-  return `${shownTime(item.ts)}  ${where(item)}  ${item.from.name}: ${item.text}`;
+function itemLine(item: HistoryItem, names: ReadonlyMap<string, string>): Cell {
+  return `${shownTime(item.ts)}  ${where(item, names)}  ${item.from.name}: ${item.text}`;
 }
 
-function historyView(r: HistoryResult, space: string): Report {
+function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>): Report {
   const scope = r.channels.length === 1 && !r.dms ? `#${r.channels[0]}` : r.dms ? "every channel and DMs" : "every channel";
   const notes: Cell[] = [];
   const filtered = r.window.since !== null || r.window.from !== null || r.window.grep !== null;
@@ -461,7 +466,7 @@ function historyView(r: HistoryResult, space: string): Report {
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],
-                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item), from: item.from.name, text: item.text })),
+                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: item.text })),
               }]
             : []),
           { kind: "lines" as const, lines: notes },

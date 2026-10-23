@@ -3833,7 +3833,8 @@ many messages were read, whether older retained messages exist that the window d
 whether the window goes back to `--since`. An age outside the supported date range or a sequence
 that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
-is the ISO time.
+is the ISO time. A DM row shows its recipient's name when a message in the window came from that
+principal, and the principal otherwise. `result.items[].to` is the principal.
 
 Retained history is not every message sent. The chat stream keeps a fixed number of messages per
 sender on each channel, so a busy sender's oldest messages are discarded while other senders'
