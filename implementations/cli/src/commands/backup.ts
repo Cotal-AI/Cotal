@@ -358,6 +358,8 @@ async function snapshotStream(
       onChunk: (chunk) => {
         if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "chunk" && ++sunkChunks === 1)
           throw new Error("smoke-injected failure at the first snapshot chunk");
+        if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "nospace")
+          throw Object.assign(new Error("ENOSPC: no space left on device, write (smoke-injected)"), { code: "ENOSPC" });
         return queue.push(chunk);
       },
     });
@@ -392,6 +394,21 @@ interface BackupObservation {
   mutationAttempted: boolean;
   cleanupConfirmed: boolean;
   published?: BackupCreateResult;
+  /** What the attempt was writing, and the directory it went to, for a disk that fills up. */
+  writing?: { what: "store copy" | "backup"; directory: string };
+}
+
+/** The failure for a create that ran out of disk space or quota and removed what it wrote. A
+ *  destination write error names no file, so the message names the directory the attempt was
+ *  writing; the preserved cut is untouched, so the next step is to free space and run it again. */
+function noSpaceFailure(error: unknown, observed: BackupObservation, args: ParsedArgs, target: Record<string, unknown>): CommandFailure | undefined {
+  const code = (error as NodeJS.ErrnoException).code;
+  if ((code !== "ENOSPC" && code !== "EDQUOT") || !observed.writing) return undefined;
+  const destination = resolve(args.positionals[1]!);
+  const { what, directory } = observed.writing;
+  const written = what === "backup" ? "it removed the partial backup and published none" : `it removed the partial copy and wrote nothing to ${destination}`;
+  const flags = [args.values.only === undefined ? "" : ` --only ${args.values.only}`, args.values["store-dir"] === undefined ? "" : ` --store-dir ${args.values["store-dir"]}`].join("");
+  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then run cotal backup create ${destination}${flags} again` });
 }
 
 export function validateBackupArguments(args: ParsedArgs): void {
@@ -431,6 +448,10 @@ export async function backup(args: ParsedArgs): Promise<void> {
     }
     if (isCommandFailure(error) && !observed.mutationAttempted) throw error;
     const outcome = !observed.mutationAttempted ? "refused" : observed.cleanupConfirmed ? "failed" : "unknown";
+    if (outcome === "failed") {
+      const noSpace = noSpaceFailure(error, observed, args, target);
+      if (noSpace) throw noSpace;
+    }
     // The guard's own sentence is the operator's evidence, as on restore: it names the cause, such as
     // a broker still answering at the cut's endpoint. Snapshot bytes and credentials never reach it.
     const detail = error instanceof Error ? error.message : String(error);
@@ -531,6 +552,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       ],
     });
     claimed = true;
+    observed.writing = { what: "store copy", directory: dirname(clonePath) };
     clone = createAttemptClone(root, ready.source.path, attemptId);
     recordMaintenanceClaimResources(lock, { ownedPaths: [
       { label: "clone", path: clone.path, dev: clone.identity.dev.toString(), ino: clone.identity.ino.toString() },
@@ -550,6 +572,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       owners: [broker.brokerOwner, broker.watchdogOwner],
       ownedPaths: broker.runFiles.map((file) => ({ label: "config" as const, ...file })),
     });
+    observed.writing = { what: "backup", directory: destinationPath };
     writer = createArtifactWriter(destination);
     recordMaintenanceClaimResources(lock, { ownedPaths: [
       { label: "destination", path: writer.directory, dev: writer.identity.dev.toString(), ino: writer.identity.ino.toString() },

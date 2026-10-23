@@ -1440,6 +1440,11 @@ A root with no preserved cut refuses and names `cotal down --preserve-state`. A 
 refuses and names that state and its space. A destination that already exists is a `CONFLICT`
 refusal, because create writes only a new directory. Any other refusal or failure shows the check's
 own sentence as its native detail, such as a broker still listening at the cut's recorded endpoint.
+A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes
+what it wrote and fails `OPERATION_FAILED` (exit 5). Its message names the error and where it was
+writing: the store copy under `.cotal/maintenance/attempts`, or the backup in its destination. It
+also says that no backup was published and that the preserved cut is still ready. Its Next frees
+space on that disk and runs the same `backup create` again.
 
 A `backup create` interrupted by SIGINT, SIGTERM or SIGHUP after it claims the cut exits 130, 143
 or 129 and names its attempt, the partial artifact it left and `cotal backup recover <attempt> --yes`.

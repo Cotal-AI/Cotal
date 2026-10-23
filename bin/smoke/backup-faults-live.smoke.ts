@@ -32,6 +32,8 @@ const BACKUP_STAGES = {
   chunk: /smoke-injected failure at the first snapshot chunk/,
   close: /smoke-injected failure after snapshot close/,
   manifest: /smoke-injected failure before manifest publication/,
+  // A full disk names its cause and directory, what was and was not written, and a retry.
+  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run cotal backup create [^\n]*artifact-nospace again/,
 } as const;
 
 const journalState = (root: string): string | undefined => {
