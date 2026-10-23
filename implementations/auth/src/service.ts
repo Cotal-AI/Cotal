@@ -3758,8 +3758,9 @@ async function handleServiceEndpointHost(req: IncomingMessage, res: ServerRespon
 const SERVICE_HOST_BODY_MAX_BYTES = 64 * 1024;
 
 /** Publish the canonical void closure, manifest and schema, create-only, through one effect whose
- *  credential names exactly those two artifacts; nothing else is granted. Idempotent: a store that
- *  holds them already answers without a write. */
+ *  credential publishes exactly those two artifacts and reads them back, over the read-only discovery
+ *  base every effect credential carries; no other write is granted. Idempotent: a store that holds
+ *  them already answers without a write. */
 async function publishCanonicalVoidClosure(opts: Parameters<typeof openServiceHostEffect>[0]): Promise<void> {
   const artifacts: unknown[] = [singleDocumentClosure(VOID_SCHEMA).manifest, VOID_SCHEMA];
   const effect = await openServiceHostEffect(opts, { keys: { records: [], auth: [], authFamilies: [] }, deadlineMs: Date.now() + S2A_INVOCATION_MS,

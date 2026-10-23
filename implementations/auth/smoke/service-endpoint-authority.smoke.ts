@@ -226,6 +226,17 @@ try {
   for (const reg of [schemaNoRoot, schemaUnreferenced, schemaForged]) schemaRefusals.push(await viaProvider("a", register(rid(), reg)));
   c.check("F5 a schema closure without its root, one no command references, and one whose manifest does not recompile all refuse closure-invalid",
     schemaRefusals.every((r) => denied(r, "closure-invalid")), schemaRefusals);
+  // The two refusals a referenced schema closure can reach only once a command names it: a member the
+  // manifest lists but the body does not carry, and a submitted bundle that recompiles to another digest.
+  const stringSchema = { type: "string" };
+  const widened = { v: 1, root: contractDigest(VOID_SCHEMA), members: [contractDigest(stringSchema)].sort() };
+  const widenedDigest = contractDigest(widened);
+  const refersWidened = cluster("org.example.widened", [{ ...cmd("lookup"), inputDigest: widenedDigest }]);
+  const memberMissing = { clusterDigests: [refersWidened.closureDigest], contractArtifacts: [refersWidened.manifest, refersWidened.document, widened, VOID_SCHEMA] };
+  const recompilesElsewhere = { clusterDigests: [refersWidened.closureDigest], contractArtifacts: [refersWidened.manifest, refersWidened.document, widened, VOID_SCHEMA, stringSchema] };
+  const f6a = await viaProvider("a", register(rid(), memberMissing)), f6b = await viaProvider("a", register(rid(), recompilesElsewhere));
+  c.check("F6 a referenced schema closure whose manifest names a member the body does not carry refuses closure-invalid", denied(f6a, "closure-invalid"), f6a);
+  c.check("F6 a referenced schema closure whose submitted bundle recompiles to another digest refuses closure-invalid", denied(f6b, "closure-invalid"), f6b);
 
   // ---- G: create-only name binding through the host ----
   const bindReq = { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-bind", granter: operator,
