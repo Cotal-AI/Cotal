@@ -2,6 +2,8 @@ import { existsSync, lstatSync, readFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
+import { parsePid, probeLiveness, readPidfile } from "./pid.js";
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
   canonicalRoot,
@@ -13,6 +15,7 @@ import {
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
+import { ProtectedRecordStore } from "./protected-records.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -126,6 +129,8 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` on a stack root with no registration or prepared record: the space its stack
    *  journal recorded. It is kept out of `space`, which callers read as a prepared space. */
   stackSpace?: string;
+  /** For `not-started`: the Cotal home in use, when the root's stack runs under another one. */
+  home?: string;
 }
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
@@ -317,17 +322,40 @@ function notStarted(space: string): void {
   if (prepared) throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
 }
 
-/** The broker and space a root's own stack journal recorded, when the root has one. A journal that
- *  cannot be read still proves a broker was recorded here, so it returns neither rather than
- *  nothing. The server is only shown, never dialed. */
-function stackRecord(root: string): { server?: string; stackSpace?: string } | undefined {
+/** Whether `root`'s stack journal names member instances of which this Cotal home holds no record,
+ *  while a manager or delivery record under the root fronts a live process: the stack runs under
+ *  another `COTAL_HOME`, whose registration and service records this one cannot see. A journal that
+ *  names no instance, a stopped stack, or a record that cannot be read answers false. */
+export function stackRunsUnderOtherHome(root: string, journal: { space?: unknown; members?: unknown }): boolean {
+  const space = journal.space;
+  if (typeof space !== "string" || !Array.isArray(journal.members)) return false;
+  const ids = journal.members.map((row) => (row as { instanceId?: unknown } | null)?.instanceId).filter((id): id is string => typeof id === "string");
+  if (!ids.length) return false;
+  try {
+    const instances = new ProtectedRecordStore("services", space, (value) => value, "instances");
+    if (ids.some((id) => instances.read(id) !== undefined)) return false;
+    return [MANAGER_PIDFILE, DELIVERY_PIDFILE].some((template) => {
+      const pid = parsePid(readPidfile(localProcessPath(template, { root, space })) ?? "");
+      return pid !== undefined && probeLiveness(pid) === "alive";
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** The broker and space a root's own stack journal recorded, when the root has one, and the Cotal
+ *  home in use when the stack runs under another one. A journal that cannot be read still proves a
+ *  broker was recorded here, so it returns neither rather than nothing. The server is only shown,
+ *  never dialed. */
+function stackRecord(root: string): { server?: string; stackSpace?: string; home?: string } | undefined {
   const path = stackJournalPath(root);
   let file: Stats;
   try { file = lstatSync(path); } catch { return undefined; }
   if (!file.isFile() || file.size > 64 * 1024) return {};
   try {
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown } | null;
-    return { ...(typeof journal?.server === "string" ? { server: journal.server } : {}), ...(typeof journal?.space === "string" ? { stackSpace: journal.space } : {}) };
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown } | null;
+    if (!journal) return {};
+    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}) };
   } catch {
     return {};
   }
@@ -443,7 +471,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // registration that stack is not running here, and the default port may hold another mesh. The
     // space is left out, so no caller reads this root offline as a prepared space.
     const stack = stackRecord(root);
-    if (stack) throw new MeshTargetError("not-started", `the stack in ${root} recorded a broker, and no space is registered for it here`, { root, ...stack });
+    if (stack) throw new MeshTargetError("not-started", stack.home === undefined ? `the stack in ${root} recorded a broker, and no space is registered for it here` : `the stack in ${root} runs under another Cotal home`, { root, ...stack });
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the

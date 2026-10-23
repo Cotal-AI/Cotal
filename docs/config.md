@@ -215,7 +215,7 @@ other value when it starts, naming the variable.
 | `COTAL_MANAGED_HANDOFF_FILE` | `cotal` entry, foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; taken and deleted before anything else runs | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |
 | `COTAL_SERVE_HEADLESS` | OpenCode runtime | Run the OpenCode server without a foreground TUI (`1`). Stdout gets one `[cotal-serve]` line with the server's port and session and no password; a host that drives the server passes its own `OPENCODE_SERVER_PASSWORD` to the launcher | off |
-| `COTAL_HOME` | workspace | Override the machine-home dir for the **mesh registry only** (`meshes/`, `current-mesh`, onboard marker). Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
+| `COTAL_HOME` | workspace | Override the machine-home dir: the mesh registry (`meshes/`, `current-mesh`, onboard marker) and records such as prepared spaces and service records. Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
 
 > `--console-port` is a `cotal supervise` flag, not an environment variable; there is no
 > `COTAL_CONSOLE_PORT`.
@@ -405,18 +405,26 @@ rather than read as absent. A process record's read error names the record's pat
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:
 `~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`.
 
-`COTAL_HOME` overrides **this tree only** (registry + current pointer + onboard marker). It is not a
-full workstation sandbox. Broker launch policy, the JetStream store, pidfiles, and auth live under
-the **project** `.cotal/` found by walking up from the cwd ([Project: `.cotal/`](#project-files)
-above, including `broker-policy.json` on TLS meshes). A probe that sets `COTAL_HOME` alone and runs
+`COTAL_HOME` overrides **this tree only**: the registry, current pointer and onboard marker, and
+records such as prepared spaces and service records. It is not a full workstation sandbox. Broker launch policy, the JetStream
+store, pidfiles, and auth live under the **project** `.cotal/` found by walking up from the cwd
+([Project: `.cotal/`](#project-files) above, including `broker-policy.json` on TLS meshes). A probe that sets `COTAL_HOME` alone and runs
 `cotal up --tls-cert …` from a directory whose walked root is the operator home still writes those
 project paths on the live machine.
+
+A controller stack's member records live in this tree, so commands run under another `COTAL_HOME`
+cannot see a stack started under this one. While that stack's manager or delivery daemon runs,
+`status` there says the stack runs under another Cotal home and names the home in use, and `up`
+refuses `TARGET_UNAVAILABLE` with nothing started. Both name the step: run with the `COTAL_HOME` the
+stack was started under.
 
 | Path | What it is |
 |---|---|
 | `meshes/space.<key>.json` | Registry of running meshes: one file per broker `cotal up` started (server URL, root path, mode, TLS-required client intent when recorded, attach bind host and live-session ceiling when the operator set them); `<key>` is the same case-safe hex encoding of the space name, and the record's own `space` field is authoritative |
 | `current-mesh` | Default space a bare `cotal spawn` joins (set by `cotal use`) |
 | `onboarded.json` | Marker (with `ONBOARD_VERSION`) that `cotal setup` writes once; setup shows its splash until then |
+| `prepared/space.<key>.json` | A space `cotal space create` prepared and no `up` has started yet |
+| `services/<key>/` | Saved service definitions and instance records, including a controller stack's `stack-*` members |
 | the Claude plugin marketplace | The installed `cotal-mesh` plugin assets |
 
 ### Configuration files

@@ -1810,7 +1810,10 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string): void {
       throw new Error(`ordinary startup after restore must use the recorded active target store ${maintenance.restore.target.path}, not ${storeDir}`);
     return;
   }
-  if (maintenance.state === "ready") throw new Error("ordinary resume must begin through the attempt-bound startup path");
+  // A preserved cut resumes only through bare `up`, which journals the resume attempt. Nothing has
+  // started here, so this is a refusal.
+  if (maintenance.state === "ready")
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root holds a stack preserved by `cotal down --preserve-state`, which only bare `cotal up` resumes; nothing was started", { target: { root, space: maintenance.space }, remedy: `resume it with bare \`cotal up\` in ${root}` });
   throw new Error(`cotal up is refused while maintenance state is ${maintenance.state}; follow the recorded restore recovery`);
 }
 

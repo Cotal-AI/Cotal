@@ -1,4 +1,5 @@
 import { brokerAddressForDisplay } from "./broker-display.js";
+import { userCotalDir } from "./mesh-registry.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
@@ -46,6 +47,11 @@ export function renderWorkspaceError(e: WorkspaceError): string {
   return `✗ ${message}${remedy === undefined ? "" : ` - ${remedy}`}`;
 }
 
+/** The step for a root whose stack runs under another Cotal home (`stackRunsUnderOtherHome`). */
+export function stackHomeRemedy(): string {
+  return `run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}`;
+}
+
 /** "Which mesh" resolution failures — maps a {@link MeshTargetError}'s `{code, details}` to copy. */
 function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
   const d = err.details;
@@ -68,12 +74,16 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         : parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"; stale entry removed`, "re-run `cotal up` or check `cotal meshes`");
     case "unreadable-auth":
       return parts(`space "${d.space}"'s trust material under ${d.root} will not load (${err.message})`, "repair or remove the account record, then re-run `cotal up`");
-    case "not-started":
+    case "not-started": {
       // A prepared space names itself. A root whose stack journal recorded a broker names that broker,
-      // and `up` there refuses until `space create` prepares the journal's space at that root again.
-      return d.space === undefined
-        ? parts(`the stack in ${d.root} recorded ${d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${d.root}\`, then start it with \`cotal up\` there`)
-        : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
+      // and `up` there refuses until `space create` prepares the journal's space at that root again. A
+      // stack running under another Cotal home names the home in use, because `up` there refuses.
+      if (d.space !== undefined) return parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
+      const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
+      return d.home === undefined
+        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${d.root}\`, then start it with \`cotal up\` there`)
+        : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());
+    }
     case "user-auth-unrecorded":
       // U11: without a TRUSTED local record of the space's IdP there is no actionable
       // `cotal login --idp <?>` line to print — the honest recovery is re-registering the mesh
