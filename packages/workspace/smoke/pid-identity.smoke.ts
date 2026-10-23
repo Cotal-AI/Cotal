@@ -408,7 +408,27 @@ try {
       g5Threw && parsePid(readFileSync(firstPath, "utf8")) === firstTarget.pid && verifyIdentityPin(firstPath).kind === "match");
     reap(firstTarget.child);
 
-    check("G6 no `.publish.` temporary survives ANY of G1 through G5",
+    // A pidfile that exists but cannot be read is not a first start (#3575). A directory stands in
+    // for it, so the cell holds as root, where a mode 000 file still reads.
+    const unreadablePath = join(root, ".cotal", "g-unreadable.pid");
+    mkdirSync(unreadablePath);
+    writeIdentityPin(unreadablePath, process.pid);
+    const pinBefore = readFileSync(identityPinPath(unreadablePath), "utf8");
+    const unreadableTarget = spawnTarget();
+    strays.push(unreadableTarget.child);
+    await wait(150);
+    const g6Steps: string[] = [];
+    let g6Thrown: unknown;
+    try {
+      writePidPair(unreadablePath, unreadableTarget.pid!, { onStep: (step) => { g6Steps.push(step); if (step === "bridge-pin") throw new Error("planted crash after bridge-pin"); } });
+    } catch (e) { g6Thrown = e; }
+    check("G6 a pidfile that cannot be read throws, naming it, before the publish renames anything",
+      g6Thrown instanceof Error && g6Thrown.message.includes(unreadablePath) && g6Steps.length === 0
+        && readFileSync(identityPinPath(unreadablePath), "utf8") === pinBefore,
+      { thrown: String(g6Thrown), steps: g6Steps, pin: readFileSync(identityPinPath(unreadablePath), "utf8") });
+    reap(unreadableTarget.child);
+
+    check("G7 no `.publish.` temporary survives ANY of G1 through G6",
       !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
   }
 
