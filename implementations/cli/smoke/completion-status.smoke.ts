@@ -310,6 +310,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   // With no pwsh on PATH there is no profile to wire, so install refuses without guessing one.
   const pwsh = s.run(["completion", "install", "powershell"]);
   check("completion install powershell is refused, naming the supported loading command", pwsh.status === 2 && pwsh.stdout === "" && pwsh.stderr.includes("the supported loading command is: cotal completion script powershell | Out-String | Invoke-Expression"), shown(pwsh));
+  const fromShell = s.run(["completion", "install"], { SHELL: "/bin/tcsh" });
+  check("a SHELL that names an unsupported shell is refused UNSUPPORTED, exit 2, naming it without the whole help",
+    fromShell.status === 2 && /completion does not support tcsh, the shell SHELL names/.test(fromShell.stderr) && /UNSUPPORTED/.test(fromShell.stderr) && !/^Usage$/m.test(fromShell.stderr), shown(fromShell));
   const installTcsh = s.run(["completion", "install", "tcsh"]);
   check("completion install for an unknown shell is refused", installTcsh.status === 1 && installTcsh.stdout === "" && /choose a supported shell/.test(installTcsh.stderr) && /pass one of: bash, zsh, fish, powershell/.test(installTcsh.stderr), shown(installTcsh));
 

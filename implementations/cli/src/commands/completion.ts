@@ -159,7 +159,10 @@ export async function completion(args: ParsedArgs): Promise<void> {
   }
   if (sub === "script") { process.stdout.write(SCRIPTS[shell!]!); return; }
   const sh = shell ?? currentShell();
-  if (!Object.hasOwn(SCRIPTS, sh)) throw new CommandFailure("refused", "USAGE_INVALID", "the current shell is unknown", { remedy: "pass one of: bash, zsh, fish, powershell" });
+  // A shell SHELL names is known even when completion does not support it, so it is named.
+  if (!Object.hasOwn(SCRIPTS, sh)) throw sh
+    ? new CommandFailure("refused", "UNSUPPORTED", `completion does not support ${sh}, the shell SHELL names`, { target: { shell: sh }, remedy: "pass one of: bash, zsh, fish, powershell" })
+    : new CommandFailure("refused", "USAGE_INVALID", "SHELL is not set, so the current shell is unknown", { remedy: "pass one of: bash, zsh, fish, powershell" });
   const paths = stubPaths(sh);
   if (!paths) throw new CommandFailure("refused", "UNSUPPORTED", "owned PowerShell profile installation is unavailable on this host or the shell is not installed; no profile path was guessed", { remedy: `review your profile manually; the supported loading command is: ${LOAD_NOW.powershell}` });
   if (sh === "zsh" && process.env.ZDOTDIR && !isAbsolute(process.env.ZDOTDIR)) throw new CommandFailure("refused", "USAGE_INVALID", "relative ZDOTDIR makes the startup target depend on the shell's working directory", { remedy: "use an absolute ZDOTDIR or manage the printed script manually" });

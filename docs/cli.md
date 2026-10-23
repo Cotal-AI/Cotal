@@ -5290,7 +5290,8 @@ and zsh stubs complete file names where a value takes a path. The fish stub offe
 own candidates.
 
 `install` and `uninstall` take a shell name or detect it from `SHELL`. Pass `powershell`
-explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX hosts:
+explicitly when PowerShell inherited another shell's `SHELL`. A `SHELL` that names a shell
+completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2), naming it. On supported POSIX hosts:
 
 - Bash uses `~/.config/cotal/completion.bash` and an owned block in `~/.bashrc`.
 - Zsh uses `~/.config/cotal/completion.zsh` and an owned block in `$ZDOTDIR/.zshrc`, or
