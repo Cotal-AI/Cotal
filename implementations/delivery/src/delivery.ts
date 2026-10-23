@@ -281,7 +281,7 @@ async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, spac
     return { initial, source: () => mintCreds(auth, identity, "delivery") };
   }
   throw new Error(
-    `delivery: no scoped creds at ${where}. Launch via \`cotal setup\`/\`cotal go\` (the setup helper mints + writes it), or pass --creds <file>; for a standalone dev run use --dev-mint.`,
+    `delivery: no scoped creds at ${where}. Start the space with \`cotal up\`, which mints and writes them, or pass --creds <file>; for a standalone dev run use --dev-mint.`,
   );
 }
 
