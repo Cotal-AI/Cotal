@@ -644,8 +644,11 @@ numeric code and status without copying the server's description or changing the
 The journal records the absolute root it was written in, and the stack runs only from that folder.
 In a copy of a controller project, or after the folder is moved, commands that read the journal
 refuse `CONFLICT`, exit 2, and name the recorded folder: a copy is told to use the stack from the
-original, and a moved folder to move back there first. `space create` in a copy whose records name
-another root says so and names that root.
+original, and a moved folder to move back there first. A folder whose `.cotal` is a link to another
+project's `.cotal` is told that it is a link and to use the stack from that project. `status` there
+does not read the folder's boot and additive attempt inventories through the link and warns that
+it did not. `space create` in a copy whose records name another root says so and names that root,
+and in a linked folder it names the link.
 
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit

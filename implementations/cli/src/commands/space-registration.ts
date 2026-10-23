@@ -7,6 +7,7 @@ import {
   authDir,
   canonicalRoot,
   checkDiscoveryDocument,
+  cotalDirLink,
   clearCurrent,
   discoveryDocumentUrl,
   findMesh,
@@ -427,8 +428,10 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
     // or locally started registration.
     // Records copied or moved here keep naming the folder they came from as their space's root.
     const origin = held.length === 1 ? findPreparedSpace(held[0]!)?.root ?? findMesh(held[0]!)?.root : undefined;
-    if (origin !== undefined && !here(origin))
-      throw refuse("CONFLICT", `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
+    if (origin !== undefined && !here(origin)) {
+      const link = cotalDirLink(root);
+      throw refuse("CONFLICT", link !== undefined ? `${join(root, ".cotal")} is a link to ${link}, which holds the records of "${held[0]}" at ${origin}` : `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
+    }
     const stopped = held.length === 1 && journaled === undefined && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
     throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`

@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, assessMaintenanceClaim, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MaintenanceClaim, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, assessMaintenanceClaim, authDir, cotalDirLink, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MaintenanceClaim, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -333,6 +333,13 @@ function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["b
   // A refusal with its own cause, such as a root other local accounts can write, is named.
   const because = (error: unknown) => isCommandFailure(error) ? ` (${error.message})` : "";
   const result: NonNullable<StatusResult["bootAttempts"]> = { root, state: "not-checked", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] };
+  // Neither inventory is read through a link; the folder it leads to reports its own.
+  const link = cotalDirLink(root);
+  if (link !== undefined) {
+    result.state = "partial";
+    gaps.add("COTAL_DIR_LINKED", `this folder's .cotal is a link to ${link}, so its fresh boot and additive attempt inventories were not read through it`, { root, link });
+    return result;
+  }
   try {
     if (!realDirNoSymlink(root, ".cotal")) return result;
     const attempts = listFreshTeamAttempts(root), summaries = listFreshTeamSummaries(root);

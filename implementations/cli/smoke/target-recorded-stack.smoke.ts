@@ -4,7 +4,8 @@
  * `endpoints` in that root used to target nats://127.0.0.1:4222 while the stack journal recorded
  * another port, so any broker on the default port would have been dialed. They now refuse as not
  * started, name the recorded broker and say how to start it: `space create` prepares the journal's
- * space at the root again, then `cotal up`.
+ * space at the root again, then `cotal up`. A folder whose `.cotal` is a link to the project's is
+ * told it is a link, and its status names the link once.
  *
  * The journal is written by hand in the shape `cotal up` leaves when its broker never started; the
  * resolver reads only its server and space fields. Driven through the built binary in a sandboxed COTAL_HOME.
@@ -14,7 +15,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -30,6 +31,7 @@ interface Envelope {
   target: { space?: string | null } | null;
   result: { selected?: { resolved: boolean; code?: string; message?: string } } | null;
   error?: { code: string; message: string; remedy?: string };
+  warnings?: { code: string; message: string }[];
 }
 
 const RECORDED = "nats://127.0.0.1:24711";
@@ -90,6 +92,18 @@ const movedUp = run(["up", "--json"], moved);
 renameSync(moved, root);
 check("up in a moved folder refuses CONFLICT and says to move it back",
   movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === `move this folder back to ${root}, then run cotal up there`, shown(movedUp));
+// A folder whose .cotal links to this project's reads the same journal through the link.
+const linked = `${root}-linked`;
+mkdirSync(linked);
+symlinkSync(join(root, ".cotal"), join(linked, ".cotal"));
+const linkedUp = run(["up", "--json"], linked);
+check("up in a folder whose .cotal is a link refuses CONFLICT, naming the link and the recorded folder",
+  linkedUp.status === 2 && linkedUp.envelope?.error?.code === "CONFLICT" && linkedUp.envelope.error.message === `${join(linked, ".cotal")} is a link to ${join(root, ".cotal")}, whose stack journal was recorded at ${root}; a controller stack runs only from the folder it started in` && linkedUp.envelope.error.remedy === `use the stack from ${root}, which holds it; this folder only links to its records`, shown(linkedUp));
+const linkedStatus = run(["status", "--json"], linked);
+const linkedCodes = (linkedStatus.envelope?.warnings ?? []).map((w) => w.code);
+check("status there warns once that it did not read the attempt inventories through the link",
+  linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${join(root, ".cotal")}`)), shown(linkedStatus));
+rmSync(linked, { recursive: true, force: true });
 writeFileSync(join(copy, ".cotal", "stack-controller.json"), JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: copy, space: "la07" }) + "\n", { mode: 0o600 });
 const malformed = run(["up", "--json"], copy);
 check("a malformed journal is still SCHEMA_INVALID, and its remedy names the journal's own path",

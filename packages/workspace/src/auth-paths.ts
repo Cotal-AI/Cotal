@@ -1,5 +1,5 @@
 import { CommandFailure } from "./output.js";
-import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import {
@@ -305,6 +305,17 @@ export function cotalDirProblem(root: string): string | undefined {
     return undefined;
   }
   return stat.isDirectory() ? undefined : `${path} is a ${stat.isFile() ? "file" : "special file"}, not a directory, so it cannot hold this folder's Cotal records`;
+}
+
+/** Where `<root>/.cotal` leads when it is a symlink, such as a link to another project's `.cotal`.
+ *  Undefined when it is a real directory, absent, or a link that leads nowhere. */
+export function cotalDirLink(root: string): string | undefined {
+  const path = join(root, ".cotal");
+  try {
+    return lstatSync(path).isSymbolicLink() ? realpathSync(path) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** {@link findCotalRoot} for a caller that must run inside a workspace that already exists, such as
