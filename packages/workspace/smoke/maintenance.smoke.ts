@@ -1147,6 +1147,28 @@ if (process.platform !== "win32") {
   releaseMaintenanceLock(p.lock);
 }
 
+// A disaster restore retains no old source, so its explicit cleanup only retires the journal.
+{
+  const p = ready("cleanup-disaster");
+  rmSync(p.store, { recursive: true });
+  prepareMissingSourceRestore(p.lock, { attemptId: "restore-disaster", targetPath: p.store, claim: restoreClaim() });
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-disaster", serverName: "restore-disaster-listener", serverNonce: "restore-disaster-nonce",
+    processOwner: owner("restore-disaster-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  const retired = cleanupRestoreFallback(p.lock, "restore-disaster");
+  check("disaster cleanup records no old-source cleanup", retired.restore.cleanup === undefined);
+  check("disaster cleanup keeps the active target", sameStoreIdentity(target, readStoreIdentity(p.store)));
+  check("disaster cleanup retires the restore journal for a later preserve cycle", readMaintenanceJournal(p.root) === undefined);
+  releaseMaintenanceLock(p.lock);
+}
+
 // Replacing the retained source before cleanup fails closed and preserves both the replacement and target.
 {
   const p = ready("cleanup-mismatch");

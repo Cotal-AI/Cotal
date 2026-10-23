@@ -4024,6 +4024,9 @@ export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string)
     });
   assertStoreIdentity(record.restore.target);
   const previous = record.restore.previousSource;
+  // A disaster restore replaced a missing source, so it retains no old store: retiring its journal is
+  // the whole cleanup, after the same finalization checks.
+  if (!previous && record.restore.method === "disaster" && !record.restore.cleanup) return retireCleanedRestore(lock, record);
   if (!previous)
     maintenanceError("cleanup-forbidden", "this restore has no retained old source", { root: lock.root, attemptId });
   if (sameStoreIdentity(previous.identity, record.restore.target) || previous.identity.path === record.restore.target.path)
@@ -4044,9 +4047,13 @@ export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string)
   return retireCleanedRestore(lock, record);
 }
 
-/** Consume a healthy restore only after exact old-source cleanup is durably complete. */
+/** Consume a healthy restore only after exact old-source cleanup is durably complete. A disaster
+ *  restore retained no old source, so it has no cleanup to complete. */
 function retireCleanedRestore(lock: MaintenanceLock, record: RestoreActiveRecord): RestoreActiveRecord {
-  if (record.restore.cleanup?.kind !== "previous-source" || record.restore.cleanup.status !== "complete")
+  const cleaned = record.restore.method === "disaster"
+    ? record.restore.cleanup === undefined
+    : record.restore.cleanup?.kind === "previous-source" && record.restore.cleanup.status === "complete";
+  if (!cleaned)
     maintenanceError("cleanup-forbidden", "restore retirement requires completed previous-source cleanup", {
       root: lock.root, attemptId: record.restore.attemptId,
     });

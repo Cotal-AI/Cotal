@@ -461,11 +461,11 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with a host, without credentials, path, query or fragment. Any other value refuses `USAGE_INVALID` before anything is written. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. A different `--store-dir`, `--max-file-store` or `--host` refuses the same way, naming each recorded value. A controller stack's broker also needs one IP literal that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials |
+| `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with a host, without credentials, path, query or fragment. Any other value refuses `USAGE_INVALID` before anything is written. A `tls://` address records TLS as required, so without `--tls-cert` and `--tls-key`, or a recorded TLS policy, `up` refuses it `USAGE_INVALID` before anything starts. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. A different `--store-dir`, `--max-file-store` or `--host` refuses the same way, naming each recorded value. A controller stack's broker also needs one IP literal that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials |
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's space | Space name |
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
-| `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it) |
+| `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f` |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
@@ -724,7 +724,11 @@ The journal reads earlier three-member auth/open records with an unattempted aut
 Its next write records all four roles. It neither adopts legacy processes nor converts a mode.
 
 A repair `up` on a mesh whose broker died reopens the store its record names, and refuses a
-different `--store-dir` rather than silently opening a second store.
+different `--store-dir` rather than silently opening a second store. `down` drops that record, so a
+later start without `--store-dir` reads the store its last broker served from the broker config `up`
+wrote. When that store is not the default `.cotal/nats` and still holds JetStream data while the
+default store holds none, such as after `backup restore --store-dir`, the start refuses `CONFLICT`
+(exit 2) and names it. Pass `--store-dir <dir>` to reopen it.
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit
@@ -1264,7 +1268,8 @@ are always refused.
 `store` and `all` also refuse every maintenance journal state. After a healthy committed restore,
 `restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
-completed restore journal so a later `down --preserve-state` can start a new backup cycle.
+completed restore journal so a later `down --preserve-state` can start a new backup cycle. After an
+`--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
 
@@ -1402,7 +1407,8 @@ preserved source, or the maintenance attempt tree.
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
 A root with no preserved cut refuses and names `cotal down --preserve-state`. A cut in another state
 refuses and names that state and its space. A destination that already exists is a `CONFLICT`
-refusal, because create writes only a new directory.
+refusal, because create writes only a new directory. Any other refusal or failure shows the check's
+own sentence as its native detail, such as a broker still listening at the cut's recorded endpoint.
 
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
 hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
@@ -1421,6 +1427,9 @@ manifest path or selected-space guess. It requires the native deadline and every
 to prove the attempt stale, then performs the native rollback. Commit intent forbids rollback.
 `backup cleanup-fallback <full-attempt-id>` requires the matching healthy active restore and
 removes only its unchanged retained old-store identity; it never removes the restored target.
+A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
+so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
+starts a new backup cycle.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
@@ -1654,7 +1663,9 @@ record, endpoint, and target identity all match that proof; degraded restore rep
 the guarded workspace transition only after manager commit. If an uncommitted bound owner is provably
 dead, recovery retires that exact proof under the maintenance lock and binds a fresh listener for the
 same attempt, endpoint, and target with a new nonce and server name. A live foreign/mismatched listener
-or ambiguous owner is preserved and refused, never adopted by reachability alone. A reconstructed
+or ambiguous owner is preserved and refused, never adopted by reachability alone. Before the
+daemons start, re-entry recreates the memory-only buckets on an adopted restore or resume listener,
+because the interrupted `up` may have stopped before it made them. A reconstructed
 commit/degraded attempt without either the exact bound proof or a durable dead-listener replacement
 record fails closed even when the recorded port is free. A later ordinary startup may pass an `active`
 restore only when its details prove manager commit and its exact recorded listener is dead.

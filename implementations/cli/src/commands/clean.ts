@@ -93,7 +93,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     const lock = acquireMaintenanceLock(root);
     try {
       const record = cleanupRestoreFallback(lock, values.attempt);
-      console.log(c.green(`✓ removed retained source for restore ${record.restore.attemptId}`));
+      console.log(c.green(record.restore.method === "disaster" ? `✓ retired restore ${record.restore.attemptId}; it replaced a missing source, so no old store was removed` : `✓ removed retained source for restore ${record.restore.attemptId}`));
     } finally {
       releaseMaintenanceLock(lock);
     }
