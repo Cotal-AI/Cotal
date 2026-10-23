@@ -7,8 +7,9 @@
  * only), the `all` removal set (store + auth + every derived local cred + crash residue: stale
  * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the refusal of a store
  * directory that holds anything else (with nothing in it removed) and `up`'s warning about one, the
- * dry run, the already-clean no-op, and that `clean all` drops only registry entries rooted at THIS
- * project (a named open mesh must never delete the default space's entry).
+ * dry run, the already-clean no-op, that `clean all` drops only registry entries rooted at THIS
+ * project (a named open mesh must never delete the default space's entry), and that a `clean all`
+ * removing the space trust says earlier full backups no longer restore into the root.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -370,16 +371,38 @@ try {
   recordMesh(entry("main", otherRoot));
   setCurrent("named-open");
   const cwd = process.cwd();
+  const consoleWarn = console.error;
+  const notes: string[] = [];
+  console.error = (...args: unknown[]) => { notes.push(args.map(String).join(" ")); };
   process.chdir(openRoot);
   try {
     await clean({ positionals: ["all"], values: { force: true }, raw: [] });
   } finally {
+    console.error = consoleWarn;
     process.chdir(cwd); // chdir out BEFORE the rm (Windows EBUSY on a deleted cwd)
   }
   check("all: drops THIS root's registry entry, not the default space's", loadMeshes().map((m) => m.space).join(",") === "main", loadMeshes());
   check("all: releases the `current` pointer it held", getCurrent() !== "named-open", getCurrent());
+  check("all: an open root holds no space trust, so it says nothing about backups", !notes.some((note) => note.includes("full backups")), notes);
   rmSync(openRoot, { recursive: true, force: true });
   rmSync(otherRoot, { recursive: true, force: true });
+
+  // A full backup is bound to the space trust, so a `clean all` that removes it says, in its dry run
+  // and in its receipt, that the full backups taken before it no longer restore into this root.
+  const trustRoot = meshRoot();
+  notes.length = 0;
+  console.error = (...args: unknown[]) => { notes.push(args.map(String).join(" ")); };
+  process.chdir(trustRoot);
+  try {
+    await clean({ positionals: ["all"], values: { "dry-run": true }, raw: [] });
+    await clean({ positionals: ["all"], values: { force: true }, raw: [] });
+  } finally {
+    console.error = consoleWarn;
+    process.chdir(cwd);
+  }
+  check("all: removing the space trust says, in the dry run and the receipt, that earlier full backups no longer restore here",
+    notes.length === 2 && /full backups taken before this clean would no longer restore into this root/.test(notes[0] ?? "") && /full backups taken before this clean no longer restore into this root.*Take a new full backup/.test(notes[1] ?? ""), notes);
+  rmSync(trustRoot, { recursive: true, force: true });
 
   // A retained bare `down` reaches its pidfile sweep only for one registration that `cotal up`
   // started at this root, and refuses when another registration names the same broker address

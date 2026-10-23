@@ -43,6 +43,9 @@ import { observeServiceProcess, serviceInstances } from "../lib/service-instance
 import { foreignStoreEntries, listEntries, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
+/** How a removed trust record is labeled. A full backup is bound to the trust it was taken under,
+ *  so once that trust is removed it no longer restores into this root. */
+const SPACE_TRUST = "(space trust)";
 type Target = (typeof TARGETS)[number];
 
 /** `cotal clean <history|store|all>` - one configurable cleanup verb.
@@ -151,13 +154,16 @@ export async function clean(args: ParsedArgs): Promise<void> {
     console.log(c.dim("nothing to clean - no local state found"));
     return;
   }
+  const trustRemoved = removed.some((path) => path.endsWith(SPACE_TRUST));
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
     console.log(c.dim(`dry run - nothing was removed; cotal clean ${target}${values["store-dir"] ? ` --store-dir ${values["store-dir"]}` : ""} --force removes these`));
+    if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes"));
     return;
   }
   for (const path of removed) console.log(c.green(`✓ removed ${path}`));
   if (target === "all") console.log(c.dim("a fresh space identity is minted on the next `cotal up`"));
+  if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Take a new full backup after the next `cotal up`"));
 }
 
 /** The live-purge half, shared with the `cotal history clear` alias. Resolves the running mesh (from
@@ -452,11 +458,11 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // removes the same files.
     const trustPaths = existsSync(authDirPath) ? readdirSync(authDirPath).filter(trustRecord) : [];
     if (dryRun) {
-      for (const entry of trustPaths) recordRemoved(`.cotal/auth/${entry} (space trust)`);
+      for (const entry of trustPaths) recordRemoved(`.cotal/auth/${entry} ${SPACE_TRUST}`);
       return removed;
     }
     await deleteSpaceAuth(secrets, space);
-    for (const entry of trustPaths) recordRemoved(`.cotal/auth/${entry} (space trust)`);
+    for (const entry of trustPaths) recordRemoved(`.cotal/auth/${entry} ${SPACE_TRUST}`);
     opts.identity?.beforeRemove(authDirPath);
     rmSync(authDirPath, { recursive: true, force: true }); // drop the now-empty auth dir (nothing lockable left)
     opts.identity?.afterRemove(authDirPath);

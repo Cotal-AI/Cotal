@@ -1355,7 +1355,9 @@ One configurable cleanup verb; every target requires `--force`, except a `--dry-
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
   registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
   `cotal up` then refuses and names `cotal up -f <manifest>` when the deployment ran at another
-  address, mode or space.
+  address, mode or space. A full backup is bound to the space trust it was taken under, so full
+  backups taken before `clean all` no longer restore into this root. Its dry run and its receipt
+  say so when it removes that trust; take a new full backup after the next `cotal up`.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
 running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). On a
@@ -1584,10 +1586,14 @@ A directory with no `manifest.json` is refused as an incomplete artifact, the ki
 `backup create` leaves, with the fault `manifest-missing`. A full artifact of an authenticated space
 restores only into a root that still holds the trust state it was taken under, so it cannot move to
 another machine or a fresh root. `backup create`, `backup inspect` and `backup verify` say so in a
-`Restores into` row, and their JSON carries `trustBound`.
+`Restores into` row, and their JSON carries `trustBound`. A registry restore does not check the trust
+state, so `--only registry` still restores such an artifact's channel settings.
 
 File integrity is not a signature or a restore proof. Matching a manifest does not authenticate
-its author, verify snapshot semantics or prove existing trust will accept a restore. The guarded
+its author, verify snapshot semantics or prove existing trust will accept a restore. `backup
+inspect` and `backup verify` do not compare an artifact's trust state with this root's, and their
+`Authority continuity` row says `not checked`. A full artifact taken on this root before `clean all`
+or `up --rotate-sys` still verifies, and restore refuses it `CONFLICT`. The guarded
 read path refuses unsupported file-protection environments rather than using a weaker reader.
 
 `backup recover <full-attempt-id>` uses the original root's pre-commit restore journal, not a
@@ -1669,7 +1675,9 @@ such path and one remedy such as `chmod g-w <paths>`. `backup inspect` does not 
 copy that other accounts can only read is accepted.
 
 Restore validates and stages the exact allowlisted artifact bytes before moving or creating a store.
-It requires the same space and existing trust state. The whole pre-commit window holds a journaled
+It requires the same space. A full restore also requires the trust state the artifact was taken
+under; a registry restore, `--only registry` of a full artifact included, does not check it. The
+whole pre-commit window holds a journaled
 liveness claim (coordinator, watchdogs, brokers, and a deadline 30 minutes after the restore
 began). While the claim is live, ordinary `up`, a repeated restore and `backup recover` refuse
 `LIFECYCLE_BLOCKED` (exit 2) and name the restore process and the deadline. A command that finds
@@ -1794,7 +1802,8 @@ space trust bundle before staging, including nkeys, seed matches, JWTs, signers,
 full restores commit to the validated operator, system-account, data-account, and active-signer root
 chain in addition to the static/user authority fingerprint. Because the system account is part of that
 commitment, a [`cotal up --rotate-sys`](#up) makes every full artifact taken before it unrestorable
-against this root: take a fresh full backup after each rotation. The composed commitment is revalidated
+against this root: take a fresh full backup after each rotation. [`cotal clean all`](#clean) removes
+the space trust itself, so it does the same. The composed commitment is revalidated
 immediately before store mutation and never includes secret seeds. Restore never creates fresh auth.
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
