@@ -77,7 +77,7 @@ console.log("2. grammar refuses before any target, connector or connection");
   const parseCode = (json as unknown as { code?: unknown }).code;
   check("--json is not a chat flag", !isCommandFailure(json) && typeof parseCode === "string" && parseCode.startsWith("ERR_PARSE_ARGS"), json);
   check("two channels refuse as usage", refusal(run(["a", "b", "--stdio"]))?.code === "USAGE_INVALID");
-  for (const channel of ["team.*", "team.>"])
+  for (const channel of ["team.*", "team.>", "gen*"])
     check(`the wildcard channel ${channel} refuses as usage`, refusal(run([channel, "--stdio"]))?.code === "USAGE_INVALID" && refusal(run([channel, "--stdio"]))?.message === "name one concrete channel, without wildcards");
   const unsafe = refusal(run(["kanäle", "--stdio"]));
   check("a channel name that is not NATS-safe refuses as usage, naming the segment", unsafe?.code === "USAGE_INVALID" && unsafe.message.includes('segment "kanäle" must be a NATS-safe token'), unsafe);

@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import {
-  assertValidChannel, isConcreteChannel, oneLine, readChannelRegistry, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
+  oneLine, readChannelRegistry, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
   CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, loadMeshes, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
@@ -14,6 +14,7 @@ import {
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
 import { openRoutingChatSession } from "../chat/open-session.js";
@@ -60,15 +61,9 @@ export function chatArguments(args: ParsedArgs): ChatInput {
   if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "chat takes at most one channel", { remedy: "run cotal chat [<channel>]" });
   const raw = args.positionals[0];
   const channel = raw?.replace(/^#/, "");
-  if (channel !== undefined) {
-    // A name the channel rules refuse gets their reason, which names the segment at fault.
-    try {
-      assertValidChannel(channel);
-      if (!isConcreteChannel(channel)) throw new Error("name one concrete channel, without wildcards");
-    } catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
-    }
-  }
+  // A name the channel rules refuse gets their reason, which names the segment at fault.
+  const problem = channel === undefined ? undefined : concreteChannelProblem(channel);
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   if (values.name !== undefined && (!values.name.trim() || values.name.length > 128 || /[\u0000-\u001f\u007f]/u.test(values.name)))
     throw new CommandFailure("refused", "USAGE_INVALID", "--name takes a label of 1 to 128 characters without control characters");
   // Every admission presents the session as an endpoint, so `--kind endpoint` changes nothing.

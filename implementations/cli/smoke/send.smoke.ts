@@ -12,7 +12,9 @@
  * consumer, and a channel send reads that channel's policy with a Direct Get, so the consumer count
  * on both buckets is the same before and after the sends. The old watch, and the policy read's scan,
  * left one consumer per send on the bucket they read for five minutes. `cotal channel` on the same
- * operator credential reads the registry with a Direct Get and leaves no consumer either.
+ * operator credential reads the registry with a Direct Get and leaves no consumer either. A post to
+ * an unregistered channel reads that channel's retained count once with STREAM.INFO, which opens no
+ * consumer.
  *
  * Run: pnpm smoke:send
  */
@@ -49,7 +51,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 56;
+const EXPECTED = 60;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -217,6 +219,12 @@ try {
   const consumersAfter = await watchConsumers();
   const listed = await run(["channel"]);
   const consumersAfterList = await watchConsumers();
+  // A channel with no registry entry: a first post says it starts the channel, a later one says the
+  // channel already has messages, and both name the registered channels.
+  const fresh = `fresh-${randomUUID().slice(0, 6)}`;
+  const firstFresh = await run(["send", "-c", fresh, "one"]);
+  const laterFresh = await run(["send", "-c", fresh, "two", "--json"]);
+  const consumersAfterFresh = await watchConsumers();
   await inspector.close();
 
   check(
@@ -234,6 +242,23 @@ try {
     "`cotal channel` leaves no consumer on the channel-registry stream (#4091)",
     consumersAfterList.channels === consumersAfter.channels,
     { before: consumersAfter, after: consumersAfterList },
+  );
+
+  check(
+    "a first post to an unregistered channel says it starts the channel and names the registered ones",
+    firstFresh.code === 0 && firstFresh.stderr.includes(`#${fresh} has no channel metadata and no earlier message, so this message starts it`) && firstFresh.stderr.includes("Registered channels: #general."),
+    firstFresh,
+  );
+  const laterWarning = laterFresh.code === 0 ? (JSON.parse(laterFresh.stdout) as { warnings: { code: string; message: string; target: { earlierMessages?: unknown; registered?: unknown } }[] }).warnings.find((w) => w.code === "CHANNEL_UNREGISTERED") : undefined;
+  check(
+    "a later post to it says the channel already has messages, and its JSON warning carries both facts",
+    laterWarning !== undefined && laterWarning.message.includes(`#${fresh} already has messages`) && laterWarning.target.earlierMessages === true && JSON.stringify(laterWarning.target.registered) === JSON.stringify(["general"]),
+    laterFresh,
+  );
+  check(
+    "reading an unregistered channel's earlier messages leaves no consumer on the presence or channel-registry stream",
+    consumersAfterFresh.presence === consumersAfterList.presence && consumersAfterFresh.channels === consumersAfterList.channels,
+    { before: consumersAfterList, after: consumersAfterFresh },
   );
 
   check("`cotal send -t` outside a seat exits 0", dm.code === 0, dm.stderr);
@@ -354,12 +379,15 @@ try {
     unsafe.code === 1 && unsafe.stdout.includes('"code":"USAGE_INVALID"') && unsafe.stdout.includes('segment \\"kanäle\\" must be a NATS-safe token'), unsafe);
   const spaced = await run(["send", "-c", "gen eral", "x", "--json"]);
   check("`cotal send -c` with a space in the name names the segment, not wildcards",
-    spaced.code === 1 && spaced.stdout.includes('segment \\"gen eral\\" must be a NATS-safe token') && !spaced.stdout.includes("wildcards"), spaced);
+    spaced.code === 1 && spaced.stdout.includes('segment \\"gen eral\\" must be a NATS-safe token') && !spaced.stdout.includes("wildcards") && !spaced.stdout.includes("'*', or '>'"), spaced);
   const badRole = await run(["send", "-r", "bad role!", "x", "--json"]);
   check("`cotal send -r` with a role that is not one NATS-safe token is USAGE_INVALID, exit 1, with the role rule",
     badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);
   const wildcard = await run(["send", "-c", "team.*", "x", "--json"]);
   check("`cotal send -c` with a wildcard says to name one concrete channel", wildcard.code === 1 && wildcard.stdout.includes("name one concrete channel, without wildcards"), wildcard);
+  const starred = await run(["send", "-c", "gen*", "x", "--json"]);
+  check("`cotal send -c` with * inside a segment gets the wildcard sentence, not a rule that lists '*' and '>'",
+    starred.code === 1 && starred.stdout.includes("name one concrete channel, without wildcards") && !starred.stdout.includes("'*', or '>'"), starred);
 
   // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.
   const bigFile = join(storeDir, "big.txt");

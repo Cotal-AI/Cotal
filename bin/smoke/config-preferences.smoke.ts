@@ -1,8 +1,9 @@
 /**
  * `cotal config` and the preferences it saves, driven through the built binary in a fresh sandbox:
  * the effective values with their sources and shadowed values, `get`, `set` and `unset` for the user
- * and for one space, the refusals (a set for a space this machine does not know among them), the named
- * environment tiers, the selected space, an invalid file stopping every command but help and completion
+ * and for one space, the refusals (a read, set or unset for a space this machine does not know among
+ * them), a value left for a removed space, the named environment tiers, the selected space, an invalid
+ * file stopping every command but help and completion
  * without being reset, a linked file stopping them the same way, a stale write refused, a persona the
  * space's catalog does not hold saved with a warning that names the catalog, two concurrent writers
  * both landing, and the consumers outside `spawn`: color, the `personas edit`

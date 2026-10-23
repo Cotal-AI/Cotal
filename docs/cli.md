@@ -3843,8 +3843,9 @@ preserved and never printed in the receipt. A file that cannot be read is refuse
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`.
 The recipient grammar is checked before connector installation or target preparation. Channel
-and role names use the native subject grammar; a channel publication cannot name a wildcard, and a
-channel or role name outside the grammar is refused with the rule it breaks.
+and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
+`name one concrete channel, without wildcards`, and a channel or role name outside the grammar is
+refused with the rule it breaks.
 A direct target resolves by its full identity or an unambiguous name. A name collision refuses
 with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, and a target that is not
 present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
@@ -3863,9 +3864,11 @@ role sends include the broker's stored sequence. Storage does not confirm delive
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
 `<agent> is offline. The message is stored and delivered when <agent> reconnects; a new agent spawned as <agent> does not receive it.`
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
-`--verbose/-v` to show the actual sending principal. An unregistered channel is labeled; its native
-space policy still controls publication and no registry metadata is created. Unreadable metadata
-stays not checked. A message over the broker's message limit, envelope included, refuses
+`--verbose/-v` to show the actual sending principal. A post to an unregistered channel warns
+`CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
+and lists the space's registered channels, so a mistyped name stands out. It reads that count as
+`cotal history` lists channels. Its native space policy still controls publication and no registry
+metadata is created. Metadata or a count it cannot read stays not checked. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A channel post the broker
 refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
 the space or this identity may not post to it. The remedy lists the channels this identity may post
@@ -3944,8 +3947,9 @@ and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
-name without `@`, is refused with that list of forms, and the numbered list opens. In the list, an
-empty line keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
+name without `@`, is refused with that list of forms, and the numbered list opens. A `#<channel>`
+holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
+keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view.
 `/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
@@ -4016,7 +4020,7 @@ id that follows the first request's result. Requests run one at a time in arriva
 refusal waits its turn too, so every `result` and `error` record comes back in the order its line
 arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
 by its id. A missing field, a field the type does not take or a malformed value refuses with
-`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and a role a
+`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and is refused with the sentence `cotal send -c` gives for that name. A role must be a
 valid role name.
 
 | `type` | Fields | Result |
@@ -4936,9 +4940,11 @@ key. A read looks through `--space`, else the space selected with `cotal use`, e
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
-`unset --space` takes any name, so a value left for a space you removed can go. A write that a
-variable outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming the
-variable. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
+A read and `unset --space` also take a space that still holds a saved value, so a value left for
+a space you removed can be read and removed, and refuse any other name the same way. A write that
+another value outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming
+that value: a variable, or your value for the selected space when you write your defaults without
+`--user`. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
 warning naming the catalog. A variable whose value `config set` would refuse still wins, and
 `config`, `config get` and `status` name it in a `PREFERENCE_INVALID` warning with the reason.
 Setting a value that is already saved, or
