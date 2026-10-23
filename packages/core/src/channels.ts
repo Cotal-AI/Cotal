@@ -235,7 +235,7 @@ export async function ensureDefaultDeliveryClass(opts: {
  *  `cotal down -f` to remove ONLY the cards a `spawn -f` run created (ownership-scoped); the caller is
  *  responsible for the members-present safety check. The bucket must already exist (no create on a
  *  delete path); a key that's already absent is a no-op. The space-wide defaults key is never a
- *  channel name, so it can't be removed here. */
+ *  channel name, so it can't be removed here. Returns the channels that had an entry to remove. */
 export async function deleteChannels(opts: {
   servers: string;
   space: string;
@@ -244,11 +244,18 @@ export async function deleteChannels(opts: {
   bearer?: string;
   sentinelCreds?: string;
   channels: string[];
-}): Promise<void> {
+}): Promise<string[]> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
-    for (const channel of opts.channels) await kv.delete(channel);
+    const removed: string[] = [];
+    for (const channel of opts.channels) {
+      // A key whose last write is a delete or a purge has no entry.
+      if ((await kv.get(channel))?.operation !== "PUT") continue;
+      await kv.delete(channel);
+      removed.push(channel);
+    }
+    return removed;
   } finally {
     await nc.drain();
   }

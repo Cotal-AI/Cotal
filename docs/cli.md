@@ -1804,7 +1804,10 @@ running while any stack member's process may still run. The refusal names one su
 writes nothing: the registration, the selection and the root's files stay. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
-that `space create` made stays. Forgetting the selected space clears the selection.
+that `space create` made stays. Forgetting the selected space clears the selection. Forget also
+removes the per-space preferences saved under that name, so a later space with the same name starts
+without them, and the receipt lists each removed key and value so you can set them again. If that
+removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it.
 `status` in a forgotten space's root then selects no space and probes no broker.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.
@@ -3994,11 +3997,15 @@ cotal channel remove <name> [--purge] [--yes]
 metadata, not every channel with traffic. `show` includes inherited replay and delivery settings.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
-records. A missing feed remains unknown rather than an empty confirmed census.
+records. A missing feed remains unknown rather than an empty confirmed census. The delivery service
+writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
-space and history scope. Scripts pass `--yes`. Neither removal nor replay settings revoke grants
-or stop participants; future posts can create retained history again.
+space and history scope. Scripts pass `--yes`. Removing a channel that has no saved entry is a
+`no-op`, and its Metadata row says `no saved entry`; `--purge` still deletes that channel's
+retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
+removal nor replay settings revoke grants or stop participants; future posts can create retained
+history again.
 
 
 | Flag | Default | Meaning |

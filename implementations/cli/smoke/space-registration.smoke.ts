@@ -4,7 +4,9 @@
  * another address has nothing listening, and a stand-in exchange answers for a user-auth bundle's
  * pins. Each refusal is checked for its code and exit, and for writing nothing; each success for the
  * record it writes and for leaving the selection as it was. An open space must be one the broker
- * serves, so the open broker serves the names that are added and refuses one it does not. On Linux, a space started as a controller
+ * serves, so the open broker serves the names that are added and refuses one it does not. A forget
+ * removes the space's per-space preferences with it, refuses on a preferences file it cannot read,
+ * and is partial when it cannot remove them. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, and one naming a missing channels file, have refused and left the root as
@@ -335,6 +337,38 @@ setCurrent("keep");
   check("forgetting keeps the root's files", existsSync(join(root, ".cotal")));
   const human = await run(["space", "forget", "keep"]);
   check("forgetting the selected space clears the selection and says so", human.status === 0 && getCurrent() === undefined && /forgot keep/.test(human.stdout) && /no space is selected now/.test(human.stdout), shown(human));
+
+  // A space's per-space preferences go with it. A preferences file that cannot be read refuses before
+  // anything is forgotten; one that cannot be written after the record is gone leaves the run partial.
+  const prefsDir = join(home, ".config", "cotal"), prefsFile = join(prefsDir, "preferences.json");
+  const saved = () => (JSON.parse(readFileSync(prefsFile, "utf8")) as { spaces: Record<string, Record<string, string>> }).spaces;
+  const setUp: number[] = [];
+  // These are open spaces, so the open broker serves them before they are added.
+  const { setupSpaceStreams } = await import("@cotal-ai/core");
+  for (const space of ["withprefs", "shownprefs", "badprefs", "lockedprefs"]) await setupSpaceStreams({ servers: LIVE, space });
+  for (const name of ["withprefs", "shownprefs", "badprefs", "lockedprefs"]) setUp.push((await json(["space", "add", name, "--server", LIVE, "--root", root])).status ?? -1);
+  for (const [name, key, value] of [["withprefs", "persona", "rev"], ["withprefs", "harness", "opencode"], ["shownprefs", "persona", "rev"], ["badprefs", "persona", "rev"], ["lockedprefs", "persona", "rev"]])
+    setUp.push((await json(["config", "set", key!, value!, "--space", name!])).status ?? -1);
+  check("four spaces are added and their preferences saved", setUp.every((status) => status === 0), setUp);
+  const withPrefs = await json(["space", "forget", "withprefs"]);
+  check("forget removes the space's preferences, lists each key and value, and keeps another space's",
+    withPrefs.status === 0 && JSON.stringify(withPrefs.env?.result.removedPreferences) === JSON.stringify({ persona: "rev", harness: "opencode" }) && saved().withprefs === undefined && saved().shownprefs?.persona === "rev", shown(withPrefs));
+  const shownPrefs = await run(["space", "forget", "shownprefs"]);
+  check("the receipt names each removed value and the config set that restores one",
+    shownPrefs.status === 0 && shownPrefs.stdout.includes("removed its per-space preferences: persona=rev - `cotal config set <key> <value> --space shownprefs` sets one again"), shown(shownPrefs));
+  const prefsText = readFileSync(prefsFile, "utf8");
+  writeFileSync(prefsFile, "{");
+  const badPrefs = await json(["space", "forget", "badprefs"]);
+  writeFileSync(prefsFile, prefsText);
+  check("a preferences file that cannot be read refuses the forget and keeps the record", refused(badPrefs, 1, "SCHEMA_INVALID") && findMesh("badprefs") !== undefined, shown(badPrefs));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    chmodSync(prefsDir, 0o500);
+    const locked = await json(["space", "forget", "lockedprefs"]);
+    chmodSync(prefsDir, 0o700);
+    check("preferences that cannot be removed leave the forget partial, exit 4, naming config unset",
+      locked.status === 4 && locked.env?.outcome === "partial" && findMesh("lockedprefs") === undefined && saved().lockedprefs?.persona === "rev" &&
+        (locked.env?.error?.remedy ?? "").includes("cotal config unset <key> --space lockedprefs"), shown(locked));
+  }
 }
 
 // ── A root other local accounts can write ──────────────────────────────────────────────────────────────
@@ -427,6 +461,13 @@ setCurrent("keep");
   check("space show shows it as prepared", show.status === 0 && show.env?.result.kind === "prepared-space" && show.env.result.root === fresh, shown(show));
   const named = await json(["who", "--space", "demo"]);
   check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(named.env?.error?.message ?? "") && named.env?.error?.remedy?.includes(fresh), shown(named));
+  const channelForms = [["channel"], ["channel", "show", "general"], ["channel", "set", "general", "--desc", "x"], ["channel", "defaults"], ["channel", "members", "general"], ["channel", "remove", "general", "--yes"]];
+  const channelRefusals: Awaited<ReturnType<typeof json>>[] = [];
+  for (const form of channelForms) channelRefusals.push(await json([...form, "--space", "demo"]));
+  check("every channel form naming it is TARGET_UNAVAILABLE, exit 2, naming its root",
+    channelRefusals.every((r) => refused(r, 2, "TARGET_UNAVAILABLE") && r.env?.error?.remedy?.includes(fresh)), channelRefusals.map(shown));
+  const channelHuman = await run(["channel", "set", "general", "--desc", "x", "--space", "demo"]);
+  check("the human channel refusal gives its code and Next", channelHuman.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(channelHuman.stderr) && channelHuman.stderr.includes(fresh), shown(channelHuman));
   const inRoot = await json(["who"], fresh);
   check("a command run in its root with nothing selected is TARGET_UNAVAILABLE", refused(inRoot, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(inRoot.env?.error?.message ?? ""), shown(inRoot));
   // The refusal's target names the space and its root, from the resolver and from the connect path.

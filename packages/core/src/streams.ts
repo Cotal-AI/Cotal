@@ -749,7 +749,8 @@ export async function clearSpaceHistory(opts: {
  *  registry config so it stops surfacing as an empty channel. Needs PURGE rights and the
  *  registry key delete: pass a `channel-purger` cred; a bare connection (open mode) has them by default.
  *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing channel
- *  registry bucket/key is a no-op — the purge alone already emptied the channel. */
+ *  registry bucket/key is a no-op — the purge alone already emptied the channel. `removed` says
+ *  whether this call deleted the channel's registry entry. */
 export async function clearChannel(opts: {
   servers: string;
   space: string;
@@ -758,7 +759,7 @@ export async function clearChannel(opts: {
   /** User mode: a `channel-purger`-view bearer + the space's sentinel creds (instead of a creds file). */
   bearer?: string;
   sentinelCreds?: string;
-}): Promise<{ channel: string; purged: number }> {
+}): Promise<{ channel: string; purged: number; removed: boolean }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
   const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
@@ -767,13 +768,17 @@ export async function clearChannel(opts: {
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
       filter: chatSubject(opts.space, "*", "*", opts.channel),
     });
+    let removed = false;
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));
-      await registry.delete(opts.channel);
+      if ((await registry.get(opts.channel))?.operation === "PUT") {
+        await registry.delete(opts.channel);
+        removed = true;
+      }
     } catch {
       /* no channel registry bucket or no config for this channel — purge already emptied it */
     }
-    return { channel: opts.channel, purged };
+    return { channel: opts.channel, purged, removed };
   } finally {
     await nc.drain();
   }

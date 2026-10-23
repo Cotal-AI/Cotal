@@ -8,7 +8,7 @@ import {
   CommandFailure, jsonFlag, loadMeshes, plainFlag, presentationOf, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
-import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { channelMembers } from "./channel-members.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -95,7 +95,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   if (action === "members") return channelMembers(values, name!, presentation);
   const writes = action === "set" || action === "remove" || (action === "defaults" && Object.keys(patch(values)).length > 0);
   const profile = action === "remove" && values.purge ? "channel-purger" : writes ? "channel-writer" : "operator";
-  const connection = await connectOrExit(values, profile);
+  const connection = await connectOrThrow(values, profile);
   if (values.delivery === "durable" && connection.mode !== "auth" && connection.mode !== "user")
     throw new CommandFailure("refused", "UNSUPPORTED", "the selected mesh has no recorded authenticated delivery service; durable membership was not promised by a metadata write", { target: { space: connection.space, mode: connection.mode ?? "unrecorded" }, remedy: "select a registered authenticated space with its delivery service, or use --delivery live for a live-only channel" });
   const user = connection.bearer && writes ? await userViewAuthOrExit(connection, profile === "channel-purger" ? "channel-purger" : "channel-writer") : undefined;
@@ -114,11 +114,12 @@ export async function channels(args: ParsedArgs): Promise<void> {
     return;
   }
   let purged: number | undefined;
+  let removed = false;
   try {
     if (action === "remove") {
-      if (values.purge) purged = (await clearChannel({ ...options, channel: name! })).purged;
+      if (values.purge) ({ purged, removed } = await clearChannel({ ...options, channel: name! }));
       // clearChannel's best-effort config cleanup is not an acknowledgement of the registry delete.
-      await deleteChannels({ ...options, channels: [name!] });
+      removed = (await deleteChannels({ ...options, channels: [name!] })).length > 0 || removed;
     } else {
       const file = action === "defaults" ? { defaults: patch(values) } : { channels: { [name!]: patch(values) } };
       await seedChannelRegistry({ ...options, file });
@@ -128,11 +129,13 @@ export async function channels(args: ParsedArgs): Promise<void> {
       purged === undefined ? "The channel change did not return a confirmed outcome. It may have been applied." : `The purge reported ${purged} messages removed, but channel metadata removal was not confirmed.`,
       { target, ...(purged === undefined ? {} : { changed: [{ kind: "channel-history", channel: name, purged }] }), remedy: "Read the channel and its history before retrying; do not assume the change failed." });
   }
-  const result = { action, name, space: connection.space, patch: action === "remove" ? null : patch(values), purged: purged ?? null };
-  writeResult(presentation, { command: "channel", target, result }, (r) => ({ sections: [
-    { title: action === "remove" ? `Channel removed · #${name}` : action === "defaults" ? "Channel defaults saved" : `Channel saved · #${name}`, blocks: [
-      { kind: "fields", rows: [["Space", r.space], ...(action === "remove" ? [["History", r.purged === null ? "kept" : `${r.purged} retained messages purged`]] as [string, string][] : Object.entries(r.patch!).map(([key, value]) => [key === "replayWindow" ? "Replay window" : key[0]!.toUpperCase() + key.slice(1), String(value)] as [string, string]))] },
-      { kind: "lines", lines: [{ text: action === "remove" ? "This does not stop members or revoke access. Future posts can create new retained history." : "Metadata does not grant read or post access. Replay controls backfill, not confidentiality.", tone: "hint" }] },
+  // A channel with no saved entry and no retained message to purge is left as it was.
+  const unchanged = action === "remove" && !removed && !purged;
+  const result = { action, name, space: connection.space, patch: action === "remove" ? null : patch(values), purged: purged ?? null, removed: action === "remove" ? removed : null };
+  writeResult(presentation, { command: "channel", target, result, noOp: unchanged }, (r) => ({ sections: [
+    { title: action !== "remove" ? action === "defaults" ? "Channel defaults saved" : `Channel saved · #${name}` : removed ? `Channel removed · #${name}` : unchanged ? `Nothing removed · #${name}` : `Channel history purged · #${name}`, blocks: [
+      { kind: "fields", rows: [["Space", r.space], ...(action === "remove" ? [["Metadata", removed ? "removed" : "no saved entry"], ["History", r.purged === null ? "kept" : `${r.purged} retained messages purged`]] as [string, string][] : Object.entries(r.patch!).map(([key, value]) => [key === "replayWindow" ? "Replay window" : key[0]!.toUpperCase() + key.slice(1), String(value)] as [string, string]))] },
+      { kind: "lines", lines: [{ text: action !== "remove" ? "Metadata does not grant read or post access. Replay controls backfill, not confidentiality." : unchanged ? `${connection.space} has no saved entry for #${name}, so nothing changed.` : "This does not stop members or revoke access. Future posts can create new retained history.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
   ] }));

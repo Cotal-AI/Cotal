@@ -17,10 +17,12 @@ import {
   pinnedFetch,
   preparedSpaceAt,
   protectedLocalDirectory,
+  readPreferences,
   recordMesh,
   recordPreparedSpace,
   removeMesh,
   removePreparedSpace,
+  removeSpacePreferences,
   writeResult,
   type Cell,
   type Check,
@@ -107,6 +109,8 @@ interface SpaceForgotten {
   readonly origin: MeshEntry["origin"] | "prepared" | null;
   /** Whether it was the selected space, so no space is selected now. */
   readonly selectionCleared: boolean;
+  /** The per-space preferences saved under its name that the forget removed, by key. */
+  readonly removedPreferences: Readonly<Partial<Record<string, string>>>;
 }
 
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
@@ -454,12 +458,14 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   if (rest.length !== 1) throw usage("usage: cotal space forget <name>");
   const name = rest[0]!;
   const target = { space: name };
+  // Read before any effect: a preferences file that cannot be read refuses the forget as it is.
+  const preferencesRevision = readPreferences().revision;
   const m = findMesh(name);
   if (!m) {
     const p = findPreparedSpace(name);
     if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, target, "see the registered spaces with `cotal space`");
     removePreparedSpace(name);
-    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared" });
+    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared" }, preferencesRevision);
   }
   if (m.origin === "catalog")
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
@@ -476,14 +482,23 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   }
   removeMesh(name);
   const warnings = unsettled.map((member) => ({ code: "STACK_MEMBER_UNSETTLED", target, message: `the stack member ${member} is gone but was never stopped cleanly: its record has no stop receipt` }));
-  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null }, warnings);
+  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null }, preferencesRevision, warnings);
 }
 
-function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared">, warnings: OutputWarning[] = []): void {
+/** The space's per-space preferences go with it, so a later space of the same name starts without
+ *  them. The registration is already gone when their removal fails, which leaves the run partial. */
+function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared" | "removedPreferences">, preferencesRevision: number, warnings: OutputWarning[] = []): void {
   const selectionCleared = getCurrent() === r.space;
   if (selectionCleared) clearCurrent();
-  const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared };
-  writeResult(presentation, { command: "space", target: { space: r.space }, result, warnings }, forgottenView);
+  let removedPreferences: Partial<Record<string, string>> = {};
+  let partial: { message: string; remedy: string } | undefined;
+  try {
+    removedPreferences = removeSpacePreferences(r.space, preferencesRevision).removed;
+  } catch (e) {
+    partial = { message: `forgot ${r.space}, but its per-space preferences were not removed: ${(e as Error).message}`, remedy: `see them with \`cotal config --space ${r.space}\` and remove each with \`cotal config unset <key> --space ${r.space}\`` };
+  }
+  const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared, removedPreferences };
+  writeResult(presentation, { command: "space", target: { space: r.space }, result, warnings, ...(partial ? { completeness: "partial" as const, partial } : {}) }, forgottenView);
 }
 
 function forgottenView(r: SpaceForgotten): Report {
@@ -491,6 +506,8 @@ function forgottenView(r: SpaceForgotten): Report {
     { text: `forgot ${r.space}`, tone: "ok", mark: "✓" },
     { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
   ];
+  const removed = Object.entries(r.removedPreferences).filter(([, value]) => value !== undefined);
+  if (removed.length) lines.push({ text: `  removed its per-space preferences: ${removed.map(([key, value]) => `${key}=${value}`).join(", ")} - \`cotal config set <key> <value> --space ${r.space}\` sets one again`, tone: "hint" });
   if (r.selectionCleared) lines.push({ text: "no space is selected now - select one with `cotal use <name>`", tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }
