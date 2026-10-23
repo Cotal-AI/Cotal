@@ -651,17 +651,20 @@ The journal records the absolute root it was written in, and the stack runs only
 In a copy of a controller project, or after the folder is moved, commands that read the journal
 refuse `CONFLICT`, exit 2, and name the recorded folder: a copy is told to use the stack from the
 original, and a moved folder to move back there first. A folder is moved when its recorded folder no
-longer holds the journal. Commands that reach a static-auth space from a moved folder, such as
-`send`, `history`, `ps` and `service stop`, refuse the same way. The broker names a store inside the
-project folder relative to that folder and runs from it, so a broker still running when its folder
-is renamed keeps writing into the renamed folder and does not create the old path again. A broker
-an earlier release started does, so when something is found at the recorded path, the refusal says
-to move it aside before moving the folder back. When `space create --adopt` could take the journal
-over instead, the refusal names that command too. A folder whose `.cotal` is a link to another
-project's `.cotal` is told that it is a link and to use the stack from that project. `status` there
-does not read the folder's boot and additive attempt inventories through the link and warns that
-it did not. `space create` in a copy whose records name another root says so and names that root,
-and in a linked folder it names the link.
+longer holds the journal. When this machine records neither the space nor an instance of its stack,
+as on another machine, moving back would not start it, so a moved folder is told only to adopt the
+journal with `space create --adopt`. `status`, `send` and `history` there name the same next step.
+Commands that reach a static-auth space from a moved folder, such as `send`, `history`, `ps` and
+`service stop`, refuse the same way. The broker names a store inside the project folder relative to
+that folder and runs from it, so a broker still running when its folder is renamed keeps writing
+into the renamed folder and does not create the old path again. A broker an earlier release started
+does, so when something is found at the recorded path, the refusal says to move it aside before
+moving the folder back. When the space is prepared or registered here and `space create --adopt`
+could take the journal over instead, the refusal names that command too. A folder whose `.cotal` is
+a link to another project's `.cotal` is told that it is a link and to use the stack from that
+project. `status` there does not read the folder's boot and additive attempt inventories through the
+link and warns that it did not. `space create` in a copy whose records name another root says so and
+names that root, and in a linked folder it names the link.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
 `down`, `clean` and `reset` refuse `SCHEMA_INVALID`, exit 1, naming its path, and `status` warns
@@ -2052,7 +2055,9 @@ back to the selection.
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
 `cotal space forget <space>`. `cotal space create <space> --root <dir>` then prepares it again.
-`use`, `up --space` and `space forget` also say the folder no longer exists.
+`use`, `up --space` and `space forget` also say the folder no longer exists. Run from the folder it
+was moved to, whose stack journal names the old folder, such a command says the folder was moved and
+names the next step that `up` and `down` name there.
 
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is

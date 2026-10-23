@@ -7,7 +7,10 @@
  * space at the root again, then `cotal up`. A folder whose `.cotal` is a link to the project's is
  * told it is a link, and its status names the link once. A journal cut short or emptied, as an
  * interrupted write leaves it, is named with its path and the way out, and status warns about it. A
- * moved folder is told to move back, and to move aside first any folders found at the old path.
+ * moved folder whose space this machine does not record is told only to adopt the journal, since
+ * moving it back would not start it, and status and whoami name the same step. With the space
+ * prepared at the old path, up, down, whoami and status there all name moving back, or forgetting and
+ * adopting, and up says to move aside first any folders found at the old path.
  * `space create` in a copy refuses; where the folder its journal names holds no journal, as for a
  * copy from another machine, the refusal and status name `space create --adopt`, which rewrites the
  * journal to name the copy and its store, and prepares the space there. A folder renamed from a path
@@ -115,16 +118,41 @@ const copied = run(["up", "--json"], copy);
 check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its journal was recorded at",
   copied.status === 2 && copied.envelope?.error?.code === "CONFLICT" && (copied.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was copied from there`) && copied.envelope.error.remedy === `use the stack from ${root}, which holds it; this copy does not`, shown(copied));
 renameSync(root, moved);
+// Nothing on this machine records la07 or an instance of its stack, so moving back would not start it.
+const adoptOnly = `adopt it with cotal space create la07 --adopt --root ${moved}; this machine records neither "la07" nor an instance of its stack, so moving the folder back would not start it`;
 const movedUp = run(["up", "--json"], moved);
+const movedStatus = run(["status", "--json"], moved), movedWho = run(["whoami", "--json"], moved);
 // A broker from an earlier release that kept running after the move created empty store folders there.
 mkdirSync(join(root, ".cotal", "nats", "jetstream"), { recursive: true });
 const recreatedUp = run(["up", "--json"], moved);
 rmSync(root, { recursive: true });
 renameSync(moved, root);
-check("up in a moved folder refuses CONFLICT and says to move it back",
-  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === `move this folder back to ${root}, then run the command again there; or, to run it from this folder, adopt it with cotal space create la07 --adopt --root ${moved}`, shown(movedUp));
-check("with empty folders at the old path it is still moved, and says to move them aside first",
-  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; or, to run it from this folder, adopt it with cotal space create la07 --adopt --root ${moved}`, shown(recreatedUp));
+check("up in a moved folder whose space this machine does not record refuses CONFLICT and names only --adopt",
+  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === adoptOnly, shown(movedUp));
+check("status and whoami there name the same next step",
+  (movedStatus.envelope?.result?.selected?.message ?? "").endsWith(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
+check("with empty folders at the old path it is still moved, and names the same step",
+  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === adoptOnly, shown(recreatedUp));
+// With la07 prepared at the old path, moving back starts it again; adopting it here needs a forget first.
+{
+  check("rig: prepare la07 at its root again", run(["space", "create", "la07", "--json"]).status === 0);
+  renameSync(root, moved);
+  const adopt = `or, to run it from this folder, forget it with cotal space forget la07, then run cotal space create la07 --adopt --root ${moved}`;
+  const back = `move this folder back to ${root}, then run the command again there; ${adopt}`;
+  const routes = [run(["up", "--json"], moved), run(["down", "--yes", "--json"], moved), run(["whoami", "--json"], moved), run(["whoami", "--space", "la07", "--json"], moved)];
+  const status = run(["status", "--space", "la07", "--json"], moved);
+  mkdirSync(join(root, ".cotal", "nats", "jetstream"), { recursive: true });
+  const recreated = run(["up", "--json"], moved);
+  rmSync(root, { recursive: true });
+  renameSync(moved, root);
+  check("up, down, whoami and whoami --space there all name moving back, or forgetting and adopting",
+    routes.every((r) => r.status === 2 && r.envelope?.error?.remedy === back), routes.map(shown));
+  check("status --space there says the folder was moved and names the same step",
+    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there - ${back}`, shown(status));
+  check("with empty folders at the old path, up says to move them aside first",
+    recreated.status === 2 && recreated.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; ${adopt}`, shown(recreated));
+  check("rig: forget la07", run(["space", "forget", "la07", "--json"]).status === 0);
+}
 // A folder whose .cotal links to this project's reads the same journal through the link.
 const linked = `${root}-linked`;
 mkdirSync(linked);
@@ -153,8 +181,9 @@ rmSync(linked, { recursive: true, force: true });
   const plain = run(["space", "create", "la07", "--json"], brought);
   check("space create there without --adopt refuses CONFLICT, exit 2, naming the --adopt command",
     plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with ${command}`, shown(plain));
-  const status = run(["status", "--json"], brought);
-  check("status there names the same command", JSON.stringify(status.envelope?.result?.selected ?? null).includes(`\`${command}\``), shown(status));
+  const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
+  check("status there names the same step as up, which adopts it",
+    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with ${command};`) && (status.envelope?.result?.selected?.message ?? "").endsWith(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], brought);
   const journal = JSON.parse(readFileSync(path, "utf8")) as { root: string; space: string; server: string; broker?: { storeDir: string }; members: { instanceId: string | null; state: string }[] };
   renameSync(away, root);

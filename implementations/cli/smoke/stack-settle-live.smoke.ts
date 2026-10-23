@@ -21,6 +21,7 @@
  *     naming that cap and the flag. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send` and `up` from
  *     the renamed folder name the move and the way back, and after the move back `down` stops it.
+ *     Stopped and moved again, `up`, `send`, `history` and `status` there all name moving it back.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -324,6 +325,15 @@ try {
     check("the running broker did not create the old path again", !existsSync(root), existsSync(root) ? readdirSync(root, { recursive: true }) : []);
     renameSync(moved, root);
     check("after the move back, down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    // Stopped and moved again: this machine records the stack's instances, so every command from the
+    // moved folder names the one way back.
+    renameSync(root, moved);
+    const way = `move this folder back to ${root}, then run the command again there`;
+    const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
+    const status = cli(moved, "status", "--space", space, "--json");
+    renameSync(moved, root);
+    check("stopped and moved, up, send and history there all name moving the folder back", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
+    check("status --space there names the same step", String((status.env?.result?.selected as { message?: string } | undefined)?.message ?? "").endsWith(way), shown(status));
   }
 
   // 3b. A first up refused at a port another program holds pins nothing.
