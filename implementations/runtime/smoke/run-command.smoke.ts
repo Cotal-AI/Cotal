@@ -308,11 +308,20 @@ let P = "";
   // carries the disposition the settle named — the other half of #1439, read back the way an
   // operator reads it. Read AFTER completion: the driver appends the settle asynchronously, and a
   // journal read taken straight off the answer command can still show the pause pending.
+  reset();
   await wf(["journal", cid]);
   c("the answered checkpoint renders resolved, not the settled status ok",
     rendered("/checkpoint:approve#0", "resolved"),
     lines().filter((l) => l.includes("checkpoint")).join(" | "));
-  // The rendered journal is a summary table; the accepted answer's facts are in its JSON result.
+  // The pause's earlier pending rows stay in the journal, so only its last row may decide whether
+  // it still needs an answer.
+  c("a settled pause is no longer listed as needing an answer, and Next offers no answer",
+    !captured().includes("Needs an answer") && !captured().includes("cotal r answer"),
+    lines().filter((l) => l.includes("Needs an answer") || l.includes("r answer")).join(" | "));
+  c("the text render shows the accepted value, answerer and artifact on the pause's answered line",
+    lines().some((l) => l.includes("/checkpoint:approve#0") && l.includes("answered") && l.includes('"yes"') && l.includes("smoke") && l.includes("artifact://run-command")),
+    lines().filter((l) => l.includes("answered")).join(" | "));
+  // The JSON result carries the same facts on the settled row.
   const shown = await envelopeOf(["journal", cid]);
   const settled = (shown?.result as { view?: { journal?: JournalRowJson[] } } | undefined)?.view?.journal
     ?.find((r) => r.step === "/checkpoint:approve#0" && r.answer !== undefined);
@@ -603,7 +612,11 @@ let P = "";
     refused === undefined && captured().includes("not admissible") && orphanLine.includes("rejected") && orphanLine.includes("L5004"),
     { exit: process.exitCode, orphanLine, err: refused instanceof Error ? refused.message.slice(0, 120) : "" });
   c("and the exit status is non-zero, because the check refused", process.exitCode === 1, process.exitCode);
-  c("the refusal's why names the repair the table offers", captured().includes("--discard-approvals"), captured().split("\n").find((l) => l.includes("person actually made")) ?? "");
+  // The check refuses the override by name (below), so the why names it as a commit's decision
+  // rather than telling the reader to pass it here.
+  c("the refusal's why names the repair the table offers, as a commit's override",
+    captured().includes("a migration commit under the --discard-approvals override") && !captured().includes("pass --discard-approvals"),
+    captured().split("\n").find((l) => l.includes("actually made")) ?? "");
   const filed2 = await asOperator(rid2, async ({ nc }) => listRunMigrations(await new Kvm(nc).open(recordsBucket(SPACE)), EP, rid2)).catch(() => undefined);
   c("...and the refused check filed nothing either", filed2 !== undefined && filed2.length === 0, filed2);
 
@@ -620,7 +633,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 59;
+const DECLARED = 61;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

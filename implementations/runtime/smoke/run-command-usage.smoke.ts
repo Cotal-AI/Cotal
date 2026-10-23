@@ -10,6 +10,9 @@
  *
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, registry, type Command } from "@cotal-ai/core";
 import { exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
@@ -129,6 +132,28 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     !v1.includes("is a manager running for this mesh?") && !v1.includes("--local"), v1);
   const unmarked = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms", mark()));
   c("an unanswered failure whose producer recorded no rail keeps the legacy wording", unmarked.includes("is a manager running for this mesh?"), unmarked);
+}
+
+// A scripted checkpoint result is read by the simulator only for an `expired` status, so a
+// malformed one would simulate as an answer. The results file is refused before the simulation.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
+  const program = join(dir, "p.cotal.js");
+  writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
+  const simulate = (script: unknown) => {
+    const handler = join(dir, "results.json");
+    writeFileSync(handler, JSON.stringify(script));
+    return runWorkflow({ values: { handler }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
+  };
+  const scriptRefusal = (got: unknown, says: string) =>
+    isCommandFailure(got) && got.code === "SCHEMA_INVALID" && exitCode(got.outcome, got.code) === 1 && got.message.includes(says);
+  const maybe = await simulate({ checkpoints: { go: { status: "maybe" } } });
+  c("a scripted checkpoint status other than resolved or expired is refused SCHEMA_INVALID, exit 1",
+    scriptRefusal(maybe, 'status must be "resolved" or "expired"'), maybe);
+  const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
+  c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
+    scriptRefusal(at, "at is stamped from virtual time"), at);
+  rmSync(dir, { recursive: true, force: true });
 }
 
 restore();

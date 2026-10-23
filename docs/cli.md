@@ -2323,7 +2323,9 @@ read. A connector whose catalog could not be read, or that the manager could not
 read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. The
 screen points to that warning without repeating it inline. The remedy is to correct the stated
 cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
-refusal is reported separately. A connector whose harness the manager did not find at boot
+refusal is reported separately. When the space's service registry lists no live manager, an
+unpinned operator `models` refuses `TARGET_UNAVAILABLE` (exit 2) at once, as `ps` does, and names
+bare `cotal up` as the next step. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
 printed it. OpenCode and Codex ids are the full
@@ -4768,13 +4770,20 @@ Follow-up commands printed by the CLI retain the same explicit pin and fill
 in a returned run ID only when it matches the native run-token shape. Keep the
 pin on later status, answer and resume calls.
 
+An unpinned hosted verb run by the operator reads the space's service registry first. When it
+lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
+(exit 2) at once, as `ps` does, and names bare `cotal up` as the next step, instead of waiting out
+the manager's answer deadline.
+
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
 run is recorded; a program that does not validate is refused with every problem listed. `resume`
 asks the manager to take an existing run back and continue it from its step journal; the source is
 the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
-`journal` renders one run's durable records; both only inspect. An open pause prints its question.
+`journal` renders one run's durable records; both only inspect. An open pause prints its question
+under `Needs an answer`, and only then does Next offer `answer`. A pause counts as open while its
+last journal row is pending, so a settled or expired one is not listed there.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
 order the store committed them, so the last is the current position.
@@ -5022,10 +5031,14 @@ cotal r simulate ./workflow.cotal.js --handler ./results.json
 ```
 
 These three forms are offline and reject mesh or caller selection. Validation checks the
-language. Plan lists validated static call sites in source order; it does not evaluate branches,
+language. A program that does not validate is refused by all three with every problem listed: its
+code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
+`result.problems`. Plan lists validated static call sites in source order; it does not evaluate branches,
 loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
-script. It executes no JavaScript handler and invents no unscripted outcome. A simulation does
-not establish live authority, installed applications or readiness. All three support JSON and
+script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
+checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
+`artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
+simulator stamps `at` from virtual time. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
 plain output and contact no broker.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and

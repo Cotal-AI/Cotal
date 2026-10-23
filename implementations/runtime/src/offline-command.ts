@@ -26,7 +26,29 @@ function scriptOf(file: string | undefined): SimScript {
     if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item))
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
   }
+  for (const [name, entry] of Object.entries((script.checkpoints ?? {}) as Record<string, unknown>)) {
+    for (const result of Array.isArray(entry) ? entry : [entry]) {
+      const problem = checkpointResultProblem(result);
+      if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted checkpoint '${name}': ${problem}`, { target: { file } });
+    }
+  }
   return script as SimScript;
+}
+
+/** Why a scripted checkpoint result is not one `checkpoint()` can return, or undefined. The
+ *  simulator reads only an `expired` status and takes any other entry as an answer, so a malformed
+ *  one is refused here rather than simulated as resolved. */
+function checkpointResultProblem(result: unknown): string | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return "a result must be an object";
+  const fields = result as Record<string, unknown>;
+  if (fields.status !== "resolved" && fields.status !== "expired") return "status must be \"resolved\" or \"expired\"";
+  if ("at" in fields) return "at is stamped from virtual time and cannot be scripted";
+  const known = new Set(["status", "value", "by", "artifact"]);
+  const unknown = Object.keys(fields).find((key) => !known.has(key));
+  if (unknown !== undefined) return `unknown field '${unknown}'`;
+  if (fields.by !== undefined && typeof fields.by !== "string") return "by must be a string";
+  if (fields.artifact !== undefined && typeof fields.artifact !== "string") return "artifact must be a string";
+  return undefined;
 }
 
 /** A static call-site inventory. It makes no claim about branch choices, effect order or loop counts. */
@@ -65,7 +87,19 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   try { checked = validate(source, file); }
   catch (error) {
     if (!(error instanceof LangErrors)) throw error;
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow is not valid cotal-lang", { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
+    // Every problem as the validator records it, so the fix is the same edit a hosted `run start`
+    // refusal prints.
+    const problems = error.errors.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix }));
+    const count = `${problems.length} problem${problems.length === 1 ? "" : "s"}`;
+    const failure = new CommandFailure("refused", "SCHEMA_INVALID", `the workflow is not valid cotal-lang (${count})`, { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
+    writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-validation", valid: false, problems }, failure }, (result): Report => ({ sections: [
+      { title: "Workflow not valid", blocks: [
+        { kind: "fields", rows: [["File", file], ["Problems", String(result.problems.length)]] },
+        ...result.problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
+        { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime or application was checked.", tone: "hint" }] },
+      ] },
+    ] }));
+    return;
   }
   const warnings = checked.warnings.map((warning) => ({ code: warning.code, target: { file, span: warning.span }, message: "The language validator reported a warning at this source position." }));
   if (mode === "validate") {
