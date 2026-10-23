@@ -109,6 +109,10 @@ export class ArtifactFileFault extends Error {
   }
 }
 
+/** A manifest whose content is not a valid inventory. `reason` names no manifest value beyond a
+ *  declared file name already checked to be plain. */
+const invalidManifest = (reason: string) => new ArtifactFileFault("manifest.json", "manifest-invalid", reason);
+
 /** Refuse a manifest.json that is not a bounded regular file before any read follows it. */
 function assertManifestFile(path: string): void {
   const stat = lstatSync(path);
@@ -310,23 +314,23 @@ function validateArtifactInventory(artifact: string, manifest: BackupManifest): 
   const undeclared = actual.find((name) => !expected.has(name));
   if (undeclared !== undefined) throw new ArtifactFileFault(isSafeFileName(undeclared) ? undeclared : null, "undeclared");
   if (new Set(actual).size !== actual.length || actual.length !== expected.size)
-    throw new Error("backup artifact contains extra, duplicate, or missing files");
+    throw invalidManifest("its file inventory does not match the folder");
   if (new Set(manifest.files.map((file) => file.path)).size !== manifest.files.length)
-    throw new Error("backup artifact file inventory contains duplicate paths");
+    throw invalidManifest("it declares a file more than once");
   for (const file of manifest.files) {
     if (!Number.isSafeInteger(file.size) || file.size < 0 || !/^[0-9a-f]{64}$/.test(file.sha256) ||
         !["snapshot", "checkpoints"].includes(file.kind) ||
         (file.kind === "snapshot") !== (typeof file.stream === "string"))
-      throw new Error(`backup file metadata is invalid: ${file.path}`);
+      throw invalidManifest(`its record for ${file.path} has an invalid size, SHA-256, kind or stream`);
     if (file.kind === "checkpoints" && file.size > MAX_CHECKPOINT_BYTES)
-      throw new Error(`backup checkpoints exceed ${MAX_CHECKPOINT_BYTES} bytes`);
+      throw invalidManifest(`it declares a checkpoints file larger than its ${MAX_CHECKPOINT_BYTES / 1024 / 1024} MiB limit`);
   }
   const checkpointFiles = manifest.files.filter((file) => file.kind === "checkpoints");
   if (checkpointFiles.length !== 1 || checkpointFiles[0].path !== manifest.checkpoints)
-    throw new Error("backup manifest must name exactly one checkpoints file");
+    throw invalidManifest("it does not name exactly one checkpoints file");
   const snapshotFiles = new Map(manifest.files.filter((file) => file.kind === "snapshot").map((file) => [file.path, file.stream]));
   if (snapshotFiles.size !== manifest.streams.length || manifest.streams.some((stream) => snapshotFiles.get(stream.snapshot) !== stream.stream))
-    throw new Error("backup stream records do not match snapshot file metadata");
+    throw invalidManifest("its stream records do not match its snapshot files");
 }
 
 /** The hashes detect corruption, not a consistent rewrite, so an artifact that verify vouches for or
@@ -358,7 +362,7 @@ export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
   const bytes = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
   if (!bytes) throw new Error("backup manifest is absent");
   const manifest = parseManifest(path, bytes);
-  if (typeof manifest.space !== "string" || manifest.space.length > 200) throw new Error("backup space is invalid");
+  if (typeof manifest.space !== "string" || manifest.space.length > 200) throw invalidManifest("it names an invalid space");
   validateArtifactInventory(artifact, manifest);
   if (verify) for (const file of manifest.files) copyPinnedFile(join(artifact, file.path), undefined, file);
   const after = lstatSync(artifact, { bigint: true });
