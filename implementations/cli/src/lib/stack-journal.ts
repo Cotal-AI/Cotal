@@ -3,6 +3,7 @@
  *  `<root>/.cotal/stack-controller.json`. It is not a service record, unit receipt or team ledger,
  *  and it grants no stop authority by itself: every effect still rechecks the instance records. */
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
@@ -65,8 +66,18 @@ const MAINTENANCE_ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 export { stackJournalPath };
 
-function invalid(): never {
-  throw new CommandFailure("refused", "SCHEMA_INVALID", "the stack journal has an unsupported shape; no stack membership or stopped state was inferred", { remedy: "inspect <root>/.cotal/stack-controller.json and the service instances it names; it was not reset" });
+function invalid(root: string): never {
+  throw new CommandFailure("refused", "SCHEMA_INVALID", "the stack journal has an unsupported shape; no stack membership or stopped state was inferred", { remedy: `inspect ${stackJournalPath(root)} and the service instances it names; it was not reset` });
+}
+
+/** A well-formed journal that another folder recorded: this folder was moved or copied after that
+ *  stack started there. Its members and instances belong to that folder, so nothing here uses them. */
+function recordedElsewhere(root: string, recordedRoot: string, space: string): never {
+  const moved = !existsSync(recordedRoot);
+  throw new CommandFailure("refused", "CONFLICT", `this folder's stack journal was recorded at ${recordedRoot}, so this folder was ${moved ? "moved" : "copied"} from there; a controller stack runs only from the folder it started in`, {
+    target: { root, recordedRoot, space },
+    remedy: moved ? `move this folder back to ${recordedRoot}, then run cotal up there` : `use the stack from ${recordedRoot}, which holds it; this copy does not`,
+  });
 }
 
 function validate(input: unknown, root: string): StackJournal {
@@ -76,39 +87,40 @@ function validate(input: unknown, root: string): StackJournal {
   // the next write records the current shape. A user stack never has that legacy shape.
   if (Array.isArray(value.members) && value.members.length === STACK_ROLES.length - 1 && value.mode !== "user" && value.members.every((row, index) => (row as { role?: unknown })?.role === ["broker", "delivery", "manager"][index]))
     value.members = [value.members[0], { role: "auth", definition: STACK_DEFINITION.auth, instanceId: null, state: "not-attempted" }, ...value.members.slice(1)];
-  if (value.schemaVersion !== 1 || value.kind !== "cotal-stack-controller" || value.root !== root || typeof value.space !== "string" || !value.space || typeof value.server !== "string" || !value.server || !STACK_MODES.includes(value.mode as StackMode) || typeof value.updatedAt !== "string" || !Array.isArray(value.members) || value.members.length !== STACK_ROLES.length) invalid();
+  if (value.schemaVersion !== 1 || value.kind !== "cotal-stack-controller" || typeof value.root !== "string" || !isAbsolute(value.root) || typeof value.space !== "string" || !value.space || typeof value.server !== "string" || !value.server || !STACK_MODES.includes(value.mode as StackMode) || typeof value.updatedAt !== "string" || !Array.isArray(value.members) || value.members.length !== STACK_ROLES.length) invalid(root);
   const members = (value.members as unknown[]).map((row, index) => {
     const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code", "replacement"]);
     const role = STACK_ROLES[index]!;
-    if (member.role !== role || member.definition !== STACK_DEFINITION[role] || !STATES.includes(String(member.state)) || member.code !== undefined && (typeof member.code !== "string" || !/^[A-Z_]{1,64}$/.test(member.code))) invalid();
-    if (member.instanceId !== null) { try { serviceOperationId(member.instanceId); } catch { invalid(); } }
-    if (member.replacement !== undefined) replacementOf(member.replacement);
-    if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted" || member.replacement !== undefined)) invalid();
+    if (member.role !== role || member.definition !== STACK_DEFINITION[role] || !STATES.includes(String(member.state)) || member.code !== undefined && (typeof member.code !== "string" || !/^[A-Z_]{1,64}$/.test(member.code))) invalid(root);
+    if (member.instanceId !== null) { try { serviceOperationId(member.instanceId); } catch { invalid(root); } }
+    if (member.replacement !== undefined) replacementOf(member.replacement, root);
+    if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted" || member.replacement !== undefined)) invalid(root);
     return member as unknown as StackMember;
   });
   const operation = localRecordObject(value.operation, ["id", "kind", "phase", "recordedAt", "withAgents", "maintenanceAttemptId"]);
-  try { serviceOperationId(operation.id); } catch { invalid(); }
-  if (!["up", "down", "preserve", "resume"].includes(String(operation.kind)) || !PHASES.includes(String(operation.phase)) || typeof operation.recordedAt !== "string" || typeof operation.withAgents !== "boolean") invalid();
+  try { serviceOperationId(operation.id); } catch { invalid(root); }
+  if (!["up", "down", "preserve", "resume"].includes(String(operation.kind)) || !PHASES.includes(String(operation.phase)) || typeof operation.recordedAt !== "string" || typeof operation.withAgents !== "boolean") invalid(root);
   const maintained = operation.kind === "preserve" || operation.kind === "resume";
-  if (maintained !== (operation.maintenanceAttemptId !== undefined) || maintained && (operation.withAgents !== false || typeof operation.maintenanceAttemptId !== "string" || !MAINTENANCE_ATTEMPT_ID.test(operation.maintenanceAttemptId))) invalid();
-  const broker = value.broker === undefined ? undefined : brokerInputs(value.broker);
+  if (maintained !== (operation.maintenanceAttemptId !== undefined) || maintained && (operation.withAgents !== false || typeof operation.maintenanceAttemptId !== "string" || !MAINTENANCE_ATTEMPT_ID.test(operation.maintenanceAttemptId))) invalid(root);
+  const broker = value.broker === undefined ? undefined : brokerInputs(value.broker, root);
+  if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
 }
 
-function replacementOf(input: unknown): StackReplacement {
+function replacementOf(input: unknown, root: string): StackReplacement {
   const value = localRecordObject(input, ["operation", "instanceId", "launchRequestId", "definitionRevision"]);
-  try { for (const id of [value.operation, value.instanceId, value.launchRequestId, ...(value.definitionRevision === undefined ? [] : [value.definitionRevision])]) serviceOperationId(id); } catch { invalid(); }
+  try { for (const id of [value.operation, value.instanceId, value.launchRequestId, ...(value.definitionRevision === undefined ? [] : [value.definitionRevision])]) serviceOperationId(id); } catch { invalid(root); }
   return value as unknown as StackReplacement;
 }
 
 export interface StackBrokerInputs { storeDir: string; maxFileStore?: number; host?: string }
 
-function brokerInputs(input: unknown): StackBrokerInputs {
+function brokerInputs(input: unknown, root: string): StackBrokerInputs {
   const value = localRecordObject(input, ["storeDir", "maxFileStore", "host"]);
-  if (typeof value.storeDir !== "string" || !isAbsolute(value.storeDir) || value.storeDir.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.storeDir)) invalid();
-  if (value.maxFileStore !== undefined && (!Number.isSafeInteger(value.maxFileStore) || Number(value.maxFileStore) <= 0)) invalid();
-  if (value.host !== undefined && (typeof value.host !== "string" || !value.host || value.host.length > 253 || /[\u0000- \u007f]/u.test(value.host))) invalid();
+  if (typeof value.storeDir !== "string" || !isAbsolute(value.storeDir) || value.storeDir.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.storeDir)) invalid(root);
+  if (value.maxFileStore !== undefined && (!Number.isSafeInteger(value.maxFileStore) || Number(value.maxFileStore) <= 0)) invalid(root);
+  if (value.host !== undefined && (typeof value.host !== "string" || !value.host || value.host.length > 253 || /[\u0000- \u007f]/u.test(value.host))) invalid(root);
   return { storeDir: value.storeDir as string, ...(value.maxFileStore !== undefined ? { maxFileStore: Number(value.maxFileStore) } : {}), ...(value.host !== undefined ? { host: value.host as string } : {}) };
 }
 

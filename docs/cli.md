@@ -619,6 +619,11 @@ and reports them; unknown operations are retained and never retried automaticall
 initializing streams or recording the broker registration is attributed to the broker, not the next
 unstarted member. The failure target names that stage. Typed JetStream API errors retain their
 numeric code and status without copying the server's description or changing the unknown outcome.
+The journal records the absolute root it was written in, and the stack runs only from that folder.
+In a copy of a controller project, or after the folder is moved, commands that read the journal
+refuse `CONFLICT`, exit 2, and name the recorded folder: a copy is told to use the stack from the
+original, and a moved folder to move back there first. `space create` in a copy whose records name
+another root says so and names that root.
 
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit

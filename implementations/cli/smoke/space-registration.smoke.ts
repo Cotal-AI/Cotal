@@ -22,7 +22,7 @@
  *
  * Run: pnpm smoke:space-registration
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -440,6 +440,16 @@ setCurrent("keep");
   saveBrokerAuth(authDir(accountRoot), brokerAuth);
   saveSpaceAccountAuth(authDir(accountRoot), await createSpaceAccountAuth(brokerAuth, "held"));
   check("a folder whose .cotal holds another space's account is CONFLICT", refused(await json(["space", "create", "other", "--root", accountRoot]), 2, "CONFLICT"));
+  // A copy of that folder keeps the account, while the registration still names the original as the
+  // space's root, so the refusal says where the records came from.
+  recordMesh({ space: "held", server: DEAD, root: accountRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
+  const accountCopy = join(home, "account-copy");
+  spawnSync("cp", ["-a", accountRoot, accountCopy]);
+  const inCopy = await json(["space", "create", "other", "--root", accountCopy]);
+  removeMesh("held");
+  rmSync(accountCopy, { recursive: true, force: true });
+  check("a copy of a folder whose records name another root is CONFLICT, naming that root",
+    refused(inCopy, 2, "CONFLICT") && inCopy.env?.error?.message === `${accountCopy} holds records copied or moved from ${accountRoot}, the root of "held"`, shown(inCopy));
   const heldElsewhere = await json(["space", "add", "alias", "--server", AUTH_LIVE, "--root", accountRoot]);
   check("an auth broker whose --root holds another space's trust is refused naming that space first",
     refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
