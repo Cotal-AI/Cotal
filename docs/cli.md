@@ -2049,8 +2049,9 @@ link, when the recorded folder still holds the journal, because this folder is t
 that runs from there, when this machine records an instance of that stack, because the folder was
 then moved on this machine and moves back, and when the space is prepared or registered on this
 machine, where its Next names `cotal space forget` first. A copy brought from another machine and a
-folder moved after its record was forgotten are adopted. Without `--adopt`, nothing rewrites a
-journal.
+folder moved after its record was forgotten are adopted. A folder renamed from a path that `cotal up`
+refuses, such as one with a tab in it, is told only to adopt, since moving it back would not start
+the stack. Without `--adopt`, nothing rewrites a journal.
 
 With no `--space`, `--server` or `--creds`, nothing selected and no project in the folder, a command
 that several running spaces could serve asks which one when it runs in a terminal. The answer is the
