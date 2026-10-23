@@ -175,9 +175,12 @@ function show(name: string | undefined, values: { space?: string; server?: strin
   if (!name) return usage();
   const path = agentFilePath(targetRoot(values), name);
   if (!existsSync(path)) return notFound(name, path);
-  // Print the file verbatim — the canonical card (frontmatter + persona body).
+  // The canonical card (frontmatter + persona body). Piped or redirected it is written byte for byte.
+  // A catalog travels with a cloned repo, so on a terminal its control characters are escaped, as
+  // `persona show` shows them.
   console.log(c.dim(path));
-  process.stdout.write(readFileSync(path, "utf8"));
+  const bytes = readFileSync(path);
+  process.stdout.write(process.stdout.isTTY ? bytes.toString("utf8").split(/\r?\n/).map(oneLine).join("\n") : bytes);
 }
 
 /** `cotal personas edit <name>` — open the card in the `editor` preference ($VISUAL, then $EDITOR,

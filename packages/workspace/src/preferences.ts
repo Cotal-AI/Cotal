@@ -95,12 +95,13 @@ const KEYS: readonly KeySpec[] = [
     key: "color",
     about: "whether output is colored: auto (on a terminal), always or never",
     perSpace: false,
-    // FORCE_COLOR keeps the precedence over NO_COLOR it has always had: `0` or `false` is never and
-    // any other value always. NO_COLOR is a no-color preference when it is non-empty (no-color.org).
+    // FORCE_COLOR keeps the precedence over NO_COLOR it has always had: `0` or `false`, in any case,
+    // is never and any other value always. NO_COLOR is a no-color preference when it is non-empty
+    // (no-color.org).
     env: ["FORCE_COLOR", "NO_COLOR"],
     productDefault: "auto",
     check: (value) => ((COLOR_VALUES as readonly string[]).includes(value) ? undefined : `use ${COLOR_VALUES.join(", ")}`),
-    fromEnv: (name, raw) => (name === "FORCE_COLOR" ? (raw === "0" || raw === "false" ? "never" : "always") : raw ? "never" : undefined),
+    fromEnv: (name, raw) => (name === "FORCE_COLOR" ? (raw === "0" || raw.toLowerCase() === "false" ? "never" : "always") : raw ? "never" : undefined),
   },
   {
     key: "editor",
@@ -208,6 +209,12 @@ let cached: { path: string; prefs: Preferences } | undefined;
 /** Where a write goes: the user's defaults, or one space's personal overrides. */
 export type PreferenceScope = { readonly space?: string };
 
+/** Why a write refuses `value` for `key` on this key's own check, or undefined when it passes. */
+export function preferenceValueProblem(key: string, value: string): string | undefined {
+  const problem = specOf(key).check(value);
+  return problem && `invalid ${key} ${JSON.stringify(value)}: ${problem}`;
+}
+
 /**
  * Set (`value` a string) or clear (`value` undefined) one key in one scope, and report whether the
  * file changed. The write holds the preferences lock, refuses with `CONFLICT` when the file is no
@@ -221,8 +228,8 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     if (!spec.perSpace) throw new CommandFailure("refused", "USAGE_INVALID", `${key} has no per-space value; set it for the user`);
   }
   if (value !== undefined) {
-    const problem = spec.check(value);
-    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", `invalid ${key} ${JSON.stringify(value)}: ${problem}`);
+    const problem = preferenceValueProblem(key, value);
+    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   }
   const dir = globalConfigDir();
   let lock: ReturnType<typeof acquireLock>;

@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -41,6 +41,7 @@ import { defaultPersonaFix } from "../lib/default-persona.js";
 import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
+import { invalidEnvironmentValues } from "./config.js";
 import { onInstance } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
@@ -271,6 +272,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   const maintenance = readMaintenance(root, gaps);
   const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, hints };
   const parts = gaps.warnings.length;
+  // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
+  const context = { preferences: cachedPreferences(), space: selected.ok ? selected.target.space : undefined };
+  const invalidValues = invalidEnvironmentValues(PREFERENCE_KEYS.map((key) => resolvePreference(key, context)));
   writeResult(
     presentation,
     {
@@ -278,7 +282,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       target: { space: selected.ok ? selected.target.space : null, scope: values.all ? "all" : "selected" },
       result,
       completeness: parts ? "partial" : "complete",
-      warnings: gaps.warnings,
+      warnings: [...gaps.warnings, ...invalidValues],
       ...(parts ? { partial: { message: `status could not read ${parts === 1 ? "one part" : `${parts} parts`} of what it reports; the warnings name ${parts === 1 ? "it" : "each"}` } } : {}),
     },
     (result) => statusView(result, Boolean(values.verbose)),

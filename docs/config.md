@@ -144,7 +144,8 @@ One resolver decides each key, in this order: an explicit flag, the persona's pi
 variable, your value for the space the command acts on, your own value, then the default. For a
 detached `spawn` the manager's own `COTAL_DEFAULT_AGENT` sits between your values and the product
 default. `--no-color` and `--plain` beat the `color` key. `FORCE_COLOR` turns color on, or off when it
-is `0` or `false`, and a non-empty `NO_COLOR` turns it off; both beat a saved value. `cotal config`
+is `0` or `false` in any letter case, and a non-empty `NO_COLOR` turns it off; both beat a saved value.
+`auto` colors a terminal unless its `TERM` is `dumb`. `cotal config`
 shows the value that wins and every other value it outranks, so a shell export that hides a saved
 value is visible.
 

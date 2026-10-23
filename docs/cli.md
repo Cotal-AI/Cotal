@@ -82,8 +82,8 @@ connectors or writes configuration. Help, version and completion never do either
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
 the `console` screen, is colored only when stdout is a terminal, so piped or redirected output is
-plain text. A non-empty `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
-piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`. `--no-color` turns
+plain text. A terminal whose `TERM` is `dumb` gets no color either. A non-empty `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
+piped or `TERM` is `dumb`, unless it is `0` or `false` in any letter case, and it takes precedence over `NO_COLOR`. `--no-color` turns
 color off for that run, whatever the environment says. It sets no `NO_COLOR` for the programs the
 run starts, but they are no longer forced into color by `FORCE_COLOR`.
 
@@ -3050,7 +3050,8 @@ The legacy `personas` parser remains available during migration: `list [-v] [--r
 `show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
 draft validation and commit fence. Its `list` escapes control characters in the names, fields and
-bodies it prints, as `persona show` does. Only its explicit `--running` overlay connects to the mesh.
+bodies it prints, as `persona show` does. Its `show` does the same on a terminal, and writes the
+file byte for byte when its output is piped or redirected. Only its explicit `--running` overlay connects to the mesh.
 
 ## supervise
 
@@ -4706,7 +4707,9 @@ key. A read looks through `--space`, else the space selected with `cotal use`, e
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
 and `persona` have per-space values. A write that a variable outranks in this shell is still saved,
-with a `PREFERENCE_SHADOWED` warning naming the variable. Setting a value that is already saved, or
+with a `PREFERENCE_SHADOWED` warning naming the variable. A variable whose value `config set`
+would refuse still wins, and `config`, `config get` and `status` name it in a `PREFERENCE_INVALID`
+warning with the reason. Setting a value that is already saved, or
 unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
 with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
 refused with `CONFLICT`. A preferences folder you cannot write is refused with `PERMISSION_DENIED`
@@ -5563,7 +5566,8 @@ kickoff prompts or opaque launch-option values.
 A manifest it cannot resolve is refused with `SCHEMA_INVALID` (exit 1). The refusal names each
 problem by file, line and column where the parser has them, the key path, and the reason, and
 `--json` lists every problem under `target.issues`. A problem in a referenced persona
-names that file and the parser's reason without quoting its contents.
+names that file and the parser's reason without quoting its contents. `team boot` and
+`team deploy` refuse a manifest they cannot resolve the same way, before they contact a broker.
 This file check does not prove live authorization, installed applications or launch readiness.
 These read views do not apply a boot, an additive deployment or a removal.
 

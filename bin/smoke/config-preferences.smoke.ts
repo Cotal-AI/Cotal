@@ -36,6 +36,7 @@ writeFileSync(join(project, ".cotal", "agents", "x.md"), "---\nname: x\n---\nhi\
 type Setting = { key: string; value: string | null; winner: { source: string; name?: string; value: string } | null; shadowed: { source: string; name?: string; value: string }[] };
 type Envelope = {
   outcome: string;
+  completeness?: string;
   command: string;
   target: unknown;
   result: Record<string, unknown> | null;
@@ -156,6 +157,19 @@ const ansi = /\x1b\[/;
   check("an empty VISUAL falls to EDITOR, as before", settingOf(blankVisual, "editor")?.value === "vi-editor", settingOf(blankVisual, "editor"));
   const persona = run(["config", "--json"], { COTAL_DEFAULT_PERSONA: "lead", COTAL_DETACH_KEY: "^_" });
   check("COTAL_DEFAULT_PERSONA and COTAL_DETACH_KEY supply their keys", settingOf(persona, "persona")?.winner?.name === "COTAL_DEFAULT_PERSONA" && settingOf(persona, "detach-key")?.value === "^_", persona.envelope?.result);
+  check("valid values from the environment raise no warning", persona.status === 0 && persona.envelope?.warnings.length === 0, persona.envelope?.warnings);
+
+  // A variable with a value `config set` refuses still wins, and every read names it.
+  const invalidEnv = { COTAL_DETACH_KEY: "bogus", COTAL_DEFAULT_AGENT: "bogus", COTAL_DEFAULT_PERSONA: "bad:name" };
+  const invalid = run(["config", "--json"], invalidEnv);
+  const named = (r: ReturnType<typeof run>) => (r.envelope?.warnings ?? []).filter((w) => w.code === "PREFERENCE_INVALID").map((w) => (w as { target: { variable: string } } & typeof w).target.variable).sort().join();
+  check("config names each variable whose value config set refuses, and each still wins",
+    invalid.status === 0 && invalid.envelope?.outcome === "ok" && named(invalid) === "COTAL_DEFAULT_AGENT,COTAL_DEFAULT_PERSONA,COTAL_DETACH_KEY" &&
+      settingOf(invalid, "detach-key")?.value === "bogus" && settingOf(invalid, "harness")?.winner?.name === "COTAL_DEFAULT_AGENT" && settingOf(invalid, "persona")?.value === "bad:name", invalid.envelope);
+  const one = run(["config", "get", "detach-key"], invalidEnv);
+  check("config get names its own key's variable on stderr", one.status === 0 && /! COTAL_DETACH_KEY: invalid detach-key "bogus"/.test(one.stderr) && !/COTAL_DEFAULT_AGENT/.test(one.stderr), shown(one));
+  const statusRun = run(["status", "--json"], invalidEnv);
+  check("status names them too and stays complete", statusRun.envelope?.completeness === "complete" && named(statusRun) === "COTAL_DEFAULT_AGENT,COTAL_DEFAULT_PERSONA,COTAL_DETACH_KEY", { status: statusRun.status, outcome: statusRun.envelope?.outcome, warnings: statusRun.envelope?.warnings });
 }
 
 // ── the selected space ───────────────────────────────────────────────────────────────────────────
