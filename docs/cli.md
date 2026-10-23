@@ -4126,7 +4126,9 @@ channel the identity may read. `--limit` bounds the read, and `--since`, `--from
 filter that window on this machine. They do not search the whole stream. `result.window` says how
 many messages were read, whether older retained messages exist that the window did not reach, and
 whether the window goes back to `--since`. An age outside the supported date range or a sequence
-that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting.
+that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting. So is a
+`--since` in any other form. A time is an ISO 8601 date such as `2026-10-23`, or a date and time such
+as `2026-10-23T09:00:00Z`, on a real calendar day, so `-5`, `10/23/2026` and `2026-02-30` are refused.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
 is the ISO time. A DM row shows its recipient's name when a message in the window came from that
 principal, and the principal otherwise. `result.items[].to` is the principal.

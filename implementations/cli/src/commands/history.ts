@@ -94,6 +94,20 @@ function parseLimit(raw: string | undefined): number {
 
 const UNIT_MS: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 
+/** An ISO 8601 date, or date and time with an optional zone. */
+const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/** `raw` as epoch milliseconds when it is an ISO 8601 time on a real calendar day, else NaN.
+ *  `Date.parse` alone also reads shapes such as `-5` or `10/23/2026` as dates, and rolls
+ *  `2026-02-30` over into March. */
+function isoTime(raw: string): number {
+  const date = ISO_TIME.exec(raw);
+  if (!date) return NaN;
+  const [month, day] = [Number(date[2]) - 1, Number(date[3])];
+  const calendar = new Date(Date.UTC(Number(date[1]), month, day));
+  return calendar.getUTCMonth() === month && calendar.getUTCDate() === day ? Date.parse(raw) : NaN;
+}
+
 function parseSince(raw: string | undefined, now: number): Since | undefined {
   if (raw === undefined) return undefined;
   if (/^\d+$/.test(raw)) {
@@ -107,9 +121,9 @@ function parseSince(raw: string | undefined, now: number): Since | undefined {
     if (!Number.isFinite(at.getTime())) throw usage("--since age is outside the supported date range");
     return { kind: "time", ms: at.getTime(), text: at.toISOString() };
   }
-  const at = Date.parse(raw);
+  const at = isoTime(raw);
   if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString() };
-  throw usage(`--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "${raw}"`);
+  throw usage(`--since takes an ISO 8601 time such as 2026-10-23T09:00:00Z, an age such as 30m, 2h or 1d, or a chat stream sequence, not "${raw}"`);
 }
 
 function itemOf(msg: CotalMessage, where: { seq?: number; channel?: string }): HistoryItem {

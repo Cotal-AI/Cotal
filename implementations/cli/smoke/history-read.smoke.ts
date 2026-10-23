@@ -216,7 +216,7 @@ try {
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
   // ── usage ───────────────────────────────────────────────────────────────────────────────────────
-  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "1001"], ["--since", "yesterday-ish"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
+  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "1001"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
