@@ -1,5 +1,26 @@
 # @cotal-ai/connector-claude-code
 
+## 0.99.1
+
+### Patch Changes
+
+- 50de78d: Point Claude Desktop chat on a signed-in space at the space's hosted connector. Desktop chat
+  supplies no native session, so this computer's `--desktop` server cannot join a signed-in space,
+  yet setup wrote its entry and status reported it as added. Setup for a signed-in space now writes no
+  Desktop entry and prints the hosted connector URL to add under Settings > Connectors > Add custom
+  connector, the Claude Desktop status row prints it for a signed-in selected space, and the server's
+  refusal names it. The URL comes from `cloudCapabilities.hostedConnector` (version 1, HTTPS) in the
+  space's discovery document; a space that advertises none is reported that way. The Desktop server's
+  instructions no longer tell the model to prefer the local path for a signed-in space.
+- 0b5c02d: A Claude plugin installation at local or project scope that its update does not reach no longer
+  blocks every Cotal command after an upgrade. Claude Code can apply `claude plugin update --scope
+  local`, run in a project folder nested inside another project with its own installation, to the
+  enclosing project and report the plugin as already current, so the nested folder's record stayed old
+  and the connector refresh failed on every command. The refresh now completes and prints a warning
+  that names the folder and the `claude plugin uninstall` command that removes the installation there.
+  A user-scope installation that does not update is still an error, and a failed update now names the
+  project folder.
+
 ## 0.99.0
 
 No changes in this release.
