@@ -3831,7 +3831,8 @@ preserved and never printed in the receipt. A file that cannot be read is refuse
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`.
 The recipient grammar is checked before connector installation or target preparation. Channel
-and role names use the native subject grammar; a channel publication cannot name a wildcard.
+and role names use the native subject grammar; a channel publication cannot name a wildcard, and a
+channel or role name outside the grammar is refused with the rule it breaks.
 A direct target resolves by its full identity or an unambiguous name. A name collision refuses
 with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, and a target that is not
 present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
