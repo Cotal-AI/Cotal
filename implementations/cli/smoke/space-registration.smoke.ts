@@ -675,7 +675,7 @@ if (process.platform === "linux") {
   recordPreparedSpace({ space: "sp ace", root: legacy, ts: new Date().toISOString() });
   const legacyUp = await json(["up", "--root", legacy, "--space", "sp ace", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
   check("up of a legacy name that is not a routing token says no member was started and quotes the name in its next step",
-    refused(legacyUp, 1, "SCHEMA_INVALID") && /no member was started/.test(legacyUp.env?.error?.message ?? "") && (legacyUp.env?.error?.remedy ?? "").includes("--space 'sp ace'"), shown(legacyUp));
+    refused(legacyUp, 1, "SCHEMA_INVALID") && /started no member/.test(legacyUp.env?.error?.message ?? "") && (legacyUp.env?.error?.remedy ?? "").includes("--space 'sp ace'"), shown(legacyUp));
   const human = await run(["space", "--plain"]);
   check("the listing shows it under its own heading", /Prepared, not started/.test(human.stdout) && /demo \(selected\)/.test(human.stdout), shown(human));
   const target = await json(["who"]);
