@@ -377,9 +377,10 @@ try {
               COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
             },
           }).then(({ stdout }) => {
-            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown } } };
+            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown } } };
             const reply = out.result?.result;
-            return out.command === "run" && out.outcome === "ok" && out.result?.kind === "run-receipt" && out.result.action === "answer"
+            // The manager's answer does not repeat the run id, so the receipt names the run the command did.
+            return out.command === "run" && out.outcome === "ok" && out.target?.run === runId && out.result?.kind === "run-receipt" && out.result.action === "answer"
               && typeof reply?.token === "string" && typeof reply.answerId === "string"
               ? { ok: true as const, token: reply.token, answerId: reply.answerId }
               : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
@@ -671,30 +672,34 @@ try {
     return LOGS.join("\n");
   };
   // An open mesh issues no caller authority and keeps no admission store (SPEC 14.8), so it hosts
-  // no run and admits no local one: both refusals name the fact. The CLI refuses through
-  // `console.error` + `process.exit(1)`, captured here the way A7 captures them.
+  // no run and admits no local one: both refusals name the fact. The hosted one is the manager's
+  // refusal, thrown classified for the command kernel; the local one goes through `console.error` +
+  // `process.exit(1)`, captured here the way A7 captures them.
   const realError = console.error, realExit = process.exit;
   console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
   process.exit = ((code?: number) => { throw new Error(`exit ${code}: ${LOGS.join("\n")}`); }) as never;
   let hostedOut = "", localOut = "", ps = "";
+  let hostedRefusal: { outcome?: unknown; code?: unknown } | undefined, unknownRun: { outcome?: unknown; code?: unknown; message?: unknown } | undefined;
   try {
-    hostedOut = await cli(["start"], { file }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+    hostedOut = await cli(["start"], { file }).then((out) => out, (e: Error) => { hostedRefusal = e as typeof hostedRefusal; return `threw: ${e.message}`; });
     localOut = await cli(["start"], { file, local: true, "admit-read": "none", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
     // `--json` writes one result envelope straight to stdout, so the listing is read there.
     const realWrite = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { LOGS.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; }) as typeof process.stdout.write;
     try { ps = await cli(["ps"], { json: true }); } finally { process.stdout.write = realWrite; }
+    await cli(["show", "run-00000000000000000000000000000000"], { json: true }).catch((e: unknown) => { unknownRun = e as typeof unknownRun; });
   } finally {
     console.log = realLog;
     console.error = realError;
     process.exit = realExit;
     process.exitCode = undefined;
   }
-  c("B1. `cotal run start` on an open mesh is refused by the manager, naming the space and that runs need a static-auth mesh", hostedOut.includes("threw: exit 1") && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
+  c("B1. `cotal run start` on an open mesh is refused by the manager, UNSUPPORTED, naming the space and that runs need a static-auth mesh", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
   c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
   const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
     && listed.result?.kind === "runs" && Array.isArray(listed.result.items) && listed.result.items.length === 0, ps);
+  c("B4. `cotal run show` of a run the manager holds no record of is refused TARGET_NOT_FOUND for the command kernel", unknownRun?.outcome === "refused" && unknownRun.code === "TARGET_NOT_FOUND" && String(unknownRun.message).includes("no record"), unknownRun);
   await mgr.stop();
   mgr = undefined;
 } catch (e) {
@@ -722,7 +727,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 70;
+const EXPECTED_CELLS = 71;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

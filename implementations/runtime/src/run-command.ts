@@ -53,6 +53,7 @@ import {
   standaloneConnectOpts,
   unansweredRail,
   unansweredRequest,
+  type EpError,
   type EpErrorDetail,
   type ParsedArgs,
   type RunJournalRow,
@@ -63,7 +64,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
+import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -610,10 +611,29 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
   return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
 }
 
+/** The manager's refusal codes that say it acted on nothing. */
+const REFUSED_BEFORE_EFFECT: Readonly<Record<string, RefusalCode>> = {
+  "permission-denied": "PERMISSION_DENIED", "not-found": "TARGET_NOT_FOUND", "failed-precondition": "LIFECYCLE_BLOCKED",
+  "bad-request": "USAGE_INVALID", "unimplemented": "UNSUPPORTED", "conflict": "CONFLICT",
+};
+
+/** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
+ *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
+ *  recorded it. */
+function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined): CommandFailure {
+  const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
+  const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
+  const code = err?.code === undefined ? undefined : REFUSED_BEFORE_EFFECT[err.code];
+  const remedy = err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
+  if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
+  if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
+  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
+}
+
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
  *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
- *  ({@link invokeRepairingSplit}). The reply's data on success; on a refusal the manager's own
- *  sentence, printed, and a non-zero exit. */
+ *  ({@link invokeRepairingSplit}). The reply's data on success; a refusal throws as
+ *  {@link managerRefusal} classifies it. */
 async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved?: (space: string) => void): Promise<unknown> {
   const { target: t, seat } = await resolveRunControlTarget(values);
   resolved?.(t.space);
@@ -647,11 +667,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     });
     if (r.reply.ok !== true) {
       const err = r.reply.error;
-      console.error(`run ${command.slice(4)}: ${renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err)}`);
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
       for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
-      process.exit(1);
+      throw managerRefusal(command, t.space, args, err);
     }
     return r.reply.data;
   } catch (e) {
@@ -788,7 +807,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
     ...(verb === "amend" ? { amend: true } : {}),
   });
-  runReceipt(verb, space, result, values);
+  runReceipt(verb, space, result, values, a);
 }
 
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;

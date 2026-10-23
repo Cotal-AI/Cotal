@@ -4016,6 +4016,9 @@ that cannot be represented without rounding is a `USAGE_INVALID` refusal before 
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
 is the ISO time. A DM row shows its recipient's name when a message in the window came from that
 principal, and the principal otherwise. `result.items[].to` is the principal.
+A line break or other control character in a message's text shows as its `\uXXXX` escape in the
+text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
+`--json` carries the text as it was sent, in `result.items[].text`.
 
 Retained history is not every message sent. The chat stream keeps a fixed number of messages per
 sender on each channel, so a busy sender's oldest messages are discarded while other senders'
@@ -4332,7 +4335,8 @@ A partial or unknown result retains the allocated public identity and lifecycle 
 and does not retry the mint.
 
 Lifetime inputs use native seconds. The receipt reports the resulting JWT expiry, rather than
-promising a default lifetime. `--expires-in` and `--expires-at` are mutually exclusive. JSON is
+promising a default lifetime. `--expires-in` and `--expires-at` are mutually exclusive, and an
+`--expires-at` that is not in the future refuses before anything is written. JSON is
 one finite document; plain output uses the same public receipt. Signing material is exported by
 [auth signer](#account-signer-export), not a signer flag on mint. The old top-level `mint` spelling
 is refused with the literal namespace replacement.
@@ -4919,8 +4923,15 @@ each live manager.
 pin never falls back to another manager. Rich run reports label an explicit pin
 as the requested manager, and the JSON target carries `requestedManagerInstance`.
 Follow-up commands printed by the CLI retain the same explicit pin and fill
-in a returned run ID only when it matches the native run-token shape. Keep the
-pin on later status, answer and resume calls.
+in the run ID the command named or the manager returned, only when it matches the native
+run-token shape. Keep the pin on later status, answer and resume calls.
+
+A hosted verb the manager refuses reports the outcome and code as other commands do, and with
+`--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
+denied credential, a step in the wrong state or a program that does not validate, is refused, exit
+2. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
+`cotal run show <runId>` as the next step. Any other refusal of `start`, `resume`, `answer` or
+`amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
 
 An unpinned hosted verb run by the operator reads the space's service registry first. When it
 lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
@@ -4951,7 +4962,7 @@ step row carries its `step` key, the `effect` kind and its `name`, `state`, `out
 pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
 settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
-The run header and errors go to stderr, so stdout carries only rows; an unreadable revocation marker
+The run header goes to stderr, so stdout carries only rows; an unreadable revocation marker
 prints its reason there and still exits 1. The text view is presentation and is not a stable
 parsing target. `--json` on any other verb is refused.
 `ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
@@ -5694,9 +5705,11 @@ patterns and durable channels, not task dependencies or permission grants. Missi
 membership is explicit, never an empty complete graph. Long identities wrap without clipping.
 
 The authenticated observer remains narrowed to channel traffic. Its DM view refuses instead of
-broadening credentials or inventing a private conversation identity. Open-space DM observations
+broadening credentials or inventing a private conversation identity, and with `--json` its `error`
+record names the space and the reason. Open-space DM observations
 retain native sender and target IDs. Use `--json` for versioned view records or `--plain` for line-oriented reports outside a
-terminal. Both use the same bounded observer lifecycle and shared view model.
+terminal. Both use the same bounded observer lifecycle and shared view model. A line-oriented
+roster, channels, waiting or topology view prints its report again each time that report changes.
 
 
 ### Authority

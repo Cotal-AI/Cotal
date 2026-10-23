@@ -1,6 +1,6 @@
 import { writeSync } from "node:fs";
 import { CotalEndpoint, chatWildcard, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
+import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
 import { connectOrExit, connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
@@ -21,21 +21,27 @@ export function validateWatchArguments(args: ParsedArgs): void {
 /** An invisible observer. Leaving this view never sends a control or stop request. */
 export async function watch(args: ParsedArgs): Promise<void> {
   validateWatchArguments(args);
-  try { await watchSession(args); }
+  const resolved: { space?: string } = {};
+  try { await watchSession(args, resolved); }
   catch (error) {
     if (!args.values.json) throw error;
-    const target = { requestedSpace: args.values.space ?? null };
-    writeStreamRecord(streamRecord("watch", "error", target, { code: isCommandFailure(error) ? error.code : "OPERATION_FAILED", message: "The observer could not establish its authorized view; this is not an empty successful snapshot." }));
+    // A refusal says why in its own words, as the plain form does. Any other failure keeps the
+    // generic sentence, because its message is not written for an operator.
+    const target = { requestedSpace: args.values.space ?? null, ...(resolved.space === undefined ? {} : { space: resolved.space }) };
+    const reason = isCommandFailure(error) ? { message: error.message, ...(error.remedy === undefined ? {} : { remedy: error.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
+    writeStreamRecord(streamRecord("watch", "error", target, { code: isCommandFailure(error) ? error.code : "OPERATION_FAILED", ...reason }));
     writeStreamRecord(streamRecord("watch", "end", target, { reason: "setup-failed" }));
     process.exitCode = isCommandFailure(error) ? exitCode(error.outcome, error.code) : 5;
   }
 }
 
-async function watchSession(args: ParsedArgs): Promise<void> {
+async function watchSession(args: ParsedArgs, resolved: { space?: string }): Promise<void> {
   const values = args.values as FlagValues<typeof watchFlags>;
   const filter = (values.view === "feed" ? "activity" : values.view ?? "activity") as WatchFilter;
   const interactive = !values.json && !values.plain && !inputDisabledByFlag() && process.stdout.isTTY && process.stdin.isTTY;
   const connection = values.json ? await connectOrThrow(values, "admin") : await connectOrExit(values, "admin");
+  resolved.space = connection.space;
+  recordOperationSpace(connection.space);
   if (filter === "dms" && (connection.bearer || connection.creds)) throw new CommandFailure("refused", "UNSUPPORTED", "this observer is narrowed to channel traffic in authenticated spaces; no broader credential or private conversation was substituted");
   const user = connection.bearer ? values.json ? await userViewAuth(connection, "admin") : await userViewAuthOrExit(connection, "admin") : undefined;
   const ep = new CotalEndpoint({
