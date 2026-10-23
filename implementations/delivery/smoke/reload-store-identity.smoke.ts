@@ -126,6 +126,14 @@ try {
     () => reloadStoreIdentityOf({ injected: true, store: undeclared }),
     "COTAL_SECRET_STORE",
   );
+  for (const blank of ["  ", "\t\n"]) {
+    process.env.COTAL_SECRET_STORE = blank;
+    throws(
+      `injected identity refuses a whitespace-only coordinate ${JSON.stringify(blank)} at start, naming the variable`,
+      () => reloadStoreIdentityOf({ injected: true, store: undeclared }),
+      "COTAL_SECRET_STORE",
+    );
+  }
   process.env.COTAL_SECRET_STORE = "vault:prod";
   const injected = reloadStoreIdentityOf({ injected: true, store: undeclared });
   ok("injected identity is the coordinate", injected.kind === "injected" && injected.coordinate === "vault:prod");
