@@ -1442,7 +1442,8 @@ brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`,
 `backup recover` refuse `LIFECYCLE_BLOCKED` and name the backup process and the deadline, and
 `cotal status` names the attempt and its next step. Once it is stale, `backup recover` removes the
 partial artifact, the clone and the broker files, each matched by inode, and a create to another
-directory does the same before it starts. A create naming the partial artifact refuses `CONFLICT`
+directory does the same before it starts, then backs up the cut's recorded store, a custom
+`--store-dir` one included. A create naming the partial artifact refuses `CONFLICT`
 and names that recovery.
 
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
@@ -4888,8 +4889,9 @@ explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access. A refused directory on the way to a file is named with its reason, and
-a group- or other-writable one with `chmod go-w <path>` as the fix. A startup file that is a
+owner or unsafe file access before it creates anything. One refusal names every refused startup
+file, stub, record and directory on the way to them with its reason, and a group- or other-writable
+one with its mode and one `chmod go-w <paths>` that fixes them all. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
 it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
 warns that it is a symlink and does not read it. A startup file its owner made read-only is never

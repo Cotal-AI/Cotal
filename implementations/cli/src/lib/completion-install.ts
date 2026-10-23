@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, fsyncSync } from "node:fs";
+import { closeSync, constants, fstatSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, fsyncSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
@@ -40,31 +40,67 @@ export function completionPaths(shell: string): Paths | undefined {
 function supported(): void {
   if (process.platform === "win32" || process.getuid === undefined || constants.O_NOFOLLOW === undefined || constants.O_NONBLOCK === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "owned shell-file installation is not supported on this platform; use completion script explicitly instead of a weaker writer");
 }
-function safeParents(path: string, create = false): void {
-  supported();
-  if (/[\u0000-\u001f\u007f]/u.test(path)) throw new CommandFailure("refused", "USAGE_INVALID", "completion paths cannot contain terminal controls or newlines");
-  const parent = dirname(path);
-  if (parent !== path) safeParents(parent, create);
-  let info;
-  try { info = lstatSync(path); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    if (!create) return;
-    mkdirSync(path, { mode: 0o700 }); info = lstatSync(path);
-  }
-  const sticky = info.uid === 0 && (info.mode & 0o1000) !== 0;
-  const writable = "is writable by group or others";
-  const problem = info.isSymbolicLink() ? "is a symlink" : !info.isDirectory() ? "is not a directory"
-    : info.uid !== 0 && info.uid !== process.getuid!() ? "is owned by another user" : (info.mode & 0o022) !== 0 && !sticky ? writable : undefined;
-  if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `the completion path ${path} ${problem}; custom shell wiring was not changed`, {
-    target: { path },
-    remedy: problem === writable
-      ? `remove group and other write permission (chmod go-w ${path}) and run the command again, or wire completion yourself from cotal completion script <shell>`
+/** A completion file or folder that is unsafe to read or replace, and the chmod mode that fixes it when one does. */
+interface Gap { path: string; problem: string; chmod?: string }
+const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : quote(path);
+const modeOf = (info: Stats) => `mode ${(info.mode & 0o777).toString(8).padStart(4, "0")}`;
+
+/** One refusal naming every unsafe path with its reason, so a single change fixes them all. */
+function unsafe(gaps: Gap[]): CommandFailure {
+  const chmods = [...new Set(gaps.map((gap) => gap.chmod))].map((mode) => `chmod ${mode} ${gaps.filter((gap) => gap.chmod === mode).map((gap) => shellPath(gap.path)).join(" ")}`);
+  return new CommandFailure("refused", "PERMISSION_DENIED", `${gaps.map((gap) => `${gap.path} ${gap.problem}`).join("; ")}; custom shell wiring was not changed`, {
+    target: gaps.length === 1 ? { path: gaps[0]!.path } : { path: gaps[0]!.path, paths: gaps.map((gap) => gap.path) },
+    remedy: gaps.every((gap) => gap.chmod)
+      ? `${chmods.join("; ")} and run the command again, or wire completion yourself from cotal completion script <shell>`
       : "wire completion yourself from cotal completion script <shell>",
   });
 }
+/** Every unsafe folder from `path` up to the root, deepest first. The walk ends at a missing folder,
+ *  which `create` makes private when nothing above it was refused. */
+function parentGaps(path: string, create = false): Gap[] {
+  supported();
+  if (/[\u0000-\u001f\u007f]/u.test(path)) throw new CommandFailure("refused", "USAGE_INVALID", "completion paths cannot contain terminal controls or newlines");
+  const parent = dirname(path);
+  const above = parent !== path ? parentGaps(parent, create) : [];
+  let info;
+  try { info = lstatSync(path); }
+  catch (error) {
+    if (above.length) return above;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (!create) return above;
+    mkdirSync(path, { mode: 0o700 }); info = lstatSync(path);
+  }
+  const sticky = info.uid === 0 && (info.mode & 0o1000) !== 0;
+  const gap: Gap | undefined = info.isSymbolicLink() ? { path, problem: "is a symlink" } : !info.isDirectory() ? { path, problem: "is not a directory" }
+    : info.uid !== 0 && info.uid !== process.getuid!() ? { path, problem: "is owned by another user" }
+    : (info.mode & 0o022) !== 0 && !sticky ? { path, problem: `is writable by group or others (${modeOf(info)})`, chmod: "go-w" } : undefined;
+  return gap ? [gap, ...above] : above;
+}
+function safeParents(path: string, create = false): void {
+  const gaps = parentGaps(path, create);
+  if (gaps.length) throw unsafe(gaps);
+}
+/** Why an existing shell file is unsafe to read or replace: it must be an owned, bounded regular file
+ *  without group or other write access, and a private one also without their read access. */
+function fileGap(path: string, info: Stats, privateFile: boolean): Gap | undefined {
+  if (info.isSymbolicLink()) return { path, problem: "is a symlink" };
+  if (!info.isFile()) return { path, problem: "is not a regular file" };
+  if (info.uid !== process.getuid!()) return { path, problem: "is owned by another user" };
+  if (privateFile && (info.mode & 0o077) !== 0) return { path, problem: `is not private to you (${modeOf(info)})`, chmod: "go-rwx" };
+  if ((info.mode & 0o022) !== 0) return { path, problem: `is writable by group or others (${modeOf(info)})`, chmod: "go-w" };
+  if (info.size > 2 * 1024 * 1024) return { path, problem: "is larger than 2 MiB" };
+  return undefined;
+}
+/** {@link fileGap} for an existing file, read without opening it, and every unsafe folder above it. */
+function pathGaps(path: string, privateFile = false, link = true): Gap[] {
+  let info: Stats | undefined;
+  try { info = lstatSync(path); } catch { /* missing, or under a folder that is refused */ }
+  const gap = info && (link || !info.isSymbolicLink()) ? fileGap(path, info, privateFile) : undefined;
+  return [...(gap ? [gap] : []), ...parentGaps(dirname(path))];
+}
 function read(path: string, privateFile = false): Snapshot | undefined {
-  safeParents(dirname(path));
+  // A file under an unsafe folder is not opened. It is named with that folder instead.
+  if (parentGaps(dirname(path)).length) throw unsafe(pathGaps(path, privateFile));
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
@@ -75,7 +111,8 @@ function read(path: string, privateFile = false): Snapshot | undefined {
   }
   try {
     const before = fstatSync(fd);
-    if (!before.isFile() || before.uid !== process.getuid!() || (before.mode & (privateFile ? 0o077 : 0o022)) !== 0 || before.size > 2 * 1024 * 1024) throw new CommandFailure("refused", "PERMISSION_DENIED", "shell integration needs an owned, bounded regular file without group/other write access", { target: { path } });
+    const gap = fileGap(path, before, privateFile);
+    if (gap) throw unsafe([gap]);
     const bytes = Buffer.alloc(2 * 1024 * 1024 + 1);
     let length = 0;
     while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
@@ -156,6 +193,10 @@ export function readCompletionText(path: string): string | undefined {
 /** Hold one writer lock and change only the recorded stub and unchanged owned startup block. */
 export function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string) {
   supported();
+  // Every unsafe file or folder this change reads or writes is named in one refusal before anything is
+  // created. A linked startup file is left to its own refusal below, which names the line to add.
+  const gaps = [...new Map([...(paths.rc ? pathGaps(paths.rc, false, false) : []), ...pathGaps(paths.stub), ...pathGaps(recordPath(paths), true)].map((gap) => [gap.path, gap])).values()];
+  if (gaps.length) throw unsafe(gaps);
   if (paths.rc) {
     safeParents(dirname(paths.rc));
     try { lstatSync(dirname(paths.rc)); }

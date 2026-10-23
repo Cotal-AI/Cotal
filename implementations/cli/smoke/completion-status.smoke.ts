@@ -3,7 +3,7 @@
  * and the refusal of the form it replaced (`completion <shell>`), driven through the built binary in
  * a fresh sandbox per case. HOME, XDG_CONFIG_HOME and COTAL_HOME are sandboxed, so the status reads
  * and `completion install` writes only there. A symlinked startup file is refused by name with the
- * line to add where it points.
+ * line to add where it points, and a group-writable one with the chmod that fixes it.
  *
  * Run: pnpm smoke:completion-status
  */
@@ -173,7 +173,7 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
   check("that stub is reported unreadable with a COMPLETION_UNREADABLE warning for its shell", bash?.state === "unreadable" && env?.warnings.some((w: { code: string; target: { shell?: string } }) => w.code === "COMPLETION_UNREADABLE" && w.target.shell === "bash") === true, env);
   check("the other shells are still reported", s.shellOf(env, "zsh")?.state === "current" && s.shellOf(env, "fish")?.state === "missing", env?.result);
   const human = s.run(["completion", "--plain"]);
-  check("the report still prints, exit 4, with the warning on stderr", human.status === 4 && /^ {2}bash +unreadable$/m.test(human.stdout) && /could not be read/.test(human.stderr), shown(human));
+  check("the report still prints, exit 4, with the warning on stderr naming the stub and why", human.status === 4 && /^ {2}bash +unreadable$/m.test(human.stdout) && human.stderr.includes(`${join(s.xdg, "cotal", "completion.bash")} is not a regular file`), shown(human));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const rc = join(s.home, ".zshrc");
     chmodSync(rc, 0o000);
@@ -198,6 +198,28 @@ if (process.platform !== "win32") {
   const report = s.run(["completion", "--json"]);
   const reportEnv = report.stdout.startsWith("{") ? JSON.parse(report.stdout) : undefined;
   check("the report warns that the rc is a symlink", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message === `${rc} is a symlink, which completion does not follow; its contents were not printed`) === true, shown(report));
+}
+
+// ── a group-writable startup file and stub folder, as umask 002 leaves them, share one refusal ──────
+// The file used to get "shell integration needs an owned, bounded regular file" with no path or chmod.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const s = sandbox("/bin/bash");
+  const rc = join(s.home, ".bashrc");
+  const folder = join(s.xdg, "cotal");
+  writeFileSync(rc, "# mine\n");
+  chmodSync(rc, 0o664);
+  mkdirSync(folder, { recursive: true });
+  chmodSync(folder, 0o775);
+  const refused = s.run(["completion", "install", "bash", "--json"]);
+  const error = refused.stdout.startsWith("{") ? JSON.parse(refused.stdout).error : undefined;
+  check("install refuses a group-writable rc and stub folder at once, exit 2, naming each with its mode and writing nothing", refused.status === 2 && error?.code === "PERMISSION_DENIED" && error.message.includes(`${rc} is writable by group or others (mode 0664)`) && error.message.includes(`${folder} is writable by group or others (mode 0775)`) && readdirSync(folder).length === 0 && readFileSync(rc, "utf8") === "# mine\n", shown(refused));
+  const report = s.run(["completion", "--json"]);
+  const reportEnv = report.stdout.startsWith("{") ? JSON.parse(report.stdout) : undefined;
+  check("the report names the rc and its mode", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message.startsWith(`${rc} is writable by group or others (mode 0664)`)) === true, shown(report));
+  const chmod = /^(chmod go-w [^;]+) and run the command again/.exec(error?.remedy ?? "")?.[1];
+  const fixed = chmod ? spawnSync("sh", ["-c", chmod], { encoding: "utf8" }) : undefined;
+  const installed = s.run(["completion", "install", "bash"]);
+  check("running its one chmod lets install wire the rc", chmod === `chmod go-w ${rc} ${folder}` && fixed?.status === 0 && installed.status === 0 && readFileSync(rc, "utf8").includes(join(folder, "completion.bash")), { chmod, install: shown(installed) });
 }
 
 // ── install refuses before it writes ────────────────────────────────────────────────────────────────
