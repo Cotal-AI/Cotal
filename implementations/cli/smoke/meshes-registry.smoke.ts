@@ -1140,18 +1140,24 @@ try {
     watched.code === 0 && findMesh("watched") === undefined, watched.out);
   watcher.kill("SIGKILL");
 
-  const dropped = await run(["rm", "live-local"], { force: true });
-  check("rm --force drops a running mesh's record", dropped.code === 0 && findMesh("live-local") === undefined, loadMeshes());
-  // …and --force must not be defeated by the guard it is meant to skip. The ownership probe reads
-  // the root's local process state; on a root it cannot make sense of, that probe throws, and
-  // running it anyway would make the documented override unusable exactly when it is needed.
+  // `--force` does not drop it either: `cotal down` finds the mesh by this record, and dropping it
+  // once left a running stack that no command could stop.
+  const forcedLive = await run(["rm", "live-local"], { force: true });
+  check("rm --force refuses a mesh this machine is running, keeping its record", forcedLive.code === 1 && findMesh("live-local") !== undefined, forcedLive.out);
+  check("…pointing at `cotal down` and saying why --force does not drop it",
+    forcedLive.out.includes("`cotal down` there stops it") && forcedLive.out.includes("--force does not drop it while the mesh runs"), forcedLive.out);
+  removeMesh("live-local");
+  // …and --force must not be defeated by a probe that cannot answer. The ownership probe reads
+  // the root's local process state; on a root where that read fails, the probe throws, and the
+  // override is what is left for a record nothing can check.
   const brokenRoot = projectRoot("broken");
-  saveSpaceAuth(authDir(brokenRoot), await createSpaceAuth("tenant-a"));
-  writeFileSync(join(authDir(brokenRoot), "account.deadbeef.json"), "{ not json"); // unreadable tenant
-  writeFileSync(join(brokenRoot, ".cotal", "nats.pid"), String(process.pid), { mode: 0o600 });
+  mkdirSync(join(brokenRoot, ".cotal", "nats.pid")); // a pidfile that cannot be read
   recordMesh({ space: "tenant-a", server: LIVE, root: brokenRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const unforcedOnBroken = await run(["rm", "tenant-a"]).then(() => undefined, (e: Error) => e);
+  check("rm without --force does not drop a record whose root cannot be checked",
+    unforcedOnBroken !== undefined && findMesh("tenant-a") !== undefined, String(unforcedOnBroken));
   const forcedOnBroken = await run(["rm", "tenant-a"], { force: true });
-  check("rm --force works on a root whose space cannot be resolved",
+  check("rm --force drops a record whose root cannot be checked",
     forcedOnBroken.code === 0 && findMesh("tenant-a") === undefined, forcedOnBroken.out);
   brokerStandIn.kill("SIGKILL");
 

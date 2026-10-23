@@ -2111,7 +2111,9 @@ connect; that auth-required refusal is the pass. The sentinel credentials land i
 the entry's root; the registry records only the path.
 
 `meshes rm` drops records. It never stops a mesh. For a mesh running on this machine `cotal down`
-is the right verb, and `rm` says so unless you pass `--force`. A broker record that cannot be proven
+is the right verb, and `rm` refuses and says so, with or without `--force`, because `cotal down`
+finds a running mesh by its record. `--force` drops a record only when its folder cannot be checked
+for a running mesh. A broker record that cannot be proven
 stopped counts as running, as it does for `clean`. A hand-added record is removed by
 `meshes rm`, by an `add --force` replacement, or by a `cotal up` that actually starts the broker for that same space, server and root, which becomes that
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
