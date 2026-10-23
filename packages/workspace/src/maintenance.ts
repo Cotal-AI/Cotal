@@ -675,8 +675,14 @@ function fsyncDirectory(path: string): void {
 
 function ensureDirectory(path: string, harden: boolean): void {
   if (!existsSync(path)) {
-    mkdirSync(path, { mode: 0o700 });
-    fsyncDirectory(dirname(path));
+    // A concurrent first operation on this root can create it between the check and the mkdir; the
+    // checks below verify what is there, and the lock then names that operation.
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      fsyncDirectory(dirname(path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
   }
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink())
