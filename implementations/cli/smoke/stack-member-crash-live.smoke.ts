@@ -7,7 +7,9 @@
  *  2. `ps` refuses: no manager is running for this space, and its Next names bare `cotal up`.
  *  3. `up` starts the manager again, and `ps` is answered.
  *  4. A SIGINT with no stop request leaves that manager running. A plain SIGTERM, as `kill`, a
- *     systemd stop or a system shutdown sends, stops it and it exits; `up` starts it again.
+ *     systemd stop or a system shutdown sends, stops it and it exits. `chat` then refuses at once
+ *     that no manager is running, rather than wait out a request no manager can answer; `up` starts
+ *     the manager again.
  *  5. `status` reports the running manager as answering. Stopped with SIGSTOP, as a hang, it reads
  *     not answering by pid, `down --yes` and `ps` refuse it by pid, and `run ps` refuses
  *     TARGET_UNAVAILABLE pointing to `status`; once that process is killed, the final
@@ -99,6 +101,11 @@ try {
   check("a plain SIGTERM stops the manager and it exits", signalled !== undefined && !alive(signalled.pid));
   const log = signalled ? cli("service", "logs", "stack-manager", "--instance", signalled.instanceId, "--tail", "40") : undefined;
   check("...and its log names the stop it ran", log?.out.includes("received SIGTERM with no stop request; stopping with the default agent policy") === true, log?.out);
+  const chatFrom = Date.now();
+  const chat = cli("chat", "general", "--plain");
+  const chatMs = Date.now() - chatFrom;
+  check("chat refuses at once: no manager is running to admit a chat session", chat.status === 2 && chat.out.includes("no manager is running for this space to admit a chat session") && chatMs < 8_000, { ms: chatMs, out: chat.out });
+  check("...and its Next names bare cotal up", chat.out.includes("start the stack's manager with bare cotal up"), chat.out);
   const afterTerm = cli("up");
   check("up starts the manager after its SIGTERM stop", afterTerm.status === 0, afterTerm.out);
   check("...and ps is answered", cli("ps").status === 0);

@@ -4110,6 +4110,10 @@ The mesh is resolved once, and its recorded auth mode picks the admission. No ot
 | static | The space's manager admits the session and mints its own credential ([Static chat sessions](control-surface.md#static-chat-sessions)) | 15 minutes, never renewed |
 | user | The auth service admits it under your own `cli` grant; sign in with `cotal login` first | Up to 8 hours, never extended |
 
+On a static mesh, `chat` reads the space's service registry before it asks the manager for a
+session. When the registry lists no live manager, as after `cotal service stop stack-manager`, it
+refuses `TARGET_UNAVAILABLE` (exit 2) at once and names bare `cotal up`, as the run verbs do.
+
 A static or user session shows its end time in the banner, and says when it ends a minute before.
 After a session ends, `--plain` answers every line with how to leave, and `/quit` or the end of
 input leaves.

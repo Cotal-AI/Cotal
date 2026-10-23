@@ -20,7 +20,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, isConnectRefusal, mintControlInstrument, preflightOrThrow, type MeshTarget } from "@cotal-ai/workspace";
-import { askManager, managerFailure, type ManagerReply } from "../lib/control.js";
+import { askManager, managerFailure, refuseWithoutLiveManager, type ManagerReply } from "../lib/control.js";
 import { NativeChatSession } from "./native-session.js";
 import type { CloseReport, SessionIdentity } from "./session.js";
 
@@ -105,12 +105,16 @@ export function retireReport(reply: ManagerReply, managerInstanceId: string, val
 
 /** Ask the pinned mesh's manager `op` under a fresh one-shot instrument minted from the pinned
  *  trust material. When the mint or the dial throws, nothing reached the manager, and a read-only
- *  preflight of the same target classifies the cause as `connectOrThrow` does; it prunes nothing. */
-async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unknown>, instanceId: string | undefined): Promise<ManagerReply> {
+ *  preflight of the same target classifies the cause as `connectOrThrow` does; it prunes nothing.
+ *  With `purpose`, an unpinned call on a space whose registry lists no live manager is refused
+ *  before `op` is sent, as the run verbs refuse it, rather than after it has waited out its deadline. */
+async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unknown>, instanceId: string | undefined, purpose?: string): Promise<ManagerReply> {
   try {
-    const instrument = await mintControlInstrument(mesh, "privileged", instanceId);
-    return await askManager(mesh.space, mesh.server, op, args, { ...instrument, tls: mesh.tlsRequired }, "owner", undefined, instanceId !== undefined ? { instanceId } : undefined);
+    const auth = { ...await mintControlInstrument(mesh, "privileged", instanceId), tls: mesh.tlsRequired };
+    if (purpose !== undefined && instanceId === undefined) await refuseWithoutLiveManager(mesh.space, mesh.server, auth, { space: mesh.space }, purpose);
+    return await askManager(mesh.space, mesh.server, op, args, auth, "owner", undefined, instanceId !== undefined ? { instanceId } : undefined);
   } catch (e) {
+    if (e instanceof CommandFailure) throw e;
     await preflightOrThrow(mesh, undefined, true);
     throw e;
   }
@@ -148,9 +152,10 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   try {
     reply = await askPinned(mesh, "chatSessionOpen", {
       subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,
-    }, options.instanceId);
+    }, options.instanceId, "admit a chat session");
   } catch (e) {
     recipient.clear();
+    if (e instanceof CommandFailure) throw e;
     if (isConnectRefusal(e)) throw e.failure();
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the control instrument could not be minted or connected, so chat-session-open was not sent: ${(e as Error).message}`, { target: { space: mesh.space } });
   }
