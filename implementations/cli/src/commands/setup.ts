@@ -470,7 +470,7 @@ function bundleSpace(file: string): string {
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
   const candidates = await setupConnectorCandidates(await setupConnectorSurface());
   if (candidates.length > 0) return candidates;
-  if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness "${harness}"; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`);
+  if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
     remedy: seeds ? "run `cotal ext seed`" : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
@@ -517,7 +517,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   if (problem) throw usage(problem);
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
-  if (!candidate) throw usage(`no harness "${inputs.harness}"; known harnesses: ${candidates.map((c) => c.value).join(", ")}`);
+  if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`);
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
   const state = checkLocalSpace(inputs.space, inputs.project, "--project", true);

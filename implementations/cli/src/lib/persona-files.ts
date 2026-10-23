@@ -41,10 +41,16 @@ function catalogAt(root: string, space: string): PersonaCatalog {
   }
 }
 
+/** Why `name` cannot name a persona, or undefined when it can. */
+export function personaNameProblem(name: string): string | undefined {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return "persona names use letters, digits, '_' or '-'";
+  try { assertValidName(name); } catch { return "invalid persona name"; }
+  return undefined;
+}
+
 export function personaPath(root: string, name: string): string {
-  if (!/^[A-Za-z0-9_-]+$/.test(name))
-    throw new CommandFailure("refused", "USAGE_INVALID", "persona names use letters, digits, '_' or '-'");
-  try { assertValidName(name); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid persona name"); }
+  const problem = personaNameProblem(name);
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   return agentFilePath(root, name);
 }
 
