@@ -217,6 +217,17 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const helpJson = cotal(["help", "--json"]);
   refused("a command with no JSON output refuses --json", helpJson, /Unknown option '--json'/);
   check("a command with no JSON output writes no envelope for it", !helpJson.stdout.startsWith("{"), shown(helpJson));
+  // An empty --space used to fall back to the selected space, so `history clear --space "$S" --yes`
+  // with S unset purged it.
+  const selected = (home: string) => writeFileSync(join(home, "current-mesh"), "ghost\n");
+  for (const [argv, flag] of [[["history", "clear", "--space", "", "--yes"], "--space/-s"], [["send", "--space=", "-c", "general", "x"], "--space/-s"], [["whoami", "-s", " "], "--space/-s"], [["doctor", "--space", ""], "--space"]] as const) {
+    const r = cotal([...argv], selected, noSeed);
+    refused(`cotal ${argv.join(" ")} refuses the empty ${flag} before resolving the selected space`, r, new RegExp(`^✗ ${flag} is empty; name one space$`, "m"));
+    check(`cotal ${argv.join(" ")} never reaches the selected space`, !r.stderr.includes("ghost"), shown(r));
+  }
+  const emptyJson = cotal(["history", "clear", "--space", "", "--yes", "--json"], selected, noSeed);
+  check("an empty --space under --json is one USAGE_INVALID envelope with the space-listing remedy",
+    envelopes(emptyJson).length === 1 && envelopes(emptyJson)[0]?.error?.code === "USAGE_INVALID" && envelopes(emptyJson)[0]?.error?.remedy === "name the space; `cotal space` lists the spaces this machine knows", shown(emptyJson));
 }
 
 // ── Global flags: accepted by every command, before or after its words, and text after -- ─────────
