@@ -368,7 +368,12 @@ is installed, `cotal setup` adds a `cotal` server to Desktop's own config,
 It runs the same server with `--desktop`, by the absolute paths of the node that runs the CLI and of
 the plugin copy under `~/.cotal/claude-plugin`. Quit and reopen Claude Desktop to load it. A repeat
 `cotal setup` and `cotal update` keep the entry current, `cotal status` reports it, and a config
-file that is not valid JSON is refused and left as it was. Setup can use Desktop's bundled Code
+file that is not valid JSON is refused and left as it was. Desktop reads that file when it starts
+and writes the copy it holds back while you use it, so an entry added while it runs is lost. On
+macOS, setup and update therefore leave the file alone while Claude Desktop is running, finish the
+rest of their work, and say so. Quit Claude Desktop, then run `cotal setup` again from a terminal
+outside it; a terminal in its Code tab keeps Desktop running. On Windows they still write while
+Desktop runs, because the loss was not reproduced there. Setup can use Desktop's bundled Code
 executable when there is no standalone `claude` CLI. Its installed MCP and command hooks use the
 recorded Node executable, so the app need not find Node on `PATH`. On Linux, setup writes nothing
 for Desktop Chat.
