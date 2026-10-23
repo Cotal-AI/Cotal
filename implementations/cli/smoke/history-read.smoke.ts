@@ -272,30 +272,30 @@ try {
   }
   // With neither --space nor --server, a credential goes to the selected space, else to the space of
   // the folder the command runs in, and a refusal names that space rather than the default.
-  const observer = join(home, "observer.creds");
-  writeFileSync(observer, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  const selectionObserver = join(home, "selectionObserver.creds");
+  writeFileSync(selectionObserver, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
   const spaceOf = (r: { envelope?: Envelope }) => (r.envelope?.target as { space?: string } | null)?.space;
-  const bySelection = await run(["history", "general", "--json", "--creds", observer]);
+  const bySelection = await run(["history", "general", "--json", "--creds", selectionObserver]);
   check("--creds with no --space or --server reads the selected space", bySelection.status === 0 && bySelection.envelope?.outcome === "ok" && spaceOf(bySelection) === space, shown(bySelection));
   inHome(() => setCurrent("histunreg"));
   try {
-    const unregistered = await run(["history", "general", "--json", "--creds", observer]);
+    const unregistered = await run(["history", "general", "--json", "--creds", selectionObserver]);
     check("a selected space not registered here is refused by name, not as the default space",
       unregistered.status === 2 && unregistered.envelope?.error?.code === "TARGET_NOT_FOUND" &&
         unregistered.envelope.error.message === '--creds needs --server <url> or a registered --space: the selected space "histunreg" is not registered here, so nothing was dialed' &&
         spaceOf(unregistered) === "histunreg", shown(unregistered));
     inHome(() => clearCurrent());
-    const byFolder = await run(["history", "general", "--json", "--creds", observer], meshRoot);
+    const byFolder = await run(["history", "general", "--json", "--creds", selectionObserver], meshRoot);
     check("with nothing selected, it reads the space registered for the folder it runs in", byFolder.status === 0 && spaceOf(byFolder) === space, shown(byFolder));
     const prepRoot = join(home, "prep-root");
     mkdirSync(prepRoot);
     const prepared = await run(["space", "create", "histprep"], prepRoot);
     check("control: a space is prepared in another folder", prepared.status === 0, shown(prepared));
-    const unstarted = await run(["history", "general", "--json", "--creds", observer], prepRoot);
+    const unstarted = await run(["history", "general", "--json", "--creds", selectionObserver], prepRoot);
     check("there, the refusal names that folder's space",
       unstarted.status === 2 && unstarted.envelope?.error?.message === '--creds needs --server <url> or a registered --space: this folder\'s space "histprep" is not registered here, so nothing was dialed' &&
         spaceOf(unstarted) === "histprep", shown(unstarted));
-    const nowhere = await run(["history", "general", "--json", "--creds", observer]);
+    const nowhere = await run(["history", "general", "--json", "--creds", selectionObserver]);
     check("control: with nothing selected and no space in the folder, it is still the default space, not a registered one",
       nowhere.status === 2 && nowhere.envelope?.error?.message === `--creds needs --server <url> or a registered --space: the default space "main" is not registered here, so nothing was dialed` &&
         nowhere.envelope.target === null, shown(nowhere));
