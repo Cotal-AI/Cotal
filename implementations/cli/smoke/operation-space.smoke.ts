@@ -11,7 +11,7 @@
  * refuses with a target-less CONFLICT on a prepared space, and a `--file` the agent-file rules refuse
  * names the field and the reason, as does a role token `send -r` would refuse. An edit that is not
  * saved keeps its draft and names it, a malformed `--on` names the command to rerun, and no create
- * takes the seeded default's launch name. No broker is started.
+ * takes the seeded default's launch name. Removing the seeded default says so. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
@@ -156,6 +156,13 @@ for (const [label, editor, status, says] of [
     edit.status === status && edit.stderr.includes(says) && kept.length === 1 && edit.stderr.includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
   for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
 }
+
+// Removing the seeded default says what it was and how it comes back; another removal does not.
+const removedOther = cotal("persona", "remove", "goodrole", "--yes", "--json");
+check("removing another persona does not call it the seeded default", removedOther.status === 0 && !removedOther.stdout.includes("seededDefault"), shown(removedOther));
+const removedDefault = cotal("persona", "remove", "default", "--yes", "--plain");
+check("removing the seeded default says so and names what writes a fresh copy",
+  removedDefault.status === 0 && removedDefault.stdout.includes("This was the seeded default persona, which a bare cotal spawn launches") && !existsSync(agentFilePath(root, "default")), shown(removedDefault));
 
 finish();
 process.exit(process.exitCode ?? 0);

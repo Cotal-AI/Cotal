@@ -87,13 +87,16 @@ export async function persona(args: ParsedArgs): Promise<void> {
   }
   if (sub === "remove") {
     const expected = requirePersonaSource(path);
+    // The seeded default is what a bare `cotal spawn` launches, so removing it says so.
+    const seeded = name === "default";
+    const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare cotal spawn launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
       if (presentation === "json" || !canPrompt()) throw usage(yesRequired(`removing '${name}' at ${path}`, presentation === "json"));
       let confirmed = false;
       if (presentation === "plain") {
-        confirmed = (await prompts.askLine(`Remove '${name}' at ${path}?\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
+        confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
       } else {
-        const answer = await prompts.confirm({ message: `Remove '${name}' at ${path}?`, initialValue: false });
+        const answer = await prompts.confirm({ message: question, initialValue: false });
         confirmed = !prompts.isCancel(answer) && answer;
       }
       if (!confirmed) {
@@ -102,7 +105,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
       }
     }
     commitPersona(path, expected, undefined);
-    return receipt(presentation, catalog, name!, path, "removed");
+    return receipt(presentation, catalog, name!, path, "removed", seeded);
   }
   throw usage(`unknown persona action '${sub}'`);
 }
@@ -179,11 +182,12 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
   ] }));
 }
 
-function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string): void {
-  writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona-written", action, name, path } }, result => ({ sections: [
+function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string, seededDefault = false): void {
+  writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona-written", action, name, path, ...(seededDefault ? { seededDefault } : {}) } }, result => ({ sections: [
     { title: result.action === "removed" ? "Persona removed" : result.action === "created" ? "Persona created" : "Persona saved", blocks: [
       { kind: "lines", lines: [{ text: result.name, tone: "ok", mark: "✓" }] },
       { kind: "fields", rows: [["File", result.path], ["Running agents", "unchanged"]] },
+      ...(seededDefault ? [{ kind: "lines" as const, lines: ["This was the seeded default persona, which a bare cotal spawn launches. A local cotal up in this root, cotal space create or cotal setup writes a fresh copy."] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
       { command: "cotal p", description: "Browse the local catalog" },
