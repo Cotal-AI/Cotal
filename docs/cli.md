@@ -2085,7 +2085,9 @@ The default is the project you run it in. The registry stores that path, never a
 defaults to `auth` when the root holds the space's account record and to `open` otherwise. The
 broker is probed before anything is recorded, so a wrong address, or credentials that mesh will
 not accept, fails here instead of at the first `spawn`; `--force` records without verifying (and
-replaces an existing record).
+replaces a record added by hand). A name that is prepared on this machine, or that this machine
+started or a catalog lists, is refused with `CONFLICT` (exit 2), with or without `--force`, as
+`space add` refuses it: `cotal down` finds a running stack through that record.
 
 A hostname or public address is registrable only when the connection will **require TLS**. Pass
 `--tls`, or use a `tls://` URL. The scheme is recorded as enforced intent, so every later dial

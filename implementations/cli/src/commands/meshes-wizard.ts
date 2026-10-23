@@ -1,5 +1,5 @@
 import * as p from "../lib/prompts.js";
-import { findMesh, inputDisabledByFlag, type MeshEntry } from "@cotal-ai/workspace";
+import { findMesh, findPreparedSpace, inputDisabledByFlag, type MeshEntry } from "@cotal-ai/workspace";
 import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";
 import { readFileSync } from "node:fs";
@@ -337,11 +337,14 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
       }
     }
     const clash = findMesh(space);
-    if (!clash || replace) break;
+    // A prepared space, or one this machine started or a catalog lists, is not replaced, as
+    // `space add` refuses it, so only another name is offered.
+    const owner = findPreparedSpace(space) ? "a space prepared on this machine" : clash && clash.origin !== "manual" ? clash.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started" : undefined;
+    if (!owner && (!clash || replace)) break;
     const next = await io.select({
-        message: `"${space}" is already registered here (${clash.server}).`,
+        message: owner ? `"${space}" is ${owner}, so it is not replaced.` : `"${space}" is already registered here (${clash!.server}).`,
         options: [
-          { value: "replace", label: "Replace that record", hint: clash.root },
+          ...(owner ? [] : [{ value: "replace", label: "Replace that record", hint: clash!.root }]),
           { value: "rename", label: "Use a different name" },
           { value: "cancel", label: "Cancel" },
         ],

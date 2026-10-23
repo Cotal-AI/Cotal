@@ -129,18 +129,26 @@ function take<T>(check: Check<T>, target: unknown): T {
 const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: string): CommandFailure =>
   new CommandFailure("refused", code, message, { target, ...(remedy ? { remedy } : {}) });
 
-/** Only a registration added by hand can be replaced; one this machine started or a catalog lists
- *  is forgotten or stopped first. */
-function replaceable(name: string, force: boolean, target: unknown): boolean {
+/** The registration a name already has when a new one added by hand may replace it. A prepared
+ *  space, or a registration this machine started or a catalog lists, is never replaced that way, with
+ *  or without `--force`: it is forgotten or stopped first. `space add` and `meshes add` share this. */
+export function handAddedRegistration(name: string, force: boolean, target: unknown): MeshEntry | undefined {
   if (findPreparedSpace(name))
     throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `start it with \`cotal up\` in its root, or forget it with \`cotal space forget ${name}\``);
   const existing = findMesh(name);
-  if (!existing) return false;
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
-  if (existing.origin !== "manual") {
+  if (existing && existing.origin !== "manual") {
     const owner = existing.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started";
     throw refuse("CONFLICT", force ? `"${name}" is ${owner}, so --force does not replace it` : `"${name}" is already registered at ${existing.server}; it is ${owner}`, target, `see it with \`cotal space show ${name}\``);
   }
+  return existing;
+}
+
+/** Only a registration added by hand can be replaced; one this machine started or a catalog lists
+ *  is forgotten or stopped first. */
+function replaceable(name: string, force: boolean, target: unknown): boolean {
+  const existing = handAddedRegistration(name, force, target);
+  if (!existing) return false;
   if (!force) throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
   return true;
 }

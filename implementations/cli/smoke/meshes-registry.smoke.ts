@@ -40,7 +40,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { createSpaceAuth, isReachable, registry } = await import("@cotal-ai/core");
-const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, releaseMaintenanceLock, removeMesh, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
+const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -84,7 +84,11 @@ async function run(positionals: string[], values: Record<string, string | boolea
   try {
     await meshes({ positionals, values, raw: [] });
   } catch (e) {
-    if (!(e instanceof ExitSignal)) throw e;
+    // A typed refusal is what the binary prints with exit 2: its message, then its remedy.
+    if (isCommandFailure(e)) {
+      code = 2;
+      lines.push(e.message, e.remedy ?? "");
+    } else if (!(e instanceof ExitSignal)) throw e;
   } finally {
     console.log = log;
     console.error = err;
@@ -273,6 +277,22 @@ try {
   check("add refuses a space that is already registered", dup.code === 1 && dup.out.includes("already registered"), dup.out);
   const replaced = await run(["add", "beta"], { server: DEAD, root, force: true });
   check("add --force replaces an existing record", replaced.code === 0 && findMesh("beta")?.server === DEAD, findMesh("beta"));
+  // A registration this machine started is how `cotal down` finds that stack. Replacing it, as
+  // `--force` once did, left a running stack that no command could stop, so `meshes add` refuses it
+  // the way `space add` does, with or without `--force`.
+  const startedHere = { space: "started-here", server: LIVE, root, mode: "open" as const, origin: "up" as const, ts: new Date(0).toISOString() };
+  recordMesh(startedHere);
+  const overStarted = await run(["add", "started-here"], { server: DEAD, root, force: true });
+  check("add --force refuses a space this machine started (exit 2)", overStarted.code === 2 && overStarted.out.includes("a space this machine started, so --force does not replace it"), overStarted.out);
+  check("…naming `space show` as the next step", overStarted.out.includes("cotal space show started-here"), overStarted.out);
+  check("…and the registration is unchanged", findMesh("started-here")?.server === LIVE && findMesh("started-here")?.origin === "up", findMesh("started-here"));
+  const besideStarted = await run(["add", "started-here"], { server: DEAD, root });
+  check("add without --force refuses it without offering --force", besideStarted.code === 2 && besideStarted.out.includes("it is a space this machine started") && !besideStarted.out.includes("--force"), besideStarted.out);
+  removeMesh("started-here");
+  recordPreparedSpace({ space: "prepared-here", root, ts: new Date(0).toISOString() });
+  const overPrepared = await run(["add", "prepared-here"], { server: DEAD, root, force: true });
+  check("add --force refuses a space prepared on this machine", overPrepared.code === 2 && overPrepared.out.includes("a space prepared on this machine") && findMesh("prepared-here") === undefined, overPrepared.out);
+  removePreparedSpace("prepared-here");
   const noServer = await run(["add", "nowhere"], { root });
   check("add without --server fails loud", noServer.code === 1 && noServer.out.includes("--server"), noServer.out);
   const authless = await run(["add", "needs-auth"], { server: LIVE, root, mode: "auth" });
@@ -893,7 +913,6 @@ try {
   // unreachable is not proof that mesh is gone, and the reclaim happens BEFORE the broker starts,
   // so an `up` that then fails would leave the operator with neither mesh and no way back.
   const { claimSpace } = await import("../src/commands/up.js");
-  const { isCommandFailure } = await import("@cotal-ai/workspace");
   // Every claim refusal is typed as refused with its own code and remedy, which is what lets both
   // `up` routes show the reason and the next step with exit 2.
   const claimRefused = (e: Error | undefined, code: string) => isCommandFailure(e) && e.outcome === "refused" && e.code === code;
@@ -1159,7 +1178,7 @@ try {
   // suite can catch that: asserting the rules alone stayed green while `add <already-registered>`
   // silently overwrote a record and "point at a different folder" asked nothing.
   const { addWizard } = await import("../src/commands/meshes-wizard.js");
-  interface Asked { kind: "text" | "select" | "confirm"; message: string; initialValue?: boolean }
+  interface Asked { kind: "text" | "select" | "confirm"; message: string; initialValue?: boolean; options?: unknown[] }
   /** A scripted terminal: answers in order, and records what it was asked. */
   const driver = (answers: unknown[]) => {
     const asked: Asked[] = [];
@@ -1178,7 +1197,7 @@ try {
         log: { info() {}, warn() {}, error() {} },
         spinner: () => ({ start() {}, stop() {} }),
         async text(o: { message: string }) { asked.push({ kind: "text", message: o.message }); return nextAnswer(o.message) as string; },
-        async select<T>(o: { message: string }) { asked.push({ kind: "select", message: o.message }); return nextAnswer(o.message) as T; },
+        async select<T>(o: { message: string; options?: { value: unknown }[] }) { asked.push({ kind: "select", message: o.message, options: o.options?.map((x) => x.value) }); return nextAnswer(o.message) as T; },
         async confirm(o: { message: string; initialValue?: boolean }) { asked.push({ kind: "confirm", message: o.message, initialValue: o.initialValue }); return nextAnswer(o.message) as boolean; },
       },
     };
@@ -1296,6 +1315,16 @@ try {
     clashOut === false && clash.asked.some((a) => a.kind === "select" && a.message.includes("already registered")), clash.asked);
   check("…and cancelling there writes nothing", findMesh("taken")?.ts === new Date(0).toISOString(), findMesh("taken"));
   removeMesh("taken"); // this block's fixture; later cases assert on an empty registry
+  // A registration this machine started is never offered for replacement, even under --force: it is
+  // how `cotal down` finds that stack.
+  recordMesh({ space: "taken-here", server: LIVE, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const owned = driver(["cancel"]);
+  const ownedOut = await addWizard({ space: "taken-here", server: LIVE, force: true }, root, owned.io as never);
+  const ownedAsk = owned.asked.find((a) => a.kind === "select" && a.message.includes("a space this machine started, so it is not replaced"));
+  check("the wizard does not offer to replace a space this machine started",
+    ownedOut === false && ownedAsk !== undefined && !ownedAsk.options?.includes("replace") && ownedAsk.options?.includes("rename") === true, owned.asked);
+  check("…and the registration is unchanged", findMesh("taken-here")?.server === LIVE && findMesh("taken-here")?.origin === "up", findMesh("taken-here"));
+  removeMesh("taken-here");
 
   // 2. "Point at a different folder" must ASK for one, not re-infer the folder it just rejected.
   const noTrust = projectRoot("wiz-notrust");
