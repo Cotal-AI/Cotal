@@ -4677,7 +4677,8 @@ and `persona` have per-space values. A write that a variable outranks in this sh
 with a `PREFERENCE_SHADOWED` warning naming the variable. Setting a value that is already saved, or
 unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
 with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
-refused with `CONFLICT`.
+refused with `CONFLICT`. A preferences folder you cannot write is refused with `PERMISSION_DENIED`
+(exit 2), naming the folder, before anything is changed.
 
 `result.settings` (or `result.setting` for `get`) holds each key's `value`, its `winner`
 (`{source, name, value}`, where `source` is `environment`, `space`, `user` or `default`) and the
