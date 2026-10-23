@@ -127,7 +127,9 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
 }
 
 
-export const completionFlags = [jsonFlag, plainFlag] as const;
+export const completionFlags = [jsonFlag, plainFlag,
+  { name: "force", type: "boolean", description: "install/uninstall: rewrite or remove a modified owned stub and cotal-marked startup block; text outside the markers is kept" },
+] as const;
 const currentShell = (): string => { const name = basename(process.env.SHELL ?? ""); return name === "pwsh" ? "powershell" : name; };
 
 /** Validate output mode and grammar before reading or changing shell files. */
@@ -135,6 +137,7 @@ export function validateCompletionArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const [sub, shell] = args.positionals;
   if (args.positionals.length > 2) throw new CommandFailure("refused", "USAGE_INVALID", "completion takes one operation and one shell");
+  if (args.values.force && sub !== "install" && sub !== "uninstall") throw new CommandFailure("refused", "USAGE_INVALID", "--force applies to completion install and uninstall");
   if (sub === undefined) return;
   if (Object.hasOwn(SCRIPTS, sub)) throw new CommandFailure("refused", "USAGE_INVALID", `cotal completion ${sub} is now cotal completion script ${sub}`, { remedy: `load it with: ${LOAD_NOW[sub]}` });
   if (!["script", "install", "uninstall"].includes(sub)) throw new CommandFailure("refused", "USAGE_INVALID", "choose completion script, install or uninstall");
@@ -159,11 +162,11 @@ export async function completion(args: ParsedArgs): Promise<void> {
   if (!paths) throw new CommandFailure("refused", "UNSUPPORTED", "owned PowerShell profile installation is unavailable on this host or the shell is not installed; no profile path was guessed", { remedy: `review your profile manually; the supported loading command is: ${LOAD_NOW.powershell}` });
   if (sh === "zsh" && process.env.ZDOTDIR && !isAbsolute(process.env.ZDOTDIR)) throw new CommandFailure("refused", "USAGE_INVALID", "relative ZDOTDIR makes the startup target depend on the shell's working directory", { remedy: "use an absolute ZDOTDIR or manage the printed script manually" });
   const operation = sub as "install" | "uninstall";
-  const result = changeCompletion(operation, sh, paths, SCRIPTS[sh]!);
+  const result = changeCompletion(operation, sh, paths, SCRIPTS[sh]!, Boolean(values.force));
   writeResult(presentation, { command: `completion ${operation}`, target: { shell: sh }, noOp: result.noOp, result }, (data): Report => ({ sections: [
     { title: data.noOp ? "Shell completion unchanged" : operation === "install" ? "Shell completion installed" : "Shell completion removed", blocks: [
       { kind: "fields", rows: [["Shell", data.shell], ["Script", data.stub], ["Startup", data.startup ?? "fish completion directory"], ["Changed files", String(data.changed.length)]] },
-      { kind: "lines", lines: [{ text: "Only recorded, unchanged owned material was changed. Other startup content was retained.", tone: "hint" }, { text: operation === "install" ? "Open a new shell to load the installed completion. This command did not change the parent shell." : "Functions already loaded in the parent shell cannot be unloaded by this command. Open a new shell.", tone: "hint" }] },
+      { kind: "lines", lines: [{ text: data.forced ? `${operation === "install" ? "Rewrote" : "Removed"} modified owned material with --force. Startup content outside the cotal markers was retained.` : "Only recorded, unchanged owned material was changed. Other startup content was retained.", tone: "hint" }, { text: operation === "install" ? "Open a new shell to load the installed completion. This command did not change the parent shell." : "Functions already loaded in the parent shell cannot be unloaded by this command. Open a new shell.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal completion", description: "Read installed files and ownership, without loading a shell" }, { command: `cotal completion script ${sh}`, description: "Print the supported script for manual wiring" }] }] },
   ] }));
@@ -277,9 +280,15 @@ function statusView(status: CompletionStatus): Report {
         ] },
       ] },
       { title: "Next", blocks: [{ kind: "commands", items: [
-        { command: `cotal completion install ${selected?.shell ?? "<shell>"}`, description: "Install or refresh the managed integration" },
+        // A modified integration refuses a plain install or uninstall, so it is offered only with --force.
+        ...status.shells.filter((shell) => shell.ownership === "modified" && shell !== selected).map((shell) => ({ command: `cotal completion install ${shell.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" })),
+        selected?.ownership === "modified"
+          ? { command: `cotal completion install ${selected.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" }
+          : { command: `cotal completion install ${selected?.shell ?? "<shell>"}`, description: "Install or refresh the managed integration" },
         { command: `cotal completion script ${selected?.shell ?? "<shell>"}`, description: "Print the script for manual setup" },
-        { command: `cotal completion uninstall ${selected?.shell ?? "<shell>"}`, description: "Remove only unchanged recorded material" },
+        selected?.ownership === "modified"
+          ? { command: `cotal completion uninstall ${selected.shell} --force`, description: "Remove the modified owned integration; text outside the cotal markers is kept" }
+          : { command: `cotal completion uninstall ${selected?.shell ?? "<shell>"}`, description: "Remove only unchanged recorded material" },
       ] }] },
     ],
   };

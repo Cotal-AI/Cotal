@@ -13,7 +13,11 @@ interface Paths { stub: string; rc?: string }
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 export const completionSourceLine = (path: string, shell = "bash"): string => shell === "powershell" ? `. '${path.replaceAll("'", "''")}'` : `source ${quote(path)}`;
-const blockFor = (path: string, shell: string) => `# >>> cotal completion >>>\n${completionSourceLine(path, shell)}\n# <<< cotal completion <<<\n`;
+const BEGIN = "# >>> cotal completion >>>", END = "# <<< cotal completion <<<";
+const blockFor = (path: string, shell: string) => `${BEGIN}\n${completionSourceLine(path, shell)}\n${END}\n`;
+/** Each complete owned block in a startup file: its begin marker, the lines up to the next end
+ *  marker with no begin marker among them, and that end marker. */
+const MARKED = new RegExp(`^${BEGIN}\\n(?:(?!${BEGIN}\\n)[^\\n]*\\n)*?${END}(?:\\n|$)`, "gm");
 const recordPath = (paths: Paths) => `${paths.stub}.ownership.json`;
 
 /** Ask the installed shell for its current-user all-hosts profile; profile directories vary by host. */
@@ -190,8 +194,10 @@ export function readCompletionText(path: string): string | undefined {
   return text(read(path));
 }
 
-/** Hold one writer lock and change only the recorded stub and unchanged owned startup block. */
-export function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string) {
+/** Hold one writer lock and change only the recorded stub and unchanged owned startup block. With
+ *  `force`, a modified recorded stub and the complete marked blocks are rewritten or removed too, and
+ *  startup content outside the markers is still kept. */
+export function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string, force = false) {
   supported();
   // Every unsafe file or folder this change reads or writes is named in one refusal before anything is
   // created. A linked startup file is left to its own refusal below, which names the line to add.
@@ -218,10 +224,16 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     let record = owned.record;
     if (!record && operation === "uninstall") {
       if (stub) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this completion file has no recorded ownership; it and custom startup wiring were left unchanged", { remedy: "review and explicitly install the recognized generated integration before uninstalling it" });
-      return { operation, shell, changed, noOp: true, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
+      return { operation, shell, changed, noOp: true, forced: false, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
     }
     if (!record && stub) throw new CommandFailure("refused", "CONFLICT", "the existing completion stub has no recorded ownership; it was not adopted or overwritten", { target: { shell, path: paths.stub }, remedy: "review the existing integration manually; completion script prints the supported replacement without editing it" });
-    if (record && stub && stub.hash !== record.stubHash) throw new CommandFailure("refused", "CONFLICT", "the recorded completion stub was modified; it and startup content were left unchanged", { target: { shell, path: paths.stub } });
+    let forced = false;
+    if (record && stub && stub.hash !== record.stubHash) {
+      if (!force) throw new CommandFailure("refused", "CONFLICT", `the recorded completion stub ${paths.stub} was modified; it and startup content were left unchanged`, { target: { shell, path: paths.stub }, remedy: operation === "install"
+        ? `rewrite it with \`cotal completion install ${shell} --force\`, or put your copy back; \`cotal completion script ${shell}\` prints the one install writes`
+        : `remove it anyway with \`cotal completion uninstall ${shell} --force\`, or put the installed copy back first` });
+      forced = true;
+    }
     if (!record) {
       record = { schemaVersion: 1, shell, stub: paths.stub, stubHash: hash(script), wiring: null };
     }
@@ -229,8 +241,17 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     let installedBlock = blockFor(paths.stub, shell);
     if (record.wiring) {
       const count = current.split(record.wiring.block).length - 1;
-      if (count > 1 || count === 0 && (current.includes(paths.stub) || current.includes("# >>> cotal completion >>>") || current.includes("# cotal shell completion"))) throw new CommandFailure("refused", "CONFLICT", "the recorded startup block is modified or ambiguous; custom startup content was not rewritten");
-      if (count === 1) {
+      if (count > 1 || count === 0 && (current.includes(paths.stub) || current.includes(BEGIN) || current.includes("# cotal shell completion"))) {
+        // Only complete marked blocks can be rewritten; without one, the owner has to say which lines are cotal's.
+        const marked = current.match(MARKED)?.length ?? 0;
+        if (!force || !marked) throw new CommandFailure("refused", "CONFLICT", "the recorded startup block is modified or ambiguous; custom startup content was not rewritten", { target: { shell, path: paths.rc }, remedy: marked
+          ? `${operation === "install" ? "rewrite" : "remove"} the lines from "${BEGIN}" to "${END}" in ${paths.rc} with \`cotal completion ${operation} ${shell} --force\`, or edit them there yourself`
+          : `${paths.rc} has no complete block from "${BEGIN}" to "${END}", so remove the cotal completion lines there yourself, then run \`cotal completion ${operation} ${shell}\` again` });
+        forced = true;
+        installedBlock = blockFor(paths.stub, shell);
+        let placed = operation === "uninstall";
+        nextStartup = current.replace(MARKED, () => (placed ? "" : (placed = true, installedBlock)));
+      } else if (count === 1) {
         installedBlock = (record.wiring.block.startsWith("\n") ? "\n" : "") + blockFor(paths.stub, shell);
         nextStartup = current.replace(record.wiring.block, operation === "install" ? installedBlock : "");
       }
@@ -246,7 +267,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       if (owned.snapshot) { remove(recordPath(paths), owned.snapshot); changed.push(recordPath(paths)); }
     } else {
       if (paths.rc && !record.wiring) {
-        if (current.includes(paths.stub) || current.includes("# >>> cotal completion >>>") || current.includes("# cotal shell completion")) throw new CommandFailure("refused", "CONFLICT", "custom startup wiring already refers to this stub; it was not adopted or rewritten", { remedy: "keep custom wiring and use completion script, or review it before managed installation" });
+        if (current.includes(paths.stub) || current.includes(BEGIN) || current.includes("# cotal shell completion")) throw new CommandFailure("refused", "CONFLICT", "custom startup wiring already refers to this stub; it was not adopted or rewritten", { remedy: "keep custom wiring and use completion script, or review it before managed installation" });
         installedBlock = (current && !current.endsWith("\n") ? "\n" : "") + blockFor(paths.stub, shell);
         nextStartup = current + installedBlock;
       }
@@ -259,7 +280,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       if (text(owned.snapshot) !== serialized) { write(recordPath(paths), owned.snapshot, serialized, 0o600); changed.push(recordPath(paths)); }
       if (readOnly()) throw new CommandFailure("failed", "OPERATION_FAILED", `${changed.includes(paths.stub) ? "wrote" : "kept the current"} ${paths.stub} but could not add its line to ${paths.rc}, which is read-only; that file was not changed`, { target: { shell, path: paths.rc }, changed: [...changed], remedy: `add this line to ${paths.rc} yourself: ${completionSourceLine(paths.stub, shell)}` });
     }
-    return { operation, shell, changed, noOp: !changed.length, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
+    return { operation, shell, changed, noOp: !changed.length, forced, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
   } catch (error) {
     const confirmed = [...changed, ...(error instanceof CommandFailure ? error.changed ?? [] : [])];
     if (error instanceof CommandFailure && error.outcome === "unknown") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", error.message, { target: { shell, detail: error.target }, changed: confirmed, remedy: error.remedy });

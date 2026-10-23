@@ -3,7 +3,9 @@
  * and the refusal of the form it replaced (`completion <shell>`), driven through the built binary in
  * a fresh sandbox per case. HOME, XDG_CONFIG_HOME and COTAL_HOME are sandboxed, so the status reads
  * and `completion install` writes only there. A symlinked startup file is refused by name with the
- * line to add where it points, and a group-writable one with the chmod that fixes it.
+ * line to add where it points, and a group-writable one with the chmod that fixes it. An edited owned
+ * stub or block is refused with `--force` as its way out, which keeps startup content outside the
+ * markers.
  *
  * Run: pnpm smoke:completion-status
  */
@@ -317,6 +319,44 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion offers script and install, not the replaced forms", /^script\t/m.test(offered.stdout) && /^install\t/m.test(offered.stdout) && !/^bash/m.test(offered.stdout), shown(offered));
   const shells = s.run(["__complete", "completion", "script", ""]);
   check("completion script offers the shells", ["bash", "zsh", "fish", "powershell"].every((shell) => new RegExp(`^${shell}$`, "m").test(shells.stdout)), shown(shells));
+}
+
+// ── A modified owned integration names its way out ──────────────────────────────────────────────────
+{
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc"), stub = join(s.xdg, "cotal", "completion.bash");
+  writeFileSync(rc, "export EDITOR=vi\n");
+  s.run(["completion", "install", "bash"]);
+  writeFileSync(rc, readFileSync(rc, "utf8") + "alias ll='ls -l'\n");
+  const installed = { rc: readFileSync(rc, "utf8"), stub: readFileSync(stub, "utf8") };
+  writeFileSync(stub, installed.stub + "# my edit\n");
+  for (const operation of ["install", "uninstall"]) {
+    const r = s.run(["completion", operation, "bash"]);
+    check(`${operation} of an edited stub refuses, exit 2, naming --force, and changes nothing`, r.status === 2 && r.stderr.includes(`cotal completion ${operation} bash --force`) && readFileSync(stub, "utf8") === installed.stub + "# my edit\n", shown(r));
+  }
+  const status = s.run(["completion", "--plain"]);
+  check("bare completion offers install and uninstall for the modified integration only with --force",
+    /^ {2}cotal completion install bash --force /m.test(status.stdout) && /^ {2}cotal completion uninstall bash --force /m.test(status.stdout) && !/^ {2}cotal completion (?:un)?install bash +[A-Z]/m.test(status.stdout), shown(status));
+  const named = s.run(["completion", "install", "bash", "--json"]);
+  check("the refusal names the stub, and its JSON carries the way out", named.status === 2 && codeOf(named.stdout) === "CONFLICT" && JSON.parse(named.stdout).error.message.includes(stub) && /--force/.test(JSON.parse(named.stdout).error.remedy ?? ""), shown(named));
+  const forced = s.run(["completion", "install", "bash", "--force"]);
+  check("install --force rewrites the edited stub and leaves the startup file as it was", forced.status === 0 && readFileSync(stub, "utf8") === installed.stub && readFileSync(rc, "utf8") === installed.rc, shown(forced));
+  writeFileSync(rc, installed.rc.replace(/^(source .*)$/m, "$1 && echo edited"));
+  const block = s.run(["completion", "install", "bash"]);
+  check("install of an edited block refuses, naming the file, the markers and --force",
+    block.status === 2 && block.stderr.includes(rc) && block.stderr.includes('"# >>> cotal completion >>>" to "# <<< cotal completion <<<"') && block.stderr.includes("cotal completion install bash --force"), shown(block));
+  const rewritten = s.run(["completion", "install", "bash", "--force"]);
+  check("install --force rewrites the block and keeps the lines around it", rewritten.status === 0 && readFileSync(rc, "utf8") === installed.rc, shown(rewritten));
+  writeFileSync(rc, installed.rc + installed.rc);
+  const removed = s.run(["completion", "uninstall", "bash", "--force", "--json"]);
+  check("uninstall --force removes both copies of a duplicated block and the stub, and keeps the rest",
+    removed.status === 0 && outcomeOf(removed.stdout) === "ok" && JSON.parse(removed.stdout).result.forced === true && readFileSync(rc, "utf8") === "export EDITOR=vi\nalias ll='ls -l'\n".repeat(2) && !existsSync(stub), shown(removed));
+  s.run(["completion", "install", "bash"]);
+  writeFileSync(rc, readFileSync(rc, "utf8").replace("# <<< cotal completion <<<\n", ""));
+  const unclosed = s.run(["completion", "uninstall", "bash", "--force"]);
+  check("a block with no end marker is refused even with --force, naming the file to edit", unclosed.status === 2 && unclosed.stderr.includes(`${rc} has no complete block`) && existsSync(stub), shown(unclosed));
+  const misplaced = s.run(["completion", "--force"]);
+  check("--force is refused where it does not apply", misplaced.status === 1 && /--force applies to completion install and uninstall/.test(misplaced.stderr), shown(misplaced));
 }
 
 // ── Values the CLI knows locally ──────────────────────────────────────────────────────────────────

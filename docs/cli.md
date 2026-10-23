@@ -5316,6 +5316,12 @@ profile or permits scripts under its execution policy.
 Installation writes a private `.ownership.json` record beside its stub. Reinstall refreshes only
 an unchanged recorded stub. Uninstall removes only that stub and the unchanged recorded startup
 block, keeping other startup bytes. Modified or unrecorded material is preserved with a refusal.
+For a recorded stub or startup block you edited, the refusal names `--force`: `install --force`
+rewrites the stub and each block from `# >>> cotal completion >>>` to `# <<< cotal completion <<<`,
+and `uninstall --force` removes them. Startup content outside those markers is kept. A block whose
+end marker is gone is still refused, with the file named, because only you can tell which lines
+are cotal's; remove them there yourself. For an integration you modified, bare `completion` offers
+`install` and `uninstall` only with `--force`.
 A stub from an earlier release without an ownership record needs manual review; matching
 generated text alone is not treated as ownership. An unowned startup reference to a managed stub must be reviewed
 before removing the stub. These commands cannot unload functions in a parent shell.
