@@ -74,7 +74,8 @@ export interface ResolvedService {
  * endpoint + nonce AND the body's echoed request id, not just "first `{ok:true}` on the rail".
  * A reply that fails any of these is IGNORED (not rejected: an attacker racing a wrong-nonce reply
  * must not be able to fail an honest describe), and the wait continues to the deadline. A signal
- * that aborts with a `TimeoutError` ends the wait as that deadline would.
+ * that aborts with a `TimeoutError` ends the wait as that deadline would. Any other abort rejects
+ * with the signal's reason, as an abort before the publish does.
  */
 export async function describeEndpoint(
   nc: NatsConnection,
@@ -111,7 +112,7 @@ export async function describeEndpoint(
   const cancelled = new Promise<never>((_, reject) => {
     onAbort = () => reject(opts.signal?.reason?.name === "TimeoutError"
       ? unanswered(Math.round(performance.now() - startedAt))
-      : new EpEnvelopeError("unavailable", `describe(${endpoint}) observation cancelled`));
+      : opts.signal?.reason);
     opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {

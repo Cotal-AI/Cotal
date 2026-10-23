@@ -13,7 +13,7 @@
  * No broker. Run: pnpm smoke:ep-invoke
  */
 import {
-  compileContract, describeEndpoint, epReplySubject, invokeCommand, parseEpSubject,
+  compileContract, describeEndpoint, epReplySubject, invokeCommand, parseEpSubject, resolveService,
   unansweredRequest, type EpCaller, type ResolvedService,
 } from "../src/index.js";
 
@@ -271,6 +271,30 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   }, "a poisoned Error.message getter on retry publish still rejects as unavailable and never escapes the timer");
   await poison(() => ({ toString() { throw new Error("toString poisoned"); } }),
     "a poisoned non-Error toString on retry publish still rejects as unavailable and never escapes the timer");
+}
+
+// 7d) A cancellation settles a resolve with the signal's reason whichever leg it lands in. Aborted
+//     while the describe waits for its reply, it used to reject `unavailable`, the code a real
+//     transport failure carries, while an abort before the publish rejected with the reason itself.
+//     A `TimeoutError` abort still ends the wait as the deadline would.
+{
+  const cancelIn = async (reason: unknown, aborted: boolean) => {
+    const ctl = new AbortController();
+    if (aborted) ctl.abort(reason);
+    else setTimeout(() => ctl.abort(reason), 50);
+    const e = await resolveService(fakeNc(() => []), SPACE, ENDPOINT, CALLER, { signal: ctl.signal, deadlineMs: 2000 })
+      .then(() => undefined, (err: unknown) => err);
+    return { e, reason: ctl.signal.reason as unknown };
+  };
+  const stop = new Error("caller-stop");
+  for (const [label, reason] of [["the default AbortError", undefined], ["a caller's Error", stop]] as const) {
+    const before = await cancelIn(reason, true), during = await cancelIn(reason, false);
+    c(`a resolve aborted before the describe rejects with the signal's reason (${label})`, before.e === before.reason, before.e);
+    c(`a resolve aborted while the describe waits rejects with the signal's reason (${label})`, during.e === during.reason, during.e);
+  }
+  const timedOut = await cancelIn(new DOMException("deadline passed", "TimeoutError"), false);
+  c("a TimeoutError abort while the describe waits still reports the unanswered deadline",
+    (timedOut.e as { code?: string })?.code === "deadline-exceeded" && unansweredRequest(timedOut.e), timedOut.e);
 }
 
 // 8) The retry above is confined to reserved, read-only describe. A resolved command rides epCall
