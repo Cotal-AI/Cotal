@@ -2019,7 +2019,9 @@ export class Manager {
       // pull/display), so skip the channel-registry watch — the supervisor cred (residual 2) then
       // holds no channel-KV read grant. Presence (the roster) is still watched.
       watchChannels: false,
-      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint" },
+      // `host` says which machine runs this manager, as an agent's card does: an owner with several
+      // managers tells them apart by it. Advisory display metadata, never a routing input.
+      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint", meta: { host: hostname() } },
     });
     // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
     // matter to a supervisor operator, especially a failed standing-credential renewal.
