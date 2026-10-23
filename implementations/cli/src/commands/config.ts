@@ -144,8 +144,9 @@ function setting(key: PreferenceKey, scope: Scope, prefs: Preferences): Setting 
   return { ...resolvePreference(key, { space: scope.space ?? undefined, preferences: prefs }), about: info.about, perSpace: info.perSpace };
 }
 
-/** A harness must name a connector this workstation knows, so a typo is refused at the write. */
-function checkHarness(value: string): void {
+/** A harness must name a connector this workstation knows, so a typo is refused at the write.
+ *  `persona create --harness` takes the same check. */
+export function checkHarness(value: string): void {
   const installed = loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name));
   const known = knownHarnesses(installed);
   if (!known.includes(value)) throw usage(`no harness "${value}"; known harnesses: ${known.join(", ")}`);

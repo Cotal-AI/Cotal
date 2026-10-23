@@ -14,6 +14,7 @@ import {
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { checkHarness } from "./config.js";
 
 export const personaFlags = [
   spaceFlag, serverFlag, jsonFlag, plainFlag,
@@ -118,6 +119,7 @@ function createSource(name: string, path: string, values: Values): Buffer {
     return bytes;
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
+  if (values.harness !== undefined) checkHarness(values.harness);
   const body = values.prompt ?? readInput(values.from!).toString("utf8");
   if (!body.trim()) throw usage("persona body is empty");
   const channels = (text: string | undefined) => text?.split(",").map(value => value.trim()).filter(Boolean);

@@ -121,6 +121,10 @@ const ansi = /\x1b\[/;
   }
   const both = run(["config", "--json", "--plain"]);
   check("--json with --plain is refused", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
+  // A persona's harness pin takes the same check as the harness preference.
+  const pinned = run(["persona", "create", "pinned", "--prompt", "hi", "--subscribe", "", "--harness", "nosuch", "--json"], {}, project);
+  check("persona create --harness refuses a harness no connector provides, writing no file",
+    pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && /no harness "nosuch"; known harnesses: .*claude.*opencode/.test(pinned.envelope.error.message) && !existsSync(join(project, ".cotal", "agents", "pinned.md")), shown(pinned));
 }
 
 // ── the named environment tiers ──────────────────────────────────────────────────────────────────
