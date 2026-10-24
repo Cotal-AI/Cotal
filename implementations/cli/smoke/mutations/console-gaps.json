@@ -1,6 +1,6 @@
 {
   "suite": ["implementations/cli/smoke/console-gaps.smoke.ts"],
-  "guard": "unread badges count live arrivals and stay honest at the retention cap, the roster tags the harness, and a deleted channel leaves the strip",
+  "guard": "unread badges count live arrivals and stay honest at the retention cap, the roster tags the harness, a deleted channel leaves the strip, and the TUI paints no color under --no-color or NO_COLOR",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-gaps",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-gaps.json",
   "why": [
@@ -56,6 +56,26 @@
       "cell": "a channel that first appears after startup badges its first message (+1), no baseline swallows it",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "note": "The empty-mesh defect console-reviewer reproduced: the first live channel's first arrival counted as read."
+    },
+    {
+      "name": "G6 the TUI loads Ink when the command module loads",
+      "file": "implementations/cli/src/commands/console.ts",
+      "find": "import type { ObserverAuth } from \"../console/root.js\";\n",
+      "replace": "import \"ink\";\nimport type { ObserverAuth } from \"../console/root.js\";\n",
+      "expectRed": "--no-color paints the console with no ANSI color, even under FORCE_COLOR",
+      "cell": "--no-color paints the console with no ANSI color, even under FORCE_COLOR",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "Chalk settles its level when Ink is imported, before the kernel reads --no-color, so FORCE_COLOR still colors the console."
+    },
+    {
+      "name": "G7 the TUI loads without the color decision",
+      "file": "implementations/cli/src/commands/console.ts",
+      "find": "  if (!colorEnabled()) process.env.FORCE_COLOR = \"0\";\n",
+      "replace": "",
+      "expectRed": "a non-empty NO_COLOR paints the console with no ANSI color",
+      "cell": "a non-empty NO_COLOR paints the console with no ANSI color",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "Chalk does not read NO_COLOR, so the console paints color under it."
     }
   ]
 }

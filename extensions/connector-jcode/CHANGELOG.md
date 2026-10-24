@@ -1,5 +1,137 @@
 # @cotal-ai/connector-jcode
 
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+No changes in this release.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
+### Patch Changes
+
+- ab2acc8: Tell every agent where to talk when it joins. A fresh agent can start on no channel, so the Claude Code, Codex, Jcode, OpenCode and Hermes startup text now says how to find its team's channel with `cotal_channels` and `cotal_join`, to use `cotal_dm` for one peer and `cotal_anycast` for a role, and to post on `#announce` only for a deliberate space-wide notice. OpenCode and Hermes previously carried no channel guidance at all. This is guidance only: no grant, subscription, mention or wake behaviour changes.
+
+## 0.91.0
+
+### Patch Changes
+
+- 0e40d19: Files written in place under `~/.cotal` or a project's `.cotal` are no longer written through a symlink. The manager's own delivery-aware marker, the `agent-bearer` health file, the onboarding marker, the `setup` log and personas, the web session file and detached log, the feedback store, persona files saved by `saveAgentFile`, the seat custody record, payload, exit record and log, the Claude seat home and plugin marketplace, the Codex host log, the Jcode launch record, the `ext` extensions prefix `package.json`, and the isolated broker's config rewrite and watchdog now refuse a symlink and leave it unchanged. A file rewritten in place is set to `0600` through the open file. `hardenPrivate` on a file now uses the same no-follow descriptor. A directory is still hardened to `0700` by its path, so a symlinked `~/.cotal` or `.cotal` is not refused there. The manager and native service custody no longer chmod their pid records by path, since those are created `0600`. The broker ports report refusal names the report's path, and a failed close no longer hides it.
+
+## 0.90.1
+
+## 0.90.0
+
+## 0.89.0
+
+## 0.88.0
+
+## 0.87.0
+
+### Patch Changes
+
+- af82e8d: A seat's launch-material directory (`cotal-launch-*` in the OS temp dir, holding the broker URL, the creds path and the control token) is now removed when the seat's process exits. Before this change a Claude seat left it behind after `cotal stop`, while the persona file and control socket of the same launch were removed. `materialEnv` in `@cotal-ai/connector-core` now takes the launch's artifact array as a second, required argument and appends the material's private directory to it, and every connector returns that array on `LaunchSpec.artifacts`, so the manager, the pty runtime and the foreground `cotal spawn` remove it the way they remove a persona file. Each connector now writes the material after its last refusal, so a refused launch leaves no material file behind. The second material file the Hermes launcher writes for its gateway child is not covered by this change.
+
+## 0.86.0
+
 ## 0.85.0
 
 ## 0.84.0

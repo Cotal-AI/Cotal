@@ -64,9 +64,6 @@ export const piConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
-      // extension drops even that once it has read it, so a shell this seat runs inherits neither.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -114,6 +111,10 @@ export const piConnector: Connector = {
     // The persona rides a private file the launcher removes once the child has exited (core
     // launch-artifacts). The extension also removes it at session start, once Pi has read it.
     const artifacts: string[] = [];
+    // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
+    // extension drops even that once it has read it, so a shell this seat runs inherits neither. Its
+    // directory is the first artifact, so a failed persona write below removes it too.
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
     if (persona) {
       const file = writeLaunchArtifact(artifacts, "cotal-persona-", "persona.md", persona);
       env.COTAL_PI_PERSONA_FILE = file;

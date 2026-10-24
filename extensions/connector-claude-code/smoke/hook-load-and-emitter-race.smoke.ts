@@ -76,33 +76,36 @@ check("BOTH pass --plugin-dir, so the plugin's hooks are actually loaded",
   { missing: argvLines.filter((l) => !l.includes("--plugin-dir")) });
 
 // ---- 3. the emitter race ----
+// The event plane lives in `claude-events.ts`, which the MCP server and the personal native host
+// both build; its emitter factory is the guarded start. `mcp.ts` still owns the shutdown order.
+const plane = strip(read("src/claude-events.ts"));
 const mcp = strip(read("src/mcp.ts"));
-const iWait = mcp.indexOf("await waitForEventConnection(");
-const iStart = mcp.indexOf("return startEmitter();");
+const iWait = plane.indexOf("await waitLive(");
+const iStart = plane.indexOf("return AguiEmitter.start");
 console.log("\nthe emitter — it must not start against an unbound endpoint:");
 check("the emitter path AWAITS the mesh link", iWait !== -1);
-// REACHABILITY, not just presence. `if (false) await waitForEventConnection()` keeps every
-// character the cell above looks for and restores the original race — found by a review lane on
-// this branch. Requiring the await to be a BARE STATEMENT (line starts with `await`) rejects the
-// guarded form. NAMED RESIDUAL, because this is still source and not a call-path witness: a more
-// elaborate guard (a variable that is always false, an early return above it) would evade this.
-// The real fix is to drive the emitter factory and observe that it reaches the wait; the call site
-// is a nested closure inside the tool registration, so that needs a harness this suite does not
-// have. Recorded as open rather than papered over.
+// REACHABILITY, not just presence. `if (false) await waitLive()` keeps every character the cell
+// above looks for and restores the original race — found by a review lane on the branch that added
+// it. Requiring the await to be a BARE STATEMENT (line starts with `await`) rejects the guarded
+// form. NAMED RESIDUAL, because this is still source and not a call-path witness: a more elaborate
+// guard (a variable that is always false, an early return above it) would evade this. The real fix
+// is to drive the emitter factory and observe that it reaches the wait; the call site is the
+// holder's factory closure, so that needs a harness this suite does not have. Recorded as open
+// rather than papered over.
 check("…as a BARE statement, not guarded into unreachability",
-  mcp.split("\n").some((l) => /^\s*await waitForEventConnection\(/.test(l)),
-  mcp.split("\n").filter((l) => l.includes("waitForEventConnection(")));
+  plane.split("\n").some((l) => /^\s*await waitLive\(/.test(l)),
+  plane.split("\n").filter((l) => l.includes("waitLive(")));
 check("instrument control: the guarded emitter start call is in this file", iStart !== -1);
 check("…and the wait comes BEFORE the emitter starts (the ordering IS the fix)",
   iWait !== -1 && iStart !== -1 && iWait < iStart, { iWait, iStart });
 
 check("event pumps use the same connection wait as emitter startup",
-  /waitLive:\s*waitForEventConnection/.test(mcp));
+  /\n\s*waitLive,\s*\n\s*\}\);/.test(plane));
 check("an existing bind without live transport cannot release the event wait",
-  /else if \(agent\.connected && agent\.transportConnected\) finish\(\)/.test(mcp));
-const iAbort = mcp.indexOf("eventWaitStop.abort();");
+  /if \(agent\.connected && agent\.transportConnected\) \{ release\(\); resolve\(\); \}/.test(plane));
+const iAbort = mcp.indexOf("plane?.stop();");
 check("shutdown cancels event waiting before it closes the endpoint",
-  iAbort !== -1 && iAbort < mcp.indexOf("await agent.stop();"));
+  /stop: \(\) => stop\.abort\(\)/.test(plane) && iAbort !== -1 && iAbort < mcp.indexOf("await agent.stop();"));
 
 const agent = strip(readFileSync(join(root, "..", "connector-core", "src", "agent.ts"), "utf8"));
 check("connector-core exposes a PUBLIC bounded wait for callers outside the op methods",

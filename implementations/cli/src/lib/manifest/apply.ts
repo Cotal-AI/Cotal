@@ -102,7 +102,7 @@ export function writeLaunchSpec(root: string, spec: MeshLaunchSpec, opts: { upda
 
 /** A channel's registry card (description/instructions/replay…) in the shape `seedChannelRegistry`
  *  writes. Oversize description/instructions are rejected at the write path. */
-function cardOf(ch: ResolvedChannel): ChannelConfig {
+export function cardOf(ch: ResolvedChannel): ChannelConfig {
   return {
     ...(ch.description !== undefined ? { description: ch.description } : {}),
     ...(ch.instructions !== undefined ? { instructions: ch.instructions } : {}),
@@ -118,15 +118,6 @@ export function manifestToChannels(prepared: PreparedManifest): ChannelRegistryF
   const channels: Record<string, ChannelConfig> = {};
   for (const ch of prepared.manifest.channels) channels[ch.name] = cardOf(ch);
   return { ...(prepared.manifest.defaults ? { defaults: prepared.manifest.defaults } : {}), channels };
-}
-
-/** A seed of ONLY the given channels and NO defaults — for `spawn -f`, which seeds the brand-new
- *  keys it creates onto a shared mesh and must never rewrite the mesh-wide defaults or a pre-existing
- *  (unmanaged) card. */
-export function channelsSeed(channels: ResolvedChannel[]): ChannelRegistryFile {
-  const out: Record<string, ChannelConfig> = {};
-  for (const ch of channels) out[ch.name] = cardOf(ch);
-  return { channels: out };
 }
 
 /** Preflight the connectors: MATERIALIZE every distinct connector type from the manifest (seeded or

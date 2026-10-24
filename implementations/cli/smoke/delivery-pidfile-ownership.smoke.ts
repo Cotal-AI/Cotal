@@ -7,9 +7,9 @@
  * On the reporting mesh the record named a pid four days dead while the daemon ran under a new one.
  *
  * WHY THAT IS NOT MERELY AN UNDER-REPORT. `cotal down` decides what to stop from that record, and
- * `mayBeRunning` is documented as the guard that must fail CLOSED so `cotal down nats` cannot pull
- * the broker out from under a live dependant. A record naming a dead pid SATISFIES that guard: it
- * supplies the proof-of-death the guard requires, so a live delivery daemon reads as clear.
+ * `mayBeRunning` is the check that must fail CLOSED where `down --preserve-state` fences the daemon
+ * and calls its cut complete. A record naming a dead pid SATISFIES that check: it supplies the
+ * proof-of-death the check requires, so a live delivery daemon reads as clear.
  *
  * THE SUITE RUNS THE REAL DAEMON ON THE NON-LAUNCHER PATH, which is the whole subject: `cotal
  * deliver` is spawned directly against a real auth broker, exactly as a container entrypoint would,
@@ -140,8 +140,9 @@ try {
     existsSync(identityPinPath(PID_PATH)) ? readFileSync(identityPinPath(PID_PATH), "utf8").trim() : null);
   check("CELL: the shipped reader reports the live daemon as ALIVE rather than absent",
     deliveryLiveness(undefined, SPACE) === "alive", deliveryLiveness(undefined, SPACE));
-  // THE GUARD THE ISSUE IS ABOUT. `mayBeRunning` must block a `cotal down nats` while this daemon
-  // is live; over an absent or stale record it returns false and the broker goes out from under it.
+  // THE CHECK THE ISSUE IS ABOUT. `mayBeRunning` must see this daemon as live, so a preserving cut
+  // fences it and never calls the stack down around it; over an absent or stale record it returns
+  // false and the live daemon reads as gone.
   check("CELL: the fail-closed down guard sees the live daemon (mayBeRunning is TRUE)",
     mayBeRunning(DELIVERY_ROW, ctx) === true, mayBeRunning(DELIVERY_ROW, ctx));
 

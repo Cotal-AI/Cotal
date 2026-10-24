@@ -10,12 +10,14 @@
 #
 # The floor is 0.18 because `BasePlatformAdapter.connect` gained the keyword-only `is_reconnect`
 # there and the gateway has passed it at every call site since; plugin/cotal/adapter.py accepts
-# and acts on it. The ceiling is exclusive of 0.22, which does not exist upstream yet.
+# and acts on it. The ceiling is exclusive of 0.22. 0.22.0 was released upstream on 2026-10-14
+# and has not been checked against this connector.
 #
 # What a resolver actually picks from this range: PyPI publishes up to 0.19.0, so a plain uv/pip
-# resolution lands on 0.19.0, which is inside the range and supported. 0.20.x and 0.21.x exist
-# only as upstream GitHub releases, so an operator on those installed from git or the install
-# script is also inside the range rather than refused.
+# resolution lands on 0.19.0, which is inside the range and supported. 0.20.x and later exist
+# only as upstream GitHub releases. An operator on 0.20.x or 0.21.x installed from git is inside
+# the range. Hermes's install script installs the latest stable release by default, which is
+# 0.22.x since 2026-10-14, so that default is outside the range and refused.
 [project]
 name = "cotal-connector-hermes"
 version = "0.1.0"

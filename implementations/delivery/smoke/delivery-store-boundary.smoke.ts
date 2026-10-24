@@ -112,13 +112,15 @@ try {
   const two = await seed("two", "a", "b");
   const one = await seed("one", "a");
   // A source checkout refuses to seed the connector store, so the child skips seeding like the other CLI smokes.
-  const env = { ...process.env, HOME: join(scratch, "home"), XDG_CONFIG_HOME: join(scratch, "xdg"), COTAL_HOME: join(scratch, "cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(scratch, "home"), XDG_CONFIG_HOME: join(scratch, "xdg") };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  Object.assign(env, { COTAL_HOME: join(scratch, "cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" });
   const repoRoot = join(import.meta.dirname, "..", "..", "..");
   // Async so the listener in this process can answer the child's dial.
   const deliver = (root: string, ...flags: string[]): Promise<{ out: string; signer?: string }> =>
     new Promise((done) => {
       jwts.length = 0;
-      const child = spawn(join(repoRoot, "node_modules", ".bin", "tsx"), [join(repoRoot, "bin", "cotal.ts"), "deliver", ...flags, "--dev-mint", "--server", server], { cwd: join(scratch, root), env });
+      const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repoRoot, "bin", "cotal.ts"), "deliver", ...flags, "--dev-mint", "--server", server], { cwd: join(scratch, root), env });
       let out = "";
       child.stdout.on("data", (d) => (out += d));
       child.stderr.on("data", (d) => (out += d));

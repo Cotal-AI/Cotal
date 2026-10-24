@@ -4,9 +4,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, createSpaceAuth, evictDeniedPrincipalWithCreds, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { bootDeliveryDaemon } from "./_boot-delivery.js";
 let pass = 0, fail = 0;
 const check = (name: string, condition: boolean, extra?: unknown) => {
   if (condition) { pass++; console.log(`  ✓ ${name}`); }
@@ -50,7 +51,7 @@ if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL !== "1") {
 }
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `orphan817-${randomUUID().slice(0, 8)}`; const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n"); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; const managers: ChildProcess[] = []; const seats: number[] = [];
+const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined; const managers: ChildProcess[] = []; const seats: number[] = [];
 async function startManager(tag: string, returnAtManager = false): Promise<{ child: ChildProcess; manager?: { managerPid: number; managerInstanceId: string }; ready?: { managerPid: number; managerInstanceId: string; seatPid: number; actor: string; lifecycleUid: string }; spawn?: { managerPid: number; managerInstanceId: string; reply: { ok: boolean; error?: string; data?: unknown }; managedNames: string[] }; stdout: () => string; stderr: () => string }> {
   const child = spawn(tsx, [host], { cwd: repo, env: { ...ambientEnv, REPRO_ROOT: root, REPRO_SPACE: space, REPRO_SERVERS: servers, REPRO_OBSERVER_CREDS: observerCreds, REPRO_EVICTOR_CREDS: evictorCreds, REPRO_ACCOUNT_ID: auth.account.pub, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" }, detached: true, stdio: ["ignore", "pipe", "pipe"] }); managers.push(child); let out = "", err = ""; child.stdout?.on("data", (b) => out += String(b)); child.stderr?.on("data", (b) => err += String(b)); const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) { const readyLine = out.split("\n").find((x) => x.startsWith("REPRO_READY ")); if (readyLine) { const ready = JSON.parse(readyLine.slice("REPRO_READY ".length)); seats.push(ready.seatPid); return { child, ready, stdout: () => out, stderr: () => err }; } const spawnLine = out.split("\n").find((x) => x.startsWith("REPRO_SPAWN ")); if (spawnLine) return { child, spawn: JSON.parse(spawnLine.slice("REPRO_SPAWN ".length)), stdout: () => out, stderr: () => err }; const managerLine = out.split("\n").find((x) => x.startsWith("REPRO_MANAGER ")); if (managerLine && returnAtManager) return { child, manager: JSON.parse(managerLine.slice("REPRO_MANAGER ".length)), stdout: () => out, stderr: () => err }; if (child.exitCode !== null) throw new Error(`${tag} manager exited ${child.exitCode}: ${err}`); await wait(100); }
@@ -59,11 +60,11 @@ async function startManager(tag: string, returnAtManager = false): Promise<{ chi
 try {
   if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL === "1") throw new Error("CONTROL_THROW_MUST_FAIL");
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await wait(50); await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  const did = newIdentity(); daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, did, "delivery"), card: { id: did.id, name: "delivery", role: "delivery", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }); daemon.on("error", () => {}); await daemon.start(); await daemon.startPlane3(async () => undefined, { evictPrincipal: async (principal) => evictDeniedPrincipalWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal, options: { maxVerifyRounds: 12 } }), reloadStoreIdentity: () => workspaceSecretStore(root).identity });
-  // The manager's #1694 binding requires the answer to name a real holder of the delivery
-  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
-  // `holdsDeliveryLease` below is truthful.
-  await daemon.acquireDeliveryLease(0).catch(() => {});
+  // The shipped delivery rail: both eviction verbs, and the delivery lease held and renewed for the
+  // suite's whole life. The successor starts more than one lease TTL after this boot (the first
+  // manager's start plus the 20 s wait below), so a lease acquired once and never renewed has expired
+  // by then and the successor refuses the responder that no longer holds it.
+  daemon = await bootDeliveryDaemon({ space, servers, auth, reloadStoreIdentity: workspaceSecretStore(root).identity });
   const first = await startManager("first");
   if (!first.ready)
     throw new Error(`first manager refused: ${first.spawn?.reply.error}\nstdout:\n${first.stdout()}\nstderr:\n${first.stderr()}`);

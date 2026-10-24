@@ -458,6 +458,26 @@ try {
   }
   await new Promise<void>((res) => { try { epWatchEvents(nc, SPACE, "not.an.epe.subtree", { onEvent: () => {}, onError: () => {} }); c("epWatchEvents refuses a non-epe filter", false, "no throw"); } catch { c("epWatchEvents refuses a filter that is not an epe subtree of the space", true); } res(); });
 
+  // stop() never outlives its connection: a drain settles on the server's PONG, which a closing
+  // connection strands, so a stop racing the close must settle on the close, and a stop on a closed
+  // connection must settle rather than reject.
+  {
+    const nc2 = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+    const watchMid = epWatchEvents(nc2, SPACE, `${spacePrefix(SPACE)}.epe.>`, { onEvent: () => {}, onError: () => {} });
+    await nc2.flush();
+    const t0 = Date.now();
+    const stopping = watchMid.stop().then(() => "stopped" as const, (e: Error) => `rejected: ${e.message}`);
+    await nc2.close();
+    const outcome = await Promise.race([stopping, wait(3000).then(() => "hung" as const)]);
+    c("epWatchEvents stop() settles when the connection closes mid-drain", outcome === "stopped" && Date.now() - t0 < 3000, JSON.stringify({ outcome, ms: Date.now() - t0 }));
+    const nc3 = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+    const watchGone = epWatchEvents(nc3, SPACE, `${spacePrefix(SPACE)}.epe.>`, { onEvent: () => {}, onError: () => {} });
+    await nc3.flush();
+    await nc3.close();
+    const afterClose = await Promise.race([watchGone.stop().then(() => "stopped" as const, (e: Error) => `rejected: ${e.message}`), wait(3000).then(() => "hung" as const)]);
+    c("epWatchEvents stop() on an already-closed connection settles at once", afterClose === "stopped", afterClose);
+  }
+
   await nc.drain();
   console.log(`\nENDPOINT VERBS SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 } finally {

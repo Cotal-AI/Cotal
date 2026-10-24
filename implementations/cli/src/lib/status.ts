@@ -1,25 +1,37 @@
-import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { authDir, extensionConnectors, findCotalRoot, installedExtensionVersion, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveMeshTarget, resolveOnPath, WEB_PIDFILE, WEB_SESSION_FILE, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
+import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
+import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
-import { resolveNatsServer } from "./nats-bin.js";
+import { findNatsServer, natsServerProblem } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
+import { serviceInstanceStore, serviceInstances } from "./service-instances.js";
 import { cliVersion } from "./version.js";
 
 // Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
 export { resolveRuntimeSpace, resolveSpace } from "@cotal-ai/workspace";
 
-export interface MeshStatus {
-  reachable?: boolean;
-  server: string;
-  space: string;
-  root: string;
-  auth: boolean;
-  origin?: MeshEntry["origin"];
+/** Where the dashboard that holds the live `pid` in `web.pid` recorded its session. A dashboard started
+ * as an owned service writes its own record beside its startup receipt and never writes `web.session`,
+ * so the web service instance whose recorded process is that live pid names the file. Any other holder
+ * is a dashboard that wrote `web.session`. The holder picks the record, and neither is read in place of
+ * the other. Instance records that cannot be read throw. */
+export function webSessionSource(context: LocalProcessContext, pid: number): { path: string; label: string; instance?: string } {
+  const held = serviceInstances(context.space).map((row) => row.record.value).filter((value) =>
+    value.adapter?.name === WEB_SERVICE_ADAPTER && value.process !== undefined && value.process.pid === pid && assertRecordIdentity(value.process).kind === "match");
+  if (held.length > 1) throw new Error(`${held.length} web service instances record the live pid ${pid}`);
+  const instance = held[0];
+  if (!instance) return { path: localProcessPath(WEB_SESSION_FILE, context), label: WEB_SESSION_FILE };
+  const stateDirectory = serviceInstanceStore(context.space).directory();
+  if (!stateDirectory) throw new Error("the service state directory is missing");
+  return {
+    path: serviceWebSessionPath({ space: context.space, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory }),
+    label: "service session record",
+    instance: instance.instanceId,
+  };
 }
 
-/** The address the dashboard recorded in `web.session` once `listen()` succeeded, with the readiness
- * nonce recorded beside it, or `undefined` while there is no whole record. A record that exists and
- * cannot be read throws. */
+/** The address the dashboard recorded in its session record once `listen()` succeeded, with the
+ * readiness nonce recorded beside it, or `undefined` while there is no whole record. A record that
+ * exists and cannot be read throws. */
 export function webBoundAddress(path: string): { host: string; port: number; url: string; readiness: string } | undefined {
   const session = readWebSession(path);
   if (!session) return undefined;
@@ -29,8 +41,8 @@ export function webBoundAddress(path: string): { host: string; port: number; url
 
 /** The address a mesh's dashboard recorded once it was listening, while the pid it recorded is alive.
  * Only its own records place it: `--port` moves it off its default port, and any other program can
- * own that port. A record that exists and cannot be read throws an error that names it, because a
- * read error such as EISDIR carries no path. */
+ * own that port. {@link webSessionSource} picks the record. A record that exists and cannot be read
+ * throws an error that names it, because a read error such as EISDIR carries no path. */
 export function recordedWebUrl(context: LocalProcessContext): string | undefined {
   let raw: string | undefined;
   try {
@@ -40,50 +52,32 @@ export function recordedWebUrl(context: LocalProcessContext): string | undefined
   }
   const pid = raw === undefined ? undefined : parsePid(raw);
   if (pid === undefined || probeLiveness(pid) !== "alive") return undefined;
+  let source: ReturnType<typeof webSessionSource>;
   try {
-    return webBoundAddress(localProcessPath(WEB_SESSION_FILE, context))?.url;
+    source = webSessionSource(context, pid);
   } catch (e) {
-    throw new Error(`${WEB_SESSION_FILE} unreadable · ${(e as Error).message}`);
+    throw new Error(`service instance records unreadable · ${(e as Error).message}`);
   }
-}
-
-/** True when an installed extension contributes the `web` command and its package is on disk, so
- * `cotal web` can start it. A manifest or package record that cannot be read throws, like every
- * other reader. */
-export function webInstalled(): boolean {
-  return loadExtensionsManifest().extensions.some((e) => e.commands.some((cmd) => cmd.name === "web") && installedExtensionVersion(e.pkg) !== undefined);
-}
-
-/** Cheap snapshot of the mesh setup and spawn resolve for this folder. Discovered catalog brokers
- * are never probed: their registry record is the selected state this card reports. */
-export async function meshStatus(cwd: string): Promise<MeshStatus> {
   try {
-    const target = resolveMeshTarget(cwd, {});
-    return {
-      reachable: target.origin === "catalog" ? undefined : await isReachable(target.server, target.tlsRequired ? { tls: true } : {}),
-      server: target.server,
-      space: target.space,
-      root: target.root,
-      auth: target.mode !== "open",
-      ...(target.origin ? { origin: target.origin } : {}),
-    };
-  } catch {
-    // With no resolvable mesh, retain the configure-only card's local default state.
+    return webBoundAddress(source.path)?.url;
+  } catch (e) {
+    throw new Error(`${source.label} unreadable · ${(e as Error).message}`);
   }
-  const server = DEFAULT_SERVER;
-  const root = findCotalRoot(cwd);
-  const auth = loadSoleSpaceAuth(authDir(root));
-  return {
-    reachable: await isReachable(server),
-    server,
-    space: auth?.space ?? DEFAULT_SPACE,
-    root,
-    auth: Boolean(auth),
-  };
+}
+
+/** True when an installed extension contributes the `web` service preset and its package is on disk,
+ * so `cotal service add --preset web` can configure the dashboard. A manifest or package record that
+ * cannot be read throws, like every other reader. */
+export function webInstalled(): boolean {
+  return loadExtensionsManifest().extensions.some((e) => e.servicePresets?.some((preset) => preset.name === "web") === true && installedExtensionVersion(e.pkg) !== undefined);
 }
 
 export interface MachineStatus {
   nats: "path" | "bundled" | "missing";
+  /** The nats-server a broker start would run and the version it reports, or null when there is none. */
+  natsServer: { path: string; version: string | null } | null;
+  /** Why a broker start refuses that nats-server, or null. */
+  natsProblem: string | null;
 }
 
 /** One installed connector's harness readiness: the executables it declares (`requires`), the ones
@@ -98,13 +92,12 @@ export interface HarnessStatus {
 
 /** Machine-level readiness: the once-per-machine setup pieces. */
 export async function machineStatus(): Promise<MachineStatus> {
-  let nats: MachineStatus["nats"] = "missing";
   try {
-    nats = (await resolveNatsServer()).source;
+    const server = await findNatsServer();
+    return { nats: server.source, natsServer: { path: server.path, version: server.version }, natsProblem: natsServerProblem(server) };
   } catch {
-    nats = "missing";
+    return { nats: "missing", natsServer: null, natsProblem: null };
   }
-  return { nats };
 }
 
 /** Every connector this machine can launch, read off each connector's own `requires` rather than a list
@@ -121,12 +114,12 @@ export function connectorHarnesses(): HarnessStatus[] {
     .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !resolveOnPath(bin)), setup }));
 }
 
-/** The rows each connector's setup provider reports about what it installed. Only a connector that
- *  declares a provider is imported; one whose cached metadata predates the setup ref is read from the
- *  connector itself. A declared provider that cannot be resolved renders as one red row naming the
- *  error, so the rest of status still prints. */
-export async function connectorStatusRows(harnesses: readonly HarnessStatus[]): Promise<ConnectorStatusRow[]> {
-  const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills` };
+/** The rows each connector's setup provider reports about what it installed, for the selected space
+ *  when `signedIn` names it. Only a connector that declares a provider is imported; one whose cached
+ *  metadata predates the setup ref is read from the connector itself. A declared provider that cannot
+ *  be resolved renders as one red row naming the error, so the rest of status still prints. */
+export async function connectorStatusRows(harnesses: readonly HarnessStatus[], signedIn?: SignedInSpace): Promise<ConnectorStatusRow[]> {
+  const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills`, ...(signedIn ? { signedIn } : {}) };
   const rows: ConnectorStatusRow[] = [];
   for (const harness of harnesses) {
     try {

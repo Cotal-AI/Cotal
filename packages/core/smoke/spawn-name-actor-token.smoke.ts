@@ -176,7 +176,7 @@ const CLI_RAW = readFileSync(
   "utf8",
 );
 check("instrument control: the CLI's spawn source was located",
-  CLI_RAW.includes("async function spawnDetached") && CLI_RAW.includes("export async function spawn"),
+  CLI_RAW.includes("async function launchManagedPersona") && CLI_RAW.includes("export async function spawn"),
   { len: CLI_RAW.length });
 const CLI_AST = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest);
 // Parsed, so only a real value import binding the export to its own name counts, wherever it sits in the list.

@@ -18,6 +18,10 @@ export type SessionVerifier = (
 /** Out-of-band key on a session-caller permission set: the grant expiry (unix seconds) the callout
  *  binds the minted JWT to, instead of the bearer's. Stripped before the JWT is encoded. */
 export const SESSION_EXP = "__cotalSessionExp";
+/** Internal expiry bound for ordinary endpoint callers, stripped before JWT encoding. */
+export const ENDPOINT_CALLER_EXP = "__cotalEndpointCallerExp";
+export const ENDPOINT_CALLER_RECHECK = "__cotalEndpointCallerRecheck";
+export type EndpointCallerResolver = (t: ValidatedUserToken) => Promise<{ capabilities: NonNullable<MintOpts["endpointCapabilities"]>; expiresAt?: number; recheck?: () => Promise<void> }>;
 
 /** The callout's issuing seam for an eligible user's `manager-caller` view (SPEC 13.15). `mint`
  *  builds the view's permission set for the given `issued` pair, so the evidence is the set that is signed.
@@ -49,7 +53,8 @@ export type AclResolver = (
  * Build the callout's `permissionsFor` hook. Maps `ValidatedUserToken` → `MintPrincipal` → core's
  * `permissionsFor("agent", …)`. `connId` here is the CLIENT-CHOSEN inbox nonce the callout reads from
  * `req.connect_opts.name` (NOT `req.user_nkey`, which the client cannot know pre-connect); it scopes the
- * reply inbox `_INBOX_<connId>.>`.
+ * reply inbox `_INBOX_<connId>.>`. `readerId` is the connection's server-assigned history-reader id
+ * (core's `calloutReaderId`), which keys the admin view's reader deletes.
  *
  * Invariants enforced HERE (not in core):
  *  - the owner is a DERIVED owner (`u_…`) — user mode never accepts the reserved dev `local` owner;
@@ -57,29 +62,39 @@ export type AclResolver = (
  *    have them agree, else it is rejected (the confused-authority guard the Q4 review required closed the
  *    moment `permissionsFor(validated)` became production).
  */
-export function calloutPermissions(resolveAcl: AclResolver): (t: ValidatedUserToken, connId: string) => Record<string, unknown>;
+export function calloutPermissions(resolveAcl: AclResolver): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
   verifySession: SessionVerifier,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
   verifySession: SessionVerifier,
   issueUserCaller: UserCallerIssuer,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+export function calloutPermissions(
+  resolveAcl: AclResolver,
+  authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
+  verifySession: SessionVerifier,
+  issueUserCaller: UserCallerIssuer,
+  resolveEndpointCaller: EndpointCallerResolver,
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
   verifySession?: SessionVerifier,
   issueUserCaller?: UserCallerIssuer,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
-  return (t, connId) => {
+  resolveEndpointCaller?: EndpointCallerResolver,
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
+  return (t, connId, readerId) => {
+    if (t.act.view === "service-endpoint")
+      throw new Error("callout permissions: service-endpoint requires native service authorization; ordinary actor profiles refuse it");
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
     const caps = t.act.scope ?? [];
     // Single capability authority: if a top-level `scope` is present it must equal `act.scope` exactly —
@@ -89,7 +104,7 @@ export function calloutPermissions(
       throw new Error(
         "callout permissions: top-level scope != act.scope - act.scope is the single capability authority",
       );
-    const principal: MintPrincipal = { owner: t.owner, actor: t.act.actor, connId };
+    const principal: MintPrincipal = { owner: t.owner, actor: t.act.actor, connId, readerId };
     // A claimless bearer of EITHER shape mints nothing, even in a composition that skipped the
     // connect gate (the equality against the row's uid follows below; this refusal is the
     // claim-side half).
@@ -142,6 +157,10 @@ export function calloutPermissions(
       }
       if (t.act.view === "transfer-writer")
         return permissionsFor("transfer-writer", t.space, principal, { transferWriter: t.act.transferWriter! });
+      // #4189: the own-DM reader. Its rows name the lifecycle-keyed `dm_` durable of the CURRENT
+      // row, which the equality check above already proved is the bearer's lifecycle.
+      if (t.act.view === "dm-reader")
+        return permissionsFor("dm-reader", t.space, { ...principal, lifecycleUid: t.act.lifecycleUid }, {});
       if (t.act.view === "manager-caller") {
         const instanceId = t.act.managerInstanceId!;
         if (!authorizeManagerCaller)
@@ -173,11 +192,14 @@ export function calloutPermissions(
     // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed
     // dm/dlv/chathist grant names from it (SPEC 13.1) and refuses to mint without one.
     const { scope: _rowScope, kind: _kind, parentHasRun: _parentHasRun, ...aclOpts } = acl;
-    return permissionsFor(
-      "agent",
-      t.space,
-      { ...principal, lifecycleUid: acl.lifecycleUid },
-      { ...aclOpts, capabilities: caps },
+    const mint = (endpointCapabilities: NonNullable<MintOpts["endpointCapabilities"]> = []) => permissionsFor(
+      "agent", t.space, { ...principal, lifecycleUid: acl.lifecycleUid },
+      { ...aclOpts, capabilities: caps, endpointCapabilities },
     );
+    if (!resolveEndpointCaller) return mint();
+    return resolveEndpointCaller(t).then(({ capabilities, expiresAt, recheck }) => ({
+      ...mint(capabilities), ...(expiresAt === undefined ? {} : { [ENDPOINT_CALLER_EXP]: expiresAt }),
+      ...(recheck === undefined ? {} : { [ENDPOINT_CALLER_RECHECK]: recheck }),
+    }));
   };
 }

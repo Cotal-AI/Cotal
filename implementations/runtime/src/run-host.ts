@@ -30,18 +30,22 @@ import {
   type RunHostOpenPause,
   type RunHostAcceptedAnswer,
   type RunHostAmendRequest,
+  type RunJournalPageContext,
   type RunJournalRow,
   type RunListRow,
   type RunStatusView,
   type RunValidation,
+  EpEnvelopeError,
 } from "@cotal-ai/core";
-import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, programHashOf, stepPauseToken, type JournalEntry } from "@cotal-ai/lang";
+import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, RootCancellation, journalEntryKeyString, programHashOf, stepPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
 import type { KV } from "@nats-io/kv";
+import { listRunPage } from "./run-list-page.js";
+import { logLineText } from "./log-line.js";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
   if (out.status === "completed")
@@ -102,6 +106,11 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
         ...(typeof result.at === "number" ? { at: result.at } : {}),
       }
     : undefined;
+  // A race that took a branch's value settles `{ branches, value: { index, value } }`, where
+  // `index` names that branch.
+  const winner = e.kind === "race" && e.status === "ok" && result?.value !== null && typeof result?.value === "object"
+    ? (result.value as { index?: unknown }).index
+    : undefined;
   return {
     n,
     kind: "step",
@@ -112,8 +121,10 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
     outcome,
     ...(e.status !== undefined ? { status: e.status } : {}),
     ...(e.error?.code ? { errorCode: e.error.code } : {}),
+    ...(e.error?.message ? { errorMessage: e.error.message } : {}),
     startedAt: e.startedAt,
     ...(e.endedAt !== undefined ? { endedAt: e.endedAt } : {}),
+    ...(typeof winner === "string" ? { winner } : {}),
     ...(typeof external?.asks === "string" ? { asks: external.asks } : {}),
     ...(typeof external?.addressee === "string" ? { addressee: external.addressee } : {}),
     ...(typeof external?.deadlineAt === "number" ? { deadlineAt: external.deadlineAt } : {}),
@@ -122,9 +133,10 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
   };
 }
 
-/** The answer a settled `ask` accepted, read off its pause's status and answer record. An ask's
- *  frozen result is the answer's value alone, so unlike a checkpoint's it names no answer to print. */
-async function acceptedAskAnswer(kv: KV, endpoint: string, token: string): Promise<StepJournalRow["answer"]> {
+/** The answer a settled pause accepted, read off its pause's status and answer record. An ask's
+ *  frozen result is the answer's value alone, and a pause cancelled after it accepted an answer has
+ *  no result, so unlike a resolved checkpoint's neither names an answer to print. */
+async function acceptedPauseAnswer(kv: KV, endpoint: string, token: string): Promise<StepJournalRow["answer"]> {
   const status = await readCheckpointStatus(kv, { endpoint, token });
   const answerId = status?.value.state === "resumed" ? status.value.settledAnswerId : undefined;
   if (answerId === undefined) return undefined;
@@ -140,11 +152,32 @@ async function acceptedAskAnswer(kv: KV, endpoint: string, token: string): Promi
   };
 }
 
+/** The complete reply a journal page may take; the serving connection's payload limit bounds it too. */
+const JOURNAL_PAGE_BYTES = 1_048_576;
+
+/** The rows of `view` from `offset` that fit in one reply, found by halving the row count, with the
+ *  journal's row count. A record that does not fit with no rows, or one row that does not fit,
+ *  refuses `resource-exhausted`. */
+function journalPage(view: RunStatusView, offset: number, context: RunJournalPageContext | undefined): RunStatusView {
+  if (context === undefined) throw new EpEnvelopeError("failed-precondition", "a paged journal read needs the serving connection's reply measure");
+  const rows = view.journal.slice(offset);
+  const page = (count: number): RunStatusView => ({ ...view, journal: rows.slice(0, count), journalTotal: view.journal.length });
+  if (!context.replyFits(page(0), JOURNAL_PAGE_BYTES)) throw new EpEnvelopeError("resource-exhausted", `the record of run ${view.runId} does not fit in one reply even without its journal`);
+  let fits = 0, over = rows.length + 1;
+  while (over - fits > 1) {
+    const count = Math.floor((fits + over) / 2);
+    if (context.replyFits(page(count), JOURNAL_PAGE_BYTES)) fits = count; else over = count;
+  }
+  if (fits === 0 && rows.length > 0) throw new EpEnvelopeError("resource-exhausted", `journal row ${offset} of run ${view.runId} does not fit in one reply`);
+  return page(fits);
+}
+
 /** The journal view `cotal run journal` prints, as rows. The step key is rendered by the export
  *  the journal itself keys with, so it is the key `answer` takes back. A settled checkpoint or
  *  `ask` also lists the amendments filed under the token it settled under (an ask's last attempt
- *  token rides its pending entries), read from the answer records on `kv`, and a settled ask the
- *  answer its last attempt accepted. */
+ *  token rides its pending entries), read from the answer records on `kv`, and a settled ask or a
+ *  cancelled pause the answer its last attempt accepted. Each step in a branch that lost a settled
+ *  `race` names that race. */
 export async function journalRows(
   kv: KV,
   endpoint: string,
@@ -152,6 +185,7 @@ export async function journalRows(
 ): Promise<RunJournalRow[]> {
   const rows: RunJournalRow[] = [];
   const steps = new Map<string, JournalEntry[]>();
+  const losers = new Map<string, readonly string[]>();
   for (const { record } of records) {
     if (record.kind === "activation") {
       rows.push({ n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo });
@@ -164,7 +198,8 @@ export async function journalRows(
     steps.set(row.step, step);
     const token = e.state !== "settled" || (e.kind !== "checkpoint" && e.kind !== "ask") ? undefined : stepPauseToken(step);
     const amendments = token === undefined ? [] : await listCheckpointAmendments(kv, endpoint, token);
-    const answer = token !== undefined && e.kind === "ask" ? await acceptedAskAnswer(kv, endpoint, token) : row.answer;
+    const answer = token !== undefined && (e.kind === "ask" || e.status === "cancelled") ? await acceptedPauseAnswer(kv, endpoint, token) : row.answer;
+    if (e.kind === "race" && e.state === "settled" && e.cancel !== undefined) losers.set(row.step, e.cancel.losers);
     rows.push({
       ...row,
       ...(answer !== undefined ? { answer } : {}),
@@ -178,7 +213,13 @@ export async function journalRows(
       })) }),
     });
   }
-  return rows;
+  // The step key grammar reserves `/`, `#` and `:`, so a race's branch holds exactly the steps under
+  // `<race>/b:<branch>/`.
+  const lost = [...losers].flatMap(([race, branches]) => branches.map((branch) => ({ race, prefix: `${race}/b:${branch}/` })));
+  return rows.map((row) => {
+    const race = row.kind === "step" ? lost.find((l) => row.step.startsWith(l.prefix))?.race : undefined;
+    return race === undefined ? row : { ...row, lostRace: race };
+  });
 }
 
 export const cotalLangRunHost: RunHost = {
@@ -261,6 +302,8 @@ export const cotalLangRunHost: RunHost = {
 
   drive(planes: RunHostPlanes, req: RunHostDriveRequest, mediator: RunHostPlanes): RunHostDrive {
     const pause = new PauseToken();
+    const cancellation = new RootCancellation();
+    const cancellationObserved = () => req.cancellationObserved?.() ?? cancellation.reason;
     if (mediator === undefined || mediator.nc === planes.nc || mediator.space !== planes.space)
       throw new Error("a hosted run requires a separate trusted mediator connection in the same space");
     const authority = createRunScopeAuthority(mediator, req.runId, req.lease);
@@ -275,7 +318,7 @@ export const cotalLangRunHost: RunHost = {
       space: planes.space, endpoint: req.endpoint, runId: req.runId,
       caller: runDriverCaller(req.runId, admitted.caller.owner), instanceId: req.instanceId, epoch: req.epoch,
       holder: req.holder, defaultCheckpointTimeout: req.defaultCheckpointTimeout,
-    }, authority, admission);
+    }, authority, admission, cancellationObserved);
     const records = createRunRecordHost(mediator, req.endpoint, req.runId);
     const driveReq = {
       space: planes.space,
@@ -286,14 +329,21 @@ export const cotalLangRunHost: RunHost = {
       lease: req.lease,
       handler,
       pause,
+      cancellation,
+      cancellationObserved,
       ...(req.file !== undefined ? { file: req.file } : {}),
       ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
+      ...(req.onLog !== undefined ? { onLog: (line: { readonly scope: string; readonly values: readonly unknown[] }) => req.onLog!(logLineText(line)) } : {}),
     };
     // A program that FAILS is rethrown by the driver after its `failed` note; the host reads it as
     // an outcome, never as its own crash.
     const done = (req.mode === "new" ? startRun(planes.js, planes.jsm, driveReq) : driveRun(planes.js, planes.jsm, driveReq))
       .then(outcomeOf, failureOf);
-    return { done, release: (reason: string) => pause.pause(reason) };
+    return {
+      done,
+      release: (reason: string) => pause.pause(reason),
+      cancel: (reason: string) => cancellation.cancel(reason),
+    };
   },
 
   async locate(planes: RunHostPlanes, req: RunHostLocateRequest): Promise<RunHostOpenPause> {
@@ -336,20 +386,31 @@ export const cotalLangRunHost: RunHost = {
     );
   },
 
-  async status(planes: RunHostPlanes, req: { endpoint: string; runId: string; takeoverId: string }): Promise<RunStatusView | undefined> {
+  async status(planes: RunHostPlanes, req: { endpoint: string; runId: string; takeoverId: string; journal?: { offset: number } }, context?: RunJournalPageContext): Promise<RunStatusView | undefined> {
     const record = await readRunRecord(planes.kv, req.endpoint, req.runId);
     if (record === undefined) return undefined;
     // The replay durable is named by the caller's takeover id (its credential's row); the read
     // half of that row is what a status view rides.
     const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, req.runId, req.takeoverId);
-    return {
+    let revocation: Pick<RunStatusView, "revoked" | "revocationUnreadable"> = {};
+    try {
+      const marker = await readRunRevocation(planes.jsm, planes.space, req.endpoint, req.runId);
+      if (marker) revocation = { revoked: { by: marker.by, reason: marker.reason } };
+    } catch (error) {
+      revocation = { revocationUnreadable: (error as Error).message };
+    }
+    const view: RunStatusView = {
       runId: req.runId,
       endpoint: req.endpoint,
+      ...revocation,
       spec: record.spec.value,
       ...(record.status !== undefined ? { status: record.status.value } : {}),
       journal: await journalRows(planes.kv, req.endpoint, replay.records),
     };
+    return req.journal === undefined ? view : journalPage(view, req.journal.offset, context);
   },
+
+  listPage: listRunPage,
 
   async list(planes: RunHostPlanes, req: { endpoint?: string }): Promise<RunListRow[]> {
     // Run record keys are `run.<endpoint>.<runId>.<spec|status>`; the scan is over the spec half,
@@ -386,7 +447,7 @@ export const cotalLangRunHost: RunHost = {
       rows.push({
         runId,
         endpoint,
-        ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh } : {}),
+        ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh, ...(st.failure !== undefined ? { failure: st.failure } : {}) } : {}),
         ...(lineage !== undefined ? { forkedFrom: lineage } : {}),
         startedAt: record.spec.value.pins.startedAt,
         ...(program !== undefined ? { programHash: programHashOf(program.source) } : {}),

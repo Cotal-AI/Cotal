@@ -369,7 +369,7 @@ export const BUILTINS: readonly string[] = Object.freeze([
 export const VALUE_NAMES: readonly string[] = Object.freeze(["undefined"]);
 
 /** Every name the program may reference without defining it, and may never shadow. */
-export const RESERVED_NAMES: ReadonlySet<string> = new Set([
+export const RESERVED_NAMES: readonly string[] = Object.freeze([
   ...Object.keys(PRIMITIVES),
   ...Object.keys(EVENT_CONSTRUCTORS),
   ...Object.keys(PURE_PRIMITIVES),
@@ -406,7 +406,7 @@ export const HOST_GLOBAL_HINTS: Readonly<Record<string, string>> = Object.freeze
 });
 
 /** Host globals a program might reach for out of habit, each rejected by name (L2012). */
-export const FORBIDDEN_GLOBALS: ReadonlySet<string> = new Set([
+export const FORBIDDEN_GLOBALS: readonly string[] = Object.freeze([
   ...Object.keys(HOST_GLOBAL_HINTS),
   "globalThis", "global", "window", "self", "process", "fetch",
   "RegExp", "Reflect", "Proxy", "Symbol", "WeakMap", "WeakSet", "WeakRef", "Function",

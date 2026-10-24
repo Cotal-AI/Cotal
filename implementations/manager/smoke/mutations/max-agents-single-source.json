@@ -25,8 +25,8 @@
     {
       "name": "manager stops importing MAX_AGENTS from the defining module",
       "file": "implementations/manager/src/manager.ts",
-      "find": "import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from \"./resume.js\";\n",
-      "replace": "import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from \"./resume.js\";\n",
+      "find": "import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, writeSeatRecord, type SeatRecord } from \"./resume.js\";\n",
+      "replace": "import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, writeSeatRecord, type SeatRecord } from \"./resume.js\";\n",
       "expectRed": "a value import of MAX_AGENTS resolves to the definition",
       "cell": "a value import of MAX_AGENTS resolves to the definition",
       "note": "Capacity checks can keep using the identifier; without the import they no longer acquire the definition."

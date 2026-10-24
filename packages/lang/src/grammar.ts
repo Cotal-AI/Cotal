@@ -17,6 +17,7 @@ import { LangError, LangErrors, type LangErrorCode, type SourceSpan } from "./er
 import {
   BUILTINS,
   FORBIDDEN_GLOBALS,
+  HOLDABLE_KINDS,
   HOST_GLOBAL_HINTS,
   NOTIFY_BOUND,
   PRIMITIVES,
@@ -26,9 +27,17 @@ import {
   primitiveDoc,
 } from "./primitives.js";
 import { KEY_RESERVED_RE, scopeTraits } from "./keys.js";
-import { isDuration, parseDuration } from "./duration.js";
+import { DurationError, isDuration, parseDuration } from "./duration.js";
 import { ADMITTED_NODES, FORBIDDEN_NODES, STRUCTURAL_NODES } from "./syntax.js";
 import { MUTATING_METHODS } from "./library.js";
+
+// The validator's own lookup sets. The package exports these tables as frozen arrays and never
+// these sets, so code that imports the package cannot change what `validate` admits.
+const ADMITTED = new Set(ADMITTED_NODES);
+const STRUCTURAL = new Set(STRUCTURAL_NODES);
+const RESERVED = new Set(RESERVED_NAMES);
+const HOST_GLOBALS = new Set(FORBIDDEN_GLOBALS);
+const MUTATORS = new Set(MUTATING_METHODS);
 
 /** Acorn nodes are loosely typed; this is the shape we actually read. */
 type AnyNode = Node & Record<string, unknown>;
@@ -302,7 +311,7 @@ function walkShape(
   if (rule !== undefined) {
     v.fail(rule.code, node, rule.cause, rule.fix);
     forbidden = true;
-  } else if (!ADMITTED_NODES.has(type) && !STRUCTURAL_NODES.has(type) && !underForbidden) {
+  } else if (!ADMITTED.has(type) && !STRUCTURAL.has(type) && !underForbidden) {
     v.fail(
       "L1029",
       node,
@@ -923,10 +932,49 @@ const unawaitedCause = (name: string): string =>
 const unawaitedFix = (name: string): string =>
   `Await it (\`await ${name}(...)\`), return it, or make it a branch of \`parallel\`, \`race\` or \`fanOut\`.`;
 
+/** Where the language reads a duration (§4.6): an argument by its index, and option keys. */
+const DURATION_ARGUMENT: Readonly<Record<string, number>> = Object.freeze({ sleep: 0, idle: 1, duration: 0 });
+const DURATION_OPTIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  turn: ["deadline"], ask: ["deadline"], checkpoint: ["timeout"], wait: ["timeout"], waitUntil: ["every", "deadline"],
+});
+
+/**
+ * A literal written where a duration goes must be one (L2034). The call refuses it with the same
+ * text, but only once a run reaches it; a value computed at run time is checked only there. An
+ * option written as `null` is the option left out, so it is not a literal duration.
+ */
+function checkDurations(node: AnyNode, name: string, v: Validator): void {
+  const args = (node.arguments as AnyNode[]) ?? [];
+  const at = DURATION_ARGUMENT[name];
+  if (at !== undefined && args[at] !== undefined) checkDurationLiteral(args[at], name, v);
+  const keys = DURATION_OPTIONS[name];
+  const bag = keys === undefined ? undefined : args[PRIMITIVES[name]!.optionsAt];
+  if (keys === undefined || bag?.type !== "ObjectExpression") return;
+  for (const p of (bag.properties as AnyNode[]) ?? []) {
+    const value = p.value as AnyNode | undefined;
+    if (p.type !== "Property" || value === undefined || !keys.includes(propertyKeyName(p) ?? "")) continue;
+    if (!(value.type === "Literal" && value.value === null)) checkDurationLiteral(value, name, v);
+  }
+}
+
+function checkDurationLiteral(node: AnyNode, name: string, v: Validator): void {
+  const argument = node.argument as AnyNode | undefined;
+  const written =
+    node.type === "Literal" ? { value: node.value }
+    : node.type === "TemplateLiteral" && (node.expressions as AnyNode[]).length === 0
+      ? { value: ((node.quasis as AnyNode[])[0]?.value as { cooked?: string } | undefined)?.cooked }
+    : node.type === "UnaryExpression" && (node.operator === "-" || node.operator === "+") && argument?.type === "Literal" && typeof argument.value === "number"
+      ? { value: node.operator === "-" ? -argument.value : argument.value }
+    : undefined;
+  if (written === undefined || isDuration(written.value)) return;
+  v.fail("L2034", node, new DurationError(String(written.value)).message, 'Write a duration string here, such as "30s", "10m" or "4h".', name);
+}
+
 function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   const callee = node.callee;
   if (!isNode(callee) || callee.type !== "Identifier") return;
   const name = callee.name as string;
+  checkDurations(node, name, v);
   const spec = PRIMITIVES[name];
   if (spec === undefined) {
     // L2013's other half: a USER function declared `async` (or a const bound to an async function
@@ -1142,7 +1190,10 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   // ordinary object keys and `{ runTests: ... }` is legitimate, so requiring kebab-case here would
   // refuse correct programs to fix a forgery that needs `/`, `#` or `:`. The restriction is the
   // narrowest one that closes it.
-  if (name === "parallel" || name === "race" || name === "fanOut") {
+  //
+  // `fanOut` is not here: its first argument is the items, and its branch keys are minted at run
+  // time from `key` or each item's `id`, where `assertKeySafe` refuses a reserved character.
+  if (name === "parallel" || name === "race") {
     const branches = args[0];
     if (branches !== undefined && branches.type === "ObjectExpression") {
       for (const prop of (branches.properties as AnyNode[]) ?? []) {
@@ -1183,6 +1234,10 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
     // scope primitive from having its data walked in place of its body.
     const thunks = branchThunks(args[spec.optionsAt - 1], v, scope);
     for (const thunk of thunks) checkCapturedWrites(thunk, name, v, seen);
+    if (spec.scope === "once") {
+      const reached = new Set<AnyNode>();
+      for (const thunk of thunks) checkOnceEffects(thunk, v, reached);
+    }
   }
   // A probe and the functions in its options bag run one level deeper too, in each observation's
   // own frame, and a settled `waitUntil` is replayed without calling them, so a write from one of
@@ -1195,6 +1250,38 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
       if (body !== undefined) checkCapturedWrites(body, name, v, seen);
     }
   }
+}
+
+/**
+ * L2033: an effect `once` does not admit, called in its body or in a function the body calls by
+ * name. Every step under `once` is at-most-once, and only an `ask` can be held on resume, so the run
+ * refuses anything else with L4028 when it reaches it; this refuses the calls the validator can see
+ * before the run starts. A primitive name is reserved, so a call by that name is the primitive.
+ */
+function checkOnceEffects(fn: AnyNode, v: Validator, seen: Set<AnyNode>): void {
+  if (seen.has(fn)) return;
+  seen.add(fn);
+  const visit = (node: AnyNode): void => {
+    const callee = node.type === "CallExpression" && isNode(node.callee) ? node.callee as AnyNode : undefined;
+    if (callee?.type === "Identifier") {
+      const name = callee.name as string;
+      const kind = Object.hasOwn(PRIMITIVES, name) ? PRIMITIVES[name]!.kind : null;
+      if (kind !== null && !HOLDABLE_KINDS.has(kind)) {
+        v.fail(
+          "L2033",
+          node,
+          `\`${name}\` runs inside \`once\`, and \`once\` admits only \`ask\`: a resume could not hold any other effect without performing it again or losing the run state it builds.`,
+          `Move the \`${name}\` outside the \`once\`, so only the \`ask\` it guards stays inside.`,
+          name,
+        );
+      } else {
+        const target = v.functions.get(name);
+        if (target !== undefined && target !== null) checkOnceEffects(target, v, seen);
+      }
+    }
+    for (const c of children(node)) visit(c);
+  };
+  if (isNode(fn.body)) visit(fn.body as AnyNode);
 }
 
 function isFunctionNode(node: AnyNode): boolean {
@@ -1377,7 +1464,7 @@ function walkCaptured(node: AnyNode, scope: Scope, combinator: string, v: Valida
         const root = rootIdentifier(member.object as AnyNode);
         if (
           method !== null &&
-          MUTATING_METHODS.has(method) &&
+          MUTATORS.has(method) &&
           root !== undefined &&
           scope.lookup(root.name as string) === undefined
         ) {
@@ -1454,7 +1541,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
         return;
       }
       if (scope.lookup(name) !== undefined) return;
-      if (RESERVED_NAMES.has(name)) return;
+      if (RESERVED.has(name)) return;
       if (PROMISE_NAMES.has(name)) {
         v.fail(
           "L2011",
@@ -1464,7 +1551,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
         );
         return;
       }
-      if (FORBIDDEN_GLOBALS.has(name)) {
+      if (HOST_GLOBALS.has(name)) {
         v.fail(
           "L2012",
           node,
@@ -1498,7 +1585,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
             ? (init as AnyNode)
             : undefined;
         for (const n of names) {
-          if (RESERVED_NAMES.has(n)) {
+          if (RESERVED.has(n)) {
             v.fail(
               "L2002",
               d.id as AnyNode,
@@ -1514,15 +1601,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     }
 
     case "AssignmentExpression": {
-      const left = node.left as AnyNode;
-      if (left.type === "Identifier" && scope.lookup(left.name as string) === "const") {
-        v.fail(
-          "L2003",
-          left,
-          `\`${left.name as string}\` is declared \`const\`.`,
-          "Declare it with `let` if it is meant to be reassigned.",
-        );
-      }
+      checkConstWrite(node.left as AnyNode, scope, v);
       for (const c of children(node)) walkResolve(c, v, scope);
       return;
     }
@@ -1547,7 +1626,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     case "ArrowFunctionExpression": {
       if (node.type === "FunctionDeclaration" && isNode(node.id)) {
         const fname = (node.id as AnyNode).name as string;
-        if (RESERVED_NAMES.has(fname)) {
+        if (RESERVED.has(fname)) {
           v.fail(
             "L2002",
             node.id as AnyNode,
@@ -1563,7 +1642,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
       // assigned to a `const` recurses: `const f = function walk(n) { ... walk(n - 1) ... }`.
       if (node.type === "FunctionExpression" && isNode(node.id)) {
         const fname = (node.id as AnyNode).name as string;
-        if (RESERVED_NAMES.has(fname)) {
+        if (RESERVED.has(fname)) {
           v.fail(
             "L2002",
             node.id as AnyNode,
@@ -1587,7 +1666,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
       for (let i = 0; i < params.length; i += 1) {
         const p = params[i] as AnyNode;
         for (const n of paramNames[i] as string[]) {
-          if (RESERVED_NAMES.has(n)) {
+          if (RESERVED.has(n)) {
             v.fail(
               "L2002",
               p,
@@ -1629,6 +1708,10 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
 
     case "ForStatement":
     case "ForOfStatement": {
+      // `for (x of xs)` with no declaration assigns `x` on every iteration.
+      if (node.type === "ForOfStatement" && (node.left as AnyNode).type !== "VariableDeclaration") {
+        checkConstWrite(node.left as AnyNode, scope, v);
+      }
       const inner = new Scope(scope);
       for (const c of children(node)) walkResolve(c, v, inner);
       return;
@@ -1643,6 +1726,22 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     default: {
       for (const c of children(node)) walkResolve(c, v, scope);
       return;
+    }
+  }
+}
+
+/** A destructuring leaf writes its binding as surely as a bare `x = …` does. */
+function checkConstWrite(target: AnyNode, scope: Scope, v: Validator): void {
+  const targets: AnyNode[] = [];
+  patternTargets(target, targets);
+  for (const t of targets) {
+    if (t.type === "Identifier" && scope.lookup(t.name as string) === "const") {
+      v.fail(
+        "L2003",
+        t,
+        `\`${t.name as string}\` is declared \`const\`.`,
+        "Declare it with `let` if it is meant to be reassigned.",
+      );
     }
   }
 }
@@ -1706,7 +1805,7 @@ export function validate(source: string, file = "program.cotal.js"): ValidateRes
                 code: "L1008",
                 span,
                 cause: `This program is not valid JavaScript, so none of the language rules could be checked: ${message}.`,
-                fix: "Fix the syntax at the marked position. Statements terminate explicitly here; there is no automatic semicolon insertion.",
+                fix: "Fix the syntax at the marked position.",
               },
         ),
       ],

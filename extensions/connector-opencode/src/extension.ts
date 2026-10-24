@@ -88,9 +88,10 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
   }).trim();
   const line = opencodeLine(versionRaw, "opencode");
   if (line === 2)
-    throw new Error(
-      "opencode connector: 'cotal models' is not available for OpenCode 2.x (the catalog is served by a running opencode server, not the CLI); pass --model provider/model",
-    );
+    return {
+      models: [],
+      unavailable: "OpenCode 2.x serves its model catalog from a running opencode server, not the CLI; pass --model provider/model",
+    };
   const args = ["models", "--pure", "--verbose"];
   if (opts.refresh) args.push("--refresh");
   try {
@@ -171,15 +172,6 @@ export const opencodeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      // Creds, broker URL and the control token ride a 0600 file; only its path is exported.
-      //
-      // The plugin drops even that path once it has read it, and WHERE it does so is the part worth
-      // stating: this connector's seat process is a shim that starts `opencode serve` and a TUI
-      // attached to it, and the plugin runs inside the SERVER. The server is also the process that
-      // executes the session's tool calls, so a shell this seat runs inherits neither the material
-      // nor a reference to it. The shim itself keeps the reference, because the server it starts is
-      // the reader; it runs no tools of its own.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -298,12 +290,26 @@ export const opencodeConnector: Connector = {
     // COTAL_*. Returned in the LaunchSpec so the manager holds it in memory to drive the stop.
     env.COTAL_CONTROL_SOCKET = control.path;
 
+    // Creds, broker URL and the control token ride a 0600 file; only its path is exported. It is
+    // written after every refusal above, and its directory is a launch artifact the launcher removes
+    // once the child has exited.
+    //
+    // The plugin drops even that path once it has read it, and WHERE it does so is the part worth
+    // stating: this connector's seat process is a shim that starts `opencode serve` and a TUI
+    // attached to it, and the plugin runs inside the SERVER. The server is also the process that
+    // executes the session's tool calls, so a shell this seat runs inherits neither the material
+    // nor a reference to it. The shim itself keeps the reference, because the server it starts is
+    // the reader; it runs no tools of its own.
+    const artifacts: string[] = [];
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.
     return {
       command: process.execPath,
       args: [SERVE_SHIM],
       env,
       control,
+      ...(artifacts.length > 0 ? { artifacts } : {}),
     };
   },
 };

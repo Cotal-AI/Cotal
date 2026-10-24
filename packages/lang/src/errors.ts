@@ -9,7 +9,7 @@
  */
 
 /** Every code in the catalog, with the one-line title that heads the rendered error. */
-export const CATALOG = {
+export const CATALOG = Object.freeze({
   // ---- L1xxx: grammar -----------------------------------------------------------------------
   L1001: "Forbidden syntax: `class`",
   L1002: "Forbidden syntax: `this`",
@@ -21,7 +21,8 @@ export const CATALOG = {
   // ASI itself is ALLOWED. The error is the two constructs where a newline changes what the code
   // MEANS: a value on the line after a bare `return`, and a line opening with `(` or `[` that
   // continues the statement above it. "Missing semicolon" named a rule this language does not have.
-  L1008: "Newline hazard",
+  // Source that does not parse at all is refused under this code too.
+  L1008: "Invalid syntax or newline hazard",
   L1009: "Unbraced branch",
   L1010: "`switch` case does not terminate",
   L1011: "Computed property name",
@@ -58,6 +59,10 @@ export const CATALOG = {
   L2012: "Host global is not available",
   L2031: "Mutation of a frozen value",
   L2032: "Write from a concurrent branch to something declared outside it",
+  // The static half of L4028: an effect `once` does not admit, written where the validator sees it.
+  L2033: "Effect not admitted inside `once`",
+  // The static half of the call's DurationError: a literal the source writes where a duration goes.
+  L2034: "Literal is not a duration",
 
   // ---- L3xxx: effect call shape --------------------------------------------------------------
   L3011: "Unknown option key",
@@ -217,7 +222,7 @@ export const CATALOG = {
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
   L6002: "Simulation script entry unused",
-} as const;
+} as const);
 
 export type LangErrorCode = keyof typeof CATALOG;
 

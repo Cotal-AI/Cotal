@@ -61,10 +61,21 @@ same trust chain, so there is nothing the built-ins can reach that a described c
 `retire-lifecycle` and its exact-mode target shape.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
 
+The manager's `vitals` command reports one invocation-time sample of host CPU count and load,
+available and total memory, and bounded local filesystem capacity. It is untargeted but resolves to
+one exact Manager instance. The separate `manager.vitals` capability is issued only when the actor
+scope contains `machine-vitals`; `spawn`, `run` and `admin` do not imply it. The response contains
+mount points and aggregate byte counts, never device paths, remote endpoints, process data, command
+lines, environment values or persisted history. Unsupported measurement refuses without a partial
+or zero-valued fallback.
+
 The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an
 absolute path on that manager's host and returns its canonical directory plus the host name. It
 refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
 `spawn` applies the same check at admission, before any credentials or durables are minted.
+A runtime that delegates seats outside the manager's host cannot use a host cwd. Its manager
+refuses `resolve-cwd` with `failed-precondition` before any filesystem lookup, with the same
+execution-mode refusal for every path. It returns no host name or canonical path.
 
 The manager's `resolve-agent` command is minted beside `spawn` in the spawn capability and the
 operator instruments. It accepts the persona fields `spawn` takes (`name`, `config`, `agent`,
@@ -73,6 +84,12 @@ then the persona's `agent:` pin, then the caller's default, then the manager's o
 the persona with the same visibility check as `spawn` and launches nothing. A detached `--resume`
 without `--agent` asks it before carrying a session, and a manager that does not serve it refuses
 the call.
+
+On a delegated runtime, both `resolve-agent` and `spawn` refuse an explicit persona `config`
+before any lookup of that path. Absolute, relative and bare-name config overrides receive the
+same `failed-precondition` refusal. Select a named catalog persona through `name` instead.
+Locally executing managers retain their config-path behavior. A resolved manifest uses its own
+validated, host-materialized persona resource and is not a caller-selected config override.
 
 `spawn` refuses an empty or whitespace-only value in any of its optional string fields, such as
 `role`, `agent` or `identity`, with `bad-request` naming the field. To take the persona file's value,
@@ -130,10 +147,60 @@ Manager `slots` (`manager.read`, untargeted) lists the durable static slot rows 
 owns. Only static managers hold these rows: a user-mode or open manager answers
 `failed-precondition`, and a manager whose durable store is not standing answers `unavailable`.
 Each row carries the same `readOrder` and `consistency` fields `inspect` uses, because the list
-is read the same way: torn across rows as well as within each row's slot/head pair. A `retired`
-row is never listed. `live` reflects the manager's live roster at render time, not the durable
-row. A slot row is never deleted, so a row whose latest operation is a DEL or PURGE marker is
-corruption: the list answers `unavailable` naming that row, as `inspect` does for its name.
+is read the same way: torn across rows as well as within each row's slot/head pair.
+With no arguments, retired rows remain excluded. From manager cluster revision 32,
+`{names: ["worker"], includeRetired: true}` point-reads up to 100 distinct aliases and
+includes their retired rows. An absent or sibling-owned slot is omitted, not reported
+as retired. Each returned row retains its principal, lifecycle UID, slot/head revisions,
+phase and any native cleanup-complete fact. Consumers must match every requested
+incarnation; a missing live row or an accepted stop is not a retirement result.
+`live` reflects the manager's live roster at render time, not the durable row. A slot row
+is never deleted, so a row whose latest operation is a DEL or PURGE marker is corruption:
+the list answers `unavailable` naming that row, as `inspect` does for its name.
+
+### Static chat sessions
+
+From manager cluster revision 34, a static manager admits chat sessions with
+`chat-session-open` and ends them with `chat-session-retire`. Both are untargeted and in the
+`manager.chat` class. Only operator instruments carry their rows; the `spawn` and `run`
+capabilities do not. A user-mode or open manager refuses both with `unimplemented`.
+
+`chat-session-open` takes `{subscribe, allowSubscribe, allowPublish, label, ttl, sealTo}`. The
+three lists are a spawn's, under a spawn's rules: `subscribe` is the session's initial channels,
+`allowSubscribe` its read ceiling (empty means `subscribe`, and `subscribe` must lie within it),
+and `allowPublish` its post list (empty means none). Each may be omitted. A session can join any
+channel under its ceiling, patterns included. A concrete event channel of another principal is
+refused, as it is for a spawn. The manager draws a `chat_<26 base32>` alias and a fresh nkey
+identity, runs the static slot activation, provisions the session's DM and DELIVER durables and
+ACL row, and mints an agent-profile leaf with no role, capabilities, endpoint rows or issuance.
+The leaf expires after `ttl` seconds, at most 900, and is never renewed. Because the leaf is not
+an issuance, the manager writes its credential ledger row itself before the credential leaves the
+process, and that row is what retirement marks revoked and verify-evicts.
+
+`sealTo` is a one-time curve public key (`X…`) the caller mints and keeps the private half of. The
+reply is `{alias, actor, lifecycleUid, expiresAt, sealer, sealed}`: `actor` is the nkey the
+broker authenticates, `alias` names the slot, and `expiresAt` is in epoch milliseconds. The
+credential is not in the reply in the clear. `sealed` is base64url, sealed to `sealTo` from the
+one-time `sealer` key with the NATS xkey format, and opens to the credential bound to the space,
+the admitting manager instance and every field of the reply. A generic invoke, an agent or a
+browser sees only that ciphertext. The chat adapter opens it once, refuses it unless every bound
+field matches, and keeps the credential in memory.
+
+`chat-session-retire` takes `{alias, actor, lifecycleUid}` and runs the static terminal. It refuses
+before any effect unless the alias is a chat alias whose slot this manager instance owns at that
+uid and actor. It answers `retired`, `alreadyRetired`, or `failed` with a `retirement pending:`
+reason while the slot stays held. Retirement marks the credential's ledger row revoked, verifies
+that the session's principal has no broker connection left, tears down its broker footprint and
+retires the slot. A static mesh has no broker-side credential revocation, so a copy of the leaf
+can still connect with the permissions it carries until its expiry. An ordinary spawn refuses any
+name that starts with `chat_`.
+
+The manager that admitted a session retires it at its expiry when nothing retired it sooner, so a
+lost reply or an abandoned client does not hold the slot. Its stop retires every session it still
+holds, with or without its agents, and names each one it could not retire; a stop that preserves
+the manager's state leaves them. Its own startup sweep never retires a session it is admitting or
+holds. A session that none of these retired stays held until the next start of that manager
+instance.
 
 ## Spawn is a goal
 
@@ -205,8 +272,8 @@ gate frozen by a takeover or a registration says nothing about the head, so that
 carries `gateState=frozen` and no `headState`. Those facts ride `error.details[]` as
 `kind = ai.cotal.ep.lifecycle-blocked` and are also appended to the error string, so a
 caller that only prints `error.message` still sees them. The CLI and the connector tools hand a
-refusal on in one shape, so `cotal spawn -f` keeps the same code, details, rendered facts and
-acceptance data as `cotal spawn --detach` and `cotal_spawn`. A connector that collapses the
+refusal on in one shape, so `cotal spawn --detach` keeps the same code, details, rendered facts
+and acceptance data as `cotal_spawn`. A connector that collapses the
 refusal to "startup failed (unknown)" or a SPEC 13.6 wait-timeout is hiding a knowable
 state, not reporting a missing one.
 
@@ -220,7 +287,7 @@ On a static or open mesh,
 an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
 pin one instance by its exact id, as `--on` does for `cotal ps`, `cotal models` and every hosted
-`cotal run` verb, and `instance` for `cotal_run` and `cotal_personas`. A foreground CLI spawn has no manager to pin and refuses the
+`cotal run` verb, and `instance` for `cotal_run`, `cotal_persona` and `cotal_personas`. A foreground CLI spawn has no manager to pin and refuses the
 flag. An MCP pin that does not resolve is refused without falling back to class anycast. There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because both surfaces take nothing else.
@@ -228,11 +295,16 @@ the whole id, because both surfaces take nothing else.
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
 the host's registered service records. Discovery and invocation both use that instance's `inst`
-route. This view grants no registry scan, class queue, or additional command capability. An absent,
+route. This view grants no registry scan or class queue. It adds no command capability except the
+three reads a launch needs: a view whose actor holds `spawn` may call `status`, `models` and
+`resolve-cwd` on that instance, subject to the execution-mode limit above. A `run`-only or no-scope view may not, and `ps` and `slots` stay with
+`admin`. A user mesh's co-located manager answers every owner's view, so its `status` counts only the
+caller's own seats, as `ps` would list them, unless the caller holds `admin`. An absent,
 ambiguous or unauthorized selection refuses before the command is sent. An ambiguous one lists the
 owner's live manager instance ids and names the caller's way to pick one: `--on <instanceId>` for
 the CLI, `--manager-instance <instanceId>` for `cotal agent-bearer --manager-call`, and the
 `instance` argument for an agent's tools.
+A pin changes routing, not the caller's grant.
 
 Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
 them; a tool's `instance` argument must name that same manager. The `cotal` commands run from their
@@ -288,12 +360,13 @@ by the same request promise, including when the transport is closing or draining
 cancellation does not revoke or resubmit the accepted operation.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
-broker host manager-free is still a topology choice: `cotal up` on that host starts a
-manager you then stop with `cotal down manager` after `✓ manager up` in
+broker host manager-free is still a topology choice: `cotal up --no-manager` on that host starts no
+manager, and `cotal supervise --server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)).
+A broker host that already runs a manager stops it only after `✓ manager up` in
 `.cotal/manager.<spaceKey>.log` (detach stdout listing `manager` is pidfile liveness, not a
-teardown boundary), and `cotal supervise
---server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)). Extra live managers
-are addressable, not an error.
+teardown boundary). A controller stack stops it with
+`cotal service stop stack-manager --space <s> --yes`; a legacy stack has no command that stops only
+its manager. Extra live managers are addressable, not an error.
 
 The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is
 read-only, it is re-published under the same request binding, and every attempt stays inside the
@@ -334,6 +407,13 @@ the target, and the same re-issue repairs it within the same bound. An agent tha
 still ends in that refusal once the re-issues run out. A pinned call gets the refusal of the
 instance it named.
 
+A verified Manager `status` reply includes `host`, the answering process's host name, and
+`version`, the running `@cotal-ai/manager` package version captured when its module loaded.
+These fields are advisory display metadata. They do not select a Manager, authorize a caller
+or determine placement. Use the verified responder's `instanceId` for attribution. Clients
+must accept status payloads that omit either field and leave the missing value unknown.
+The optional fields advance the Manager cluster revision to 28.
+
 A manager whose boot inventory marked every declared connector unavailable does not subscribe
 `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
 instance's `inst` rail, so a sibling that can launch them can take an unpinned spawn, and a
@@ -342,6 +422,8 @@ still lists the commands: the instance rail serves them, and `describe` itself s
 class rail (SPEC 13.7). An unpinned `spawn` can therefore bind-fence: `describe` may land on
 the skip member while `spawn` lands on a sibling, the command was not run, and the caller
 re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
+When no manager takes the class queue, the broker answers an unpinned `spawn` with no
+responders, and the caller classifies that `not-executed` (SPEC 13.3).
 A manager that can launch some connectors keeps the class rail. If the queue hands it a
 harness its inventory marked unavailable, the refusal names `--on` because the standing serve
 credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`
@@ -428,7 +510,8 @@ the stamp. A remote manager asks its host to reconcile the holder only on `in-fl
 condition a gate repair can clear.
 
 For the instance that cannot cooperate, an operator names it:
-`cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
+`cotal endpoint deregister <endpoint> <full-instance-id>`
+([cli.md](cli.md#endpoint-deregister)). It removes the
 record only on the same evidence `cotal ps` acts on: the broker reporting nothing subscribed on
 that instance's own rail. It refuses if the instance answers a describe, refuses if the probe could
 not run at all, and refuses if the instance is merely quiet, because a hung process still holds its
@@ -453,8 +536,9 @@ with the grant's expiry. Terminal bytes then stream on core-NATS session subject
 scoped to the two parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
 silent loss; a late attach still repaints the full screen from a replayed terminal
 snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end
-states: a restarted manager's successor refuses the old epoch's sessions and the client
-shows "manager restarted; re-attach".
+states: a restarted manager's successor refuses the old epoch's sessions. `cotal attach`
+reconnects when its link dies by asking the manager for a new session
+([CLI](cli.md#managed-seats)).
 
 ## Seat input
 
@@ -488,7 +572,11 @@ Only a runtime that owns the child's input stream can serve it. The `pty` runtim
 external terminal runtimes attach to a process they do not own, and there the command refuses
 and names the runtime rather than dropping the keystroke. A seat that is not running refuses for
 its own reason, and the two are distinguishable, so a caller can tell "this will never work"
-from "not right now". See [cli.md](cli.md#input).
+from "not right now". Both refusals carry `not-executed`, because nothing was typed. A write the
+runtime rejects once delivery has started states no outcome, so a caller reads it as `unknown`.
+The manager's other control refusals follow the same rule: one raised before the command's first
+effect, such as a denied caller, a stale target or a missing persona file, carries `not-executed`.
+See [cli.md](cli.md#input).
 
 ## Grants
 

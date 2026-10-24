@@ -147,6 +147,9 @@ export async function reconcileEndpointGate(opts: {
   if (row.op.kind !== "registration")
     throw new GateReconcileRefused("wrong-op-kind", `the gate at ${key} is frozen under a "${row.op.kind}" op, not a registration — this completes a crashed REGISTRATION's §13.1 obligation only; refusing to reinterpret another op's intent`);
   const opId = row.op.opId;
+  const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId });
+  if (row.serviceAuthority) await barrier.enumerate();
+
 
   // ---- 2. THE GUARD. Affirmative liveness, before anything is mutated.
   const liveness = await opts.probeHolder(row.principal);
@@ -170,7 +173,7 @@ export async function reconcileEndpointGate(opts: {
   // ---- 3. Only now: the shipped composition, in the §13.1 order, over the DEAD op's own id.
   // The repair evicts the family in bounded sets below, so the barrier is built without an evictor
   // (its own default is fail-closed) and is used here for enumerate, revoke and reopen.
-  const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId });
+
 
   const rows = await barrier.enumerate();
   log(`family: ${rows.length} ledger row(s)`);

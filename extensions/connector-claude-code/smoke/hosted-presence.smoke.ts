@@ -1,5 +1,5 @@
 /** REAL broker on loopback: hosted presence with distinct and absent launch labels. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -10,9 +10,11 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import { CotalEndpoint, isReachable, presenceBucket, setupSpaceStreams, type Presence } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { ClaudeSession, ClaudeSessionOptions } from "../src/mcp.js";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 const require = createRequire(import.meta.url);
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 function check(name: string, passed: boolean): void {
@@ -126,5 +128,6 @@ async function main(): Promise<void> {
     rmSync(root, { recursive: true, force: true });
     release();
   }
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 }
 (process.env.HOSTED_PRESENCE_CASE ? child() : main()).catch((error) => { console.error(error); process.exitCode = 1; });

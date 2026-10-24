@@ -21,8 +21,8 @@
     {
       "name": "an unidentified injected adapter silently falls back instead of refusing",
       "file": "implementations/delivery/src/delivery.ts",
-      "find": "    if (!coordinate)\n      throw new Error(\n        \"delivery: an injected SecretStore must declare its identity or name its coordinate in COTAL_SECRET_STORE so the manager can challenge the same authority (never a silent local-root fallback)\",\n      );",
-      "replace": "    if (!coordinate) return src.identity;",
+      "find": "  return src.injected ? injectedSecretStoreIdentity(src.store) : src.identity;",
+      "replace": "  return src.injected ? (src.store.identity !== undefined || process.env.COTAL_SECRET_STORE ? injectedSecretStoreIdentity(src.store) : { kind: \"fs\", root: process.cwd(), id: \"\" }) : src.identity;",
       "expectRed": "injected identity refuses a silent local-root fallback",
       "cell": "injected identity refuses a silent local-root fallback",
       "afterRestore": "pnpm --filter @cotal-ai/delivery build"
@@ -30,7 +30,7 @@
     {
       "name": "workspaceSecretStore drops the operator workspace identity",
       "file": "packages/workspace/src/secret-store-fs.ts",
-      "find": "  return new FsSecretStore(join(workspaceRoot, \".cotal\"), { kind: \"fs\", root: workspaceRoot });",
+      "find": "  return new FsSecretStore(join(workspaceRoot, \".cotal\"), workspaceRoot);",
       "replace": "  return new FsSecretStore(join(workspaceRoot, \".cotal\"));",
       "expectRed": "an explicitly passed workspace store names its real filesystem authority without an ambient coordinate",
       "cell": "an explicitly passed workspace store names its real filesystem authority without an ambient coordinate",

@@ -30,7 +30,7 @@
     {
       "name": "Archive publisher bypasses the secure preflight",
       "file": "scripts/publish-cold-candidate.mjs",
-      "find": "const census = await preflight({ root, env, exec });",
+      "find": "const census = await preflight({ root, env, exec, deadline, tag });",
       "replace": "const census = { state: 'ready', rows: [] };",
       "expectRed": "FAIL secure preflight refusal prevents every publication",
       "cell": "secure preflight refusal prevents every publication"

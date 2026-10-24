@@ -3,16 +3,21 @@
  *
  *  1. `inspectCredHealth` (core) is pinned pure: healthy / near-expiry (past 75% of iat→exp) /
  *     expired / unbounded / unreadable, with an injected clock.
- *  2. The doctor command runs against a STAGED `.cotal` folder (real crypto: createSpaceAuth +
- *     mintCreds): an expired delivery cred and an unbounded standing membership-rw cred are
- *     problems with exact repairs; a static agent cred is NOT a problem (pre-flip, dim); a missing
- *     file is a note, not a failure. `--fix` re-signs the class-2 files for their EXISTING nkeys
- *     (the identity pin) and the re-diagnosis ends `healthy`.
+ *  2. The doctor command runs against a STAGED root in the per-space layout (real crypto:
+ *     createSpaceAuth + mintCreds) and is read through its JSON envelope. An expired delivery cred,
+ *     an unbounded standing membership-rw cred, an unbounded agent cred and a missing connection-evictor
+ *     (nothing but a system-account rotation mints it again) are findings; a healthy $SYS observer is
+ *     not, and a user-auth sentinel file is not listed. `--fix` re-signs the two daemon files for their EXISTING nkeys (the identity pin) and,
+ *     with no registered mesh, records an offline repair rather than the lease. It never re-signs an
+ *     agent cred, so that finding stays and the run is partial. With the agent file gone the root has
+ *     no findings. A daemon file the NATS client cannot parse holds no key to re-sign, so an offline
+ *     `--fix` mints it again under a new identity and says so. `doctor` without `auth`, and an unknown
+ *     `--space`, refuse.
  *
  * Run: pnpm smoke:doctor-auth
  */
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { strict as nodeAssert } from "node:assert";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,28 +25,24 @@ import {
   idFromCreds,
   inspectCredHealth,
   mintCreds,
+  mintConnectionEvictorCreds,
   mintLifecycleUid,
   mintMembershipObserverCreds,
   newIdentity,
 } from "@cotal-ai/core";
-import { readRenewalRecord, saveSpaceAuth, spaceAccountPath, spaceMaterialDir } from "@cotal-ai/workspace";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, saveSpaceAuth, spaceMaterialDir, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 
-let pass = 0,
-  fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // ── 1. inspectCredHealth: pure-state pins with an injected clock ─────────────────────────────────
-const auth = await createSpaceAuth("doctor-smoke");
+const SPACE = "doctor-smoke";
+const auth = await createSpaceAuth(SPACE);
 const sysObserver = await mintMembershipObserverCreds(auth, newIdentity()); // while the $SYS seed is in memory
+const sysEvictor = await mintConnectionEvictorCreds(auth, newIdentity());
 const now = Math.floor(Date.now() / 1000);
 const bounded = await mintCreds(auth, newIdentity(), "probe", { expiresInSeconds: 100 });
 // Probe against the cred's OWN iat/exp, never against `now`. The smoke's clock
@@ -52,132 +53,219 @@ const bounded = await mintCreds(auth, newIdentity(), "probe", { expiresInSeconds
 const stamped = inspectCredHealth(bounded);
 const iat = stamped.iat!;
 const exp = stamped.exp!;
-check("a bounded mint carries iat and exp", Number.isInteger(iat) && Number.isInteger(exp) && exp > iat, stamped);
-check("healthy before the 75% renewal point", inspectCredHealth(bounded, iat + 60).state === "healthy");
-check("near-expiry past the 75% renewal point", inspectCredHealth(bounded, iat + 80).state === "near-expiry");
-check("expired at/after exp", inspectCredHealth(bounded, exp).state === "expired");
-check("renewAt is 75% of the iat→exp lifetime", Math.abs(stamped.renewAt! - (iat + 75)) <= 2, stamped);
+assert.ok(Number.isInteger(iat) && Number.isInteger(exp) && exp > iat, "a bounded mint carries iat and exp");
+assert.equal(inspectCredHealth(bounded, iat + 60).state, "healthy", "healthy before the 75% renewal point");
+assert.equal(inspectCredHealth(bounded, iat + 80).state, "near-expiry", "near-expiry past the 75% renewal point");
+assert.equal(inspectCredHealth(bounded, exp).state, "expired", "expired at/after exp");
+assert.ok(Math.abs(stamped.renewAt! - (iat + 75)) <= 2, "renewAt is 75% of the iat→exp lifetime");
 const unbounded = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() });
-check("unbounded when the JWT has no exp", inspectCredHealth(unbounded, now).state === "unbounded");
-check("unreadable on garbage (reported, not thrown)", inspectCredHealth("not a creds file", now).state === "unreadable");
+assert.equal(inspectCredHealth(unbounded, now).state, "unbounded", "unbounded when the JWT has no exp");
+assert.equal(inspectCredHealth("not a creds file", now).state, "unreadable", "unreadable on garbage (reported, not thrown)");
 
-// ── 2. the doctor against a staged folder ────────────────────────────────────────────────────────
+// ── 2. the doctor against a staged root ──────────────────────────────────────────────────────────
 // realpath'd: the doctor derives its root from `process.cwd()` after this smoke `chdir`s into it,
-// and the OS resolves any symlink in the path (e.g. a symlinked TMPDIR) on that walk. Comparing
-// the raw `mkdtempSync` return value against the doctor's printed (resolved) paths then fails on
-// any host where a temp dir sits behind a symlink, even though the doctor read the right file.
+// and the OS resolves any symlink in the path (e.g. a symlinked TMPDIR) on that walk.
+const startCwd = process.cwd();
+const priorHome = process.env.COTAL_HOME;
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-doctor-")));
-mkdirSync(join(root, ".cotal", "auth", "creds"), { recursive: true });
-saveSpaceAuth(join(root, ".cotal", "auth"), auth);
-
-// delivery: EXPIRED (broker-dead) — a problem with the --fix repair.
+// A private registry: `--fix` finds no registered mesh for this space, so it repairs offline.
+process.env.COTAL_HOME = join(root, "home");
+mkdirSync(authDir(root), { recursive: true, mode: 0o700 });
+saveSpaceAuth(authDir(root), auth);
+const material = spaceMaterialDir(root, SPACE);
+mkdirSync(material, { recursive: true, mode: 0o700 });
+// delivery: EXPIRED (broker-dead). membership-rw: UNBOUNDED standing cred (pre-renewal mint shape).
+// $SYS observer: healthy (bounded 30d at mint). connection-evictor deliberately MISSING (a finding).
 const dlvId = newIdentity();
-writeFileSync(join(root, ".cotal", "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
-// membership-rw: UNBOUNDED standing cred (pre-slice-5 mint shape) — a problem.
 const rwId = newIdentity();
-writeFileSync(join(root, ".cotal", "membership-rw.creds"), await mintCreds(auth, rwId, "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
-// $SYS observer: healthy (bounded 30d at mint). connection-evictor deliberately MISSING (a note).
-writeFileSync(join(root, ".cotal", "membership-observer.creds"), sysObserver, { mode: 0o600 });
-// A static agent cred: unbounded is EXPECTED pre-flip — never a problem.
-writeFileSync(join(root, ".cotal", "auth", "creds", "alice.creds"), unbounded, { mode: 0o600 });
+writeFileSync(join(material, "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
+writeFileSync(join(material, "membership-rw.creds"), await mintCreds(auth, rwId, "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
+writeFileSync(join(material, "membership-observer.creds"), sysObserver, { mode: 0o600 });
+const agents = agentCredsDir(root, SPACE);
+mkdirSync(agents, { recursive: true, mode: 0o700 });
+// A static agent cred with no expiry and no record beside it that someone asked for one: a finding.
+const alice = join(agents, "alice.creds");
+writeFileSync(alice, unbounded, { mode: 0o600 });
 // User-auth managed-agent sentinel: deny-all callout-account bearer plumbing, NOT a static agent cred.
-writeFileSync(join(root, ".cotal", "auth", "creds", "alpha.sentinel.creds"), unbounded, { mode: 0o600 });
+writeFileSync(join(agents, "alpha.sentinel.creds"), unbounded, { mode: 0o600 });
 
-const origCwd = process.cwd();
-const origLog = console.log;
-const origErr = console.error;
-function runDoctor(argvValues: Record<string, boolean | string | undefined>): Promise<{ out: string; code: number | undefined }> {
+interface Item { label: string; state: string; problem: string | null; repair: string | null }
+interface Envelope {
+  outcome: string;
+  error?: { code: string };
+  result: {
+    findings: number;
+    items: Item[];
+    repair: { attempted: boolean; authority: string | null; results: { file: string; ok: boolean; reminted: boolean; reason: string | null }[] };
+    renewal: { authority: string | null };
+  };
+}
+
+/** One `doctor auth` run in the staged root: its JSON envelope when asked for, its text and its
+ *  exit code. */
+async function runDoctor(values: Record<string, string | boolean>): Promise<{ envelope?: Envelope; text: string; code: number | undefined }> {
+  const out: string[] = [];
   const lines: string[] = [];
+  const write = process.stdout.write.bind(process.stdout);
+  const log = console.log;
+  const err = console.error;
+  process.stdout.write = ((chunk: string | Uint8Array) => (out.push(String(chunk)), true)) as typeof process.stdout.write;
   console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
   console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
   process.exitCode = undefined;
   process.chdir(root);
-  return doctor({ values: argvValues, positionals: ["auth"], raw: [] })
-    .then(() => ({ out: lines.join("\n"), code: process.exitCode as number | undefined }))
-    .finally(() => {
-      console.log = origLog;
-      console.error = origErr;
-      process.chdir(origCwd);
-      process.exitCode = 0;
-    });
+  try {
+    await doctor({ values: { space: SPACE, ...values }, positionals: ["auth"], raw: [] });
+    const code = process.exitCode as number | undefined;
+    return { ...(values.json ? { envelope: JSON.parse(out.join("")) as Envelope } : {}), text: lines.join("\n").replace(/\x1b\[[0-9;]*m/g, ""), code };
+  } finally {
+    process.stdout.write = write;
+    console.log = log;
+    console.error = err;
+    process.chdir(startCwd);
+    process.exitCode = 0;
+  }
 }
+
+/** The refusal one `doctor` invocation in the staged root ends with. */
+async function refusal(values: Record<string, string | boolean>, positionals: string[]): Promise<CommandFailure> {
+  process.chdir(root);
+  try {
+    await doctor({ values, positionals, raw: [] });
+  } catch (error) {
+    if (isCommandFailure(error)) return error;
+    throw error;
+  } finally {
+    process.chdir(startCwd);
+    process.exitCode = 0;
+  }
+  throw new Error(`doctor ${positionals.join(" ")} did not refuse`);
+}
+
+const item = (envelope: Envelope, label: string) => envelope.result.items.find((row) => row.label === label);
 
 try {
-  const first = await runDoctor({});
-  check("diagnosis exits non-zero with problems", first.code === 1, first.code);
-  check("expired delivery cred is a problem", first.out.includes("delivery.creds") && first.out.includes("EXPIRED"), first.out);
-  check("unbounded standing membership-rw is a problem", first.out.includes("unbounded standing credential"), first.out);
-  check("every problem names an exact next command", first.out.includes("next:") && first.out.includes("doctor auth --fix"), first.out);
-  check("missing connection-evictor is a note, not a failure", first.out.includes("not provisioned here"), first.out);
-  check("static agent cred is NOT a problem (pre-flip)", !first.out.includes("alice.creds:"), first.out);
-  check("user-auth sentinel cred is not rendered as a static agent cred", !first.out.includes("alpha.sentinel.creds"), first.out);
-  check("$SYS observer renders healthy with expiry", /healthy\s+membership-observer/.test(first.out.replace(/\[[0-9;]*m/g, "")), first.out);
+  // Plain diagnosis: three findings with their repairs, two quiet rows, and no sentinel row.
+  {
+    const { envelope, code } = await runDoctor({ json: true });
+    const report = envelope!;
+    const dlv = item(report, "delivery.creds");
+    assert.equal(dlv?.state, "expired", "fixture: delivery.creds is expired");
+    assert.match(dlv?.problem ?? "", /^EXPIRED/, "the expired delivery cred is a finding");
+    assert.match(dlv?.repair ?? "", /doctor auth --fix/, "its repair names doctor auth --fix");
+    const rw = item(report, "membership-rw.creds");
+    assert.match(rw?.problem ?? "", /^unbounded standing credential/, "the unbounded standing membership-rw cred is a finding");
+    assert.match(rw?.repair ?? "", /doctor auth --fix/, "its repair names doctor auth --fix");
+    assert.equal(item(report, "membership-observer.creds")?.state, "healthy", "the $SYS observer is healthy");
+    assert.equal(item(report, "membership-observer.creds")?.problem, null, "and not a finding");
+    assert.equal(item(report, "connection-evictor.creds")?.state, "missing", "the connection-evictor is missing");
+    assert.equal(item(report, "connection-evictor.creds")?.problem, "missing - live connection eviction cannot run without it", "and a finding, since only a rotation mints it again");
+    assert.match(item(report, "connection-evictor.creds")?.repair ?? "", /down` then `.* up --rotate-sys`/, "its repair is the system-account rotation");
+    assert.equal(item(report, "alice.creds")?.state, "unbounded", "fixture: alice.creds carries no expiry claim");
+    assert.match(item(report, "alice.creds")?.problem ?? "", /^unbounded credential \(no expiry claim\)/, "the unbounded static agent cred is a finding");
+    assert.ok(!report.result.items.some((row) => row.label.includes("sentinel")), "the user-auth sentinel is not listed as a static agent cred");
+    assert.equal(report.result.findings, 4, "four findings");
+    assert.equal(report.result.repair.attempted, false, "plain diagnosis repairs nothing");
+    assert.equal(report.outcome, "failed", "the diagnosis ends failed");
+    assert.equal(report.error?.code, "OPERATION_FAILED", "with OPERATION_FAILED");
+    assert.equal(code, 5, "exit 5");
+  }
 
-  const fixed = await runDoctor({ fix: true });
-  check("--fix ends healthy (exit 0)", fixed.code === undefined && fixed.out.includes("auth: healthy"), `${fixed.code} ${fixed.out.slice(-300)}`);
-  // The audit line must not contradict itself: files WERE re-signed, so a record without an
-  // explicit daemon adoption renders as "not requested" (backstop applies), never "nothing
-  // re-signed" (the slice-6 UX-review catch).
-  check(
-    "--fix renewal record says the daemon reload was not requested, not 'nothing re-signed'",
-    fixed.out.includes("daemon reload not requested by this pass") && !fixed.out.includes("nothing re-signed"),
-    fixed.out,
-  );
-  // Read back at the CANONICAL location, not where the staging put them: the folder above is a
-  // PRE-P7 one (flat), and the first `doctor auth` moved every managed kind into this space's
-  // segment on first touch. Reading the flat path here would report ENOENT on a repair that in fact
-  // succeeded. That the reads below find re-signed material is also the migration's proof.
-  const canonical = (kind: string) => join(spaceMaterialDir(root, auth.space), kind);
-  check("the diagnosis migrated the staged flat material into this space's segment", existsSync(canonical("delivery.creds")) && !existsSync(join(root, ".cotal", "delivery.creds")));
-  const dlvAfter = readFileSync(canonical("delivery.creds"), "utf8");
-  const rwAfter = readFileSync(canonical("membership-rw.creds"), "utf8");
-  check("--fix re-signed delivery for the SAME nkey (identity pin)", idFromCreds(dlvAfter) === dlvId.id);
-  check("--fix re-signed membership-rw for the SAME nkey", idFromCreds(rwAfter) === rwId.id);
-  check("--fix bounded the previously-unbounded membership-rw", inspectCredHealth(rwAfter).state === "healthy", inspectCredHealth(rwAfter));
+  // --fix: the daemon files are re-signed offline for their own nkeys; the agent finding stays.
+  // The evictor is staged first, as the rotation the finding names would leave it.
+  writeFileSync(join(material, "connection-evictor.creds"), sysEvictor, { mode: 0o600 });
+  {
+    const { envelope, code } = await runDoctor({ json: true, fix: true });
+    const report = envelope!;
+    assert.equal(report.result.repair.attempted, true, "--fix re-signed");
+    assert.equal(report.result.repair.authority, "offline", "with no registered mesh the repair is offline");
+    assert.deepEqual(report.result.repair.results.filter((row) => row.ok).map((row) => row.file).sort(), ["delivery.creds", "membership-rw.creds"], "both daemon files were re-signed");
+    assert.equal(readRenewalRecord(root, SPACE)?.authority, "offline", "the renewal record says offline, never the lease");
+    assert.equal(report.result.renewal.authority, "offline", "and the report reads that record back");
+    const dlvAfter = readFileSync(join(material, "delivery.creds"), "utf8");
+    const rwAfter = readFileSync(join(material, "membership-rw.creds"), "utf8");
+    assert.equal(idFromCreds(dlvAfter), dlvId.id, "--fix re-signed delivery for the SAME nkey (identity pin)");
+    assert.equal(idFromCreds(rwAfter), rwId.id, "--fix re-signed membership-rw for the SAME nkey");
+    assert.equal(inspectCredHealth(dlvAfter).state, "healthy", "the re-signed delivery cred is healthy");
+    assert.equal(inspectCredHealth(rwAfter).state, "healthy", "--fix bounded the previously-unbounded membership-rw");
+    assert.deepEqual(report.result.items.filter((row) => row.problem !== null).map((row) => row.label), ["alice.creds"], "only the agent finding remains: --fix never re-signs an agent cred");
+    assert.equal(report.outcome, "partial", "re-signed files with a finding left is partial");
+    assert.equal(report.error?.code, "OPERATION_PARTIAL", "with OPERATION_PARTIAL");
+    assert.equal(code, 4, "exit 4");
+  }
 
-  // #1063: this staged folder has no running mesh, so --fix always takes the offline branch — the
-  // record must say so honestly, never claim the broker-coordinated lease it never held.
-  const recordAfterFix = readRenewalRecord(root, auth.space);
-  check("--fix with no broker records an offline repair and says so", recordAfterFix?.authority === "offline" && fixed.out.includes("OFFLINE"), { authority: recordAfterFix?.authority, out: fixed.out });
-  check("--fix with no broker never claims the lease", recordAfterFix?.authority !== "lease", recordAfterFix?.authority);
+  // Without the unbounded agent cred the root has no findings.
+  {
+    rmSync(alice);
+    const { envelope, code } = await runDoctor({ json: true });
+    assert.equal(envelope?.result.findings, 0, "no findings once the agent cred is gone");
+    assert.equal(envelope?.outcome, "ok", "the diagnosis ends ok");
+    assert.equal(code, 0, "exit 0");
+    assert.match((await runDoctor({})).text, /No local credential findings/, "the text report says so");
+  }
 
-  const wrongSub = await (async () => {
-    const lines: string[] = [];
-    console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
-    process.exitCode = undefined;
-    await doctor({ values: {}, positionals: [], raw: [] });
-    const code = process.exitCode as number | undefined;
-    console.error = origErr;
-    process.exitCode = 0;
-    return { out: lines.join("\n"), code };
-  })();
-  check("`doctor` without `auth` is a loud usage error", wrongSub.code === 1 && wrongSub.out.includes("doctor auth"), wrongSub);
+  // A file other accounts can open is named by its mode, with the chmod that fixes it, and a file
+  // the NATS client cannot parse is a finding although its claims are legible. A $SYS store file at
+  // 0644 is one row like the others: the run still checks every other file.
+  {
+    const shared = join(agents, "bob.creds");
+    const crlf = join(agents, "dave.creds");
+    const observer = join(material, "membership-observer.creds");
+    writeFileSync(shared, bounded, { mode: 0o600 });
+    chmodSync(shared, 0o644);
+    chmodSync(observer, 0o644);
+    writeFileSync(crlf, bounded.replace(/\n/g, "\r\n"), { mode: 0o600 });
+    const { envelope, code } = await runDoctor({ json: true });
+    if (process.platform !== "win32") {
+      assert.equal(item(envelope!, "bob.creds")?.problem, "the credential file is not private to you (mode 0644)", "a 0644 credential is named by its mode, not as a parse failure");
+      assert.equal(item(envelope!, "bob.creds")?.repair, `chmod 600 ${shared}`, "its repair is the chmod that makes it private");
+      assert.equal(item(envelope!, "membership-observer.creds")?.problem, "the credential file is not private to you (mode 0644)", "a 0644 $SYS store credential is named by its mode, not a refusal of the whole run");
+      assert.equal(item(envelope!, "membership-observer.creds")?.repair, `chmod 600 ${observer}`, "its repair is the chmod that makes it private");
+      assert.equal(item(envelope!, "delivery.creds")?.state, "healthy", "the other files are still checked");
+    }
+    assert.equal(item(envelope!, "dave.creds")?.problem, "the NATS client cannot parse it: it has Windows (CRLF) line endings", "a CRLF credential is a finding, as --creds refuses it");
+    assert.match(item(envelope!, "dave.creds")?.repair ?? "", /^save it with LF line endings/, "its repair says how to fix the line endings");
+    assert.equal(code, 5, "the findings exit 5");
+    rmSync(shared);
+    rmSync(crlf);
+    chmodSync(observer, 0o600);
+  }
 
-  // The signer line must name the record that actually holds the signer — the split account file
-  // on a split root, never the removed monolith path. Split into two named checks (rather than one
-  // conjunction) so a future failure says WHICH measurement was wrong instead of dumping the whole
-  // captured output for the reader to diff by eye.
-  const signerAcctPath = spaceAccountPath(join(root, ".cotal", "auth"), "doctor-smoke");
-  check("signer line names the split account file", first.out.includes(signerAcctPath), { expected: signerAcctPath, out: first.out });
-  check("signer line does not name the legacy auth.json", !first.out.includes("auth.json"), first.out);
-  // An explicitly named tenant diagnoses exactly like the sole-space default (healthy here,
-  // since --fix already repaired the staged problems by this point).
-  const explicitSpace = await runDoctor({ space: "doctor-smoke" });
-  check(
-    "explicit --space <tenant> diagnoses it",
-    explicitSpace.code === undefined && explicitSpace.out.includes("space doctor-smoke") && explicitSpace.out.includes("auth: healthy"),
-    explicitSpace,
-  );
-  // A selection error must never read as a healthy open mesh.
-  const unknownSpace = await runDoctor({ space: "nope" });
-  check(
-    "explicit unknown --space fails loud, never 'healthy'",
-    unknownSpace.code === 1 && !unknownSpace.out.includes("healthy") && unknownSpace.out.includes("no account record"),
-    unknownSpace,
-  );
+  // A daemon file the NATS client cannot parse holds no key to re-sign. With no broker answering,
+  // --fix mints it again under a new identity and names that in its row; a re-signed file has none.
+  {
+    const rwPath = join(material, "membership-rw.creds");
+    writeFileSync(rwPath, readFileSync(rwPath, "utf8").slice(0, 100), { mode: 0o600 });
+    const before = (await runDoctor({ json: true })).envelope!;
+    assert.equal(item(before, "membership-rw.creds")?.problem, "the NATS client cannot parse it: it has no complete NATS user JWT block", "an unparsable daemon file is a finding");
+    assert.match(item(before, "membership-rw.creds")?.repair ?? "", /While its broker does not answer, `.*doctor auth --fix` mints it again under a new identity/, "its guidance names the --fix that mints it again");
+    const { envelope, code } = await runDoctor({ json: true, fix: true });
+    const rows = envelope!.result.repair.results;
+    assert.deepEqual(rows.find((row) => row.file === "membership-rw.creds"), { file: "membership-rw.creds", ok: true, skipped: false, reminted: true, reason: "it held no key to re-sign" }, "the row says it was minted again, and why");
+    assert.equal(rows.find((row) => row.file === "delivery.creds")?.reason, null, "a re-signed file carries no reason");
+    const rwAfter = readFileSync(rwPath, "utf8");
+    assert.notEqual(idFromCreds(rwAfter), rwId.id, "the new file has a new identity");
+    assert.equal(inspectCredHealth(rwAfter).state, "healthy", "and is healthy");
+    assert.equal(envelope!.result.findings, 0, "no finding remains");
+    assert.equal(code, 0, "exit 0");
+    writeFileSync(rwPath, rwAfter.slice(0, 100), { mode: 0o600 });
+    assert.match((await runDoctor({ fix: true })).text, /membership-rw\.creds: minted again under a new identity, because it held no key to re-sign/, "the text report names the new identity");
+  }
 
-  console.log(fail === 0 ? `\nDOCTOR-AUTH SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDOCTOR-AUTH SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
-  process.exitCode = fail === 0 ? 0 : 1;
+  // Refusals: no `auth` word, and an unknown space that must never read as healthy or open.
+  {
+    const usage = await refusal({}, []);
+    assert.equal(usage.code, "USAGE_INVALID", "`doctor` without `auth` is a usage refusal");
+    assert.match(usage.message, /doctor auth/, "it names doctor auth");
+    const unknown = await refusal({ space: "nope" }, ["auth"]);
+    assert.equal(unknown.code, "AUTH_REQUIRED", "an unknown --space refuses");
+  }
 } finally {
+  process.chdir(startCwd);
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
   rmSync(root, { recursive: true, force: true });
 }
+
+console.log("doctor-auth smoke: OK - credential health is pinned, the diagnosis finds the expired, unbounded standing and unbounded agent creds and the missing evictor, --fix re-signs the daemon files offline for their own nkeys, mints an unparsable one again and leaves the agent finding, and bad selections refuse");
+emitSentinel({ passed: cells(), failed: 0 });

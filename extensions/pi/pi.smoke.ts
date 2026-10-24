@@ -890,7 +890,7 @@ for (const assistant of [
     if (env.COTAL_PI_PERSONA_FILE) rmSync(dirname(env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
 
     assert.throws(
-      () => piConnector.buildLaunch({ space: "test", name: "pi", creds: "creds", userAuth: { owner: "o", actor: "a", sentinelCredsPath: "s", bearerCmd: ["b"] } }),
+      () => piConnector.buildLaunch({ space: "test", name: "pi", events: false, creds: "creds", userAuth: { owner: "o", actor: "a", sentinelCredsPath: "s", bearerCmd: ["b"] } }),
       /mutually exclusive/,
     );
     ok(piConnector.supportsResume === true, "Pi declares operator fork-resume support");

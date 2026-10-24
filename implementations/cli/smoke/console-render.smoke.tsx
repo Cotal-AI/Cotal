@@ -16,10 +16,10 @@ import { render } from "ink";
 import React from "react";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import type { CotalEndpoint, Presence } from "@cotal-ai/core";
+import { peerLabel, type AgentCard, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { App } from "../src/console/app.js";
 import { StatusBar } from "../src/console/ui/StatusBar.js";
-import { Topo } from "../src/console/ui/topo/Topo.js";
+import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
 import type { FeedEntry, MembershipView } from "../src/view/mesh-view.js";
 
@@ -219,6 +219,72 @@ console.log("4. every send waits for the same participant start, and a refusal r
   await wait(400);
   app.unmount();
   check("a later send retries participant startup and publishes once", starts === 2 && ep.sent.join(",") === "retry", { starts, sent: ep.sent });
+}
+
+console.log("5. a peer's control sequences reach the screen as escapes, not as terminal commands");
+{
+  const body = "INJ \x1b[2J \x1b]0;pwned-title\x07 \x1b]8;;http://evil.example/\x1b\\link\x1b]8;;\x1b\\ cr\rOVER\nSECOND-LINE";
+  class Observer extends EventEmitter {
+    space = "peer-text";
+    card = { id: "local.operator", name: "operator", kind: "endpoint", role: "operator" };
+    async start() {}
+    async stop() {}
+    getRoster(): Presence[] { return []; }
+    tap() {}
+    async listChannels() { return [{ channel: "general", messages: 1 }]; }
+    async channelHistory() { return [{ id: "m1", ts: Date.now(), from: { id: "local.peer", name: "peer\x1b[31m" }, channel: "general", parts: [{ kind: "text", text: body }] }]; }
+    async dmHistory() { return []; }
+    ref() { return this.card; }
+    async readMembership() { return { asOf: undefined, members: [] }; }
+    async watchMembership() { return { stop: async () => {} }; }
+  }
+  const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+  stdin.isTTY = true;
+  stdin.setRawMode = () => stdin;
+  stdin.ref = () => stdin;
+  stdin.unref = () => stdin;
+  let raw = "";
+  const frames: string[] = [];
+  const stdout = new Writable({ write(c, _e, cb) { raw += String(c); frames.push(strip(String(c))); if (frames.length > 100) frames.shift(); cb(); } }) as unknown as NodeJS.WriteStream;
+  stdout.columns = 160;
+  stdout.rows = 32;
+  stdout.isTTY = true;
+  const app = render(<App ep={new Observer() as unknown as CotalEndpoint} canWrite={false} canControl={false} />, { stdin, stdout, patchConsole: false, exitOnCtrlC: false, debug: true });
+  const paint = await waitForFrame(frames, "SECOND-LINE", 5_000);
+  app.unmount();
+  check("the body is painted, with its control characters as escapes", paint.includes("INJ \\u001b[2J \\u001b]0;pwned-title\\u0007"), paint.slice(-400));
+  check("no title, hyperlink, bell or bare carriage return reaches the terminal", !raw.includes("\x1b]") && !raw.includes("\x07") && !raw.includes("\x1b[2J") && !/\r(?!\n)OVER/.test(raw), JSON.stringify(raw.slice(-200)));
+  check("a body's line break still starts a new row", paint.includes("SECOND-LINE") && !paint.includes("\\u000aSECOND-LINE"), paint.slice(-400));
+}
+
+console.log("6. every topology lens labels a peer as the roster does");
+// The lenses each built their own label: the map dropped a role equal to the name and printed brackets
+// verbatim, and the sequence and matrix printed no role at all.
+{
+  const now = Date.now();
+  const cards: AgentCard[] = [
+    { id: "local.ada", name: "ada", kind: "agent", role: "ada" },
+    { id: "local.eve", name: "eve", kind: "agent", role: "ops]x[y" },
+    { id: "local.bob", name: "bob", kind: "agent" },
+    { id: "local.cy", name: "cy", kind: "agent", role: "reviewer" },
+  ];
+  const agents: Presence[] = cards.map((card) => ({ card, status: "idle", ts: now - 5_000 }));
+  const feed: FeedEntry[] = cards.map((card, i) => ({
+    id: "m" + i, ts: now - 4_000 + i * 500, from: card, delivery: "multicast", channel: "general", text: "hi",
+  }));
+  const labels = cards.map(peerLabel);
+  check("the shared label keeps an equal role and turns brackets into a space",
+    labels.join(",") === "ada/ada,eve/ops x y,bob,cy/reviewer", labels);
+  for (const [variant, lens] of (["sequence", "matrix", "map"] as const).entries()) {
+    const out = await paint(
+      <Topo feed={feed} agents={agents} channels={[{ channel: "general", messages: feed.length }]}
+        variant={variant as TopoVariant} width={200} height={20} blocked={false}
+        onFocus={() => {}} onOpenAgent={() => {}} onOpenMessage={() => {}} />,
+    );
+    check(`the ${lens} prints each peer's shared label after its status dot`,
+      labels.every((l) => out.includes("○ " + l)), out.slice(0, 800));
+    check(`...and never the bracketed role`, !out.includes("ops]x[y"), out.slice(0, 800));
+  }
 }
 
 console.log(`\n${fail === 0 ? "CONSOLE-RENDER SMOKE OK ✅" : "CONSOLE-RENDER SMOKE FAILED ❌"} (${fail} failed)`);

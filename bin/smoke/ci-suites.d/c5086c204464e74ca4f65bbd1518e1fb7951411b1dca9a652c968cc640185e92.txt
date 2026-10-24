@@ -1,0 +1,2 @@
+# Chat leaves on Ctrl-C, Ctrl-D and the line-mode signals, from the composer and the recipient picker, and closes its session once. No broker.
+smoke:chat-leave

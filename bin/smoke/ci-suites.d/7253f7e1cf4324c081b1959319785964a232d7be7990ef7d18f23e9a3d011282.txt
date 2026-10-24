@@ -1,0 +1,2 @@
+# Keyed run submission through the signerless issuer handler on real observation, issued and admission stores.
+smoke:keyed-run-submission:auth

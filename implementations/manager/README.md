@@ -3,7 +3,8 @@
 The agent supervisor: a mesh endpoint that spawns and manages nodes via a pluggable `Runtime`
 (`pty` built-in; `tmux` via `@cotal-ai/tmux`; `cmux` via `@cotal-ai/cmux`; `orca` via `@cotal-ai/orca`;
 `herdr` via `@cotal-ai/herdr`), plus its own control-plane commands
-(`start`/`stop`/`ps`/`attach`) and a WebSocket attach endpoint.
+(`spawn --detach`/`stop`/`ps`/`attach`, where attach streams over a mesh session) and a
+credentialed local HTTP console.
 
 It owns process lifecycle and config, not the agents' work; agents still coordinate laterally
 over the mesh.
@@ -11,7 +12,7 @@ over the mesh.
 **Tier:** `implementations/` (a self-contained surface over core). Implementations never import
 each other; they meet at runtime over NATS.
 
-See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
+See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 ## Remote authority clients

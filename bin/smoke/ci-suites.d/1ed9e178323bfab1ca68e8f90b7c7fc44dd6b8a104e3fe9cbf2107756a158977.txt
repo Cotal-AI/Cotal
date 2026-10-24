@@ -1,0 +1,3 @@
+# Bare cotal use is a read, so an interrupted connector seed does not block it; selecting a space
+# still runs the seed prelude.
+smoke:use-interrupted-seed

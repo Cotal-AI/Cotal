@@ -1,5 +1,736 @@
 # @cotal-ai/connector-core
 
+## 0.100.2
+
+### Patch Changes
+
+- 678a8c6: The `persona` section of the CLI docs no longer says remote `--on` operations refuse. List, show and create work on one manager's catalog with `--on`, and edit and remove refuse there, as the exact-manager section describes.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+### Patch Changes
+
+- 37f4a75: The `cotal history` docs now say that the text and plain reports show a line break or other control character in a message as its `\uXXXX` escape, and that `--json` carries the text as it was sent.
+- 6471d27: `cotal run show` and `cotal run journal` now say why a step failed. A failed or refused step's journal row carries its recorded `errorMessage` beside `errorCode` in `--json`, and the text view lists each such step with its outcome and message under `Step errors`, escaping control characters. Before, both views printed only `failed (L4000)`, and the reason, such as a hosted run that is not admitted to read a channel, was only in the manager's log. The manager's `run-status` reply schema admits the new field.
+- a80904f: `cotal run validate`, `plan` and `simulate` now say what each validator warning is: its code, title, position, cause and fix, on stderr and in the `--json` envelope's `warnings`, and `validate --json` lists each one under `result.warnings` with the same fields. Before, a warning printed only "The language validator reported a warning at this source position.", so a `fanOut` over a literal list with no `key` validated with no visible reason and then failed its run with L3021.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+### Patch Changes
+
+- d4c13db: `docs/UPGRADING.md`, which `cotal_docs` serves, now heads the section on the removed manager-service authority policy flag with 0.76.0, the first release that carries that change. It named 0.75.0, a release that does not contain the change and was never published. No behavior changes.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+### Patch Changes
+
+- 489e9c6: Explain the native data sharing a person approves: new user messages, assistant replies, tool inputs and tool results are published to readers permitted by the space's activity policy. Reasoning is off by default, and history from before approved activation is not shared. Correct the event-plane documentation's old transcript-boundary description. No event behavior or permission is changed.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+### Patch Changes
+
+- 454cb0e: Include the human-only approval, review link and unchanged-request retry instructions inside the structured pending result as well as its text. Native clients that show the model only structured content must still receive the instructions to wait for the person and never approve or poll on their behalf. Issuance remains blocked by the authority until the person's recorded decision.
+  
+  Explain expiry without incorrectly claiming the person never approved: an approved request can also expire before its connection is issued. A fresh request still needs fresh approval.
+  
+  Exercise native connection, exact recovery, capability attenuation and completed workflows through an isolated approval authority and fixture-person decision, including pre-approval transcript exclusion. Register the live approval controls in the smoke gate.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+### Minor Changes
+
+- 92f0b8c: Report pending permission approval with an authenticated review link and no usable connection. Hosted gateways can resume one unchanged request with its approval ID; the ID grants no authority and cannot rename or replace an approved connection. Native conversations wait for the person's decision before starting their connection or capturing activity. Permission arguments are proposals, never human consent.
+- 69b0538: A signed-in native Claude Code conversation can now ask for channels, a role and capabilities within the person's own grant.
+  
+  `cotal_connect` in a native Code session takes proposed `channels` (read, or read and post), a `role` and `capabilities` (`spawn`, `run`). The person must review, edit and approve the permissions in Cotal before a new connection is issued. The approved set must stay within their current access, and the returned grant must match that approved set, not the proposal. Unsupported or refused requests never fall back to baseline or broader access. A remote mesh must advertise selection v1 and connection approval v1. The authority may refuse a capability it does not support; endpoint selection is unavailable in v1.
+  
+  A connection is offered the tools its own grant can use: spawn, despawn and the persona tools with `spawn`, `cotal_run` with `run`, and `cotal_reconnect`. Manager calls exchange the conversation's own secret for a manager-call view. A conversation is not a managed seat, so a self-despawn refuses instead of stopping the app, and `cotal_yield` is not offered.
+  
+  Core exports `conversationSelection`, `checkConversationSelection` and `conversationGrant`. The gateway gains `NATIVE_GATEWAY_TOOLS`, `GatewayOptions.tools`, `GatewayOptions.selection` and `GatewayConnection.tools`. `cotal app-identity provision` takes `--selection <json>`. The hosted gateway's tool set is unchanged.
+- 42fe091: Deliver complete short messages to personally opened Claude Code conversations without an extra inbox call. Preserve message identity and reply context, acknowledge only confirmed native handoffs, and rearm later messages while retaining the inbox path for larger deliveries. A stale offer from a closed connection no longer suppresses its replacement's messages.
+- 6e44a02: Make channel discovery and addressing feedback bounded and accurate.
+  
+  `cotal_channels` now lists the channels a session is on or may join. It counts the agents' event channels and the channels outside the read ACL that it leaves out, and `all: true` lists them too. `filter` narrows the list by name. A reply lists at most 100 rows and ends with the `after` value that continues it. A live space had returned 656 rows in one 52 KB reply, 457 of them event channels.
+  
+  `cotal_channel_info` describes an event channel as an agent's, and the session's own as its own, instead of as a name a prior send may have invented.
+  
+  `cotal_dm` to the session's own name or id says that it names this session. A name that matches no peer in full lists the present names that start with it, so `ada` points to `ada (web)`. Nothing is sent and no name is ever picked for the caller.
+  
+  `cotal_anycast` to a role nobody holds says that the request waits on the role's queue until an agent with that role takes it. The queue behavior is unchanged. `cotal_status` documents that a connector sets `working` and `idle` at turn boundaries.
+  
+  The remote gateway now offers `cotal_docs`, which the orientation card recommends, and `cotal_connect` names the channels the new connection reads, may join and may post to.
+- 6703917: Connect personal native Claude conversations to signed-in meshes with separate identities, real lifecycle and own-event publication, durable request recovery, and exact-lifecycle retirement. Bind native wake readers to their conversation while retaining immediate idle and busy-boundary delivery. Capture lifecycle metadata through ordinary command hooks so the native connection does not depend on intercepting the built-in guard's protected events. Keep notification presentation off protected notes and skill output while retaining native sender attribution.
+
+### Patch Changes
+
+- 2a56547: Recover a signed-in native Claude conversation whose identity retirement is still pending. Disconnect, every routed tool and reconnect now report one disconnected state with the mesh's retirement phase and the available retry, instead of advising a reconnect that the same conversation then refused. Reconnecting retries the pending retirement and connects with a new identity once the mesh confirms it, including after the plugin server restarts. After each signed-in connection, the plugin retires the same mesh's saved conversation identities whose plugin server process no longer exists, through the new `cotal app-identity reap` plumbing. It runs in the background, so a connection never waits for it, and it keeps any identity whose server process still exists and retains any retirement that does not finish. The same conversation from another plugin server reuses a saved identity only once the server that held it no longer exists, so a live server keeps its identity even when its process start time reads differently, as macOS `ps` does across time zones and locales.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
+### Minor Changes
+
+- eb9aef9: Show a bounded, attributed preview inside Claude Code's existing native Cotal disclosure without consuming the inbox. The collapsed row reports unread count, expansion renders neutralized DM/channel rows, and UI state never drains, acknowledges or commits delivery. Unsupported chat hosts keep the existing tool and wait paths.
+
+  `GatewayWake.signal` now receives the rendered preview as a required second argument. Embedders that implement `GatewayWake` with a one-argument `signal` still conform. Code that calls `signal` directly must pass the preview.
+
+  Preview rows replace peer control characters and lone surrogates with U+FFFD before they are bounded, so a wake frame always fits the feed and no terminal control reaches the host UI. Line breaks keep their indented continuation.
+
+### Patch Changes
+
+- ab2acc8: Tell every agent where to talk when it joins. A fresh agent can start on no channel, so the Claude Code, Codex, Jcode, OpenCode and Hermes startup text now says how to find its team's channel with `cotal_channels` and `cotal_join`, to use `cotal_dm` for one peer and `cotal_anycast` for a role, and to post on `#announce` only for a deliberate space-wide notice. OpenCode and Hermes previously carried no channel guidance at all. This is guidance only: no grant, subscription, mention or wake behaviour changes.
+- 465fbd1: Export a typed `submitFeedback` helper for hosts that need the same feedback intake contract as the MCP tool. The tool now uses that helper without changing its keyed and keyless routing, request fields, email requirement, or result text.
+- 3cefc75: Report the Cotal release a server actually loaded as its standard MCP `serverInfo.version`, instead of the placeholder `0.0.0`. The conversation gateway over HTTP and stdio and the managed Claude Code server now use the same value `cotal_orientation` shows, so a long-running server keeps reporting the release it loaded rather than whatever is installed on disk now.
+- 64fe35a: Make `cotal_orientation` identify the current session without conflating its labels. The card now reports whether the endpoint is bound, separates its display name and role from the owner+actor wire principal, names the current lifecycle UID, and states whether replacement evidence is known. Values the connector cannot establish are reported as `unknown`; a resume floor is not treated as replacement proof, and an unavailable predecessor is never presented as the current incarnation.
+
+## 0.91.0
+
+### Minor Changes
+
+- 5c85ef3: Apply the new terminal screens to status, help, settings, setup receipts and inventories. Add compact action guidance, command shorthands, named agent details and the live observer. Group guarded manager maintenance and channel metadata operations under their new command names.
+
+  Validate the public recipient and agent-target arguments before installation or catalog preparation.
+
+  Support explicit message file/stdin input, channel mentions and direct replies with non-echoing structured storage receipts. Show broker-derived channel membership without treating it as access or task progress.
+
+  Consolidate workflow reads, file-based launches, offline language tools and own-seat turn handling under run/r with explicit source and outcome labels.
+
+  Add account-provider selection, private device-approval guidance, structured sign-out receipts and a non-installing update availability report.
+
+  Expose native managed-launch readiness and original request/goal attribution, verified self stop,
+  hard despawn and manager supervision flags. Add non-echoing native terminal-input receipts,
+  authorized endpoint contract/invocation reports, the full read-only watch view family, partial
+  recorded team reads and account/actor authority reports. Keep unestablished live state explicit.
+
+  Share protected owner-private local record access between endpoint references and service
+  definitions. Add case-safe per-space service definition inventory, guided/file import, policy
+  reports and guarded local removal, keeping existing process observations distinct from owned
+  instances and serving readiness.
+
+  Resolve saved endpoint targets through the canonical describe/invoke namespace. Pin the local
+  reference revision through native calls, disclose the resolved target and preserve exact instance
+  selection without broader-caller or class-queue fallback.
+
+  Read authorized native endpoint registrations with explicit bounded-lag enumeration, leader-read
+  coordinates and partial results for unreadable or omitted keys. Keep registration, reported status,
+  process ownership and current serving responses distinct.
+
+  Add the guarded history-clear screen with default-cancel scope review, explicit scripted confirmation,
+  offline dry-run and per-stream native purge receipts. Preserve acknowledged partial work and unknown
+  submissions without retrying destructive requests.
+
+  Expose digest-verified action metadata to clients and add native endpoint action following with
+  --wait. Retain original requests and accepted goal identity, use accepting-instance reconciliation
+  and emit explicit bounded goal stream records without resubmitting an unknown action.
+
+  Apply the shared report treatment to classified failures and expose safe original-request, accepted-
+  goal and responder attribution without copying raw argument or native-detail objects into reports.
+
+  Make spawn --file select a persona on its execution host, with the native shared manifest schema
+  providing the team-deploy refusal. Add non-launching offline preview reports and a protected explicit
+  foreground enrollment-file input without changing native launch fields or adding wire authority.
+
+  Add a Linux process-service driver with machine/boot and process-creation ownership, exact
+  instance selection, explicit multi-instance launch, bounded readiness/log reads and guarded
+  stop/restart/removal. Distinguish owned process presence and HTTP reachability from endpoint
+  serving, retain uncertain launch receipts and never fall back to PID-only or remote controls.
+
+  Add ownership-aware completion installation, refresh and removal with finite JSON/plain receipts.
+  Keep custom and modified shell material, preserve the stable offline dispatcher and refresh only
+  existing recorded stubs through the current-generation updater without adding startup wiring.
+
+  Add offline endpoint contract scaffolding and checking through the installed native cluster/schema
+  compilers. Create files exclusively, derive digests from schemas and keep handler execution,
+  serving authority and opaque attribute/event semantics separate from local validation.
+
+  Expose native ephemeral endpoint casts with pre-publication journal refusal and non-execution
+  receipts. Keep original request/binding attribution, broker denial and unknown outcomes distinct.
+
+  Expose target-bound account signer export under auth signer with required protected output,
+  inspected same-account replacement, public-only receipts and no operator-root or caller issuance.
+  Share protected workstation file access across the credential, endpoint and service frontends.
+
+  Add protected, explicitly unverified handle metadata inspection without signatures, redemption or
+  caller issuance. Resolve literal nested help and scoped aliases through declared metadata while
+  keeping help offline and provider imports behind validated execution.
+
+  Move static credential minting into auth mint through a registered implementation action, with
+  one shared flag grammar and public-only JSON/plain receipts. Keep source-root authority/profile
+  checks, native provisioning and expiry metadata, use create-only default labels and explicitly
+  report a reused nkey's new out-of-band lifecycle instead of claiming its old inbox was retained.
+  Reject the top-level mint spelling before effects and keep explicit exports out of managed state.
+  Name both roots when the selected root and current folder disagree about the signing authority.
+
+  Expose one-shot native endpoint class scatter with frozen-set reconciliation, attributed member
+  results and every native anomaly bucket. Keep pinned/targeted/journaled calls off this route,
+  preserve classified mixed/unknown outcomes and retain useful result data in finite failure reports.
+
+  Add exact-manager persona list/show/create with native ownership checks and bounded complete-file
+  merging. Refuse unsupported metadata before submission, retain the actual responder/request and
+  separate a confirmed save from a denied or unknown optional announcement without retrying it.
+
+  Expose exact-target endpoint deregistration through the existing native guard as a registered
+  operator action. Require a reviewed full class/instance, preserve TLS and selected static authority,
+  refuse unsupported auth fallback, keep dry-run offline and report native deletion revisions or
+  uncertainty without retry. Turn the old default-instance spelling into a pre-effect migration refusal.
+
+  Add finite private-backup creation receipts after native cleanup, read-only manifest inspection
+  and size/SHA-256 verification without staging or restore claims. Expose exact-attempt recovery
+  and healthy fallback cleanup with default-cancel review, offline plans, revision rechecks and
+  native owner/identity guards. Keep confirmed publication and incomplete cleanup distinct.
+
+  Add public-only JSON/plain feedback receipts with bounded response metadata, explicit unknown
+  submission outcomes and no redirect or retry. Accept protected key-file input, refuse raw keys on
+  argv and keep submitted bodies, contact values, credentials and response text off diagnostic output.
+
+  Move credential diagnosis and native static daemon repair onto shared JSON/plain reports. Add
+  nonmutating observation intent at the existing local migration boundaries, retain acknowledged
+  path moves/re-signs separately from adoption, keep prior broker refusals visible and avoid live
+  agent or open-mode claims from absent/local credential files. Never expose secret fingerprints or
+  raw credential/audit parser diagnostics in the new reports.
+
+  Evolve workstation local-process providers with a versioned service ABI, closed bounded option
+  schemas and package-bound cached declaration fingerprints. Validate definitions without provider
+  imports, then route explicit adapter launches through the creation-pinned direct-process
+  controller. Retain adapter provenance, exact native readiness coordinates and unknown hook
+  outcomes. Check declared capabilities and keep service launch intents behind extension-removal
+  guards without introducing wire grants, manager impact bypasses or implicit dependencies.
+
+  Add declarative service presets with schema-derived parsing, scoped help/completion and guided
+  creation. Validate declared protected path references without reading contents. Expose the native
+  feedback-intake preset through the shared controller, using the guarded same-binary re-exec and
+  existing intake implementation. Correlate post-listen startup with the exact child/launch,
+  preserve TLS and private append-only storage, keep credentials on file references and refuse
+  the former top-level intake launcher before effects. Separate controller-only providers from
+  legacy PID inventory and retain startup/data receipts without claiming endpoint serving.
+
+  Expose the independent delivery preset through its own registered local-process provider, using
+  shared workspace custody metadata instead of an implementation import. Retain the native scoped
+  store, SYS account scan, singleton lease and TLS checks, refuse legacy custody adoption and
+  publish startup only after native readiness. Share private child-bound startup receipts and
+  public-only target resolution between native adapters, while preserving the workstation path
+  context without inheriting arbitrary credential or agent identity environment values.
+
+  Expose caller-scoped manager stop-impact observations through the native status contract. Reuse
+  its actual runtime seat policy, retain owner filtering and show pending lifecycle/retirement work
+  without treating an observation as stop authority, a reservation or completed cleanup.
+
+  Put manager gate repair and retained-seat maintenance on shared JSON/plain reports and default-
+  cancel confirmations. Preserve the registered target/TLS policy, classify uncertain submitted
+  effects without replay and separate native gate/custody receipts from serving or cleanup claims.
+
+  Apply scoped grammar/help and shared account, inventory and native-request reports to Linear.
+  Keep native MCP isError results distinct from unknown execution, bound human output without
+  truncating JSON and preserve its existing serving/caller authority during the pending transitions.
+
+  Give existing native Linear caller issuance a private create-only output preflight and shared
+  receipts. Preserve original identity/lifecycle and uncertain provisioning/publication without
+  replay, broader caller substitution, managed-launch claims or environment-export onboarding.
+
+  Keep direct-service supervisor assignment distinct from unperformed OS discovery in instance
+  and preview reports; a recorded none does not claim external supervision is absent.
+
+  Prepare private, request/process-bound native stop handoffs and immutable phase observations.
+  Keep cleanup unverified and existing reservations untouched; manager service control is not
+  activated by these primitives alone.
+
+  Expose the manager embedding's own registration/policy observation without exporting credentials,
+  URLs or grants. Keep it distinct from fresh serving evidence and wire caller authorization.
+
+  Provide a public-only native manager identity callback before endpoint construction and expose
+  its actual per-process UID in status. This supplies launch-correlation data without treating
+  identity metadata as serving readiness, ownership authority or a generic caller grant.
+
+  Prepare private native identity bindings before endpoint construction. Preserve dotted endpoint
+  class names under the native validator, keep epochs out of pre-serving identity data and require
+  a separate attributed response before any serving or process-control inference.
+
+  Add the native manager service preset with pre-endpoint identity binding, post-start signal-ready
+  receipt and invoking-caller readiness/impact observations. Show the full native seat consequences
+  before default-cancel confirmation and bind the unchanged scope to the live native reservation.
+  Require immutable accepted/returned evidence plus original process exit before a stopped record;
+  retain unknown requests without force kill or restart, and leave cleanup unverified. Keep generic
+  and legacy signal paths from bypassing this boundary. The child never publishes its console URL.
+  Foreground, OS-supervised and non-Linux manager service operation remain unsupported.
+
+  Add the prepared native auth-service preset with shared daemon inputs, exclusive real-child PID
+  custody and a private post-initialization startup receipt. Keep discovery capability and key
+  material native and private. Refuse existing custody, remote brokers and TLS-required targets
+  instead of reclaiming a daemon, weakening transport or generating new issuer material. Keep
+  foreground/OS-service operation unsupported.
+
+  Add the Linear service preset over the existing account, native static registration and renewal
+  implementation. Bind its explicit root/registered transport and publish a private handler-
+  initialization phase only after shutdown handlers exist. Keep process/initialization evidence
+  separate from broker flush, fresh endpoint response and native deregistration completion. Refuse
+  unsupported issuer/foreground/OS-service modes without substituting authority.
+
+  Show checked installed preset metadata and declared readiness/foreground/instance/stop capabilities
+  in service inventory. Keep unavailable or mismatched metadata partial with explicit warnings;
+  metadata validation is not application readiness or OS-install support.
+
+  Prepare full-instance/definition/host-bound supervisor receipts and non-echoing recorded-unit
+  file observations. Keep loaded OS state/autostart unchecked, preserve missing/modified receipts,
+  and refuse direct process controls or removal beside a recorded supervisor. OS installation and
+  native unit control remain unimplemented; no unit is created or enabled by these readers.
+
+  Claim the managed manager child's real native PID custody exclusively before endpoint startup,
+  without adopting a contender or treating a starting record as readiness. Settle the same process
+  and retain owner-bound release after native start; keep legacy entry behavior separate.
+
+  Add bounded same-host status reads for unchanged recorded systemd user units. Report physical
+  fragment, native states, invocation and exact process/launcher attribution without unit or
+  environment bodies; keep missing/ambiguous/drop-in observations partial. Status does not reload,
+  start/stop a unit, infer endpoint readiness or prove effective autostart.
+
+  Prepare a built-in direct-process unit boot entry with complete controller/definition/instance
+  validation before extension overlays, repair or package materialization. Require the recorded
+  native invocation before same-PID process replacement, refuse managed-spawn handoffs and retain
+  unknown starting evidence without retry. This does not install units or prove execution/readiness.
+
+  Declare auth and Linear foreground service lifetime through the shared owned-child controller
+  and native shutdown handlers. Print lifetime/output policy before launch, retain manager's native
+  impact requirement, and prevent native service child boot from repairing connector packages.
+  Process exit still does not prove endpoint, descendant, registration or authority cleanup.
+
+  Route recorded systemd service logs through bounded native journal reads/following pinned to the
+  original unit invocation, boot and UID. Preserve native cursors/timestamps and binary JSON, report
+  record/query/diagnostic gaps, close only the reader on interruption, and refuse missing invocation
+  evidence without substituting a direct-child file. Journal retention and cleanup stay unestablished.
+
+  Expose the service install/uninstall paths with the same exact definition/instance
+  selection and a typed unsupported boundary where native OS control is missing. Never route them
+  through the old manager-only installer, allocate a stopped record or change autostart on refusal.
+
+  Expose auth redeem with closed per-mode input and the selected native auth target. Refuse
+  unsupported conferring-handle redemption before reading the file or spending authority, rather
+  than substituting agent enrollment, session redemption or unverified artifact parsing.
+
+  Move the dashboard package from its public command to an owned service preset with explicit
+  protected static credentials and read-only intent. Preserve native HTTP/cookie/origin behavior,
+  registered TLS, exclusive PID custody and private full-launch bootstrap records; publish only
+  process initialization and non-secret reference paths. Refuse unsupported user-auth/open/OS
+  routes without operator identity or mutation-transport fallback. Hide obsolete cached web commands
+  and refuse them with an explicit matching-update remedy before loading code or repairing installs.
+  Keep legacy process observations separate and migrate setup, tool hints and dashboard guides.
+
+  Add auth mint --endpoint with closed channels/expiry/private-output inputs and the shared static
+  signing-authority checks. Resolve a live digest-verified untargeted synchronous ephemeral surface,
+  then use the native agent provisioner for its exact additional command rows and lifecycle footprint.
+  Refuse targeted/journaled/action scopes without omitting rows. Publish a create-only non-secret
+  issuance intent before native footprint work, block blind replay, preserve private output checks
+  and report temporary provisioner close separately. Do not add spawn/run/admin authority, user-auth
+  issuance, arbitrary raw-file caller derivation, managed launch or environment-export onboarding.
+
+  Expose exact auth retire grammar with a typed unsupported boundary until a caller-owned native
+  serve-gate retirement instrument exists; never borrow manager identity or use host loopback doors
+  as a substitute. Prepend native journal reader output-close handling before the binary's global
+  EPIPE exit; final stream output and reader cleanup remain observations, not assumptions.
+
+  Show endpoint caller scope in the shared receipt: actual caller/lifecycle, described owner and
+  responder, native expiry, explicit channels and bounded command rows with a JSON-preserving
+  omission count. Label the local issuance request separately from native provisioning evidence.
+
+  Consume paired native standalone endpoint caller files through registered static targets and saved
+  references. Verify signatures against current validated issuer pins, matching user keys/time windows,
+  native permission projections and principal tags before broker admission. Retain TLS and private
+  snapshots; refuse arbitrary/profile/versioned/targeted/instance/scatter/admin/action authority without
+  operator fallback, binding repair or unknown-effect replay. Show public caller binding and described
+  file-scope limits in shared reports. Share the local intent contract with issuance and validate
+  explicit dashboard credentials against the selected issuer before PID custody or initialization.
+
+  Declare the endpoint watch/session/work and invocation handle paths with closed mode
+  inputs and typed unsupported boundaries while native declaration/auth-slot adapters are absent.
+  Refuse before broker/file access or subscription, cursor, session, lease, commit or redemption;
+  never infer a generic subject, remote execution, verified attenuation or broader caller authority.
+
+  Route one named down target through the existing owned-service stop controller and retain its
+  native identity, confirmation, reservation and manager-impact policy. Keep down-labelled finite
+  receipts, full-instance selection, offline preview and saved-definition completion. Refuse
+  multi-service sets before effects until whole-set preflight exists, reject named agent-reap flags
+  with the explicit manager-service remedy, and never fall back to a legacy component PID. Reject
+  new receipt/acknowledgement flags on the bare-stack/manifest paths.
+
+  Expose the existing direct endpoint/workflow stream definitions through one pure native config
+  factory consumed by bootstrap. Retain creation order, options, retention-floor checks, independent
+  ownership census and existing contract/authority hardening; do not add schema mutations or schema
+  apply.
+
+  Add a pure conservative diff for that native stream subset. Preserve not-observed, denied,
+  not-found-without-authoritative-absence and target-mismatch states; compare only explicit fields,
+  retain uninspected defaults and never emit creation/migration actions or enable apply. Add no
+  full-space schema observation, authority policy or privileged reconciliation.
+
+  Share native message/registry, contract, authority/session, issued/admission, membership and artifact
+  creation inputs with a read-only resource catalog, retaining the existing TTL source, native guards
+  and independent inventories. Keep SDK defaults, complete canonical policy, seeds/default delivery
+  and reconciliation authority unestablished.
+
+  Add a narrowed native stream-info facade and internal resource observer with structured SDK
+  error classification, no message matching, credential substitution or authoritative absence.
+  Share declared-field comparison with the endpoint subset; keep native KV/object verification
+  required, expose uninspected fields and always disable apply.
+
+  Share native registry seed ordering and profile-default patches with explicit no-write initialization
+  definitions. Preserve seed-before-profile precedence and existing explicit delivery classes. Keep
+  validation, strict revision observations and guarded application separate; do not infer a profile,
+  expose patch bodies in diagnostics or claim legacy seeding gained revision safety.
+
+  Share pure native contract, authority/session, issued/admission and artifact config checks between
+  existing creators and schema comparison. Retain the guarded shadow/legacy-cap migrations outside
+  readers, never run TTL write canaries during diffing, suppress raw native failure text and distinguish
+  uncompared fields, unconfirmed checks and invariant matches from complete canonicality or authority.
+
+  Add bounded read-only initialization observation over an existing selected registry handle. Validate
+  native profile/patch inputs before key reads; retain revisions and tombstones and keep missing,
+  denied, unavailable, malformed, mismatched and unvisited rows distinct. Preserve private values,
+  explicit deadline/non-cancellation and incomplete field-policy labels. No bucket open/create,
+  credential fallback, revision-guarded write plan or apply authority is introduced.
+
+  Prepare a read-only existing-static schema inspection adapter with upfront native input validation,
+  strict registered root/server/TLS selection, validated current full trust and one native temporary
+  provisioner identity. Keep native mode/floor and registry read failures, private observations and
+  local reader closure explicit. Do not expose mutation ports, substitute other authority, promote
+  reported server metadata to account proof or connect an incomplete apply/public command path.
+
+  Share the existing pure primary/Limits/no-global-eviction authority-store check through core for
+  schema inspection and native lifecycle binding. Preserve the auth module's sibling import surface,
+  existing checks and error class/text. Move no lifecycle/gate operation, connection, grant or repair
+  into core, and keep complete field policy and apply authority separate.
+
+  Attribute the first failed native primary/no-eviction invariant to structured field names from the
+  same ordered check. Keep native diagnostic text private to its existing bind error, preserve its
+  class/message and avoid parsing or echoing exception strings in schema reports. Field attribution
+  is not full canonical policy, current binding, write authority or a completed migration.
+
+  Prepare explicit registered open-mode schema inspection alongside static mode. Select the mode
+  before connection, preserve registered TLS, load/mint no open-mode signer or identity and require
+  the reported broker authentication mode to match. Keep user-auth unsupported, never retry an auth
+  refusal anonymously, and retain private reads and disabled apply without public command wiring.
+
+  Compare extra observed direct-stream fields with the existing first-party baseline, without
+  normalizing absent settings from desired values or copying private SDK defaults. Classify
+  nondefault undeclared/unmodeled settings as blocked and expose field names without their values.
+  Reuse reserved NATS metadata policy; do not add KV/object expansion, full policy or apply.
+
+  Prepare a public-only schema inspection projection and shared terminal view without connecting an
+  incomplete public/apply path. Show target/profile, non-atomic resource/key observations, revisions
+  and safe policy-field attribution. Omit raw configs, registry/patch contents, unknown field names
+  and native diagnostics; retain unproven absence, incomplete policy and disabled apply labels.
+
+  Add one bounded native NATS current-connection identity query and the temporary provisioner's
+  self-only `$SYS.REQ.USER.INFO` publish grant, documented in the ownership matrix/profile summary.
+  Require matching public user/account/server before static schema reads without system credentials,
+  arbitrary-user queries or authority fallback. Ignore response permissions/expiry as ceiling or
+  lifecycle evidence and keep apply/absence authority disabled; explicit open does not invent an
+  identity. This is prepared source, not a native conformance or deployment claim.
+
+  Compare native store subjects and explicit public KV/object creation options with their documented
+  wire fields, including TTL/marker units, storage, history, limits and hardening. Do not fill SDK
+  defaults or invoke constructors. Block unexpanded options, expose their count rather than values
+  and keep full field/runtime/revision/apply policy separate.
+
+  Compare observed existing registry rows using native seed-before-profile precedence, a closed
+  known-field policy and private revision-pinned candidates. Preserve explicit delivery choices,
+  block unknown fields and unreadable/deleted/missing rows, and expose only comparison states,
+  changed field names and observed revisions. Do not turn a candidate into write authority or
+  change legacy seeding; add no guarded application or public stack/update path.
+
+  Bound the resource observer by one shared deadline, preserve unvisited rows and surface the
+  budget separately from policy comparison. Deadline expiry is not request cancellation or
+  authoritative absence; the caller still owns connection closure.
+
+  Extend observed-extra-field policy to native KV/object backing streams using shared first-party
+  baselines and scalar public KV input defaults, not private builders or missing-field filling.
+  Retain native artifact direct-read tolerance and valid smaller TTL duplicate windows. Unknown
+  or nondefault fields remain blocked, and runtime/full-schema/apply authority stay separate.
+
+  Name only the existing TTL-enforcement, stock legacy artifact-cap and contract-shadow guard
+  families in reconciliation reports. Share native constants/hardening fields, block other drift
+  and unknown settings, and keep guard-required metadata separate from an accepted migration.
+  Inspection runs no canary, state guard, creator, update or readback.
+
+  Route multi-name down through whole-set owned-service selection, process-role preflight, stable
+  definition reservations, explicit default-cancel confirmation and complete native-impact recheck
+  before the first stop. Keep per-effect native guards, input-order execution and one attributed
+  receipt. Stop on failure, retain unattempted members and never claim atomic rollback or cleanup.
+  Dry-run imports no provider and reserves/stops nothing; duplicate names and multi-name instance
+  selectors refuse. Bare-stack and manifest migration remain separate.
+
+  Include selected-space owned service definitions/instances on the shared status screen and JSON
+  result. Keep legacy pidfile rows separately labeled. Show full identities, process observations,
+  historical readiness and supervisor-record evidence without endpoint or OS-state promotion;
+  unavailable record families make the report partial rather than empty. Read no provider code
+  and control no service. Recheck each held definition again immediately before its set-stop effect.
+
+  Keep whole-set reservation/preflight and release errors in the attributed down receipt. Attempt
+  all acquired-hold releases without claiming verified lock cleanup or erasing completed stops.
+  Owned-service status warnings retain classified cause codes without native diagnostic bodies.
+
+  Share desired native resource creation configurations across the first-party stream baseline,
+  public scalar KV defaults, explicit options and hardening. Reject unexpanded inputs and include
+  hardening at creation rather than adopting and updating an existing bucket. Keep creation input
+  construction separate from mutation authority, existing-store repair and broker-store custody.
+
+  Make up background by default with an explicit --foreground mode and --detach as the accepted
+  background spelling. Reject conflicting intent before seed/effects, preserve each recovery
+  request's recorded mode, and document the supervising-unit/container migration. This retains
+  the native launch path.
+
+  Extend the background-up systemd advisory to the exact native invocation/main PID, naming the
+  unit and --foreground remedy without mistaking inherited terminal metadata for main-process
+  ownership. Preserve inherited recovery-lock release when new mode validation refuses early.
+
+  Connect setup's explicit start/detach flow after saved preparation. Validate script detachment
+  before effects, keep configure-only and default-cancel Start decisions separate, and retain one
+  finite setup envelope around the shared native managed-join observer. Local startup uses the
+  prepared root and original CLI, pins the follow-on request to its recorded manager and never
+  promotes command exit into readiness. Preserve safe failure/request/coordinator coordinates,
+  saved preparation and unknown outcomes without retrying, rolling back or replacing a manager.
+  Allow self-hosted setup startup to select one manager with --on before preparation writes;
+  retain that request in receipts and next-step hints. Local setup retains its own manager
+  pin and refuses an external selection.
+
+  Show the resolved mesh in shared rich/plain report headers, including ps and failures,
+  without re-resolving selection or changing JSON envelopes. Keep mesh context on live
+  watch and history rows and membership snapshots.
+
+  Route named Linux reset space through reviewed native local identity cleanup with
+  provider-declared key inventory, full local trust validation, unchanged filesystem scope,
+  stopped-custody checks and default-cancel confirmation. Restrict secret and raw deletions
+  to the reviewed remaining tree, retain returned per-path receipts on partial/unknown outcomes,
+  and remove only the unchanged eligible local registration after checking cleanup. Preserve
+  personas, service definitions, packages, account logins and remote data; refuse unsupported
+  provider, shared-root, foreign-material, TLS-first, remote and non-Linux targets.
+
+  Add bounded all-new agent and mixed channel/agent team deployment on static/open
+  meshes through an attributed, exact-manager native launch path. Persist one full intent
+  before effects, create new live channel cards through a separate scoped create-only
+  writer, then launch agents through the pinned manager. Sync each channel submission
+  and returned revision, each original launch request, each accepted allocation before
+  goal following, and each identity-matched joined result before continuing. Match both
+  step families before saving the full receipt. Retain unknown phases and partial channel
+  creates, allocations and joins without replay or rollback; expose them through team
+  show/inventory and keep them behind down/reset custody guards. Refuse user-auth inline
+  launch, reapply and unsupported manager/runtime selection rather than reusing the
+  unsafe legacy writer.
+
+  Extend the native manager slots read with an explicit bounded name query and optional
+  retired rows at cluster revision 30. Preserve default nonretired listing, exact manager
+  ownership and ordered slot/head observations so teardown can distinguish native terminal
+  and cleanup facts from a stop acknowledgement or a missing live-map row.
+
+  Route static agent-only team removal through the original manager and exact recorded
+  incarnations, with native impact preview, default-cancel confirmation, root maintenance
+  locking, synced original stop markers and matched retired slot/head plus cleanup receipts.
+  Retain partial and unknown per-agent outcomes without replay. Keep original creation and
+  removal history, and release only a fully receipt-matched deployment's known additive
+  blocker in boot/down/reset/deploy guards. Mixed/channel, open/user-auth and legacy removal
+  remain unsupported. Show accepted allocations without joined receipts in human deploy
+  output as well as structured output.
+
+  Add explicit static-space online handle signature inspection over native leader-served signer
+  and issuer-namespaced revocation records. Reuse one protected file snapshot for verification
+  and metadata; check raw signatures, issuer scope, parent links and containment without claiming
+  presenter binding, holder currency or use authorization. Require current spec/status pairs and
+  explicitly unrevoked sturdy handles, preserve offline unverified output by default, and never
+  redeem a handle or persist/print the ephemeral reader credential. Refuse unsupported open/user
+  authority instead of substituting a signer; report reader-close uncertainty separately.
+
+  Add the independent executable-endpoint service preset for selected Linux static-auth roots.
+  Compile and pin local contracts without handler execution, publish native contract artifacts,
+  and register through scoped native serve issuance. Run bounded no-shell JSON handlers with a
+  separate fixed argv and empty environment, retaining native schema validation, deadlines,
+  process/pipe cleanup uncertainty and no effect replay. Distinguish initialized process evidence
+  from current endpoint health, renew through the original issuer, pin native deregistration to
+  the original revision, and block reuse of unsettled full local service instances.
+
+  Correct reproduced source-build blockers in native registry-reader construction, protected
+  record imports, scoped help validation, optional observations and typed terminal reports.
+  Bind initialization reads through the public native KV API rather than private handle fields.
+
+  Avoid creating a control directory or catalog lock for a no-account observation, while keeping
+  malformed cache refusals and serialized refresh/application for existing signed-in accounts.
+
+  Create a missing extension config root privately before its first lock so a group-writable
+  umask does not make Cotal's own directory block completion installation. Keep existing
+  permissions and the completion writer's protected-ancestor refusal unchanged.
+
+  Classify local catalog-preparation cache and missing-login failures as pre-effect refusals,
+  not unknown remote operations. Keep cache paths and recovery guidance without parser excerpts
+  or cached values, and preserve existing-account refresh/application serialization.
+
+  Point unknown-space refusals at the canonical space inventory instead of a removed command,
+  and describe missing registration without claiming that its broker is down.
+
+- 5c85ef3: Bare `cotal ext` (and `ext list`) writes one structured document with `--json` and a plain report with `--plain`: `result.root` is the install prefix and `result.items` the installed extensions. This replaces one JSON line per extension. `--json` and `--plain` on the other `ext` subcommands are refused with `USAGE_INVALID`, and `ext root` stays a raw path.
+
+  A subcommand can declare its own structured outputs (`Subcommand.outputs` in `@cotal-ai/core`). The kernel reports a form by the 0 to 5 exit table only when that form declares a JSON output, and help prints each form's own `structured output` line, so `ext add`, `ext remove` and `ext seed` keep exiting 1 on any failure.
+
+  Add `cotal docs [<page>]`, the installed version's own protocol and CLI docs, offline: bare `docs` lists the pages, a page prints its Markdown, `--search <query>` shows the best-matching sections, and `--refresh` also tries the version-pinned copy on docs.cotal.ai and says which copy it served. `@cotal-ai/connector-core` exports the docs reads it uses (`docsIndex`, `readDocsPage`, `searchDocs`, `capSection`) through a new `./docs` subpath, so the bundle loads only when `docs` runs.
+
+### Patch Changes
+
+- cb1b5d5: A direct message to an agent the roster shows offline now says so, and says what happens next: the
+  message is stored and delivered when that agent reconnects, and a new agent spawned under the same
+  name does not receive it. `cotal_dm` adds the notice to its answer, `cotal send -t` prints it as a
+  `RECIPIENT_OFFLINE` warning, `cotal chat` adds it to the view and carries `recipientStatusAtSend` in
+  its `--stdio` stored result, and `cotal join` and the console print it after the send.
+- 28ae779: Declare MCP read-only and destructive-update hints on every conversation gateway tool. Message-consuming and state-changing tools remain updates; the hints do not override host permission policies.
+- 5c85ef3: Record managed-grant custody and serialize ledger reads, decisions and writes in one synchronous transaction. Bind conditional revocation to the lifecycle and custodian, preserve legacy row reads without adopting them, and define the lease-first optional retirement-only composition. Full recovery authority is not enabled.
+- 28ae779: Deliver incoming local-mesh messages through Claude Code's native plugin hooks, including supported Desktop Code sessions, without special launch flags. Surface busy notifications at a main-conversation boundary instead of waiting for the whole turn. Preserve plugin attribution, respect native Stop, and reoffer unread wakes when the local reader restarts. Idle wake notifications display as a compact, expandable Cotal indicator. Setup can use Desktop's bundled Code executable and records Node's absolute path so the app needs neither a separate terminal CLI nor Node on its PATH.
+
+  Refresh existing Claude messaging and skills plugin registrations during updates and ordinary first use after an npm upgrade. Preserve disabled settings and check the resolved payload rather than only the marketplace copy. A missing native runtime refuses the upgrade without accepting a stale generation. Allow an update after configure-only setup when the local project has no manager or broker running. Use provider readiness through the public setup entrypoint, including Desktop-only installations. Probe native executables only at an explicit availability or action boundary, with bounded timeouts, so a broken unrelated Claude command does not block connector registration, seeding or another harness's setup. Report a partial setup if the selected harness loses readiness before an action, rather than silently skipping it.
+
+## 0.90.1
+
+## 0.90.0
+
+### Minor Changes
+
+- b928aaa: Add immutable local scoped-Describe receive context and complete-envelope fingerprints, plus an explicit bounded read-only service Describe client contract. Define closed service-authority contracts, provider HTTP client hooks, host control types, registration-bound access and renewal primitives, native service gate approval guards and credential-root access checks, native caller-policy storage, create-only application-service name bindings and caller-capability policy checks. Add focused transport and structural checks and document the read-only serving-grant reader. Native service registration remains unavailable until host lifecycle support is implemented.
+
+  Keep create-only native authority writes closed over deleted key history, including concurrent caller-policy creation and pending service gates.
+
+  Bind service serving-issuance evidence to broker connection coordinates and verify it after the native gate CAS.
+
+  Add a host-only service-callout mint seam with principal attribution, a separate client inbox nonce and an original fixed expiry.
+
+  Bind native service issuance receipts to the registered witness and epcred connection, and retain expired evidence until qualified retirement.
+
+  Compose an optional sealed native service callout with current root authorization, registered serving grants, connection-bound receipts and fixed-expiry encrypted responses. Production registration and lifecycle wiring remain unavailable.
+
+### Patch Changes
+
+- 06e9515: State in the `cotal_run` tool's `page` description that a manager from release 0.88.0 or earlier refuses page mode.
+
+## 0.89.0
+
+### Minor Changes
+
+- dc458a4: Add a host-only, short-lived account census credential and a bounded pinned-server connection reader. The credential grants only one account's CONNZ request and account-qualified replies. Incomplete observations remain unknown; the reader does not grant eviction or prove terminal retirement.
+- bab4ca8: Add explicit bounded diagnostic pages for native run inventory, preserving legacy list requests and existing permissions. CLI and MCP callers can continue a pinned scan without a full-list reply or an absence claim.
+
+### Patch Changes
+
+- ae7154e: Allow persona definition tools to select a manager instance while preserving the caller's existing manager binding and permissions.
+
+## 0.88.0
+
+## 0.87.0
+
+### Minor Changes
+
+- af82e8d: A seat's launch-material directory (`cotal-launch-*` in the OS temp dir, holding the broker URL, the creds path and the control token) is now removed when the seat's process exits. Before this change a Claude seat left it behind after `cotal stop`, while the persona file and control socket of the same launch were removed. `materialEnv` in `@cotal-ai/connector-core` now takes the launch's artifact array as a second, required argument and appends the material's private directory to it, and every connector returns that array on `LaunchSpec.artifacts`, so the manager, the pty runtime and the foreground `cotal spawn` remove it the way they remove a persona file. Each connector now writes the material after its last refusal, so a refused launch leaves no material file behind. The second material file the Hermes launcher writes for its gateway child is not covered by this change.
+- 970bf2d: Accept the additive private tool-result contract in SPEC and the version-exact documentation bundle. Define consent, capture frontiers, fixed audiences, bounded revocation and exact-instance reads without implementing or enabling the path. Public tool arguments and results remain withheld; activation requires qualified owner implementations and a stock release.
+
+### Patch Changes
+
+- 5d686ff: Declare frozen private tool-result consent, revocation, serving-material and handle-mode command contracts, with closed parsers and a managed-agent issue/renew envelope. Add the consents anchor role and its tool-results scope check. These exports do not sign, issue, register, serve or enable the private path; public tool arguments and results remain withheld.
+- 9755079: Clarify private tool-result audience wording, distinguish the expired answer state from refusal codes, and spell out the consent replay row's existing signing and validity claims. No contract rule, runtime behavior or activation gate changes.
+- 8d513aa: Add a consent-only verifier for pinned signed password authentication within five minutes and a host-only proof decision door. Retain validated authentication provenance without changing ordinary bearer exchange. Private tool-result consent, issuance and serving remain unavailable.
+
+## 0.86.0
+
+### Minor Changes
+
+- 31dccc4: A Claude app conversation can join a local mesh. `serveGatewayStdio(host, options)` in `@cotal-ai/connector-core` serves the remote gateway's tools over stdio, so a local MCP server offers the same `cotal_connect`, `cotal_wait` and routed tools as the hosted connector without importing an MCP SDK. The hidden `cotal app-identity` plumbing command opens one conversation's own identity on the selected mesh: it answers `taken` for a live name, takes its channels and role from the mesh's default persona, provisions the identity's own delivery durables on a mesh with static credentials, and writes the credential to a 0600 file that never appears on stdout. `cotal app-identity retire --dir` removes the identity's broker footprint and then that file, and each provision retires what a host that exited without retiring left behind. A mesh that uses per-user sign-in is refused. The Claude Code plugin's server now serves those tools to a session Cotal did not launch, in place of `cotal_how_to_join`, and joins only when the conversation calls `cotal_connect`. `cotal setup` records the CLI's own argv beside the plugin, so that server runs the CLI by absolute path; a connector's install action receives it as `ConnectorSetupInput` from `@cotal-ai/core`. Started with `--desktop`, the same server suits Claude Desktop, whose working directory is no project. Without `--space`, provision sweeps the registry first, as `cotal spawn` does, so a recorded mesh whose broker is down no longer makes the choice ambiguous. A conversation in a Claude Code session is woken when a message arrives: the plugin declares a monitor, each local server writes the connection id of each wake to a private socket of its own, and the monitor turns each valid id into a fixed event line, so no socket text reaches the model. `GatewayOptions.wake` in `@cotal-ai/connector-core` is the hook for this: it signals a connection once until it is read, never while a `cotal_wait` holds it, and again when a client starts listening, and `cotal_connect` says whether the client will be woken. `GATEWAY_INSTRUCTIONS` now tells a conversation how to keep listening when asked, and is exported in two parts, `GATEWAY_CONNECTING` and `GATEWAY_LISTENING`. Claude Code runs the `cotal` plugin in place from the copy `cotal setup` materializes under `~/.cotal/claude-plugin`, and before this change neither a repeat `cotal setup` nor `cotal update` rewrote that copy, so after an upgrade plain sessions kept starting the old server, hooks and monitor. A setup provider can now declare `refresh` (`ConnectorSetupProvider.refresh` in `@cotal-ai/core`), which brings what it installed to this release and installs nothing new; a repeat `cotal setup` and `cotal update` run it, and `cotal update` fails when the refresh fails. The copy's version is now the release plus a digest of its files, and `cotal status` reports the plugin as current or stale against it, in place of only whether it is installed. `cotal setup` always runs `claude plugin marketplace update` after adding the marketplace, since Claude Code 2.1.295 answers a repeat add with wording the old check did not match. On macOS and Windows, where Claude Desktop is installed, `cotal setup` adds a `cotal` server to Desktop's `claude_desktop_config.json` that runs the same server with `--desktop`, keeps every other entry, refuses a file that is not valid JSON, and the refresh keeps the entry current; `cotal status` reports it.
+- 15043fa: `cotal setup` now installs the `cotal` Claude Code plugin for your user account, so every Claude Code session on the machine gets the `cotal_*` tools in any project: the terminal, the IDE extensions and the Desktop app's local Code sessions. It used to install it only for the project setup ran in. Running `cotal setup` again moves the per-project installs an earlier release made under the one user-scope install. `cotal update` still only rewrites the plugin copy and does not change where it is installed. If Claude Code cannot change one project's settings, setup still removes the others and writes the Claude Desktop entry, then fails naming that project and the `claude plugin uninstall` command to run there. `cotal status` reads `current (user scope)`. Setup and `cotal status` now read a plugin list longer than 1 MiB, which a machine with many old per-project installs reaches; before, the output was cut short and status showed `unknown`. A session Cotal launches still loads one cotal server, because its `--plugin-dir` copy replaces the installed one for that session.
+
+  The plugin's hook, which Claude Code starts for every tool call, prompt and stop, no longer bundles the `@cotal-ai/core` package root. It shrinks from 945 KB to 14 KB and starts in about half the time. `peerLabel` is now also exported from the new `@cotal-ai/core/peer-label` subpath, and the root export is unchanged.
+
+- 7e50978: The remote gateway gets `cotal_wait`, so a hosted conversation can listen for messages. A remote MCP client cannot start a turn, so a hosted conversation heard a message only when it happened to call a tool. `cotal_wait` returns at once when a wake-worthy message is buffered and otherwise as soon as one arrives, with the reply `cotal_inbox` gives, or with none after a bound. Wake-worthy follows the agent's attention, as a local seat's push does. The bound is `GatewayOptions.waitSeconds` on `registerCotalGatewayTools`, or `waitSeconds` on `handleGatewayRequest`, and defaults to `GATEWAY_WAIT_SECONDS` (50 seconds), under Claude Code's 60-second limit to a remote server's first byte, Cloudflare's origin timeout and claude.ai's tool-call timeout. A wait whose client closes the request stops listening, and a read whose client is gone clears nothing, so neither takes a message it cannot deliver. A wait ends when its connection closes, and a focus @mention that lands between two waits ends the next one. `CotalToolSpec.run` takes an optional `ToolCall` with the request's `signal`, which `cotal_inbox` honors. Every other routed tool except `cotal_inbox` now adds a line to its result when messages are waiting, and the default instructions tell the model to listen with `cotal_wait`. `MeshAgent.inboxWake()` is the inbox half of `pendingWake()`, without run turns. `MeshAgent` emits `stopping` once when `stop()` begins, whatever the transport's state.
+
+### Patch Changes
+
+- f1c80e4: `cotal agent-bearer --manager-call` is now told to name a manager with `--manager-instance <instanceId>` when an owner has more than one live manager. Before, it was told to use the instance argument, which only an agent's tools take. The exchange names `--manager-instance` for every actor-token caller, because `cotal agent-bearer` is that arm's one client, and the connector renames it to the `instance` argument when it runs the command for a tool. The refusal still refuses and still lists the owner's live manager instance ids.
+- e31affd: A forked Claude Code session no longer acts under the hosted Cotal connection of the session it was forked from. A fork inherits the parent's `connection_id` in its transcript, so before this it reused the parent's mesh name from a new session. The plugin now records which session opened each hosted connection, from a `PostToolUse` hook on `cotal_connect`, in the plugin's data directory, and its `PreToolUse` hook refuses that id in any other session with a reason that says to call `cotal_connect`. A resumed session and its subagents keep the session id and are unaffected, and `cotal_disconnect` releases the record. `runHookRelay`'s local answer now runs in every session and is told whether the session carries a mesh identity.
+- af26dda: A Claude Code session that Cotal launched now refuses the `cotal_*` tools of every MCP server other than its local Cotal server. Claude Code loads connected-account connectors in a spawned session by default, so a hosted Cotal connector beside the plugin let one session join the mesh twice under two names. The plugin's `PreToolUse` hook now denies those calls with the reason, and decides in the hook process, so the refusal holds when the control socket is down. A session Cotal did not launch keeps the hosted connector. `runHookRelay` takes an optional answer that settles an event in the hook process before the control socket is resolved.
+- 1aad363: Report the connector process working directory in session display metadata alongside its hostname.
+- 7a2c574: Claude Code sessions report the directory their own `SessionStart` hook supplies on startup, resume or fork, not the connector process directory, so sessions hosted in one process no longer all show the host's directory. The directory is absent until the hook reports it and is not changed by clear or compact. `CotalEndpoint.setCardCwd` and `MeshAgent.setCwd` set it, and `MeshAgent`'s new `withholdProcessCwd` option leaves it unset at construction.
+- 8d97d8a: Callers can name a manager instance wherever a user-auth mesh with several live managers for one owner asks them to. `cotal models` and every hosted `cotal run` verb take `--on <instance>`, and MCP `cotal_run` and `cotal_personas` take an `instance` argument under the same rules as `cotal_spawn`'s. A `cotal` command run from a managed seat's shell now selects the manager that launched the seat (`COTAL_MANAGER_INSTANCE`), as the seat's tools already did, unless `--on` names another. The ambiguity refusal still refuses, and now lists the owner's live manager instance ids and names the caller's own remedy: `--on <instanceId>` for the CLI, the `instance` argument for an agent's tools. Before, it named `--manager-instance`, which only `cotal agent-bearer` takes, so none of these callers could answer it.
+- 958e6cb: `cotal_roster`, `cotal ps`, `cotal status`, `cotal endpoints`, `cotal console` and `cotal join` print each peer's condition code and activity on one line and at most 200 characters. A control character or Unicode line separator shows as a `\uXXXX` escape, so a peer can no longer split its row into what reads as a second roster entry, pass terminal control bytes through, or flood every row with a 4000-character activity. The rule is `presenceText` in `@cotal-ai/core`, and `oneLine` moved there from `@cotal-ai/workspace`, which still re-exports it.
+
 ## 0.85.0
 
 ### Minor Changes

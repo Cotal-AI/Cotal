@@ -4,11 +4,14 @@ import {
   admissionSnapshot,
   revocationSnapshot,
   type RemoteRunRevokeRequest,
+  type RemoteRunCancelRequest,
+  type RemoteRunCancelResult,
   type RemoteRunRevokeResult,
   accountFromCreds,
   managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
+  parseGoalIndexEntry,
   parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
   REMOTE_MANAGER_IDENTITY_NAMES,
@@ -153,12 +156,49 @@ export function remoteRunHosting(args: {
   accountPublicKey: string;
   processEpoch: number;
   requestRunAdmission: (request: RemoteRunAdmissionRequest) => Promise<RemoteRunAdmissionResult>;
+  requestRunSubmission?: (request: import("@cotal-ai/core").RemoteRunSubmissionRequest) => Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;
   requestRunAttempt: (request: RemoteRunAttemptRequest) => Promise<RemoteRunAttemptResult>;
   requestRunRevoke?: (request: RemoteRunRevokeRequest) => Promise<RemoteRunRevokeResult>;
+  requestRunCancel?: (request: RemoteRunCancelRequest) => Promise<RemoteRunCancelResult>;
   call: (request: RemoteManagerAuthorityRequest) => Promise<RemoteManagerAuthorityMaterial>;
-}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> {
+}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> & Pick<RunHostingContext, "submitRun" | "cancelRun"> {
   const { state, owner, registrationProof, accountPublicKey, processEpoch } = args;
   return {
+    submitRun: async ({ subject }) => {
+      if (!args.requestRunSubmission) throw new Error("issuing host does not implement keyed submissions");
+      const request: import("@cotal-ai/core").RemoteRunSubmissionRequest = {
+        ...runRequestBase(state, registrationProof, accountPublicKey, processEpoch), kind: "manager-run-submission", subject,
+      };
+      const r = await args.requestRunSubmission(request);
+      const allowed = ["v", "kind", "requestId", "winner", "view", "admission"];
+      if (!r || Object.keys(r).some(k => !allowed.includes(k)) || r.v !== 1 || r.kind !== request.kind
+        || r.requestId !== request.requestId || typeof r.winner !== "boolean" || !r.view)
+        throw new Error("invalid keyed submission issuer response");
+      return { ...r, ...(r.admission ? { admission: admissionSnapshot(r.admission) } : {}) };
+    },
+    cancelRun: async ({ stage, subject, cancel }) => {
+      if (!args.requestRunCancel) throw new Error("issuing host does not implement observed run cancellation");
+      const request: RemoteRunCancelRequest = { ...runRequestBase(state, registrationProof, accountPublicKey, processEpoch), kind: "manager-run-cancel", stage, subject, cancel };
+      const result = await args.requestRunCancel(request);
+      exactKeys(result, ["v", "kind", "requestId", "runId", "stage", stage === "inspect" ? "authority" : "result"], "manager run cancel");
+      if (result.v !== 1 || result.kind !== request.kind || result.requestId !== request.requestId || result.runId !== cancel.runId || result.stage !== stage)
+        throw new Error("manager run cancel returned different request coordinates");
+      if (result.stage === "inspect") {
+        if (!["original", "owner-interactive", "admin"].includes(result.authority)) throw new Error("manager run cancel returned an unknown authority class");
+        return result;
+      }
+      const answer = result.result;
+      if (answer?.kind === "committed") {
+        exactKeys(answer, ["kind", "outcome", "revocation"], "manager run cancel committed");
+        if (answer.outcome !== "created" && answer.outcome !== "existed") throw new Error("manager run cancel returned an unknown write outcome");
+        return { ...result, result: { ...answer, revocation: revocationSnapshot(answer.revocation, cancel.runId) } };
+      }
+      exactKeys(answer, ["kind", "code"], "manager run cancel refusal");
+      if ((answer.kind !== "refused-before-dispatch" && answer.kind !== "outcome-unknown")
+        || !["permission-denied", "failed-precondition", "deadline-exceeded", "resource-exhausted", "unavailable"].includes(answer.code))
+        throw new Error("manager run cancel returned an unknown dispatch disposition");
+      return result;
+    },
     revokeRun: async (revoke) => {
       if (args.requestRunRevoke === undefined) throw new Error("the issuing host supplies no closed run revoke request");
       const request: RemoteRunRevokeRequest = { ...runRequestBase(state, registrationProof, accountPublicKey, processEpoch), kind: "manager-run-revoke", revoke };
@@ -477,19 +517,11 @@ export function remoteManagerGoalIndexEntries(
       result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
       result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch || !Array.isArray(result.entries))
     throw new Error("manager goal-index scan returned different lifecycle coordinates");
-  return result.entries.map((entry, index) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
-        Object.keys(entry).some((key) => !["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated", "note"].includes(key)) ||
-        entry.v !== 1 || entry.endpoint !== "manager" || entry.owner !== expectedOwner ||
-        ![entry.actor, entry.uid, entry.goalId, entry.iid].every((value) => typeof value === "string" && value.length > 0) ||
-        (entry.note !== undefined && (typeof entry.note !== "string" || entry.note.length === 0 || entry.note.length > 65_536)))
+  // The entry's shape is core's record contract; the scan adds only the endpoint and the owner.
+  return result.entries.map((raw, index) => {
+    const entry = parseGoalIndexEntry(raw, `${index} of the manager goal-index scan`);
+    if (entry.endpoint !== "manager" || entry.owner !== expectedOwner)
       throw new Error(`manager goal-index scan returned invalid entry ${index}`);
-    if (entry.allocated !== undefined && (!entry.allocated || typeof entry.allocated !== "object" || Array.isArray(entry.allocated) ||
-        Object.keys(entry.allocated).some((key) => !["name", "owner", "actor", "uid", "readinessDeadlineMs"].includes(key)) ||
-        ![entry.allocated.name, entry.allocated.actor, entry.allocated.uid].every((value) => typeof value === "string" && value.length > 0) ||
-        (entry.allocated.owner !== undefined && (typeof entry.allocated.owner !== "string" || entry.allocated.owner.length === 0)) ||
-        (entry.allocated.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(entry.allocated.readinessDeadlineMs) || entry.allocated.readinessDeadlineMs <= 0))))
-      throw new Error(`manager goal-index scan returned invalid allocation in entry ${index}`);
     return entry;
   });
 }
@@ -683,6 +715,28 @@ export function remoteManagedAgentEnrollmentMaterial(
   if (url.protocol !== "https:" && !(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]")))
     throw new Error(`managed agent enrollment returned a non-HTTPS agent bearer exchange URL (${url.protocol}//) - the actor token must never cross plaintext off this machine`);
   return m;
+}
+
+/** A managed agent's read and post channels as its enrollment asked for them and as the host
+ *  granted them. */
+export interface EnrolledAcl {
+  requested: { allowSubscribe: string[]; allowPublish: string[] };
+  effective: { allowSubscribe: string[]; allowPublish: string[] };
+}
+
+/** What the host granted beside what `requested` asked for, when the host's read or post list is
+ *  not the one asked for: a host may narrow a request to the account's grant instead of refusing
+ *  it. Undefined when the host granted what was asked. */
+export function enrolledAcl(
+  requested: { allowSubscribe?: readonly string[]; allowPublish?: readonly string[] },
+  material: Pick<RemoteManagedAgentEnrollmentResult["material"], "allowSubscribe" | "allowPublish">,
+): EnrolledAcl | undefined {
+  const asked = { allowSubscribe: [...(requested.allowSubscribe ?? [])], allowPublish: [...(requested.allowPublish ?? [])] };
+  const granted = { allowSubscribe: [...material.allowSubscribe], allowPublish: [...material.allowPublish] };
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((channel) => b.includes(channel));
+  return same(asked.allowSubscribe, granted.allowSubscribe) && same(asked.allowPublish, granted.allowPublish)
+    ? undefined
+    : { requested: asked, effective: granted };
 }
 
 /** Build one host-owned prepare-retirement request (#1972 phase P0/P1). The opId is DERIVED from the

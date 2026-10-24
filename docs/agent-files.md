@@ -22,6 +22,10 @@ capabilities: [spawn, run] # may manage teammates and start workflow runs
 You are a builder on a shared mesh of peer agents…   ← the body is the persona
 ```
 
+The file may use LF or CRLF line endings and may start with a UTF-8 byte order mark, so a
+catalog checked out on Windows reads the same. It must be UTF-8: a file saved as UTF-16, as Windows
+PowerShell 5.1 writes by default, is refused by name with the step to save it as UTF-8.
+
 **Frontmatter is identity** (an A2A-style `AgentCard`,
 [SPEC §6](../SPEC.md#6-presence-and-discovery)); **the body is the persona**, appended to
 the session's system prompt at launch: the one field that *must* be applied at launch,
@@ -53,10 +57,10 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `muted` | string[] | Per-channel attention *default*: dropped on receive, `@mentions` included. |
 | `model` | string | Model override handed to the agent CLI (Claude: `opus` / full id; OpenCode: `provider/model`). When the cotal config has a `modelPolicy` entry for the persona's role, the model must be one it allows, and a persona with no model is refused ([Model policy](config.md#model-policy)). A whitespace-only value is refused when the file loads. |
 | `variant` | string | Connector-defined model variant (e.g. an OpenCode variant, see `cotal models`). Checked against the role's `modelPolicy` variants when that entry lists any. A whitespace-only value is refused when the file loads. |
-| `agent` | string | The connector/harness this persona pins (`claude`, `jcode`, and so on). Precedence: explicit `--agent` > this field > `COTAL_DEFAULT_AGENT` > the product default, the same shape as `model`/`variant`, so the env var stays a *default* and cannot beat a deliberate per-persona pin. A value naming an unregistered connector fails the spawn loudly (no silent fallback). |
+| `agent` | string | The connector/harness this persona pins (`claude`, `jcode`, and so on). Precedence: explicit `--agent` > this field > `COTAL_DEFAULT_AGENT` > the saved [`harness` preference](config.md#preferences) > the product default, the same shape as `model`/`variant`, so the env var stays a *default* and cannot beat a deliberate per-persona pin. A value naming an unregistered connector fails the spawn loudly (no silent fallback). |
 | `launchOptions` | map | Opaque per-connector launch options forwarded **raw** to the harness (Claude flags, OpenCode agent config; Hermes and pi have no option surface and fail loud). A CLI `--opt key=value` overrides a key set here. A role with a `modelPolicy` entry launches without launch options ([Model policy](config.md#model-policy)). See [run a mesh](run-a-mesh.md#spawning-agents). |
 | `capabilities` | string[] | Control-plane capabilities minted into the cred. `spawn` grants the privileged control subject (spawn / named stop / persona definition), default-deny when absent, enforced by the broker, not a handler. `run` grants the manager's workflow-run commands (start, resume, answer, status, list) plus the spawn set a program's own spawns need, and injects the `cotal_run` tool. On a per-user-auth mesh, `role:<r>` additionally lets the agent delegate role `r` when spawning ([identity & auth](identity-and-auth.md)); `admin` is never a persona capability. |
-| `owner` | string | **Policy, not content**: set once by `definePersona` (owner = creator); only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
+| `owner` | string | **Policy, not content**: set once by `definePersona` to the creator when it is a signed-in user or one of the manager's own seats. On a static space any other creator, such as the CLI, leaves the file operator-owned. Only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
 | *(any other key)* | string | Kept verbatim in `meta` so a connector can read its own launcher hints without core knowing them. Saving a definition whose `meta` names a key this table models, or the renamed `channels` or `publish`, is refused before anything is written. The connector-owned keys are the exception: `connector`, `model`, `variant`, and `host` (the machine the session runs on) are overlaid from the live session, so a file cannot declare a harness or a host it is not on. |
 
 The three channel verbs on one card, with the common recipes:
@@ -68,16 +72,16 @@ The three channel verbs on one card, with the common recipes:
 
 - **By name.** A launcher resolves a bare name to `<target-root>/.cotal/agents/<name>.md`. The
   target root comes from the selected mesh, including `cotal use`, `--space`, and `--server`, so
-  launchers, `cotal personas`, setup, status, and agent-profile minting use one catalog. This is a
+  launchers, `cotal persona`, setup, status, and agent-profile minting use one catalog. This is a
   directory convention, not an HTTP well-known; mesh discovery stays NATS presence. The card built
   from the file is what gets broadcast.
 - **One ref.** The launcher sets `COTAL_AGENT_FILE=<abs path>` (the *who*) the way
   `COTAL_LINK` carries the *where*; the joined session reads its card straight from the
   file. Individual `COTAL_*` vars still override it ([config](config.md)).
-- **Defaults.** A bare `cotal spawn` uses the `default` persona
-  (`COTAL_DEFAULT_PERSONA` changes the fallback); the harness comes from `--agent` > the persona's
-  `agent:` pin > the invoking CLI's `COTAL_DEFAULT_AGENT` > the manager's own environment, else
-  Claude. An explicit flag always wins over the file, and the file wins over either environment
+- **Defaults.** A bare `cotal spawn` uses the `default` persona (`COTAL_DEFAULT_PERSONA` or the
+  saved [`persona` preference](config.md#preferences) changes the fallback); the harness comes from
+  `--agent` > the persona's `agent:` pin > the invoking CLI's `COTAL_DEFAULT_AGENT` > its saved
+  `harness` preference > the manager's own environment, else Claude. An explicit flag always wins over the file, and the file wins over either environment
   default, including detached spawns ([run a mesh](run-a-mesh.md)).
 
 Every launcher consumes the file the same way; they differ only in how they run the spec:
@@ -124,8 +128,10 @@ deliberately consult is affected: `cotal_personas` lists and shows the catalog o
 wire (spawn-capability, same ownership as the write), `cotal personas list` reads the
 catalog within a workspace, and `cotal_spawn` on a name that does not exist fails loud.
 
-The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it reads and
-writes the selected mesh root's files directly, offline, with no broker connection ([CLI](cli.md)).
+The operator-side counterpart is `cotal persona` (bare list, show, create, edit and remove). It reads
+and writes the selected space root's files offline. Complete file input preserves every field and
+source byte. An editor draft validates before promotion and refuses concurrent local CLI changes
+([CLI](cli.md#persona)).
 
 On a user-auth mesh, spawning owned persona content requires its creator principal or a
 current admin grant. A hosted run uses its admitted caller for that decision. A foreign

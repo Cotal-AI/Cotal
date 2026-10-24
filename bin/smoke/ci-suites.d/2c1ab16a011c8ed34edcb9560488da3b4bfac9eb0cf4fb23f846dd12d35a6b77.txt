@@ -1,0 +1,3 @@
+# How a command picks its space: a terminal chooses between running spaces for one run, a script
+# refuses an ambiguous target, and a manifest's declared space is the target of up -f and spawn -f.
+smoke:target-resolution

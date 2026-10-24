@@ -117,7 +117,7 @@
     {
       "name": "a cut inside a decided race is admitted instead of refused",
       "file": "implementations/runtime/src/fork.ts",
-      "find": "    if (e.kind === \"parallel\" || e.kind === \"fanOut\") continue;",
+      "find": "    if (scopeTraits(e.kind)?.reenters) continue;",
       "replace": "    continue;",
       "expectRed": "a cut inside a decided `race` is refused with L5020 rather than re-raced",
       "cell": "a cut inside a decided `race` is refused with L5020 rather than re-raced"
@@ -125,8 +125,8 @@
     {
       "name": "the projection is too broad and drops scopes that do NOT enclose the cut",
       "file": "implementations/runtime/src/fork.ts",
-      "find": "    return SCOPE_KINDS.has(e.kind) && req.fromStepKey.startsWith(`${k}/b:`);",
-      "replace": "    return SCOPE_KINDS.has(e.kind);",
+      "find": "    return scopeTraits(e.kind) !== undefined && req.fromStepKey.startsWith(`${k}/b:`);",
+      "replace": "    return scopeTraits(e.kind) !== undefined;",
       "expectRed": "and the scope it does not enclose STAYS in the prefix: the projection is enclosing-only",
       "cell": "so the CHILD replays that scope instead of re-entering it: it records no second `parallel:pair`",
       "note": "The narrowness twin. Projecting EVERY scope entry would satisfy the first mutation perfectly while destroying any fork whose cut sits after an unrelated combinator -- the child would re-enter and re-run scopes it had already settled. It SURVIVED its first grading and survived honestly: it was graded on `a fork at a recorded step is admissible`, a cell over a program with NO SCOPES, so the widening could not change its answer. Re-graded on a child seeded from a cut taken AFTER a settled `parallel`, and on what that child APPENDS -- the branch sleeps replay either way, so the first-live-step probe is inert here and only the second `parallel:pair#0` row tells the two apart."

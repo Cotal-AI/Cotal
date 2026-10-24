@@ -9,10 +9,10 @@
     {
       "name": "the offline branch writes authority: \"lease\" instead of \"offline\"",
       "file": "implementations/cli/src/commands/doctor.ts",
-      "find": "      results = await remintDaemonCreds(root, auth.space);\n      authority = \"offline\";",
-      "replace": "      results = await remintDaemonCreds(root, auth.space);\n      authority = \"lease\";",
-      "expectRed": "--fix with no broker records an offline repair and says so",
-      "cell": "--fix with no broker records an offline repair and says so"
+      "find": "    observed.authority = \"offline\";\n",
+      "replace": "    observed.authority = \"lease\";\n",
+      "expectRed": "with no registered mesh the repair is offline",
+      "cell": "with no registered mesh the repair is offline"
     }
   ]
 }

@@ -31,8 +31,8 @@
     {
       "name": "presence resolution matches the name alone, not the incarnation",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "  const matches = rows.filter((p) => p.card?.name === name && p.lifecycleUid === uid && typeof p.card?.id === \"string\");",
-      "replace": "  const matches = rows.filter((p) => p.card?.name === name && typeof p.card?.id === \"string\");",
+      "find": "  const matches = rows.filter((p) => p.card.name === name && p.lifecycleUid === uid);",
+      "replace": "  const matches = rows.filter((p) => p.card.name === name);",
       "expectRed": "a failed resolve bound no plan and wrote no row",
       "cell": "a failed resolve bound no plan and wrote no row",
       "note": "The handle pins one lifecycle; matching the name alone joins whatever seat currently wears it \u2014 a different incarnation than the run holds. Measured 2026-09-02: two reds (the stale-uid member resolves instead of failing L4002, and a row is written for it); 37 passed."

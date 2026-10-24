@@ -1,0 +1,3 @@
+# The manager answers status while preserved or resume-pending, as a counted read behind the
+# membership gate; every other state keeps the shared fence.
+smoke:manager-status-observation

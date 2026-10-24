@@ -18,7 +18,7 @@ function check(name: string, condition: unknown) { assert.ok(condition, name); p
 async function refusesBoot(opts: ManagerOptions, match: RegExp, label: string) {
   const probe = new Manager(opts); let started = false;
   try { await assert.rejects(probe.start().then(() => { started = true; }), match, label); passed++; }
-  finally { if (started) await probe.stop(); }
+  finally { if (started) await probe.stop({ withAgents: true }); }
 }
 const fx = await startHostedAuthFixture("noexec", 1);
 const a = fx.accounts[0]!;
@@ -229,4 +229,4 @@ try {
   await service!.close();
   check("authority close ends every real owned connection", (await service!.closed).connections.every((c) => c.ended));
   console.log(`no-execution native: ${passed} assertions passed`); emitSentinel({ passed, failed: 0 });
-} finally { console.error = originalError; await callerNc?.close(); if (managerStarted) await manager?.stop(); await retainedWriter?.close(); await witness?.close(); try { await service?.close(); } finally { await delivery?.stop(); await fx.close(); } }
+} finally { console.error = originalError; await callerNc?.close(); if (managerStarted) await manager?.stop({ withAgents: true }); await retainedWriter?.close(); await witness?.close(); try { await service?.close(); } finally { await delivery?.stop(); await fx.close(); } }

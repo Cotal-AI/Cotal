@@ -255,9 +255,9 @@ try {
   await operator.start();
 
   // The real command, with nothing pointed at this worktree: the connector must come from the
-  // config dir the binary seeded for itself. Foreground, not `-d` — the same resolution path with
+  // config dir the binary seeded for itself. `--foreground`, not `-d` — the same resolution path with
   // one less moving part (no manager relay) between the CLI and the connector.
-  cli = spawn("node", [CLI, "spawn", PEER, "--agent", "codex", "--server", servers, "--space", space], {
+  cli = spawn("node", [CLI, "spawn", PEER, "--foreground", "--agent", "codex", "--server", servers, "--space", space], {
     cwd: ROOT,
     env: cliEnv,
     stdio: ["ignore", "pipe", "pipe"],

@@ -1,0 +1,3 @@
+# cotal docs and bare cotal ext on the structured output contract through the built binary: the docs index, a page,
+# search, --refresh and the usage refusals, the lazy bundle import, and the extension listing with ext root kept raw.
+smoke:docs-ext-read

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReachable, seedChannelRegistry } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 // #839: a startup/readiness failure must not return (and let the manager retire the seat's mesh
 // credential) while the private Jcode daemon tree it launched is still executing. The fake bridge
@@ -48,6 +48,12 @@ const alive = (pid: number): boolean => {
 };
 
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-lifecycle-`));
+// Control sockets are AF_UNIX. Keep them under a short root so a deep TMPDIR cannot put the path
+// over sun_path (104 bytes on macOS, 108 on Linux) and replace the outcome under test with a
+// control-listen error.
+const sockRoot = mkdtempSync(join("/tmp", "cjl-"));
+// The socket root is not under `root`, so it needs its own removal, and its own signal backstop.
+const releaseSockRoot = teardownPathOnSignal(sockRoot);
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -104,7 +110,7 @@ function startHost(name: string, extra: NodeJS.ProcessEnv): HostRun {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, `${name}-control.sock`),
+      COTAL_CONTROL_SOCKET: join(sockRoot, `${name}-control.sock`),
       COTAL_CONTROL_TOKEN: `${name}-control-token`,
       ...extra,
     },
@@ -290,4 +296,6 @@ try {
   nats.kill("SIGKILL");
   await sleep(100);
   rmSync(root, { recursive: true, force: true });
+  rmSync(sockRoot, { recursive: true, force: true });
+  releaseSockRoot();
 }

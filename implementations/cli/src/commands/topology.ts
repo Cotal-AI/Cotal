@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
 import { type ParsedArgs } from "@cotal-ai/core";
-import { loadManifest, renderTopology, ManifestError } from "../lib/manifest/index.js";
-import { c } from "../ui.js";
+import { isCommandFailure } from "@cotal-ai/workspace";
+import { loadManifest, renderTopology, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
+import { c, stderrLine } from "../ui.js";
 
 /**
  * `cotal topology view -f cotal.yaml` — validate a mesh manifest and print its access graph:
@@ -13,13 +14,13 @@ export async function topology(args: ParsedArgs): Promise<void> {
   const values = args.values as { file?: string };
   const [sub, ...positionals] = args.positionals;
   if (sub !== "view") {
-    console.error(c.red(`✗ unknown topology subcommand "${sub ?? ""}" - expected: view`));
+    stderrLine("✗ ", `unknown topology subcommand "${sub ?? ""}" - expected: view`, c.red);
     console.error(c.dim("cotal topology view -f <cotal.yaml>"));
     process.exit(1);
   }
   const file = values.file ?? positionals[0];
   if (!file) {
-    console.error(c.red("✗ a manifest file is required - `cotal topology view -f <cotal.yaml>`"));
+    stderrLine("✗ ", "a manifest file is required - `cotal topology view -f <cotal.yaml>`", c.red);
     process.exit(1);
   }
   try {
@@ -30,11 +31,22 @@ export async function topology(args: ParsedArgs): Promise<void> {
   }
 }
 
+/** A manifest's declared space is the operation's target, so an explicit `--space` may only name the
+ *  same space; another one is refused before anything is written. */
+export function refuseManifestSpaceMismatch(prepared: PreparedManifest, space: string | undefined): void {
+  if (space === undefined || space === prepared.manifest.space) return;
+  stderrLine("✗ ", `--space ${space} does not match this manifest's space "${prepared.manifest.space}" - a manifest's space is its target; drop --space, or change the manifest`, c.red);
+  process.exit(1);
+}
+
 /** Print a manifest/file error as one red block (located issues for a ManifestError) and exit 1. */
 export function failManifest(e: unknown): never {
   if (e instanceof ManifestError) console.error(c.red(e.message));
   else if ((e as NodeJS.ErrnoException)?.code === "ENOENT")
-    console.error(c.red(`✗ manifest file not found: ${(e as NodeJS.ErrnoException).path ?? ""}`));
-  else console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `manifest file not found: ${(e as NodeJS.ErrnoException).path ?? ""}`, c.red);
+  else {
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
+    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim);
+  }
   process.exit(1);
 }

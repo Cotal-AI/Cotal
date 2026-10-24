@@ -9,7 +9,7 @@ The pump is deliberately dumb; all the judgment lives in the agents.
 
 ## Prerequisites
 
-- Node ≥ 22, pnpm, and `nats-server` (v2.11+). macOS: `brew install nats-server`.
+- Node ≥ 22, pnpm, and `nats-server` 2.12 or newer. macOS: `brew install nats-server`.
 - Install deps once, from the repo root: `pnpm install`.
 
 ## Run it

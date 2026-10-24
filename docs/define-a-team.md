@@ -47,11 +47,23 @@ Save it as `cotal.yaml` and launch:
 
 ```bash
 cotal topology view -f cotal.yaml      # validate + render the access graph (no broker needed)
+cotal space create main --root .       # prepare this folder as the local mesh root
 cotal up -f cotal.yaml                 # broker + channels + agents, all fresh
 cotal ps --space main                  # see the agents the manager booted
-cotal web --space main                 # ...or watch it in the browser
+cotal watch --space main               # watch the live mesh in the terminal
 cotal down                             # stop the whole mesh
 ```
+
+If `main` is already registered at another root, pick an unused space name in the manifest and
+`space create` command. Preparation never takes over that registration. If this folder already
+holds the matching local space, skip `space create`. Native `up -f` records a fresh boot
+summary with a run ID; `cotal team show <id>` reads that summary, not a live roster or an
+additive ownership ledger. The existing stop route for a fresh stack is bare `cotal down`
+from this folder. That route does not use the whole-set impact controller, so the summary does
+not authorize a stop or prove that the route reviewed whole-set impact.
+That `cotal down` also drops the space's registration, so `cotal space` stops listing it. A
+command that targets the space then refuses and names `cotal up` in this folder, which starts the
+stopped stack again at the address it last ran on and registers it again.
 
 The manifest introduces no access model of its own; the three verbs are the same ones
 Cotal uses everywhere: `subscribe` (auto-listen at boot, and implicitly may read),
@@ -63,37 +75,87 @@ the three `agents:` forms, channel cards, and the resolution rules are in the
 
 ## The command lifecycle
 
+The CLI supports native fresh `up -f`, `team boot <file>` on a
+prepared local root, read-only `team check`, `team boot --dry-run`,
+`team deploy --dry-run` and `team remove <id> --dry-run`, and all-new
+channel-only or bounded static/open agent and mixed `team deploy <file>` effects.
+Bare `team boot` guards the stopped
+root before native startup and never stops a leftover manager. Static and
+user-auth boots retain an intent before trust preparation; uncertain outcomes
+are not retried. Boot apply has rich, JSON and plain receipts. Channel-only deploy
+apply emits one rich, JSON or plain result. Agent apply accepts one to 100 all-new
+agents and optionally up to 100 new live channel cards. It pins issuance and launch to one native manager selected
+by an attributed read. A mixed deployment records one intent, creates channels
+with a separate scoped create-only writer, then launches agents. Every returned
+revision, original request, allocation and matched join is recorded before
+continuing. A full receipt must match both sequences. Partial effects remain
+without rollback; unknown effects are not replayed. Runtime requests must match
+that manager. Windows boot apply refuses, because protected service records cannot
+be read there. `spawn -f` no longer deploys a manifest.
+User-auth agent apply, existing cards and defaults refuse, and reapplying an identical settled
+deployment changes nothing;
+`team remove` applies only to returned static agent-only teams and requires native
+retired slot/head plus cleanup evidence for every original UID. Mixed/channel,
+open/user-auth and legacy removal effects still refuse. Boot previews show the manager PID record even when its process is
+dead, and make a bounded credless broker probe where an address is known.
+Neither observation authorizes replacing a manager. Deploy previews classify native
+presence and channel-registry reads. Remove previews read manager PS and a
+display-only membership feed. None of these reads authorizes apply. The existing `down -f` path remains native; its manifest
+argument is not a replacement for ID-only `team remove`.
+
 | Command | What it does |
 |---|---|
 | `cotal topology view -f <file>` | Validate the file and render its access graph. Read-only: needs no broker, mutates nothing. Run it before you launch. |
 | `cotal up -f <file>` | Bring up a **fresh** mesh: broker + seeded channels + booted agents. |
-| `cotal spawn -f <file>` | Deploy a manifest **additively** onto a mesh that is already running. |
-| `cotal down [-f <file>]` | Tear down (see "Tearing down" below). |
+| `cotal team check <file> [--graph]` | Resolve manifest and persona access intentions offline. |
+| `cotal team boot <file> [--dry-run]` | Preview local intent with `--dry-run`; otherwise enter guarded native fresh startup with rich, JSON or plain output on a prepared root. |
+| `cotal team deploy <file> [--dry-run]` | Preview native presence and registry with `--dry-run`. Apply all-new live channel cards or bounded static/open agent and mixed teams with synced native receipts. User-auth agents, reapply and existing-card mutation refuse. |
+| `cotal team remove <id> [--dry-run] [--yes]` | Preview native impact or retire a returned static agent-only team through its original manager, recording native terminal and cleanup facts. Legacy and channel-only previews remain read-only; mixed/channel and open/user-auth removal effects refuse. |
+| `cotal down [-f <file>]` | Tear down through the retained native route (see "Tearing down" below). |
 
-`up -f` and `spawn -f` accept `--dry-run` (preview the plan, change nothing). `up -f` also takes
-`--server` / `--host` / `--space` / `--runtime` / `--open` to override the file for one run.
+Native `up -f` accepts `--dry-run` (preview the plan, change nothing) and takes
+`--server` / `--host` / `--runtime` / `--open` to override the file for one run.
+The manifest's `space:` is the target: a `--space` that names another space is
+refused before anything is written. `team deploy --dry-run` reads native presence
+and channel registry for advisory classification. Its channel-only apply uses a
+create-only writer on one non-reconnecting broker connection; registered
+broker lists refuse. Uncertain attempts remain available for inspection.
 
 > If a Cotal mesh is already running at the manifest's broker address (e.g. the default
 > `127.0.0.1:4222` from `cotal up`), `up -f` **refuses**; it never re-seeds a live broker. The
-> check is on the *address*, not the `space:` name. Run `cotal down` first, point the manifest at
-> another address (`broker: { servers: nats://127.0.0.1:14999 }`, or `--server`), or use
-> `cotal spawn -f` to deploy onto the running mesh.
+> check is on the *address*, not the `space:` name. Run `cotal down` first, or point the manifest at
+> another address (`broker: { servers: nats://127.0.0.1:14999 }`, or `--server`).
+> `team deploy --dry-run` reads a registered broker for advisory classification;
+> bare apply accepts all-new live channel cards or bounded static/open agent
+> and mixed teams. It does not replace a manager.
 
-**Tearing down.** A fresh mesh from `up -f` is torn down with plain **`cotal down`**: it owns the
-whole space. An additive deploy from `spawn -f` is torn down with **`cotal down -f <file>`** (or
-`cotal down -f <file> --run <id>`), which removes *only* that run's agents and channels.
+**Tearing down.** A fresh mesh from `up -f` uses plain **`cotal down`** from its
+recorded root. An additive ledger created by the older `spawn -f` path still uses
+**`cotal down -f <file> --run <id>`**, which is scoped to that run's recorded
+agents and channels. A new `team deploy` saves its own attempt and returned
+channel revisions or native agent allocation/join receipt; the old `down -f`
+ledger route cannot remove those resources. ID-only `team remove` retires a returned
+static agent-only deployment through its original manager with exact-incarnation guards
+and native retirement/cleanup receipts. An unsettled attempt is not retried. Other removal
+effects remain unsupported, and the legacy-ledger preview authorizes no teardown.
 
 ## Manifest ownership
 
-The rule: **`up -f` owns the whole space; `spawn -f` owns only what it created.** Cotal only ever
-tears down what it owns; foreign actors on a shared mesh are never touched.
+The additive details below describe the retained native ledger engine. The
+new channel-only, agent and mixed `team deploy` paths do not use that legacy ledger. Their
+create-only intent and returned receipt are separate. Only a complete matched
+static agent-only removal receipt releases that deployment's known additive blocker;
+its original history remains. Channel and mixed removal remain unavailable.
+
+The rule: **`up -f` owns the whole space; an additive deploy owns only what it created.** Cotal
+only ever tears down what it owns; foreign actors on a shared mesh are never touched.
 
 - A fresh mesh from `up -f` → `cotal down` stops all of it.
-- An additive deploy from `spawn -f` records a creation-only **ledger**
+- An additive deploy from the older `spawn -f` path recorded a creation-only **ledger**
   (`.cotal/manifests/<runId>.json`) of the channels and agents it added; `cotal down -f`
-  removes only those. The **run id** is printed by `spawn -f` and is the filename under
-  `.cotal/manifests/`; pass it to `down -f --run <id>` when the file has changed since the deploy
-  (an edited file no longer matches its ledger) or to finish a teardown that was retained.
+  removes only those. The **run id** is the filename under `.cotal/manifests/`; pass it to
+  `down -f --run <id>` when the file has changed since the deploy (an edited file no longer
+  matches its ledger) or to finish a teardown that was retained.
 
 `down -f` is deliberately conservative; it treats the ledger as untrusted and validates before
 deleting: an owned agent is stopped only when the live agent's recorded name *and* id match; an
@@ -104,31 +166,24 @@ anything is uncertain, nothing remote is removed and the ledger is **retained** 
 (`.cotal/` holds creds, the ledger, and runtime artifacts: add it to your `.gitignore`; commit
 your `cotal.yaml` and persona files, not what's under it.)
 
-## Deploying onto a shared mesh (`spawn -f`)
+## Deploying onto a shared mesh (`team deploy`)
 
-`spawn -f` is additive and never adopts or mutates anything it didn't create. It classifies each
-declared item against the live mesh:
+`team deploy` is additive and never adopts or mutates anything it didn't create. `--dry-run`
+makes native reads of presence and the channel registry and classifies each declared item against
+them. A channel card that already exists is left untouched; the preview names only the explicitly
+declared fields that differ from the live card. Apply accepts only all-new items: live
+channel-only manifests, or bounded agent and mixed manifests on static-auth or open meshes
+through one native manager. It does not launch user-auth agents.
 
-| Item | Classification | Behaviour |
-|---|---|---|
-| Channel, brand-new | created + owned | Seeded and recorded in the ledger. |
-| Channel, already present | `exists-unmanaged` | Left untouched: card not mutated; the desired card is shown against the live one. |
-| Agent, not yet created | will-create | Booted and recorded. A launch that settles uncertain (neither joined nor exited within the readiness window) is recorded too and listed as pending, because the manager keeps managing it and `down -f` must stop it. A launch that fails is not recorded: the summary opens with `! partial deploy` naming the failed agents and the command exits 1, while the ledger still owns what this run did create. |
-| Agent, already created, unchanged | already-owned | No-op. |
-| Agent, already created, policy changed | `stale` | Exits non-zero unless `--allow-stale <names>` (then it restarts). |
+An identical, settled deployment is a no-op once its original cards and agent incarnations check
+out; nothing is relaunched or adopted. A changed persona refuses unless `--allow-stale <names>`
+names those agents. They keep their old policy and are not restarted.
 
-> **Security.** If an **unmanaged** actor already has read access to a channel you declare,
-> `spawn -f` prints a warning: an isolation conflict on a shared mesh. It is an explicit *lower
-> bound* (presence plus the broker membership feed), not a guarantee that no other access exists.
+> **Security.** When the broker membership feed is readable, the preview shows other readers of a
+> declared channel. That is a *lower bound*, not a guarantee that no other access exists.
 
-**Deploying to a remote manager.** The mesh's manager may live on another machine (or another
-checkout): `spawn -f` detects that from the manager lease and pushes the resolved launch spec
-inline over the control plane. The manager validates it as untrusted input and persists it under
-its own `.cotal/run/` before launching, so nothing changes downstream. Run the deploy from the
-checkout the mesh is **registered** to on your machine (that's where the ledger lands), and run
-`down -f` from that same checkout; it stops remote agents over the control plane and treats a
-locally-absent cred file as proven-absent. One residual: the agents' cred files minted on the
-manager's host stay there until the mesh's own cleanup, the same way it would after a crash.
+The full rules, receipts and removal limits are in
+[Recorded team views](cli.md#recorded-team-views).
 
 ## Operating a manifest mesh
 
@@ -145,9 +200,16 @@ cotal ps --space research-team        # finds research-team's broker via the reg
 
 ## Roster files
 
-A manager started with `cotal supervise --roster <file>` boots every agent the roster lists, which
-is how the [Docker deploy](deploy.md) runs a team in one container. A roster declares no channels:
-each agent's access comes from its persona file. Each entry starts one agent the way
+A manager service with a roster boots every agent the roster lists each time it starts:
+
+```bash
+cotal service add manager --preset manager --root <dir> --runtime pty --roster <file>
+cotal service start manager --foreground
+```
+
+`--root` and `--roster` take absolute paths. Without `--foreground` the manager runs in the
+background. The deprecated `cotal supervise --roster <file>` boots the same list. A roster declares
+no channels: each agent's access comes from its persona file. Each entry starts one agent the way
 `cotal spawn --detach` does.
 
 ```yaml

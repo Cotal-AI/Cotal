@@ -21,7 +21,8 @@
  */
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
-import { assertIdToken, digestIdToken } from "./endpoint-subjects.js";
+import { assertIdToken } from "./endpoint-subjects.js";
+import { digestIdToken } from "./digest-id.js";
 import {
   RECORD_KINDS,
   createRecordEntry,

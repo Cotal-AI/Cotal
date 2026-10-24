@@ -1,0 +1,2 @@
+# A spawn-scoped person's manager-caller view reads its own Manager's launch options.
+smoke:manager-launch-reads

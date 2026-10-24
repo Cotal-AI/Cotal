@@ -21,20 +21,22 @@
  * belongs to the dead process, the live process started later). The NATIVE WINDOWS launcher
  * (CreateProcess handle lifetime, DETACHED_PROCESS parent exit) is not exercised here. The win32
  * identity token IS: cell F drives the Windows reader/writer seam, including a mutation that
- * restores "write no pin on win32" and must red.
+ * restores "write no pin on win32" and must red. Cell W injects the refusal Windows gives a rename over
+ * a record another handle holds open into the real publish (#4168); the Windows file-sharing rule that
+ * causes it is not exercised here.
  *
  * Run: pnpm smoke:pid-identity
  */
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
-  parseWin32CreationToken, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair,
+  parseWin32CreationToken, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type RecordReplaceIo,
 } from "../src/pid.js";
 import { requestLocalStop } from "../src/local-stop.js";
 
@@ -121,6 +123,21 @@ try {
     check("P6 a carriage return cannot occur inside a token", parseRecord("4321 first\rsecond").kind === "unattributable");
   }
 
+  // ── N. A PIDFILE WITH NO PID: nothing to verify, which is not a legacy record (#3553) ───────
+  {
+    const husk = join(root, ".cotal", "husk.pid");
+    check("N1 a missing pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    writeFileSync(husk, "");
+    check("N2 an empty pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    writeFileSync(husk, "not-a-pid\n");
+    check("N3 a garbled pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    const unreadable = join(root, ".cotal", "dir.pid");
+    mkdirSync(unreadable);
+    let thrown: unknown;
+    try { verifyIdentityPin(unreadable); } catch (e) { thrown = e; }
+    check("N4 a pidfile that cannot be read throws, naming it", thrown instanceof Error && thrown.message.includes(unreadable), String(thrown));
+  }
+
   // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
@@ -193,7 +210,7 @@ try {
         { root, space: "main" },
       );
     } catch (e) { refused = (e as Error).message; }
-    check("B5 a reused pid is REFUSED on the BROKER's stop path (cotal down nats)", refused !== undefined && foreign.child.exitCode === null, { head: refused?.split("\n")[0] });
+    check("B5 a reused pid is REFUSED on the BROKER's stop path (bare cotal down)", refused !== undefined && foreign.child.exitCode === null, { head: refused?.split("\n")[0] });
     check("B6 the broker record and pin are preserved", existsSync(pidPath) && existsSync(identityPinPath(pidPath)));
     reap(foreign.child);
   }
@@ -391,7 +408,153 @@ try {
       g5Threw && parsePid(readFileSync(firstPath, "utf8")) === firstTarget.pid && verifyIdentityPin(firstPath).kind === "match");
     reap(firstTarget.child);
 
-    check("G6 no `.publish.` temporary survives ANY of G1 through G5",
+    // A pidfile that exists but cannot be read is not a first start (#3575). A directory stands in
+    // for it, so the cell holds as root, where a mode 000 file still reads.
+    const unreadablePath = join(root, ".cotal", "g-unreadable.pid");
+    mkdirSync(unreadablePath);
+    writeIdentityPin(unreadablePath, process.pid);
+    const pinBefore = readFileSync(identityPinPath(unreadablePath), "utf8");
+    const unreadableTarget = spawnTarget();
+    strays.push(unreadableTarget.child);
+    await wait(150);
+    const g6Steps: string[] = [];
+    let g6Thrown: unknown;
+    try {
+      writePidPair(unreadablePath, unreadableTarget.pid!, { onStep: (step) => { g6Steps.push(step); if (step === "bridge-pin") throw new Error("planted crash after bridge-pin"); } });
+    } catch (e) { g6Thrown = e; }
+    check("G6 a pidfile that cannot be read throws, naming it, before the publish renames anything",
+      g6Thrown instanceof Error && g6Thrown.message.includes(unreadablePath) && g6Steps.length === 0
+        && readFileSync(identityPinPath(unreadablePath), "utf8") === pinBefore,
+      { thrown: String(g6Thrown), steps: g6Steps, pin: readFileSync(identityPinPath(unreadablePath), "utf8") });
+    reap(unreadableTarget.child);
+
+    check("G7 no `.publish.` temporary survives ANY of G1 through G6",
+      !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
+  }
+
+  // ── W. Windows refuses a rename over a record another handle holds open (#4168). The refusal is
+  // injected into the real writePidPair through `replaceIo`: the platform reads win32, the rename
+  // refuses one target a set number of times and then really renames, and the sleep records instead
+  // of waiting. Each cell reads the two files back.
+  {
+    const wPath = join(root, ".cotal", "w-held.pid");
+    const oldTarget = spawnTarget();
+    const newTarget = spawnTarget();
+    strays.push(oldTarget.child, newTarget.child);
+    await wait(150);
+    const refusing = (target: string, code: string, times: number, platform: NodeJS.Platform = "win32") => {
+      const seen = { attempts: 0, sleeps: [] as number[], error: Object.assign(new Error(`${code}: injected refusal, rename -> ${target}`), { code }) };
+      const replaceIo: RecordReplaceIo = {
+        platform,
+        sleep: (ms) => { seen.sleeps.push(ms); },
+        rename: (from, to) => {
+          if (to === target && ++seen.attempts <= times) throw seen.error;
+          renameSync(from, to);
+        },
+      };
+      return { seen, replaceIo };
+    };
+    const publish = (pid: number, replaceIo?: RecordReplaceIo): unknown => {
+      try { writePidPair(wPath, pid, replaceIo ? { replaceIo } : {}); return undefined; } catch (e) { return e; }
+    };
+    const state = () => ({ pidfile: readFileSync(wPath, "utf8"), pin: readFileSync(identityPinPath(wPath), "utf8"), verdict: verifyIdentityPin(wPath).kind });
+
+    for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+      publish(oldTarget.pid!);
+      const { seen, replaceIo } = refusing(wPath, code, 3);
+      const thrown = publish(newTarget.pid!, replaceIo);
+      check(`W1 a pidfile commit refused three times with ${code} retries and publishes the NEW complete record`,
+        thrown === undefined && parsePid(readFileSync(wPath, "utf8")) === newTarget.pid && verifyIdentityPin(wPath).kind === "match"
+          && readFileSync(identityPinPath(wPath), "utf8").trim().split("\n").length === 1 && seen.attempts === 4 && seen.sleeps.length === 3,
+        { thrown: String(thrown), ...seen, ...state() });
+    }
+
+    {
+      publish(oldTarget.pid!);
+      const { seen, replaceIo } = refusing(identityPinPath(wPath), "EPERM", 2);
+      const thrown = publish(newTarget.pid!, replaceIo);
+      check("W2 a bridge pin rename refused twice retries, and the settled pin rename after it succeeds at once",
+        thrown === undefined && parsePid(readFileSync(wPath, "utf8")) === newTarget.pid && verifyIdentityPin(wPath).kind === "match"
+          && seen.attempts === 4 && seen.sleeps.length === 2,
+        { thrown: String(thrown), ...seen, ...state() });
+    }
+
+    {
+      publish(oldTarget.pid!);
+      const { seen, replaceIo } = refusing(wPath, "EPERM", Infinity);
+      const thrown = publish(newTarget.pid!, replaceIo);
+      const total = seen.sleeps.reduce((a, b) => a + b, 0);
+      check("W3 a refusal that never ends still throws that same error once the retry is spent",
+        thrown === seen.error && seen.attempts > 1 && seen.attempts === seen.sleeps.length + 1,
+        { thrown: String(thrown), attempts: seen.attempts, sleeps: seen.sleeps.length });
+      check("W3b its backoff grows by at most 10 ms a step to 100 ms, and its total stays inside the publish lock's 30 s wait",
+        seen.sleeps.every((ms, i) => ms <= 100 && (i === 0 || (ms >= seen.sleeps[i - 1]! && ms - seen.sleeps[i - 1]! <= 10))) && total > 0 && total < 30_000,
+        { first: seen.sleeps.slice(0, 12), total });
+      check("W3c the refused commit leaves the OLD pid checked against its own line of the bridge pin (match, never torn)",
+        parsePid(readFileSync(wPath, "utf8")) === oldTarget.pid && verifyIdentityPin(wPath).kind === "match"
+          && readFileSync(identityPinPath(wPath), "utf8").trim().split("\n").length === 2,
+        state());
+    }
+
+    {
+      publish(oldTarget.pid!);
+      const linux = refusing(wPath, "EPERM", Infinity, "linux");
+      const offWindows = publish(newTarget.pid!, linux.replaceIo);
+      check("W4 off Windows the same EPERM throws at once, with no retry",
+        offWindows === linux.seen.error && linux.seen.attempts === 1 && linux.seen.sleeps.length === 0 && parsePid(readFileSync(wPath, "utf8")) === oldTarget.pid,
+        { thrown: String(offWindows), ...linux.seen });
+      const other = refusing(wPath, "EXDEV", Infinity);
+      const notHeld = publish(newTarget.pid!, other.replaceIo);
+      check("W4b on Windows a code that is not a held-file refusal (EXDEV) throws at once, with no retry",
+        notHeld === other.seen.error && other.seen.attempts === 1 && other.seen.sleeps.length === 0,
+        { thrown: String(notHeld), ...other.seen });
+    }
+
+    {
+      publish(oldTarget.pid!);
+      const { seen, replaceIo } = refusing(wPath, "EPERM", 2);
+      const thrown = publish(newTarget.pid!, { rename: replaceIo.rename, platform: replaceIo.platform });
+      check("W5 with the real sleep, a pidfile commit refused twice publishes the NEW complete record",
+        thrown === undefined && parsePid(readFileSync(wPath, "utf8")) === newTarget.pid && verifyIdentityPin(wPath).kind === "match" && seen.attempts === 3,
+        { thrown: String(thrown), attempts: seen.attempts, ...state() });
+    }
+
+    // #4175: one publish makes up to three renames, and they draw on ONE backoff budget. Each rename
+    // here is held until it has itself waited `holdMs` of backoff, so a budget per rename lets every
+    // rename through and the publish waits out all three holds in turn.
+    const holding = (holdMs: number) => {
+      const waited = new Map<string, number>();
+      let current = "";
+      const sleeps: number[] = [];
+      const error = Object.assign(new Error("EPERM: injected hold, rename"), { code: "EPERM" });
+      const replaceIo: RecordReplaceIo = {
+        platform: "win32",
+        sleep: (ms) => { sleeps.push(ms); waited.set(current, (waited.get(current) ?? 0) + ms); },
+        rename: (from, to) => {
+          current = from;
+          if ((waited.get(from) ?? 0) < holdMs) throw error;
+          renameSync(from, to);
+        },
+      };
+      return { error, replaceIo, total: () => sleeps.reduce((a, b) => a + b, 0) };
+    };
+    const held = [9_900, 2_900].map((holdMs) => {
+      publish(oldTarget.pid!);
+      const hold = holding(holdMs);
+      const thrown = publish(newTarget.pid!, hold.replaceIo);
+      return { holdMs, total: hold.total(), threwHold: thrown === hold.error, thrown: String(thrown), ...state() };
+    });
+    const [worst, spread] = held;
+    check("W7 a publish whose three renames are each held for 9.9 s of backoff waits under 7.5 s in all, not 29.85 s (#4175)",
+      worst!.total > 0 && worst!.total < 7_500, held.map(({ holdMs, total, thrown }) => ({ holdMs, total, thrown })));
+    check("W7b it then throws the held rename's refusal, leaving the OLD pid matching its record",
+      worst!.threwHold && parsePid(worst!.pidfile) === oldTarget.pid && worst!.verdict === "match", worst);
+    check("W8 holds of 2.9 s each, short enough for any one rename, still stop the publish under 7.5 s, because its renames share one budget",
+      spread!.total < 7_500 && spread!.threwHold && parsePid(spread!.pidfile) === oldTarget.pid && spread!.verdict === "match", spread);
+    reap(oldTarget.child);
+    reap(newTarget.child);
+
+    check("W6 no `.publish.` temporary survives ANY of W1 through W8",
       !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
   }
 

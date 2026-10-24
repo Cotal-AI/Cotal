@@ -1,0 +1,3 @@
+# cotal history on the structured output contract against owned brokers: one channel and every channel, the window
+# flags, DMs, a denied read, --follow as stream records and lines, a retention gap, and the user-auth read path.
+smoke:history-read

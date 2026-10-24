@@ -25,11 +25,13 @@
  * session reads its own card from it. Part of the wire contract's onboarding
  * half, alongside the join link.
  */
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
+import { writePrivateRecord } from "./secret-fs.js";
+import { utf16Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 
 export interface AgentDef {
@@ -141,9 +143,13 @@ export function loadAgentFile(path: string): AgentDef {
   return parseAgentFileSource(readFileSync(path, "utf8"), path);
 }
 
-/** Parse an agent-file document already in memory. `path` is only for error text. */
+/** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
+ *  BOM and CRLF line endings, as Windows editors and git's `core.autocrlf` write them, read as LF. A
+ *  file saved as UTF-16 is refused by its encoding (see {@link utf16Problem}). */
 export function parseAgentFileSource(src: string, path: string): AgentDef {
-  const m = AGENT_FILE_FENCE.exec(src);
+  const encoding = utf16Problem(src);
+  if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
+  const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
   if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
@@ -267,7 +273,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 /** Write an agent definition back to disk in the form {@link loadAgentFile} reads:
  *  the set frontmatter fields followed by the persona body. Round-trips through the
  *  parser; creates parent dirs. The runtime persona-definition path uses this to
- *  persist a peer-defined agent as config. */
+ *  persist a peer-defined agent as config. The file is written 0o600 and never through a
+ *  symlink ({@link writePrivateRecord}). */
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
@@ -315,14 +322,15 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.meta) for (const [k, v] of Object.entries(def.meta)) fm[k] = v;
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `---\n${frontmatter}\n---\n\n${body}`);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writePrivateRecord(path, `---\n${frontmatter}\n---\n\n${body}`);
 }
 
 /** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */
 export type WirePersonaArgs = {
   name: string;
-  owner: string;
+  /** The principal a fresh file records as its owner; absent, the file is operator-owned. */
+  owner?: string;
   prompt: string;
   model?: string;
   role?: string;

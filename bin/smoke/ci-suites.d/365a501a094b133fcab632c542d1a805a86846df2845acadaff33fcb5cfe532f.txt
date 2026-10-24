@@ -1,0 +1,3 @@
+# After space forget, status in that root selects no space and never reports or probes the
+# default broker address.
+smoke:status-forgotten-space

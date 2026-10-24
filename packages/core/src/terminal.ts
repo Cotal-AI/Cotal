@@ -3,9 +3,9 @@ import type { Extension } from "./registry.js";
 /**
  * NOTE: this is **not** part of the Cotal wire protocol. It is a host-side integration contract:
  * a way to drive a terminal multiplexer (open/close tabs) that an implementation resolves from the
- * {@link Extension} registry. It lives in `core` only because the consumer (`cotal setup`, an
- * implementation) and the provider (`@cotal-ai/cmux`, an extension) sit in tiers that can't import
- * each other, so the shared type has nowhere lower to live. Nothing here references a Cotal
+ * {@link Extension} registry. It lives in `core` only because a consumer (an implementation) and
+ * the provider (`@cotal-ai/cmux`, an extension) sit in tiers that can't import each other, so the
+ * shared type has nowhere lower to live. Nothing here references a Cotal
  * concept (space, identity, subjects) — keep it that way; it describes terminals, not the mesh.
  */
 
@@ -41,8 +41,8 @@ export interface Tab {
 /**
  * A terminal-multiplexer surface an integration drives — an {@link Extension} of kind
  * `"terminal"`. `name` is the backend it provides (e.g. `"cmux"`), the key callers resolve by.
- * Only code that wants a specific backend (e.g. `cotal setup` opening cmux tabs) resolves this by
- * name — never importing the extension package. Self-registers on import, like a connector.
+ * Only code that wants a specific backend resolves this by name — never importing the extension
+ * package. Self-registers on import, like a connector.
  *
  * Tabs are described by a backend-agnostic {@link Tab} (panes as argv, not a backend-native layout
  * string), so the provider owns all backend-specific construction and none leaks into the caller.

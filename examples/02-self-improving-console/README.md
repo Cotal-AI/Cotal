@@ -51,9 +51,10 @@ Give the orchestrator a goal (see [`GOAL.md`](./GOAL.md) for the format). It spa
 into their own tabs, dispatches, and brings in a reviewer. Watch the swarm work through the old
 console, live.
 
-To run under **tmux** instead, import `@cotal-ai/tmux` in the composition root and pass
-`--runtime tmux` to `cotal supervise`. With neither extension imported, the manager throws a
-clear `"import @cotal-ai/<runtime>"` error — no silent fallback.
+`src/manager.ts` takes its runtime from `COTAL_RUNTIME` (`cmux` by default, `pty` for the
+overnight harness) and imports only `@cotal-ai/cmux`, and `launch.sh` drives cmux only. A tmux run
+needs `import "@cotal-ai/tmux"` added to `src/manager.ts` and `COTAL_RUNTIME=tmux`. A runtime that
+was never imported is refused with `unknown runtime "<runtime>"`, with no fallback.
 
 ## Run it overnight (headless self-optimizing loop)
 `harness/run-once.sh <iter>` runs the whole swarm **headless** (PTY runtime, throwaway git

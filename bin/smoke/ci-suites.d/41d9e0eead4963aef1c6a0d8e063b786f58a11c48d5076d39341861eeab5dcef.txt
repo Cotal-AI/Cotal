@@ -1,0 +1,3 @@
+# cotal space add and space forget: registering a space that runs elsewhere after checking its broker
+# and trust, and forgetting an eligible registration, on the structured output contract.
+smoke:space-registration

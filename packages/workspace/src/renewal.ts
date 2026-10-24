@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   credsClaims,
   credsFingerprint,
+  credsProblem,
   identityFromCreds,
   mintCreds,
   writeSecretFile,
@@ -10,7 +11,8 @@ import {
   type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { getSpaceAuth, spaceKey } from "./auth-paths.js";
+import { getSpaceAuth } from "./auth-paths.js";
+import { RENEWAL_RECORD_FILE, renewalRecordPath } from "./renewal-path.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, segmentedKey } from "./space-segmentation.js";
 
@@ -160,6 +162,20 @@ export async function remintDaemonCreds(
   return results;
 }
 
+/** The re-signable daemon credentials whose stored bytes the NATS client cannot parse. Such a file
+ *  holds no key to re-sign, so neither the manager nor {@link remintDaemonCreds} can renew it in place,
+ *  and `cotal up` mints only a missing one. A value the store cannot read is not reported here. */
+export async function unparsableDaemonCreds(root: string, space: string, store?: SecretStore): Promise<string[]> {
+  const s = store ?? workspaceSecretStore(root);
+  const kinds: string[] = [];
+  for (const { kind, key } of REMINTABLE_DAEMON_CREDS) {
+    let current: string | undefined;
+    try { current = await s.get(key(space)); } catch { continue; }
+    if (current !== undefined && credsProblem(current) !== undefined) kinds.push(kind);
+  }
+  return kinds;
+}
+
 /** The renewal owner's audit record — what `cotal doctor auth` renders so "file re-signed" and
  *  "daemon adopted" are distinguishable states, per the D5 panel gate. One file PER SPACE, overwritten
  *  per pass: the CURRENT renewal state, not a log (history is the git/ops layer's job). */
@@ -179,22 +195,15 @@ export interface RenewalRecord {
 }
 
 /** `.cotal/renewal.<spaceKey>.json` — the renewal record's filename, PER-SPACE. The `{space}` is
- *  expanded with the same injective hex {@link spaceKey} the pidfiles use (`manager.<space>.pid`,
+ *  expanded with the same injective hex `spaceKey` the pidfiles use (`manager.<space>.pid`,
  *  `delivery.<space>.pid` via `canonicalLocalProcessPath`), because the record is per-tenant in
  *  meaning exactly as they are: a root-scoped `renewal.json` gave one root one adoption verdict by
  *  filename, so a second space's clean pass overwrote the first space's refusal and every reader
- *  (`doctor auth`, `status --components`) then answered about the wrong renewal (#1850). */
-export const RENEWAL_RECORD_FILE = "renewal.{space}.json";
-
-/** The path a renewal owner WRITES and a reader READS for one space's record (#1850).
+ *  (`doctor auth`, `status --components`) then answered about the wrong renewal (#1850).
  *
- *  LEGACY, LABELLED, NEVER A FALLBACK. A `.cotal/renewal.json` left by a pre-per-space build names
- *  NO space — it may be any tenant-at-this-root's last pass — so this function never returns it and
- *  no reader may take it as the current space's verdict. It is surfaced as a labelled fact through
- *  {@link legacyRenewalRecord} and removed by `cotal clean`, not adopted. */
-export function renewalRecordPath(root: string, space: string): string {
-  return join(root, ".cotal", RENEWAL_RECORD_FILE.replaceAll("{space}", spaceKey(space)));
-}
+ *  Defined with {@link renewalRecordPath} in `renewal-path.ts`, the dependency-neutral layout module
+ *  shared with the per-space reaper. */
+export { RENEWAL_RECORD_FILE, renewalRecordPath };
 
 /** The root-scoped name a pre-per-space build wrote the record under — the one place that history is
  *  spelled. A READER fact only (see {@link renewalRecordPath}); `cotal clean` removes it with the

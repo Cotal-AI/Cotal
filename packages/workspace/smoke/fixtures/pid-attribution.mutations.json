@@ -4,22 +4,22 @@
     {
       "name": "PREDICTED KILLED (>=2 red) - every live pid reads as a manager, so a recycled pid belonging to an unrelated process is treated as the running supervisor and gets signalled by a stop",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  return /(^|\\s)supervise(\\s|$)/.test(command);",
+      "find": "  return /(^|\\s)(?:supervise|__daemon-manager|__service-manager)(\\s|$)/.test(command);",
       "replace": "  return command.length >= 0;",
       "expectRed": "an unrelated command line is NOT a manager"
     },
     {
       "name": "PREDICTED KILLED (>=1 red) - `supervise` matches anywhere in the argv rather than as its own word, so a path or a flag containing it counts as a manager",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  return /(^|\\s)supervise(\\s|$)/.test(command);",
-      "replace": "  return command.includes(\"supervise\");",
+      "find": "  return /(^|\\s)(?:supervise|__daemon-manager|__service-manager)(\\s|$)/.test(command);",
+      "replace": "  return /(?:supervise|__daemon-manager|__service-manager)/.test(command);",
       "expectRed": "an unrelated command line is NOT a manager"
     },
     {
       "name": "PREDICTED KILLED (>=1 red) - a live pid is trusted without attributing it at all, so the FOREIGN state disappears and a stale record naming a live stranger reads as a healthy manager",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  return { state: commandIsCotalSupervisor(cmd.command) ? \"alive\" : \"foreign\", pid, command: cmd.command };",
-      "replace": "  return { state: \"alive\", pid, command: cmd.command };",
+      "find": "  return readProcessRecord(PID_PATH(space, root), commandIsCotalSupervisor, probe, readCommand);",
+      "replace": "  return readProcessRecord(PID_PATH(space, root), () => true, probe, readCommand);",
       "expectRed": "a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager"
     },
     {

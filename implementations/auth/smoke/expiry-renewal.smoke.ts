@@ -109,6 +109,7 @@ try {
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     space,
     token: { key: publicKey as never, issuer: ISS },
+    recordIssuance: async () => {},
     authorizeActor: () => {},
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid, scope: [] })),
     log: (l) => { const m = /denied (\S+): (.*)$/.exec(l); if (m) denials.push({ ms: Date.now() - t0, nkey: m[1], reason: m[2] }); },

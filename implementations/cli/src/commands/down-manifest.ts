@@ -14,7 +14,7 @@
  *    skipped (best-effort, racy) on ANY uncertainty, including an owned agent that failed to stop;
  *  - `--allow-stale` is apply-only and has no effect here.
  */
-import { lstatSync, readFileSync, rmSync } from "node:fs";
+import { lstatSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   DEV_OWNER,
@@ -30,10 +30,11 @@ import {
   unlinkFileNoFollow,
   type EpCaller,
 } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, getSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { c } from "../ui.js";
+import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, getSpaceAuth, isCommandFailure, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { c, stderrLine } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";
+import { readManifestSource } from "../lib/manifest/index.js";
 import { findLedgerByHash, findLedgerByRun, hashManifestSource, ownedCredPath, writeLedger, type MeshLedger } from "../lib/manifest/ledger.js";
 
 export interface DownManifestFlags {
@@ -49,11 +50,12 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
   let ledgerPath: string;
   let ledger: MeshLedger;
   try {
-    const found = flags.run ? findLedgerByRun(root, flags.run) : findLedgerByHash(root, hashManifestSource(readFileSync(abs, "utf8")));
+    const found = flags.run ? findLedgerByRun(root, flags.run) : findLedgerByHash(root, hashManifestSource(readManifestSource(abs)));
     ledgerPath = found.path;
     ledger = found.ledger; // loadLedger already validated the WHOLE ledger as untrusted input
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
+    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim);
     process.exit(1);
   }
 
@@ -75,7 +77,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     runDir = realDirNoSymlink(root, ".cotal", "run", ledger.runId);
     specPath = join(runParent ?? join(root, ".cotal", "run"), `${ledger.runId}.json`);
   } catch (e) {
-    console.error(c.red(`✗ refusing teardown - unsafe owned resource: ${(e as Error).message}`));
+    stderrLine("✗ ", `refusing teardown - unsafe owned resource: ${(e as Error).message}`, c.red);
     process.exit(1);
   }
 

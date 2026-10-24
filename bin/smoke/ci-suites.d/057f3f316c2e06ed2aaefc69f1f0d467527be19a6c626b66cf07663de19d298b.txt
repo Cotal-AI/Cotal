@@ -1,0 +1,3 @@
+# Controller restore rollback attributes a live broker definition only from the journal and holds
+# otherwise; the stack fence admits only a settled active restore of the same stack.
+smoke:controller-restore

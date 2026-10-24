@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname } from "node:path";
 import * as pty from "@lydell/node-pty";
@@ -22,7 +22,7 @@ import {
   type ServerMessage,
 } from "./protocol.js";
 import { ConnectorDiagnosticReader } from "./diagnostic.js";
-import { RECORD_VERSION, bootToken, exitPath, processStartToken, writeRecord, type SeatRecord } from "./record.js";
+import { RECORD_VERSION, appendPrivate, bootToken, exitPath, processStartToken, writePrivate, writeRecord, type SeatRecord } from "./record.js";
 import { StartupConfirmGate } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
@@ -81,7 +81,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   };
   const note = (line: string): void => {
     try {
-      if (launch.logPath) appendFileSync(launch.logPath, line, { mode: 0o600 });
+      if (launch.logPath) appendPrivate(launch.logPath, line);
       else process.stderr.write(line);
     } catch {
       /* the seat directory may already be gone */
@@ -109,7 +109,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   const oomPref = preferSeatForOomKill(proc.pid);
   if (!oomPref.applied) {
     const line = `oom preference not applied to child ${proc.pid}: ${oomPref.reason}\n`;
-    if (launch.logPath) appendFileSync(launch.logPath, line, { mode: 0o600 });
+    if (launch.logPath) appendPrivate(launch.logPath, line);
     else process.stderr.write(line);
   }
   // Pin both start identities NOW, before the child can exit and be reaped: a successor that finds
@@ -268,7 +268,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       const note = `${JSON.stringify({ unattended: true, afterMs: UNATTENDED_MS, childPid: proc.pid, custodianPid: process.pid, run: launch.run })}\n`;
       if (launch.logPath) {
         try {
-          appendFileSync(launch.logPath, note, { mode: 0o600 });
+          appendPrivate(launch.logPath, note);
         } catch {
           /* the seat directory may already be gone */
         }
@@ -320,7 +320,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     // sees half a record.
     const exitFile = exitPath(launch.recordPath);
     try {
-      writeFileSync(`${exitFile}.tmp`, `${JSON.stringify(exit)}\n`, { mode: 0o600 });
+      writePrivate(`${exitFile}.tmp`, `${JSON.stringify(exit)}\n`);
       renameSync(`${exitFile}.tmp`, exitFile);
     } catch (e) {
       // A seat directory that is already gone has nobody left to read the record. Any other failure
@@ -334,7 +334,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           /* never created */
         }
         try {
-          if (launch.logPath) appendFileSync(launch.logPath, line, { mode: 0o600 });
+          if (launch.logPath) appendPrivate(launch.logPath, line);
           else process.stderr.write(line);
         } catch {
           /* the log can sit on the same failed storage */
@@ -648,7 +648,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         writeRecord(launch.recordPath, record);
         ready = true;
         const announced = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
-        if (launch.logPath) appendFileSync(launch.logPath, announced, { mode: 0o600 });
+        if (launch.logPath) appendPrivate(launch.logPath, announced);
         else process.stdout.write(announced);
         armUnobservedHandoff();
         armUnattended();
@@ -678,7 +678,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runCustodian(launch).catch((err) => {
     const text = `${(err as Error).stack ?? (err as Error).message}\n`;
     try {
-      if (launch.logPath) appendFileSync(launch.logPath, text, { mode: 0o600 });
+      if (launch.logPath) appendPrivate(launch.logPath, text);
       else process.stderr.write(text);
     } catch {
       process.stderr.write(text);

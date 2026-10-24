@@ -14,9 +14,9 @@
   "mutations": [
     {
       "name": "endpoint-plane streams are omitted from open-mode teardown",
-      "file": "packages/core/src/spaces.ts",
-      "find": "      ...endpointPlaneStreamNames(opts.space),\n",
-      "replace": "",
+      "file": "packages/core/src/space-deletion-targets.ts",
+      "find": "    ...endpointPlaneStreamNames(space), objectStoreStream(artifactBucket(space)),\n",
+      "replace": "    objectStoreStream(artifactBucket(space)),\n",
       "expectRed": "teardown leaves no space stream behind",
       "cell": "teardown leaves no space stream behind"
     }

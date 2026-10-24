@@ -150,7 +150,8 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requ
   // This exact exclusion leaves the ordinary push/PR topology unchanged. Other conditions refuse.
   const jobConditions = jobLines.filter((line) => /^    if:/.test(line));
   if (jobConditions.some((line) => line !== "    if: ${{ github.event_name != 'workflow_dispatch' }}")) return null;
-  const allowedJobKeys = new Set(["if", "name", "timeout-minutes", "runs-on", "strategy", "steps"]);
+  // `needs` orders the job after others and leaves the matrix and shard command unchanged.
+  const allowedJobKeys = new Set(["if", "needs", "name", "timeout-minutes", "runs-on", "strategy", "steps"]);
   if (
     jobKeys.length !== jobLines.length ||
     jobKeys.some((key) => !allowedJobKeys.has(key)) ||

@@ -97,6 +97,26 @@ export type AttentionMode = "open" | "dnd" | "focus";
  */
 export type ChannelMode = "quiet" | "muted";
 
+/** Where a {@link PresenceRuntime} start was observed. Closed: a consumer that meets any other value
+ *  treats the observation as unsupported rather than guessing what it dates.
+ *  - `endpoint-process`: the OS process that holds this presence's mesh connection, observed by
+ *    that process itself. */
+export type PresenceRuntimeSource = "endpoint-process";
+
+/** The running process behind a presence record, as that process observed itself. Advisory display
+ *  data, never authority. It carries no pid, host, path, command line or environment. */
+export interface PresenceRuntime {
+  /** Opaque CSPRNG id minted once per OS process and lifecycleUid scope, never reused. A new
+   *  process or lifecycle scope gets a new id; reconnect within that scope keeps it. */
+  id: string;
+  /** Epoch ms when the process started, read in-process from its own clock origin
+   *  (`performance.timeOrigin`). Never a launch request, registration, heartbeat, status or activity
+   *  time. Every lifecycle in this process shares this start, including one registered later.
+   *  It does not date a separate parent, model harness or lifecycle. */
+  startedAt: number;
+  source: PresenceRuntimeSource;
+}
+
 /** Live presence record. Stored in the space's KV bucket under key = card.id. */
 export interface Presence {
   card: AgentCard;
@@ -105,6 +125,11 @@ export interface Presence {
    *  Advisory observability, never authority (authority is the ledger/broker grants). */
   lifecycleUid?: string;
   status: PresenceStatus;
+  /** The process that publishes this record, with its observed start. Status, activity, heartbeats
+   *  and reconnects inside the process leave it unchanged; a new process publishes a new one. An
+   *  offline record keeps it to name the process that went away, so it dates a running duration
+   *  only while the record is live. Missing means the publisher reports none: unknown, not zero. */
+  runtime?: PresenceRuntime;
   /** Structured condition reported by the harness. Missing means nothing was reported. */
   condition?: PresenceCondition;
   /** Opaque reference whose meaning belongs to the provider that issued it. */

@@ -15,7 +15,7 @@ import {
   endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner,
   type EpCaller, type EpTarget,
   epCallerReplyFilter, epResponderReplyPattern, epResponderIssuedReplyPattern, epClassQueueGroup,
-  epPlaneTokens, callerRailTokens, callerTokens, EP_RAIL_V1,
+  epPlaneTokens, callerRailTokens, callerTokens, epGoalProgressGrantRow, EP_RAIL_V1,
 } from "./endpoint-subjects.js";
 
 /** A minted request capability: one endpoint command a caller may invoke, on the named rails.
@@ -107,13 +107,6 @@ export function epJournalGrantRow(space: string, cap: EpCapability, caller: EpCa
 /** The caller's reply-rail read row (§13.9 "Reply subscribe"): its own rail only, exact arity. */
 export function epCallerReplyGrantRow(space: string, caller: EpCaller): string {
   return epCallerReplyFilter(space, caller);
-}
-
-/** Per-goal live progress read row (§13.9 "Live event progress", reserved `goal` topic):
- *  `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>` — the caller identity in the subject gives
- *  mint-time read containment; delivered on the caller's own core subscription only. */
-export function epGoalProgressGrantRow(space: string, endpoint: string, caller: EpCaller): string {
-  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerTriple(caller)}.>`;
 }
 
 /** All caller-side rows for a capability set: request-publish (+ optional journal) into
@@ -228,16 +221,26 @@ export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
  *  today; minting them with `spawn` keeps that tier's surface 1:1. */
 export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
 /** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
- *  three writes start a run, take one over and answer its open pause; the two reads list runs
- *  and render one run's record and journal. All UNTARGETED: a run is not an agent, so no target
+ *  writes start a run, take one over and answer its open pause, and the keyed pair starts a run
+ *  under a submission ID and reads that submission's binding; the two reads list runs and render
+ *  one run's record and journal. All UNTARGETED: a run is not an agent, so no target
  *  block names it, and the manager scopes what a caller may see by the run's own record.
  *  A program can `spawn`, so the `run` capability implies the spawn set as well
  *  ({@link runCallerCapabilities}): a caller that may start a program that spawns may spawn. */
-export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume"] as const);
+export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume", "run-start-keyed", "run-submission-status", "run-cancel"] as const);
 export const RUN_ANSWER_COMMAND = "run-answer" as const;
 export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const);
+/** A static manager's chat-session admission and retirement. Both MINT or END a credential for a
+ *  fresh session principal, so they ride the operator instrument tiers only, beside
+ *  `define-persona`. They are deliberately ABSENT from {@link SPAWN_CREATE_COMMANDS} and every
+ *  agent rollup: there, every spawn-capable agent could mint chat leaves. */
+export const CHAT_SESSION_COMMANDS = Object.freeze(["chat-session-open", "chat-session-retire"] as const);
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
+/** The actor capability that grants one pinned Manager's machine-vitals read. */
+export const MANAGER_VITALS_SCOPE = "machine-vitals" as const;
+export const MANAGER_VITALS_COMMAND = "vitals" as const;
+
 /** The manager endpoint's read commands (`manager.read` class). */
 export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "slots", "inspect", "models", "list-personas", "show-persona", "goal-result"] as const);
 /** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
@@ -318,6 +321,7 @@ const OPERATOR_SEAT_SNAP = Object.freeze([...OPERATOR_SEAT_COMMANDS]);
 const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
 const RUN_WRITE_SNAP = Object.freeze([...RUN_WRITE_COMMANDS]);
 const RUN_READ_SNAP = Object.freeze([...RUN_READ_COMMANDS]);
+const CHAT_SESSION_SNAP = Object.freeze([...CHAT_SESSION_COMMANDS]);
 const MANAGER_READ_SNAP = Object.freeze([...MANAGER_READ_COMMANDS]);
 const MANAGER_ADMIN_SNAP = Object.freeze([...MANAGER_ADMIN_COMMANDS]);
 
@@ -358,7 +362,7 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
   ];
 }
 
-/** The `run` capability's addition (SPEC 14.3): the five untargeted `run-*` commands PLUS the
+/** The `run` capability's addition (SPEC 14.3): the seven `run-*` commands PLUS the
  *  whole spawn set. The implication is deliberate and one-way: a program is free to `spawn`, so a
  *  caller that may start one must hold what the program's spawns need, and the manager checks
  *  nothing weaker at `run-start`; a `spawn`-only caller gains no run row from this. */
@@ -376,7 +380,8 @@ export function runCallerCapabilities(callerOwner: string): EpCapability[] {
  *  this for their ep rails; no new minting authority.
  *
  *  `privileged` (the ps/start instrument): the manager reads (incl. persona catalog list/show) +
- *  untargeted `spawn` + `define-persona` - structurally barred from cross-agent reach: no any-mode row.
+ *  untargeted `spawn` + `define-persona` + the static chat-session open/retire pair - structurally
+ *  barred from cross-agent reach: no any-mode row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
  *  (tOwner `"*"`), BOTH modes of `input` (which no other profile grants at all), and the
@@ -400,6 +405,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     })),
     ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
+    ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     // The workflow-run surface (SPEC 14.3) rides the privileged tier as `cotal run`'s instrument:
     // the reads beside the manager reads, the writes beside `spawn`, which is the tier's existing
     // creation authority and what a program's own spawns already need.

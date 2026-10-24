@@ -110,6 +110,8 @@ export interface ClaudeHandleDeps {
   events?: () => AguiEmitterHolder<ClaudeEntry, unknown> | undefined;
   /** Told which inbox items a frame surfaced; pass {@link WakePolicy.surfaced}. */
   surfaced?: (items: readonly InboxItem[]) => void;
+  /** False when native ingress owns delivery and these hooks observe lifecycle only. */
+  delivery?: boolean;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -121,6 +123,9 @@ const REPEAT_LABEL_CAP = 512;
  *  injected. Both must be wired into {@link startControlServer} — the handler surfaces, the
  *  callback is the only place a peer message is ever acked. */
 export interface ClaudeHooks {
+  /** Adopt a native transcript when a personal connection starts mid-session. No synthetic
+   * lifecycle event is needed, and the source decides the pre-connection privacy boundary. */
+  adoptTranscript(path: string, source: unknown): void;
   handle: HookHandle;
   /** Pass as {@link ControlServerOpts.onReply}. */
   onReply: (ev: HookEvent, delivered: boolean) => void;
@@ -272,6 +277,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
 
   /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. */
   const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent): string | undefined => {
+    if (deps.delivery === false) return undefined;
     const items = agent.peekInbox("automatic");
     if (!items.length) return undefined;
     const body = formatInjection(items);
@@ -295,6 +301,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  goal ids commit as surfaced (arming the automatic `done`) only when the reply reached the
    *  runtime — a lost frame re-surfaces them instead of yielding for work the model never saw. */
   const surfaceTurns = (agent: MeshAgent, ev: HookEvent): string | undefined => {
+    if (deps.delivery === false) return undefined;
     const peek = agent.peekPendingTurns();
     if (!peek) return undefined;
     const rec = inFlight.get(ev);
@@ -321,6 +328,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the
           // next (re)start — acceptable for a display-only discovery field. setModel keeps the pin wins.
           if (typeof ev.model === "string") await agent.setModel(ev.model).catch(() => {});
+          // The session's directory, from the harness (`cwd` on every hook). Only a session start
+          // (startup, resume, fork) sets it: clear and compact carry the directory after any later
+          // `cd`, and the card shows where the session started, not a live shell path.
+          if (typeof ev.cwd === "string" && (ev.source === "startup" || ev.source === "resume" || ev.source === "fork"))
+            await agent.setCwd(ev.cwd).catch(() => {});
           // NOT a turn ending. `SessionStart` fires on compact, clear and resume, and a compaction
           // lands mid-turn: routed through the boundary this published `done` for a run turn the
           // model was still working on.
@@ -481,7 +493,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
-  return { handle, onReply };
+  return { handle, onReply, adoptTranscript: adoptEvents };
 }
 
 /** One `claude/channel` push. A rejection is surfaced to the caller. */

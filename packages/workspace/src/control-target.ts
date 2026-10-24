@@ -4,8 +4,8 @@
  * run`, the web dashboard), so they all resolve the same target the same way: exactly
  * {@link connectOrExit}'s precedence (--creds raw > --server + unregistered --space open >
  * registry/`current` with mint + preflight + stale-prune) with one control-specific delta: on the
- * raw `--creds` path the space defaults to THIS FOLDER's `.cotal/auth` space rather than
- * `DEFAULT_SPACE`, because a control op addresses the manager of the folder's mesh.
+ * raw `--creds` path with `--server` and no `--space`, the space is THIS FOLDER's `.cotal/auth`
+ * space rather than `DEFAULT_SPACE`, because a control op addresses the manager of the folder's mesh.
  */
 import { existsSync, readFileSync } from "node:fs";
 import {
@@ -14,6 +14,7 @@ import {
   DEV_OWNER,
   dialerFor,
   epCallerGrantRows,
+  isAuthRejection,
   jwtFromCreds,
   mintCreds,
   mintLifecycleUid,
@@ -28,7 +29,7 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
-import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, preflightOrThrow, userViewAuthOrThrow, type ConnectFlags } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
 import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
@@ -68,8 +69,8 @@ const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["
  *
  * `instanceId` (`--on <instanceId>`) is forwarded to the instrument mint so the one-shot credential
  * carries the exact `ep.inst.…` rows for that instance; a credential cannot gain a rail after it is
- * issued, so it has to arrive here rather than at the invoke. On a user-auth mesh with none, a
- * managed seat's shell selects the manager that launched it.
+ * issued, so it has to arrive here rather than at the invoke. On a user-auth mesh
+ * without an explicit selector, a managed seat uses the manager that launched it.
  *
  * `onRefusal: "throw"` makes an unresolvable or unreachable mesh a thrown {@link ConnectRefusal}
  * instead of a printed sentence and `process.exit(1)`, for a loop that has to survive the broker
@@ -85,8 +86,10 @@ export async function resolveControlTarget(
   // A credential-less resolve sweeps once when no space is named, unless the caller already swept
   // for these flags, and the peek and the connect helper both resolve against that `offline` set,
   // so they see one world and a kept dead record is a live candidate for neither.
+  // A raw `--creds` with `--server` and no `--space` takes this folder's space; with neither, the
+  // connect helper takes the selected space or this folder's.
   const withSpace = flags.creds
-    ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
+    ? flags.space === undefined && flags.server !== undefined ? { ...flags, space: soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE } : flags
     : { ...flags, offline: flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes()).offline) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
@@ -115,7 +118,7 @@ export async function resolveControlTarget(
       const pin = instanceId ?? seatManagerInstance(conn.space);
       const manager = (opts.endpoint === undefined || opts.endpoint === "manager") &&
           (profile === "control-caller-privileged" || profile === "control-caller-admin")
-        ? await userViewAuth(conn, "manager-caller", pin === undefined ? {} : { managerInstanceId: pin })
+        ? await userViewAuthOrThrow(conn, "manager-caller", pin === undefined ? {} : { managerInstanceId: pin })
         : undefined;
       return {
         space: conn.space,
@@ -199,10 +202,18 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   if (!existsSync(path))
     throw new Error(`managed seat credential is missing at ${path}; refusing to act as a different caller`);
   const creds = readFileSync(path, "utf8");
+  const tls = mesh.tlsRequired;
+  // As the operator mint does, a dial that did not reach a broker is reported in the preflight's
+  // classified words rather than as the raw transport error; the probe uses the seat's own credential
+  // and never prunes. A broker that refused the seat's credential answered, so that refusal is kept
+  // as it is and never reported as a registry mismatch.
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
-    ...standaloneConnectOpts({ creds, tls: mesh.tlsRequired }),
+    ...standaloneConnectOpts({ creds, tls }),
     maxReconnectAttempts: 0,
+  }).catch(async (e: unknown) => {
+    if (!isAuthRejection(e)) await preflightOrThrow(mesh, creds, true);
+    throw e;
   });
   let epCaller: IssuedCaller;
   try {

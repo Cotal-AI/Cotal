@@ -61,6 +61,12 @@
       "reason": "macOS home path mutation fixture"
     }
   },
+  "extensions/connector-claude-code/smoke/desktop-config.smoke.ts": {
+    "home-path": {
+      "count": 5,
+      "reason": "macOS and Linux home path fixtures for the Claude Desktop config location"
+    }
+  },
   "implementations/cli/smoke/install.smoke.ts": {
     "home-path": {
       "count": 2,
@@ -111,6 +117,18 @@
       "reason": "illustrative address in user-facing guidance"
     }
   },
+  "implementations/cli/src/commands/space-registration.ts": {
+    "shared-ipv4": {
+      "count": 1,
+      "reason": "illustrative address in user-facing guidance"
+    }
+  },
+  "implementations/cli/src/index.ts": {
+    "shared-ipv4": {
+      "count": 1,
+      "reason": "illustrative address in user-facing guidance"
+    }
+  },
   "packages/workspace/src/join-target.ts": {
     "shared-ipv4": {
       "count": 3,
@@ -139,6 +157,12 @@
     "home-path": {
       "count": 2,
       "reason": "installed and checkout path fixtures"
+    }
+  },
+  "packages/workspace/smoke/protected-paths.smoke.ts": {
+    "home-path": {
+      "count": 23,
+      "reason": "account database and home path fixtures for the private-group rule"
     }
   },
   "scripts/check-attribution.mjs": {

@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +13,9 @@ import { claudeConnector } from "../../../extensions/connector-claude-code/dist/
 import { LegacyPtyRuntime } from "../src/runtime/pty.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { TmuxRuntime } from "../../../extensions/tmux/src/runtime.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 // Keep Cotal values only for restoration, never in an environment object that could reach a child.
 const cotalOriginal = new Map<string, string>();
@@ -342,6 +346,7 @@ try {
     console.log("CLAUDE WORKSPACE TRUST NATIVE COMPLETE");
     assert.equal(failures.length, 0, failures.join("\n"));
   }
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   if (ownsTmuxSession) execFileSync("tmux", ["kill-session", "-t", tmuxSession], { stdio: "ignore" });
   for (const key of Object.keys(process.env)) if (!(key in original)) delete process.env[key];

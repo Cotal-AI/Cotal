@@ -49,7 +49,7 @@ function onPath(bin: string): boolean {
   }
   return false;
 }
-import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
+import { hardenPrivate, loadAgentFile, openPrivateAppend } from "@cotal-ai/core";
 import {
   MeshAgent,
   configFromEnv,
@@ -63,6 +63,7 @@ import {
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   WORKFLOW_STEER,
+  CHANNEL_GUIDANCE,
   AguiEmitter,
   AguiEmitterHolder,
   eventPlaneStopped,
@@ -150,6 +151,7 @@ function developerInstructions(config: ReturnType<typeof configFromEnv>, persona
     feedbackLine(config) +
     `${MESH_FIRST_STEER} ` +
     `${WORKFLOW_STEER} ` +
+    `${CHANNEL_GUIDANCE} ` +
     `Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm ` +
     `(privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); ` +
     `use cotal_roster to see who is present and cotal_status to report what you are doing. ` +
@@ -1145,7 +1147,8 @@ export async function runCodexHost(): Promise<void> {
     const logPath = join(codexHome, "host.log");
     if (!logSink) {
       process.stderr.write(`[cotal-codex] handing the terminal to Codex — host log continues in ${logPath}\n`);
-      logSink = createWriteStream(logPath, { flags: "a" });
+      // Owner-private and never appended through a symlink: the stream writes to this descriptor.
+      logSink = createWriteStream(logPath, { fd: openPrivateAppend(logPath) });
       feedEnabled = false;
       log(`codex TUI attached to ${remote.url} thread ${threadId}`);
     }

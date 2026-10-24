@@ -30,7 +30,7 @@ export function coldVersionWrites(manifest, packages, expected, source) {
 }
 
 if (isMainEntry(import.meta.url)) {
-  const root = resolve(import.meta.dirname, "..");
+  const root = resolve(process.env.RELEASE_ROOT ?? resolve(import.meta.dirname, ".."));
   const manifest = JSON.parse(readFileSync(resolve(process.argv[2]), "utf8"));
   const rows = JSON.parse(execFileSync("pnpm", ["list", "-r", "--depth", "-1", "--json"], { cwd: root, encoding: "utf8" }));
   const packages = rows.map((row) => ({ ...row, manifest: JSON.parse(readFileSync(join(row.path, "package.json"), "utf8")) }));

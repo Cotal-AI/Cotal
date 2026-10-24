@@ -24,15 +24,19 @@
  * today.
  *
  * Capability labels (describe/grant vocabulary, one per tier class):
+ *   manager.vitals read host CPU, memory and filesystem capacity on this exact Manager
  *   manager.read     status / ps / inspect / models / list-personas / show-persona
  *   manager.spawn    spawn / resolve-cwd / resolve-agent   (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
+ *   manager.chat     chat-session-open / chat-session-retire (operator instruments only; static managers)
  *   manager.admin    purge / launch / resume family / transcript-receive  (operator instruments only)
  *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
  *                    run-status / run-ps ride manager.read
  */
+import type { BrowserContractSource } from "@cotal-ai/core/browser-validators-build";
+import type { ManagerVitals } from "./vitals.js";
 import {
   serviceContractTable,
   singleDocumentClosure,
@@ -55,7 +59,89 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 
 // ---- output/input schemas (closed unless the payload is genuinely open) ------------------------
 
-/** The read-only manager-health output. Manager-LEVEL — per-agent rows are `ps`/`inspect`. */
+const STOP_IMPACT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["agentScope", "observedAt", "maintenance", "resumeRequired", "stopping", "lifecycleInFlight", "reservedLaunches", "retirementsPending", "deprovisioningInFlight", "staticReconciliationInFlight", "agents"],
+  properties: {
+    agentScope: { enum: ["manager", "owner-filtered"] },
+    observedAt: { type: "string" },
+    maintenance: { enum: ["active", "preserving", "preserved"] },
+    resumeRequired: { type: "boolean" },
+    stopping: { type: "boolean" },
+    lifecycleInFlight: { type: "integer", minimum: 0 },
+    reservedLaunches: { type: "integer", minimum: 0 },
+    retirementsPending: { type: "integer", minimum: 0 },
+    deprovisioningInFlight: { type: "integer", minimum: 0 },
+    staticReconciliationInFlight: { type: "integer", minimum: 0 },
+    agents: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "id", "lifecycleUid", "mode", "defaultAction", "withAgentsAction"],
+        properties: {
+          name: { type: "string" },
+          id: { type: "string" },
+          lifecycleUid: { type: "string" },
+          mode: { type: "string" },
+          defaultAction: { enum: ["release-custody", "stop", "stop-retaining-state"] },
+          withAgentsAction: { enum: ["stop", "stop-retaining-state"] },
+        },
+      },
+    },
+    preservation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["attemptId", "inventorySha256"],
+      properties: {
+        attemptId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+        inventorySha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+      },
+    },
+  },
+} as const;
+
+const VITALS_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["sampledAt", "cpu", "memory", "filesystems"],
+  properties: {
+    sampledAt: { type: "string", format: "date-time" },
+    cpu: {
+      type: "object", additionalProperties: false,
+      required: ["logicalCount", "load1", "load5", "load15"],
+      properties: {
+        logicalCount: { type: "integer", minimum: 1 },
+        load1: { type: "number", minimum: 0 },
+        load5: { type: "number", minimum: 0 },
+        load15: { type: "number", minimum: 0 },
+      },
+    },
+    memory: {
+      type: "object", additionalProperties: false,
+      required: ["totalBytes", "availableBytes"],
+      properties: {
+        totalBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        availableBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      },
+    },
+    filesystems: {
+      type: "array", maxItems: 128,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["mount", "totalBytes", "freeBytes"],
+        properties: {
+          mount: { type: "string", minLength: 1, maxLength: 1024, pattern: "^[^\\u0000-\\u001f\\u007f-\\u009f]+$" },
+          totalBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          freeBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        },
+      },
+    },
+  },
+} as const;
+
+/** Read-only manager health and caller-scoped seat policy. Neither reserves or authorizes a stop. */
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -63,6 +149,12 @@ const STATUS_OUTPUT_SCHEMA = {
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
+    /** Answering Manager's host name. Advisory display metadata, never routing authority. */
+    host: { type: "string" },
+    /** Running @cotal-ai/manager package version. Optional for older status payloads. */
+    version: { type: "string" },
+    /** Native per-process incarnation, not inferred from a PID or a logical instance name. */
+    lifecycleUid: { type: "string" },
     execution: { enum: ["runtime", "none"] },
     /** The runtime kind serving agents (pty/tmux/cmux/orca/herdr). */
     runtime: { type: "string" },
@@ -95,6 +187,8 @@ const STATUS_OUTPUT_SCHEMA = {
         },
       },
     },
+    /** Caller-scoped native seat policy as observed now, not a stop reservation or cleanup receipt. */
+    stopImpact: STOP_IMPACT_SCHEMA,
     /** Current startup/post-adoption static lifecycle convergence state. */
     staticReconciliation: {
       type: "object",
@@ -146,6 +240,12 @@ const STATUS_OUTPUT_SCHEMA = {
 /** The typed shape a `status` invocation returns (the compiled output contract validates it). */
 export interface ManagerStatus {
   instanceId: string;
+  /** Answering Manager's host name. Advisory only; older payloads may omit it. */
+  host?: string;
+  /** Running @cotal-ai/manager package version. Older payloads may omit it. */
+  version?: string;
+  /** Older managers can omit this process-incarnation coordinate. */
+  lifecycleUid?: string;
   execution: "runtime" | "none";
   runtime: string;
   custody: "legacy" | "custodied" | "none";
@@ -156,6 +256,32 @@ export interface ManagerStatus {
   connectors: ManagerConnectorStatus[];
   classSpawn: boolean;
   staticReconciliation: ManagerStaticReconciliationStatus;
+  /** Absent on older managers. Its presence grants no stop authority. */
+  stopImpact?: ManagerStopImpact;
+}
+
+export interface ManagerStopImpact {
+  agentScope: "manager" | "owner-filtered";
+  observedAt: string;
+  maintenance: "active" | "preserving" | "preserved";
+  resumeRequired: boolean;
+  stopping: boolean;
+  lifecycleInFlight: number;
+  reservedLaunches: number;
+  retirementsPending: number;
+  deprovisioningInFlight: number;
+  staticReconciliationInFlight: number;
+  agents: Array<{
+    name: string;
+    id: string;
+    lifecycleUid: string;
+    mode: string;
+    defaultAction: "release-custody" | "stop" | "stop-retaining-state";
+    withAgentsAction: "stop" | "stop-retaining-state";
+  }>;
+  /** Present only while maintenance is not `active` and an inventory exists: the attempt and the
+   *  inventory digest a preserved-exit stop must name. Absent on revision 32 and older. */
+  preservation?: { attemptId: string; inventorySha256: string };
 }
 
 export interface ManagerStaticReconciliationSweep {
@@ -235,6 +361,12 @@ const AGENT_ROW_SCHEMA = {
     // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).
     // Optional so a v0.47 manager's rows still validate; a reader treats absence as `current`.
     meshView: { type: "string", enum: ["current", "stale", "unpopulated"] },
+    // Optional proof that the name-matched roster record also matches this managed principal
+    // and lifecycle UID. False is not proof the agent is absent; older managers omit the field.
+    presenceIdentityVerified: { type: "boolean" },
+    // Snapshot time of a current, identity-verified manager presence read, not the seat's
+    // unvalidated heartbeat timestamp. Absent when the view is stale or identity differs.
+    presenceObservedAt: { type: "integer", minimum: 0 },
     // Epoch ms of the seat's last presence heartbeat, present only when `mesh` is `offline` and
     // `meshView` is `current`: when the offline verdict began (#1208). Optional so an older
     // manager's rows still validate.
@@ -305,6 +437,15 @@ const SLOT_ROW_SCHEMA = {
   },
 } as const;
 const SLOTS_OUTPUT_SCHEMA = { type: "array", items: SLOT_ROW_SCHEMA } as const;
+const SLOTS_INPUT_SCHEMA = {
+  anyOf: [
+    { type: "null" },
+    { type: "object", additionalProperties: false, properties: {
+      names: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string", pattern: "^[A-Za-z0-9_-]+$", maxLength: 200 } },
+      includeRetired: { type: "boolean" },
+    } },
+  ],
+} as const;
 
 const INSPECT_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name"],
@@ -574,6 +715,58 @@ const PERSONA_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, path: { type: "string" } },
 } as const;
 
+/** A chat session's channel list: bounded, since every entry becomes broker permission rows. */
+const CHAT_CHANNEL_LIST = { type: "array", maxItems: 64, uniqueItems: true, items: { type: "string", minLength: 1 } } as const;
+/** An encoded curve public key, `X` and 55 base32 characters. */
+const CURVE_PUBLIC_KEY = { type: "string", pattern: "^X[A-Z2-7]{55}$" } as const;
+/** A static chat session's admission. The manager draws the alias and the identity; the caller
+ *  names the three lists a spawn takes (initial channels, read ceiling, post list) under the same
+ *  rules, a display label, a lifetime, and `sealTo`, the one-time curve key the credential is
+ *  sealed to. The leaf has no renewal, so `ttl` is capped at its 900-second life. */
+const CHAT_SESSION_OPEN_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["label", "ttl", "sealTo"],
+  properties: {
+    subscribe: CHAT_CHANNEL_LIST,
+    allowSubscribe: CHAT_CHANNEL_LIST,
+    allowPublish: CHAT_CHANNEL_LIST,
+    label: { type: "string", minLength: 1, maxLength: 128 },
+    ttl: { type: "integer", minimum: 1, maximum: 900 },
+    sealTo: CURVE_PUBLIC_KEY,
+  },
+} as const;
+/** `actor` is the session's nkey, its wire authority; `alias` is the routing-only slot name.
+ *  `expiresAt` is the leaf's expiry in epoch milliseconds. The credential is not here in the
+ *  clear: `sealed` (base64url) opens only with the private half of `sealTo`, from the one-time
+ *  `sealer` key, to a closed object binding the space, this manager instance and every field
+ *  above to the credential. */
+const CHAT_SESSION_OPEN_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["alias", "actor", "lifecycleUid", "expiresAt", "sealer", "sealed"],
+  properties: {
+    alias: { type: "string", pattern: "^chat_[a-z2-7]{26}$" },
+    actor: { type: "string", minLength: 1 },
+    lifecycleUid: { type: "string", minLength: 1 },
+    expiresAt: { type: "integer", minimum: 0 },
+    sealer: CURVE_PUBLIC_KEY,
+    sealed: { type: "string", minLength: 1 },
+  },
+} as const;
+const CHAT_SESSION_RETIRE_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["alias", "actor", "lifecycleUid"],
+  properties: {
+    alias: { type: "string", pattern: "^chat_[a-z2-7]{26}$" },
+    actor: { type: "string", minLength: 1 },
+    lifecycleUid: { type: "string", minLength: 1 },
+  },
+} as const;
+/** `failed` carries `reason`, starting `retirement pending:`. It is never a success. */
+const CHAT_SESSION_RETIRE_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["outcome"],
+  properties: {
+    outcome: { enum: ["retired", "alreadyRetired", "failed"] },
+    reason: { type: "string" },
+  },
+} as const;
+
 /** Catalog row for the mesh-side persona read (#402). Content only: name / role / model /
  *  description / owner. Capabilities have no slot — the write path still cannot self-grant spawn. */
 const PERSONA_CATALOG_ROW_SCHEMA = {
@@ -711,9 +904,57 @@ const RUN_RESUME_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string", minLength: 1 }, timeout: { type: "string", minLength: 1 } },
 } as const;
+const RUN_SUBMISSION_INPUT_SCHEMA = { type: "object", additionalProperties: false, required: ["submissionId"],
+  properties: { submissionId: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9_-]+$" } } } as const;
+const RUN_SUBMISSION_OUTPUT_SCHEMA = { type: "object", additionalProperties: false,
+  required: ["submissionId", "state", "instanceId", "processEpoch"], properties: {
+    submissionId: { type: "string" }, state: { type: "string", enum: ["unbound", "binding-only", "admitted", "activated", "indeterminate"] },
+    instanceId: { type: "string" }, processEpoch: { type: "integer", minimum: 0 }, runId: { type: "string" },
+    fingerprint: { type: "string" }, callbackDeadline: { type: "integer", minimum: 1 }, reason: { type: "string" },
+  } } as const;
+const RUN_CANCEL_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "reason"],
+  properties: { runId: { type: "string", minLength: 1 }, reason: { type: "string", minLength: 1, maxLength: 512 } },
+} as const;
+const RUN_CANCEL_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "duplicate", "authority", "observed"],
+  properties: {
+    runId: { type: "string" }, duplicate: { type: ["boolean", "null"] },
+    authority: { enum: ["original", "owner-interactive", "admin"] },
+    revocation: { type: "object", additionalProperties: false, required: ["by", "reason", "revokedAt"],
+      properties: { by: { type: "string" }, reason: { type: "string" }, revokedAt: { type: "integer" } } },
+    observed: { type: "object", additionalProperties: false, required: ["processEpoch", "phase"], properties: {
+      processEpoch: { type: "integer", minimum: 0 },
+      phase: { enum: ["terminal", "launch-abandoned", "stop-requested", "stopped", "not-driven-here"] },
+      recordedState: { enum: ["running", "released", "completed", "failed"] },
+      runEpoch: { type: "integer", minimum: 0 }, fencingToken: { type: "integer", minimum: 0 }, holder: { type: "string" },
+      driveOutcome: { anyOf: [
+        { type: "object", additionalProperties: false, required: ["status", "steps"], properties: {
+          status: { const: "completed" }, steps: { type: "integer", minimum: 0 }, value: {},
+        } },
+        { type: "object", additionalProperties: false, required: ["status", "reason"], properties: {
+          status: { const: "released" }, reason: { type: "object", additionalProperties: false, required: ["name", "message"],
+            properties: { name: { type: "string" }, message: { type: "string" } } },
+        } },
+        { type: "object", additionalProperties: false, required: ["status", "error"], properties: {
+          status: { const: "failed" }, error: { type: "object", additionalProperties: false, required: ["name", "message"],
+            properties: { name: { type: "string" }, message: { type: "string" }, code: { type: "string" } } },
+        } },
+      ] },
+    } },
+  },
+} as const;
 const RUN_ID_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string", minLength: 1 }, endpoint: { type: "string", minLength: 1 } },
+} as const;
+/** With `journal`, the reply holds the journal rows from `offset` that fit in one reply. */
+const RUN_STATUS_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId"],
+  properties: {
+    ...RUN_ID_INPUT_SCHEMA.properties,
+    journal: { type: "object", additionalProperties: false, required: ["offset"], properties: { offset: { type: "integer", minimum: 0 } } },
+  },
 } as const;
 const RUN_ID_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
@@ -721,7 +962,16 @@ const RUN_ID_OUTPUT_SCHEMA = {
 } as const;
 const RUN_PS_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
-  properties: { endpoint: { type: "string", minLength: 1 } },
+  properties: {
+    endpoint: { type: "string", minLength: 1 },
+    page: {
+      type: "object", additionalProperties: false,
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 16 },
+        cursor: { type: "string", minLength: 1, maxLength: 3072, pattern: "^[A-Za-z0-9_-]+$" },
+      },
+    },
+  },
 } as const;
 const RUN_ROW_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "endpoint"],
@@ -732,6 +982,10 @@ const RUN_ROW_SCHEMA = {
     holder: { type: "string" },
     epoch: { type: "integer", minimum: 0 },
     journalHigh: { type: "integer", minimum: -1 },
+    failure: {
+      type: "object", additionalProperties: false, required: ["message"],
+      properties: { code: { type: "string", pattern: "^L[0-9]{4}$" }, message: { type: "string" } },
+    },
     startedAt: { type: "number" },
     programHash: { type: "string" },
     forkedFrom: {
@@ -745,12 +999,55 @@ const RUN_ROW_SCHEMA = {
     revocationUnreadable: { type: "string" },
   },
 } as const;
-const RUN_PS_OUTPUT_SCHEMA = { type: "array", items: RUN_ROW_SCHEMA } as const;
+const RUN_PAGE_STATUS_SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["v", "observedSpecRevision", "state", "holder", "epoch", "fencingToken", "journalHigh", "at", "statusRevision", "staleProjection"],
+  properties: {
+    v: { const: 1 }, observedSpecRevision: { type: "integer", minimum: 0 },
+    state: { type: "string", enum: ["running", "released", "completed", "failed"] },
+    holder: { type: "string" }, epoch: { type: "integer", minimum: 0 }, fencingToken: { type: "integer", minimum: 0 },
+    journalHigh: { type: "integer", minimum: -1 }, at: { type: "number", minimum: 0 },
+    statusRevision: { type: "integer", minimum: 1 }, staleProjection: { type: "boolean" },
+  },
+} as const;
+const RUN_PAGE_SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["v", "semantics", "space", "endpointFilter", "responder", "cutSeq", "nextSeq", "items", "endObserved", "stopReason", "storageReads"],
+  properties: {
+    v: { const: 1 }, semantics: { const: "diagnostic" }, space: { type: "string" },
+    endpointFilter: { anyOf: [{ type: "null" }, { type: "string", minLength: 1, maxLength: 64 }] },
+    responder: {
+      type: "object", additionalProperties: false, required: ["instanceId", "epoch"],
+      properties: { instanceId: { type: "string", pattern: "^[a-z0-9]{26,32}$" }, epoch: { type: "integer", minimum: 0 } },
+    },
+    cutSeq: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 },
+    nextSeq: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    items: {
+      type: "array", maxItems: 16,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["endpoint", "runId", "specRevision", "startedAt", "observedAt", "status", "revocation"],
+        properties: {
+          endpoint: { type: "string", minLength: 1, maxLength: 64 },
+          runId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" },
+          specRevision: { type: "integer", minimum: 1 }, startedAt: { type: "number", minimum: 0 }, observedAt: { type: "number", minimum: 0 },
+          status: { anyOf: [{ type: "null" }, RUN_PAGE_STATUS_SCHEMA] }, revocation: { enum: ["present", "not-observed"] },
+        },
+      },
+    },
+    nextCursor: { type: "string", minLength: 1, maxLength: 3072, pattern: "^[A-Za-z0-9_-]+$" },
+    endObserved: { type: "boolean" }, stopReason: { enum: ["end", "rows", "bytes", "read-budget"] },
+    storageReads: { type: "integer", minimum: 0, maximum: 64 },
+  },
+} as const;
+const RUN_PS_OUTPUT_SCHEMA = { anyOf: [{ type: "array", items: RUN_ROW_SCHEMA }, RUN_PAGE_SCHEMA] } as const;
 const RUN_STATUS_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "endpoint", "spec", "journal"],
   properties: {
     runId: { type: "string" },
     endpoint: { type: "string" },
+    revoked: RUN_ROW_SCHEMA.properties.revoked,
+    revocationUnreadable: RUN_ROW_SCHEMA.properties.revocationUnreadable,
     // The record halves are core's own closed shapes; they ride here as the values the store holds.
     spec: { type: "object" },
     status: { type: "object" },
@@ -771,8 +1068,11 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           outcome: { type: "string" },
           status: { type: "string" },
           errorCode: { type: "string" },
+          errorMessage: { type: "string" },
           startedAt: { type: "number" },
           endedAt: { type: "number" },
+          winner: { type: "string" },
+          lostRace: { type: "string" },
           asks: { type: "string" },
           addressee: { type: "string" },
           deadlineAt: { type: "number" },
@@ -804,6 +1104,7 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
         },
       },
     },
+    journalTotal: { type: "integer", minimum: 0 },
   },
 } as const;
 /** No `by`: the answerer is the caller as the manager knows them, decided from the authenticated
@@ -844,10 +1145,11 @@ interface CommandRow {
 }
 
 const ROWS: CommandRow[] = [
+  { name: "vitals", capability: "manager.vitals", input: VOID_SCHEMA, output: VITALS_OUTPUT_SCHEMA, targeted: false, handler: "vitals" },
   { name: "status", capability: "manager.read", input: VOID_SCHEMA, output: STATUS_OUTPUT_SCHEMA, targeted: false, handler: "status" },
   { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
-  { name: "slots", capability: "manager.read", input: VOID_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
+  { name: "slots", capability: "manager.read", input: SLOTS_INPUT_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
@@ -875,12 +1177,19 @@ const ROWS: CommandRow[] = [
   // `manager.run` class (minted by the `run` capability and the privileged instrument); the reads
   // ride `manager.read` beside every other read.
   { name: "run-start", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runStart" },
+  { name: "run-start-keyed", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_SUBMISSION_OUTPUT_SCHEMA, targeted: false, handler: "runStartKeyed" },
+  { name: "run-submission-status", capability: "manager.run", input: RUN_SUBMISSION_INPUT_SCHEMA, output: RUN_SUBMISSION_OUTPUT_SCHEMA, targeted: false, handler: "runSubmissionStatus" },
   { name: "run-resume", capability: "manager.run", input: RUN_RESUME_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runResume" },
+  { name: "run-cancel", capability: "manager.run", input: RUN_CANCEL_INPUT_SCHEMA, output: RUN_CANCEL_OUTPUT_SCHEMA, targeted: false, handler: "runCancel" },
   { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "runAnswer" },
-  { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
+  { name: "run-status", capability: "manager.read", input: RUN_STATUS_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
   { name: "goal-result", capability: "manager.read", input: GOAL_RESULT_INPUT_SCHEMA, output: GOAL_RESULT_OUTPUT_SCHEMA, targeted: false, handler: "goalResult" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
+  // A static chat session's open and retire: untargeted, because the session does not exist before
+  // open and retire names it by its own slot. Minted into operator instruments only.
+  { name: "chat-session-open", capability: "manager.chat", input: CHAT_SESSION_OPEN_INPUT_SCHEMA, output: CHAT_SESSION_OPEN_OUTPUT_SCHEMA, targeted: false, handler: "chatSessionOpen" },
+  { name: "chat-session-retire", capability: "manager.chat", input: CHAT_SESSION_RETIRE_INPUT_SCHEMA, output: CHAT_SESSION_RETIRE_OUTPUT_SCHEMA, targeted: false, handler: "chatSessionRetire" },
   { name: "list-personas", capability: "manager.read", input: VOID_SCHEMA, output: LIST_PERSONAS_OUTPUT_SCHEMA, targeted: false, handler: "listPersonas" },
   { name: "show-persona", capability: "manager.read", input: SHOW_PERSONA_INPUT_SCHEMA, output: SHOW_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "showPersona" },
   { name: "purge", capability: "manager.admin", input: PURGE_INPUT_SCHEMA, output: PURGE_OUTPUT_SCHEMA, targeted: false, handler: "purge" },
@@ -1017,7 +1326,30 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  27 = manager `status` adds `lastSweep.error`: why a static reconciliation sweep stopped before
  *  it planned any alias. A changed output contract is a changed described surface even though the
- *  command name is unchanged. */
+ *  command name is unchanged.
+ *
+ *  28 = manager `status` adds the answering host name and running package version.
+ *
+ *  29 = `run-ps` accepts a bounded page request and answers with a diagnostic run page.
+ *
+ *  30 = manager `status` adds caller-scoped stop impact and its process lifecycle UID.
+ *
+ *  31 = `ps`/`inspect` add an optional lifecycle-bound presence proof and a current-view
+ *  snapshot time. Older rows omit both.
+ *
+ *  32 = `slots` accepts an optional name selection and retired-row request. A changed input
+ *  contract is a changed described surface even though the command name is unchanged.
+ *
+ *  33 = `status.stopImpact` adds the optional `preservation` binding a preserved-exit stop names.
+ *  The status output schema is closed, so a revision-32 contract rejects it.
+ *
+ *  34 = `chat-session-open` and `chat-session-retire`: a static manager admits and retires a chat
+ *  session. New served commands cannot fold into 33.
+ *
+ *  35 = keyed workflow submission and submission-status.
+ *  36 = authenticated workflow cancellation with observed local stop results.
+ *
+ *  38 = `run-status` accepts a journal page request and answers with `journalTotal`. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1035,7 +1367,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 27,
+    revision: 38,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1083,12 +1415,25 @@ export function managerClusterArtifacts(): {
   return { document, rootDigest: manifest.root, manifest, closureDigest };
 }
 
+/** The manager's contract data as a host's build-time generator takes it (`generateBrowserContracts`
+ *  from `@cotal-ai/core/browser-validators-build`): the registered cluster document, its closure
+ *  digest and each DISTINCT schema root its commands name. The closure manifests published beside
+ *  the roots ({@link managerContractArtifactValues}) are not schemas and are not included; the
+ *  generator recomputes every digest from the document and roots and refuses any mismatch. */
+export function managerBrowserContractSource(): BrowserContractSource {
+  const { document, closureDigest } = managerClusterArtifacts();
+  const roots = new Map<string, unknown>();
+  for (const row of ROWS) for (const root of [row.input, row.output]) roots.set(singleDocumentClosure(root).manifest.root, root);
+  return { label: `${MANAGER_CLUSTER_URN}@${document.revision}`, clusterDigest: closureDigest, document, roots: [...roots.values()] };
+}
+
 /** The handlers the manager supplies to back each served command. Each receives the serve
  *  CONTEXT (the broker-authenticated subject shape beside the validated args/target) so the
  *  manager can run its shared admission chokepoint and derive the caller principal; each returns
  *  the command's output value (the compiled output contract validates it at the serve boundary).
  *  Kept as a narrow interface so the contract module stays broker-free. */
 export interface ManagerServiceHandlers {
+  vitals(ctx: EpServeContext): ManagerVitals | Promise<ManagerVitals>;
   status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
@@ -1106,12 +1451,17 @@ export interface ManagerServiceHandlers {
   cancel(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
   runStart(ctx: EpServeContext): unknown | Promise<unknown>;
+  runStartKeyed(ctx: EpServeContext): unknown | Promise<unknown>;
+  runSubmissionStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runResume(ctx: EpServeContext): unknown | Promise<unknown>;
+  runCancel(ctx: EpServeContext): unknown | Promise<unknown>;
   runAnswer(ctx: EpServeContext): unknown | Promise<unknown>;
   runStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runPs(ctx: EpServeContext): unknown | Promise<unknown>;
   goalResult(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
+  chatSessionOpen(ctx: EpServeContext): unknown | Promise<unknown>;
+  chatSessionRetire(ctx: EpServeContext): unknown | Promise<unknown>;
   listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;
   showPersona(ctx: EpServeContext): unknown | Promise<unknown>;
   purge(ctx: EpServeContext): unknown | Promise<unknown>;

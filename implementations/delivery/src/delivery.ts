@@ -281,7 +281,7 @@ async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, spac
     return { initial, source: () => mintCreds(auth, identity, "delivery") };
   }
   throw new Error(
-    `delivery: no scoped creds at ${where}. Launch via \`cotal setup\`/\`cotal go\` (the setup helper mints + writes it), or pass --creds <file>; for a standalone dev run use --dev-mint.`,
+    `delivery: no scoped creds at ${where}. Start the space with \`cotal up\`, which mints and writes them, or pass --creds <file>; for a standalone dev run use --dev-mint.`,
   );
 }
 
@@ -295,9 +295,9 @@ async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, spac
  * (`startDeliveryDetached`), so every other route to a live daemon — a container entrypoint,
  * systemd, an operator typing `cotal deliver --space …`, a hosted composition calling
  * {@link runDelivery} — left whatever was on disk untouched and readers believed it. A record naming
- * a pid that died days ago does not merely under-report: `down`'s `mayBeRunning` guard exists to
- * fail CLOSED so `cotal down nats` cannot pull the broker out from under a live dependant, and a
- * stale record supplies exactly the proof-of-death that guard requires.
+ * a pid that died days ago does not merely under-report: `down`'s `mayBeRunning` check exists to
+ * fail CLOSED, so a `down --preserve-state` cut neither skips fencing a live daemon nor calls the
+ * stack down around it, and a stale record supplies the proof-of-death that check requires.
  *
  * The launcher's shape is followed rather than re-invented: the CANONICAL path (never a pre-upgrade
  * name), a provably dead pre-upgrade record reclaimed first so an upgraded root never holds both
@@ -349,7 +349,7 @@ export function recordDeliveryPid(root: string, space: string): () => void {
  * `ManagerOptions.secretStore` too, so a hosted composition renews both daemon kinds end-to-end when
  * the manager and this daemon are handed the SAME store.
  */
-export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promise<void> {
+export async function runDelivery(args: ParsedArgs, store?: SecretStore, onStarted?: (started: { status(): DeliveryStatus; close(): Promise<void> }) => Promise<void> | void): Promise<void> {
   // A START-UP FAILURE AFTER THE ACQUIRE MUST GIVE THE SHARD BACK, INCLUDING WHEN THE CALLER
   // CATCHES IT. `runDelivery` is awaited inside the CLI dispatcher's own try/catch, so a rejection
   // out of start-up is an ordinary handled error: the process prints one line and exits 1 while the
@@ -365,7 +365,8 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // of this. Cleaning up a lease must not turn a start-up failure into a quiet one.
   let releaseOnStartupFailure: (() => Promise<void>) | undefined;
   try {
-    await runStartedDelivery(args, store, (r) => { releaseOnStartupFailure = r; });
+    const started = await runStartedDelivery(args, store, (r) => { releaseOnStartupFailure = r; });
+    if (onStarted) await onStarted(started);
   } catch (e) {
     if (releaseOnStartupFailure !== undefined) {
       console.error(`\u2717 delivery: start-up failed - releasing the shard before exiting`);
@@ -767,8 +768,8 @@ async function runStartedDelivery(
     unrecordPid?.();
     closePromise = (async () => {
       try { await ep.quiescePlane3(); } catch { /* stop still releases the connection */ }
-      // `releaseDeliveryLease` swallows a delete that did not commit, so the row the broker holds
-      // afterwards is the verdict: while one is there, a successor is refused.
+      // A release that did not commit rejects. Otherwise the row the broker holds afterwards is the
+      // verdict: while one is there, a successor is refused.
       const release = async () => {
         const own = await ep.readDeliveryLeaseEntry(shard);
         if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
@@ -779,7 +780,7 @@ async function runStartedDelivery(
         // nats.js never answers a request written to a socket that dropped, nor one buffered while it
         // was down (each dial discards the buffer), even once the same connection reconnects. Such a
         // timeout says nothing about the broker, so one attempt on the reconnected transport decides.
-        // A lost read rejects the attempt, and a lost delete leaves this instance's row.
+        // A lost read or delete rejects the attempt.
         // A transport still down is waited for as long as a serving daemon waits for its broker, so
         // the window counts from the drop, and a reconnect past it earns no repeat even when it lands
         // before the lost request times out.
@@ -794,10 +795,7 @@ async function runStartedDelivery(
           });
           return transportDownSince === undefined && transportGeneration !== generation && transportLateGeneration <= generation;
         };
-        left = await release().then(
-          async (row) => row !== undefined && ep.ownsDeliveryLease(row.info) && await reconnected() ? release() : row,
-          async (e) => { if (!await reconnected()) throw e; return release(); },
-        );
+        left = await release().catch(async (e) => { if (!await reconnected()) throw e; return release(); });
       } catch (e) {
         throw new Error(`delivery: the lease release for shard ${shard} could not be confirmed (${(e as Error).message}); the bucket TTL expires a row left behind`, { cause: e });
       } finally {
@@ -1022,8 +1020,8 @@ async function runStartedDelivery(
       // RELEASE AGAINST THE BROKER'S REVISION, NOT THE ONE THIS PROCESS HAPPENS TO HOLD.
       //
       // The release is a compare-and-swap, so a token one step behind frees NOTHING, and it fails
-      // SILENTLY: `releaseDeliveryLease` swallows every error by design, because at shutdown the
-      // broker may already be gone. A daemon can therefore stop cleanly, believe it released, and
+      // SILENTLY: this shutdown catches every release error, because at shutdown the broker may
+      // already be gone. A daemon can therefore stop cleanly, believe it released, and
       // leave its row claiming the shard for the rest of the 30s bucket TTL - after which the next
       // `cotal up` is refused with "a live lease already exists" and the shard is unservable by
       // anyone. That is this issue's outage reached without any starvation or broker fault at all.
@@ -1242,9 +1240,9 @@ async function runStartedDelivery(
            noteLease("held", `a lease watch event found its lease key gone and re-acquired it at revision ${revision}`);
          } catch (e) {
            revision = undefined;
-           console.error(
-             `✗ delivery: a lease watch event found the key gone and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`,
-           );
+           console.error(isCasLoss(e)
+             ? `✗ delivery: a lease watch event found the key gone and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`
+             : `✗ delivery: a lease watch event found its lease key for shard ${shard} gone and it could not re-acquire it (${(e as Error).message}); it serves only under its lease, so it exits`);
            shutdown(1);
          }
          return;
@@ -1353,13 +1351,14 @@ async function runStartedDelivery(
               await resumeServing(`it won the atomic create at revision ${revision}`);
               noteLease("held", `found its lease key gone (renew: ${why}) and re-acquired it at revision ${revision}`);
             } catch (e) {
-              // Refused: a live lease exists that is not ours, so a replacement daemon holds this
-              // shard. THIS is the genuine loss, and it exits, WITHOUT a revision to release, or
-              // the exit would delete the replacement's row.
+              // Either way it exits WITHOUT a revision to release, or the exit could delete a
+              // replacement's row. Only the create's expected-sequence refusal says a live lease that
+              // is not ours exists, which is the genuine loss. Any other refusal, such as 10023 from
+              // a store over its cap, leaves this process with no lease, and it is quoted as it came.
               revision = undefined;
-              console.error(
-                `✗ delivery: lost the lease (${why}) and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`,
-              );
+              console.error(isCasLoss(e)
+                ? `✗ delivery: lost the lease (${why}) and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`
+                : `✗ delivery: found its lease key for shard ${shard} gone (renew: ${why}) and could not re-acquire it (${(e as Error).message}); it serves only under its lease, so it exits`);
               shutdown(1);
             }
             return;

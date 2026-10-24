@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { agentIdentity, agentWideFacts } from "../src/commands/agents.js";
-import { modelVariantsLine } from "../src/commands/models.js";
+import { modelVariants } from "../src/commands/models.js";
 
 let pass = 0;
 let fail = 0;
@@ -62,7 +62,7 @@ check(
 );
 check(
   "declared Jcode caveat appears where variants print",
-  modelVariantsLine({
+  modelVariants({
     id: "model",
     variants: ["low", "high"].map((name) => ({
       name,
@@ -72,13 +72,13 @@ check(
         warning: "declared by Jcode config; provider acceptance is validated only at launch",
       },
     })),
-  }, 5) ?? "",
-  "         variants (declared, not provider-verified): low, high",
+  }) ?? "",
+  "low, high (declared, not provider-verified)",
 );
 check(
   "ordinary connector variants keep the ordinary label",
-  modelVariantsLine({ id: "model", variants: [{ name: "fast" }] }, 5) ?? "",
-  "         variants: fast",
+  modelVariants({ id: "model", variants: [{ name: "fast" }] }) ?? "",
+  "fast",
 );
 
 console.log(`\nPS PROVENANCE SMOKE PASSED: ${pass} passed, ${fail} failed`);

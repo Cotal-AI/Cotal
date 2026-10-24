@@ -33,7 +33,7 @@ let attempted = 0;
 const failures: string[] = [];
 /** How many cells this suite must run. A cell silently skipped or silently added is a defect in
  *  its own right, and one this file has already shipped once (an ambient-dependent arm). */
-const EXPECTED_CELLS = 146;
+const EXPECTED_CELLS = 153;
 /**
  * Every code the classifier may emit, IMPORTED from production rather than restated here.
  *
@@ -283,10 +283,24 @@ for (const policy of [TODAY, WITH_TLS]) {
 }
 
 console.log("\npublic addresses — the case this exists to stop");
+/** The next step a refusal of `url` names, or undefined when it names none. */
+const remedyOf = (url: string, policy = TODAY): string | undefined => {
+  try {
+    classifyJoinTarget(url, policy);
+  } catch (e) {
+    return e instanceof JoinRefusal ? e.remedy : undefined;
+  }
+  return undefined;
+};
 const publicMsg = refuses("nats://203.0.113.7:4222", "a public address in the clear", TODAY, "unprotected-target");
 check("  the refusal names the permitted classes", /Only a loopback literal/i.test(publicMsg), publicMsg);
-check("  and says private is not the same as yours", /private is not the same/i.test(publicMsg), publicMsg);
+check("  and says the connection must require TLS, without asking for the address itself", /must require TLS/.test(publicMsg) && !/Pass the address itself/.test(publicMsg), publicMsg);
+check("  and its next step is the tls:// form of the same address, or --tls", remedyOf("nats://203.0.113.7:4222") === "use tls://203.0.113.7:4222, or pass --tls", remedyOf("nats://203.0.113.7:4222"));
+check("  a v6 public literal keeps its brackets in that form", remedyOf("nats://[2001:db8::7]:4222") === "use tls://[2001:db8::7]:4222, or pass --tls", remedyOf("nats://[2001:db8::7]:4222"));
 refuses("tls://203.0.113.7:4222", "tls:// is cosmetic in this client and must not buy passage without recorded strictness", TODAY, "unprotected-target");
+check("  a tls:// address without recorded strictness names --tls as its next step", remedyOf("tls://203.0.113.7:4222") === "pass --tls to require TLS on the connection", remedyOf("tls://203.0.113.7:4222"));
+const privateMsg = refuses("nats://192.168.1.10:4222", "RFC1918 without TLS", TODAY, "unprotected-target");
+check("  a private range keeps the general sentence, which TLS does not change, with no next step", /private is not the same/i.test(privateMsg) && remedyOf("nats://192.168.1.10:4222") === undefined, privateMsg);
 
 console.log("\npublic-tls — recorded strictness is what relaxes the fence, exactly as the doc block promised");
 // The header pre-authorized this: the `tls` connect option verifies chain AND hostname, so once
@@ -301,7 +315,9 @@ const publicTls = classifyJoinTarget("tls://broker.example.com:4222", WITH_TLS);
 check("  a public-tls verdict carries no residual — the transport is proven, not promised", publicTls.residual === undefined, publicTls);
 // The same hostname WITHOUT recorded strictness keeps the existing sentence, verbatim in intent:
 const hostMsg = refuses("nats://broker.example.com:4222", "hostname without required TLS", TODAY, "unprotected-target");
-check("  the no-TLS hostname refusal is the existing sentence", /Only a loopback literal/i.test(hostMsg) && /whoever answers the lookup/i.test(hostMsg), hostMsg);
+check("  the no-TLS hostname refusal names the lookup and the permitted classes", /Only a loopback literal/i.test(hostMsg) && /whoever answers the lookup/i.test(hostMsg), hostMsg);
+check("  and its next step is the tls:// form of that name, or --tls", remedyOf("nats://broker.example.com:4222") === "use tls://broker.example.com:4222, or pass --tls", remedyOf("nats://broker.example.com:4222"));
+check("  a ws:// name's next step is wss://, with its path", remedyOf("ws://broker.example.com/mesh") === "use wss://broker.example.com/mesh, or pass --tls", remedyOf("ws://broker.example.com/mesh"));
 // A cafe LAN is private too: RFC1918 stays refused in BOTH modes (also pinned in the loop above).
 refuses("nats://192.168.1.10:4222", "RFC1918 never becomes public-tls", WITH_TLS, "private-range");
 refuses("nats://10.1.2.3:4222", "RFC1918 never becomes public-tls", WITH_TLS, "private-range");

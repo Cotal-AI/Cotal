@@ -13,7 +13,7 @@
     {
       "name": "drop the unowned broker probe so the false Nothing running returns",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "  if (!requested.length && !values[\"dry-run\"]) {\n    const unowned = await liveUnownedBrokers(folderCtx());\n    if (unowned.length) {\n      for (const broker of unowned) {\n        console.error(c.red(\n          `Broker for \"${broker.space}\" is running at ${broker.server}, but no pidfile records it. ` +\n          `cotal down will not stop a process it did not start. ` +\n          `Stop that broker with the supervisor that started it, or remove the registration with \\`cotal meshes rm ${broker.space}\\`.`,\n        ));\n      }\n      process.exit(1);\n    }\n  }\n\n",
+      "find": "  const unowned = await liveUnownedBrokers(folderCtx());\n  if (unowned.length) {\n    for (const broker of unowned) {\n      console.error(c.red(\n        `Broker for \"${broker.space}\" is running at ${broker.server}, but no pidfile records it. ` +\n        `cotal down will not stop a process it did not start. ` +\n        `Stop that broker with the supervisor that started it, or remove the registration with \\`cotal meshes rm ${broker.space}\\`.`,\n      ));\n    }\n    process.exit(1);\n  }\n\n",
       "replace": "",
       "expectRed": "a live unowned broker is named and not stopped",
       "cell": "a live unowned broker is named and not stopped",
@@ -23,8 +23,8 @@
     {
       "name": "restore the !any guard so a mixed bare down exits 0 without naming the live broker",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "  if (!requested.length && !values[\"dry-run\"]) {\n    const unowned = await liveUnownedBrokers(folderCtx());",
-      "replace": "  if (!requested.length && !values[\"dry-run\"] && !any) {\n    const unowned = await liveUnownedBrokers(folderCtx());",
+      "find": "  const unowned = await liveUnownedBrokers(folderCtx());",
+      "replace": "  const unowned = any ? [] : await liveUnownedBrokers(folderCtx());",
       "expectRed": "an owned web plus a live unowned broker stops the web and names the broker",
       "cell": "an owned web plus a live unowned broker stops the web and names the broker",
       "note": "The round-2 reviewer's false success: with an owned web pidfile present, the gated probe never ran, the web stopped, and down exited 0 while the unowned broker stayed live and unmentioned.",
