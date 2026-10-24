@@ -86,6 +86,15 @@ async function bearer(opts: { actor?: string; ver?: number; expiredBy?: number; 
     .sign((opts.key ?? privateKey) as CryptoKey);
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+const authorizeEntered = deferred(), authorizeRelease = deferred();
+const recordEntered = deferred(), recordRelease = deferred();
+const releasedPrincipals = new Set<string>();
+const calloutLog: string[] = [];
 let calloutNc: NatsConnection | undefined;
 const conns: NatsConnection[] = [];
 async function tryConnect(token?: string): Promise<{ nc?: NatsConnection; err?: string; nonce?: string }> {
@@ -122,9 +131,20 @@ try {
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     space,
     token: { key: publicKey as never, issuer: ISS },
-    recordIssuance: async () => {},
-    authorizeActor: (t) => {
-      if (t.act.actor !== "agent_1") throw new Error(`actor ${t.act.actor} not in the spawn ledger`);
+    recordIssuance: async ({ token }) => {
+      if (token.act.actor === "held_record") {
+        recordEntered.resolve();
+        await recordRelease.promise;
+        throw new Error("fixture recorder refused");
+      }
+    },
+    authorizeActor: async (t) => {
+      if (t.act.actor === "held_auth") {
+        authorizeEntered.resolve();
+        await authorizeRelease.promise;
+      } else if (t.act.actor !== "agent_1" && t.act.actor !== "held_record") {
+        throw new Error(`actor ${t.act.actor} not in the spawn ledger`);
+      }
     },
     // connId is the client's inbox nonce (req.connect_opts.name) — scope the reply inbox on it, NOT the
     // wide `_INBOX.>`. This is the least-privilege user-mode grant the cutover requires.
@@ -132,8 +152,8 @@ try {
       pub: { allow: ["smoke.allowed", `_INBOX_${connId}.>`] },
       sub: { allow: ["smoke.allowed", `_INBOX_${connId}.>`] },
     }),
-    onMint: (info) => { minted = info; },
-    log: () => {},
+    onMint: (info) => { minted = info; releasedPrincipals.add(info.principal); },
+    log: (line) => calloutLog.push(line),
   });
 
   // A DATA-account witness: a known connection minted directly against the data account's signing key
@@ -204,12 +224,36 @@ try {
   } catch (e) { evilErr = e instanceof Error ? e.message : String(e); }
   check("client-chosen wildcard inbox nonce refused (no _INBOX_>.> escalation)", !!evilErr, "(connected!)");
 
+  // One awaited hook must not spend another connection's broker authorization deadline.
+  let heldSettled = false;
+  const heldAuth = tryConnect(await bearer({ actor: "held_auth" })).then((result) => { heldSettled = true; return result; });
+  try {
+    await Promise.race([authorizeEntered.promise, wait(4000).then(() => { throw new Error("authorizer hook was not reached"); })]);
+    const independent = await tryConnect(await bearer());
+    check("an independent valid client connects while another authorizer is held", !!independent.nc && !heldSettled);
+  } finally { authorizeRelease.resolve(); }
+  const authorized = await heldAuth;
+  check("the held client is admitted only after its own authorizer completes", !!authorized.nc);
+
+  let recordSettled = false;
+  const heldRecord = tryConnect(await bearer({ actor: "held_record" })).then((result) => { recordSettled = true; return result; });
+  try {
+    await Promise.race([recordEntered.promise, wait(4000).then(() => { throw new Error("recorder hook was not reached"); })]);
+    const independent = await tryConnect(await bearer());
+    check("an independent valid client connects while another issuance recorder is held", !!independent.nc && !recordSettled);
+  } finally { recordRelease.resolve(); }
+  const unrecorded = await heldRecord;
+  check("a failed held recorder denies only its own client and releases no JWT",
+    !unrecorded.nc && !releasedPrincipals.has(`${owner}.held_record`) && calloutLog.some((line) => line.includes("fixture recorder refused")));
+
   console.log(`\nauth-callout smoke: ${pass} passed, ${fail} failed`);
   if (fail > 0) process.exitCode = 1;
 } catch (e) {
   console.error("auth-callout smoke: fatal:", e);
   process.exitCode = 1;
 } finally {
+  authorizeRelease.resolve();
+  recordRelease.resolve();
   for (const nc of conns) await nc.close().catch(() => {});
   await calloutNc?.close().catch(() => {});
   srv.kill("SIGKILL");

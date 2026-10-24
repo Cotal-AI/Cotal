@@ -140,6 +140,8 @@ export interface CalloutMsg {
   respond(data: Uint8Array): unknown;
 }
 
+/** Hooks for distinct connections may run concurrently. Each connection still awaits its own
+ *  authority checks and durable issuance before its encrypted response is released. */
 export interface StartAuthCalloutOpts {
   /** The callout xkey SEED — MANDATORY. No xkey, no service (fail startup, never plaintext). */
   xkeySeed: string;
@@ -205,15 +207,22 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
     log("auth callout: WARNING - no expectedServerIds allow-list set; request provenance rests on $SYS system-subject isolation alone (safe single-broker, but set expectedServerIds for hardened/multi-server deploys)");
 
   const sub = nc.subscribe(AUTH_CALLOUT_SUBJECT, { queue: "cotal-auth-callout" });
+  const pending = new Set<Promise<void>>();
+  const maxInFlight = 32;
+  let stopped = false;
+  let workerFailed = false;
+  let workerError: unknown;
+  let rejectWorker!: (error: unknown) => void;
+  const workerFailure = new Promise<never>((_resolve, reject) => { rejectWorker = reject; });
 
-  const done = (async () => {
-    for await (const msg of sub) {
+  const pump = (async () => {
+    async function handle(msg: CalloutMsg): Promise<void> {
       const admittedAt = Math.floor(Date.now() / 1000);
       // ---- authenticate the REQUEST itself; shape violations get NO response ----
       const serverXkey = msg.headers?.get(SERVER_XKEY_HEADER);
       if (!serverXkey) {
         log("auth callout: dropped an UNSEALED request (no Nats-Server-Xkey header) - check the account xkey config");
-        continue;
+        return;
       }
       let claims;
       try {
@@ -222,12 +231,12 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         claims = decode<AuthorizationRequest>(dec(plain)); // ed25519 signature verified in decode()
       } catch (e) {
         log(`auth callout: dropped an undecryptable/unverifiable request (${e instanceof Error ? e.message : String(e)})`);
-        continue;
+        return;
       }
       const req = (claims as { nats?: AuthorizationRequest }).nats;
       if (!req?.user_nkey || !req.server_id?.id) {
         log("auth callout: dropped a request without user_nkey/server_id");
-        continue;
+        return;
       }
       // Request provenance — prove nats-server sent this, not an in-account publisher. `decode()`
       // verified the signature against the embedded `iss`, but that alone accepts ANY self-signed
@@ -238,17 +247,17 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       const issuer = (claims as { iss?: string }).iss;
       if (issuer !== req.server_id.id || !req.server_id.id.startsWith("N")) {
         log("auth callout: dropped a request whose issuer is not its own server identity (forgery guard)");
-        continue;
+        return;
       }
       if (opts.expectedServerIds && !opts.expectedServerIds.includes(req.server_id.id)) {
         log(`auth callout: dropped a request from an untrusted server id ${req.server_id.id}`);
-        continue;
+        return;
       }
       if (req.server_id.xkey !== serverXkey) {
         // The signed payload must vouch for the key that sealed it — otherwise a relay could
         // re-seal someone else's request under its own key.
         log("auth callout: dropped a request whose signed server_id.xkey != sealing header key");
-        continue;
+        return;
       }
 
       const respond = async (data: { jwt?: string; error?: string }, notAfter?: number) => {
@@ -286,7 +295,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           });
           opts.onMint?.(minted);
           await respond({ jwt: minted.jwt }, minted.exp);
-          continue;
+          return;
         }
         await opts.authorizeActor(validated);
         // The private reply-inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows pre-connect
@@ -351,7 +360,28 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         }
       }
     }
+
+    // Awaiting one ledger or issuer must not consume every other client's broker auth deadline.
+    for await (const msg of sub) {
+      if (pending.size >= maxInFlight) await Promise.race(pending);
+      if (stopped) break;
+      const task = handle(msg).catch((error: unknown) => {
+        stopped = true;
+        if (!workerFailed) {
+          workerFailed = true;
+          workerError = error;
+        }
+        rejectWorker(error);
+      });
+      pending.add(task);
+      void task.then(() => pending.delete(task));
+    }
   })();
+  const done = Promise.race([pump, workerFailure]).finally(async () => {
+    stopped = true;
+    await Promise.all(pending);
+    if (workerFailed) throw workerError;
+  });
 
   return { done };
 }

@@ -10,8 +10,9 @@
  * Run: pnpm smoke:callout-shape
  */
 import { Algorithms, encode } from "@nats-io/jwt";
+import { SignJWT, generateKeyPair } from "jose";
 import { createAccount, createCurve, createServer, createUser } from "@nats-io/nkeys";
-import { AUTH_CALLOUT_SUBJECT, createCalloutAuth, startAuthCallout } from "../src/index.js";
+import { AUTH_CALLOUT_SUBJECT, createCalloutAuth, startAuthCallout, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { createSpaceAuth } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;
@@ -33,7 +34,7 @@ const serverCurve = createCurve();
 const serverXkey = serverCurve.getPublicKey();
 
 /** Build a sealed callout request. Overrides let each case bend exactly one property. */
-async function sealedRequest(opts: { signer?: ReturnType<typeof createServer>; serverIdInClaim?: string; xkeyInClaim?: string; sealWith?: string } = {}) {
+async function sealedRequest(opts: { signer?: ReturnType<typeof createServer>; serverIdInClaim?: string; xkeyInClaim?: string; sealWith?: string; token?: string } = {}) {
   const userNkey = createUser().getPublicKey();
   const claim = {
     aud: calloutXkeyPub,
@@ -41,8 +42,8 @@ async function sealedRequest(opts: { signer?: ReturnType<typeof createServer>; s
     nats: {
       user_nkey: userNkey,
       server_id: { name: "n", host: "127.0.0.1", id: opts.serverIdInClaim ?? serverId, xkey: opts.xkeyInClaim ?? serverXkey },
-      connect_opts: { auth_token: "irrelevant.for.shape" },
-      client_info: {},
+      connect_opts: { auth_token: opts.token ?? "irrelevant.for.shape", name: userNkey },
+      client_info: { id: 1 },
       type: "authorization_request",
       version: 2,
     },
@@ -125,6 +126,77 @@ check("non-server (N…) issuer → no response", !(await nonServerIssuer).respo
 const wellFormed = msg(await sealedRequest(), serverXkey);
 await run([wellFormed]);
 check("well-formed request reaches a response (control — proves the drops are the guards, not a dead handler)", wellFormed.responded);
+
+// Bound asynchronous hooks and drain already admitted work when the subscription ends.
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+const { publicKey, privateKey } = await generateKeyPair("EdDSA");
+const owner = `u_${"a".repeat(26)}`;
+const now = Math.floor(Date.now() / 1000);
+const token = await new SignJWT({ scope: [], ver: USER_TOKEN_VER, act: { owner, actor: "bounded" } })
+  .setProtectedHeader({ alg: "EdDSA" }).setSubject(owner).setAudience("shape").setIssuer("https://auth.test")
+  .setIssuedAt(now).setNotBefore(now).setExpirationTime(now + 300).sign(privateKey);
+const options: StartAuthCalloutOpts = {
+  xkeySeed: callout.xkey.seed,
+  authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
+  dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+  space: "shape", token: { key: publicKey, issuer: "https://auth.test" },
+  expectedServerIds: [serverId], recordIssuance: async () => {}, authorizeActor: () => {},
+  permissionsFor: () => ({ pub: { deny: [">"] }, sub: { deny: [">"] } }), log: () => {},
+};
+const boundedMessages = await Promise.all(Array.from({ length: 40 }, async () => msg(await sealedRequest({ token }), serverXkey)));
+const firstRelease = deferred(), tailRelease = deferred(), atCapacity = deferred(), atTail = deferred();
+let active = 0, peak = 0, entered = 0, yielded = 0, settled = false;
+const bounded = startAuthCallout({ async *subscribe() {
+  for (const message of boundedMessages) { yielded++; yield message; }
+} }, {
+  ...options,
+  async authorizeActor() {
+    const index = ++entered;
+    active++;
+    peak = Math.max(peak, active);
+    if (index === 32) atCapacity.resolve();
+    if (index === 40) atTail.resolve();
+    try { await (index <= 32 ? firstRelease.promise : tailRelease.promise); }
+    finally { active--; }
+  },
+});
+void bounded.done.then(() => { settled = true; }, () => { settled = true; });
+try {
+  await Promise.race([atCapacity.promise, new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("callout capacity was not reached")), 5000))]);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  check("at most 32 authorization hooks run together", entered === 32 && peak === 32 && yielded === 33);
+  firstRelease.resolve();
+  await Promise.race([atTail.promise, new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("callout tail was not reached")), 5000))]);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  check("done waits for admitted hooks after the input iterator ends", !settled && entered === 40 && active === 8);
+} finally {
+  firstRelease.resolve();
+  tailRelease.resolve();
+}
+await bounded.done;
+check("all admitted responses complete without exceeding the bound", boundedMessages.every((message) => message.responded) && peak === 32 && active === 0);
+
+// A worker can fail after the input iterator ended; that failure still rejects done.
+const failureRelease = deferred(), failureEntered = deferred();
+const failure = new Error("fixture logger failed");
+const failed = startAuthCallout({ async *subscribe() { yield msg(await sealedRequest({ token }), serverXkey); } }, {
+  ...options,
+  async authorizeActor() {
+    failureEntered.resolve();
+    await failureRelease.promise;
+    throw new Error("fixture authorizer refused");
+  },
+  log() { throw failure; },
+});
+const failureResult = failed.done.then(() => undefined, (error: unknown) => error);
+await failureEntered.promise;
+await new Promise<void>((resolve) => setImmediate(resolve));
+failureRelease.resolve();
+check("a worker failure during the final drain is not reported as success", await failureResult === failure);
 
 console.log(`\ncallout-shape smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
