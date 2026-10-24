@@ -856,6 +856,14 @@ root, as after `space forget`, there are no saved definitions, and the Next says
 and run `cotal up`. When members still run, it names the `cotal service stop` for each one first,
 manager first and broker last.
 
+A saved local record under the Cotal home that is not valid JSON, such as a service instance record
+under `services/` cut short the same way, is left as it is. `up`, `down`, `service` and
+`reset store` refuse it `SCHEMA_INVALID`, exit 1. `service` names its path and the `mv` that moves
+it aside, and so do the others for a stack that has run. Once it is moved, Cotal no longer tracks
+the process that record names, so stop that process yourself if it still runs. For a stopped
+space, `status` warns `SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place
+of `cotal up`.
+
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
 The manager serves its console over plain HTTP on a port it picks when it starts. All three bind the

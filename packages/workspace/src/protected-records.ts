@@ -457,6 +457,19 @@ export function decodeLocalJson(bytes: Buffer): unknown {
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input is not valid UTF-8 JSON; document contents are not echoed"); }
 }
 
+/** A saved record's bytes as JSON. A record that does not parse, as an interrupted write or a full
+ *  disk can leave it, is refused with its path and the move that sets it aside; it is never reset. */
+function decodeSavedRecord(bytes: Buffer, path: string, instance: boolean): unknown {
+  try { return decodeLocalJson(bytes); }
+  catch {
+    const aside = `move it aside, as mv ${shellPath(path)} ${shellPath(`${path}.old`)} does`;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `the saved local record ${path} is not valid JSON, as an interrupted write or a full disk can leave it; nothing was inferred from it and it was left as it is`, {
+      target: { path },
+      remedy: instance ? `${aside}; Cotal then no longer tracks the process it recorded, so stop that process yourself if it still runs` : aside,
+    });
+  }
+}
+
 /** Workstation records only. Providers are never imported and revisions confer no native authority. */
 export class ProtectedRecordStore<T> {
   constructor(
@@ -494,7 +507,7 @@ export class ProtectedRecordStore<T> {
     const path = join(dir, `${spaceKey(name)}.json`);
     const bytes = readLocalRecordSource(path, RECORD_LIMIT, true);
     if (!bytes) return undefined;
-    const wrapper = localRecordObject(decodeLocalJson(bytes), ["recordVersion", "revision", "value"]);
+    const wrapper = localRecordObject(decodeSavedRecord(bytes, path, this.family === "instances"), ["recordVersion", "revision", "value"]);
     if (wrapper.recordVersion !== 1) throw new CommandFailure("refused", "SCHEMA_INVALID", "saved local record version is unsupported; it was not reset");
     const revision = localRecordText(wrapper.revision, 200);
     const value = this.validate(wrapper.value, false);

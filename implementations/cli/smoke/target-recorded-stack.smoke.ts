@@ -21,7 +21,8 @@
  * journal to name the copy and its store, and prepares the space there. A folder renamed from a path
  * with a control character, where `cotal up` refuses to start, is told only to adopt the journal. A
  * legacy root after its `down` names the address its last start configured, which a bare `cotal up`
- * there starts again.
+ * there starts again. A service instance record cut short is named with its path and the move that
+ * sets it aside by `service`, and `down` carries that as its cause; status warns about it in place of `cotal up`.
  *
  * The journal is written by hand in the shape `cotal up` leaves when its broker never started; the
  * resolver reads only its server and space fields. Driven through the built binary in a sandboxed COTAL_HOME.
@@ -337,6 +338,40 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   check(`${command} in a stopped legacy root refuses as not started, exit 2`, r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_UNAVAILABLE", shown(r));
   check(`${command} names the address its last start configured and the bare up`, (r.envelope?.error?.message ?? "").includes("last ran at nats://127.0.0.1:24712") && r.envelope?.error?.remedy === `start it again with \`cotal up\` in ${legacy}`, r.envelope?.error);
   check(`${command} in a stopped legacy root names no default broker address`, noDefault(r), shown(r));
+}
+
+// A service instance record of a prepared space cut short, as an interrupted write leaves it, is named
+// with its path and the move that sets it aside, and left as it is. Status warns about it and gives
+// that step under Next, in place of `cotal up`.
+{
+  const prepared = realpathSync(mkdtempSync(join(home, "records-")));
+  check("rig: prepare sr there", run(["space", "create", "sr", "--json"], prepared).status === 0);
+  const control = run(["status", "--json"], prepared);
+  check("control: status names no unreadable instance record", !(control.envelope?.warnings ?? []).some((w) => w.code === "SERVICE_INSTANCES_UNAVAILABLE"), shown(control));
+  const instances = join(home, ".cotal", "services", Buffer.from("sr").toString("hex"), "instances");
+  const file = join(instances, `${Buffer.from(randomUUID()).toString("hex")}.json`), cut = Buffer.from(`{\n  "recordVersion": 1,\n  "revision": "`);
+  mkdirSync(instances, { recursive: true, mode: 0o700 });
+  writeFileSync(file, cut, { mode: 0o600 });
+  const message = `the saved local record ${file} is not valid JSON, as an interrupted write or a full disk can leave it; nothing was inferred from it and it was left as it is`;
+  const remedy = `move it aside, as mv ${file} ${file}.old does; Cotal then no longer tracks the process it recorded, so stop that process yourself if it still runs`;
+  const named = (r: ReturnType<typeof run>) => r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && r.envelope.error.message === message && r.envelope.error.remedy === remedy && (r.envelope.target as { path?: string } | null)?.path === file;
+  for (const args of [["service", "--space", "sr"], ["service", "list", "--space", "sr"]]) {
+    const r = run([...args, "--json"], prepared);
+    check(`${args.join(" ")} refuses SCHEMA_INVALID, exit 1, naming the record and the move that sets it aside`, named(r), shown(r));
+  }
+  // With no stack run here, down reads the space's records as a whole and names that service list as its step.
+  const down = run(["down", "--dry-run", "--json"], prepared);
+  check("down --dry-run refuses SCHEMA_INVALID, its cause naming the record", down.status === 1 && down.envelope?.error?.code === "SCHEMA_INVALID" && (down.envelope.error as { cause?: { detail?: string } }).cause?.detail === message && down.envelope.error.remedy === "inspect them with cotal service list --space sr", shown(down));
+  const status = run(["status", "--json"], prepared);
+  check("status is partial and warns about the record with its way out", status.status === 4 && status.envelope?.outcome === "partial" && (status.envelope.warnings ?? []).some((w) => w.code === "SERVICE_INSTANCES_UNAVAILABLE" && w.message === `${message}; ${remedy}`), shown(status));
+  const hints = status.envelope?.result?.hints ?? [];
+  check("status gives that step under Next and no cotal up", hints.includes(remedy) && !hints.some((hint) => hint.includes("cotal up")), hints);
+  check("the record is left as it was", readFileSync(file).equals(cut));
+  renameSync(file, `${file}.old`);
+  const moved = run(["service", "--space", "sr", "--json"], prepared);
+  check("moved aside as the step says, service reads the space again", moved.status === 0 && moved.envelope?.outcome === "ok", shown(moved));
+  check("…and status no longer warns about it", !(run(["status", "--json"], prepared).envelope?.warnings ?? []).some((w) => w.code === "SERVICE_INSTANCES_UNAVAILABLE"));
+  check("rig: forget sr", run(["space", "forget", "sr", "--json"], prepared).status === 0);
 }
 
 finish();
