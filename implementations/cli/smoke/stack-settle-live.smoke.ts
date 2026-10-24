@@ -654,6 +654,11 @@ try {
     const plain = cli(root, "status", "--plain");
     check("status says the full store refuses the delivery lease", plain.stdout.includes("the full store refuses its lease"), plain.stdout);
     const managerPid = pidOf(space, "stack-manager");
+    // Its Next names the two routes up names: make room and restart, or keep the history behind a larger cap.
+    const routes = plain.stdout.slice(plain.stdout.indexOf("\nNext\n") + 6).split("\n").slice(0, 5).map((line) => line.trim().split(/ {2,}/)[0] ?? "");
+    const wanted = [`history clear --space ${space} --yes`, `up --root ${root}`, `kill -TERM ${managerPid}`, "down --yes", "up --max-file-store <bytes>"];
+    check("status's Next names history clear then up, or kill -TERM to the manager, down --yes and up with a larger cap",
+      managerPid !== null && routes.length === wanted.length && routes.every((route, i) => route.endsWith(wanted[i]!)), { routes, stdout: plain.stdout });
     const restart = cli(root, "up", "--json");
     check("up fails OPERATION_FAILED, exit 5, quoting the daemon's line and naming the full store, then history clear and the SIGTERM that keeps the history",
       restart.status === 5 && restart.env?.error?.code === "OPERATION_FAILED"
