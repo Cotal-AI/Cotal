@@ -2,7 +2,7 @@ import { readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { DEV_OWNER, assertLifecycleToken, endpointToken, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, colorEnabled, decodeLocalJson, observeServiceStartup, protectedLocalDirectory,
+  CommandFailure, assertRecordIdentity, colorEnabled, decodeLocalJson, observeServiceStartup, oneLine, protectedLocalDirectory,
   readLocalRecordSource, serviceMetadataDigest, serviceOperationId, serviceStartupPath,
   validateServiceStartupPath, type LocalProcess, type ServiceAdapterContext, type ServicePreset,
 } from "@cotal-ai/workspace";
@@ -20,6 +20,7 @@ function assertEarlierLaunchesSettled(context: ServiceAdapterContext): void {
   try { names = readdirSync(context.stateDirectory); } catch { return refuse(); }
   if (names.length > 4096) return refuse();
   const prefix = `.${context.instanceId}.`;
+  let ended: { pid: number; endpoint: string; instanceId: string } | undefined;
   for (const name of names.filter((name) => name.startsWith(prefix) && name.includes(".endpoint."))) {
     try {
       const phase = ["intent", "registered", "removed"].find((phase) => name.endsWith(`.endpoint.${phase}.json`));
@@ -36,11 +37,19 @@ function assertEarlierLaunchesSettled(context: ServiceAdapterContext): void {
       if (!intent || Object.keys(intent).length !== 12 || intent.schemaVersion !== 1 || intent.kind !== "exec-endpoint-registration-intent" || intent.space !== context.space || intent.serviceInstanceId !== context.instanceId || intent.launchRequestId !== request || intent.owner !== DEV_OWNER || typeof intent.endpoint !== "string" || typeof intent.instanceId !== "string" || typeof intent.actor !== "string" || intent.actor.length > 200 || typeof intent.contractDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(intent.contractDigest) || typeof intent.observedAt !== "string" || !Number.isFinite(Date.parse(intent.observedAt)) || !process || Object.keys(process).length !== 2 || !Number.isSafeInteger(process.pid) || Number(process.pid) <= 0 || typeof process.token !== "string" || !/^[0-9]{1,128}$/.test(process.token)) return refuse();
       endpointToken(intent.endpoint); assertLifecycleToken(intent.instanceId);
       const removedBytes = readLocalRecordSource(join(context.stateDirectory, name.replace(/\.intent\.json$/, ".removed.json")), 8192, true);
-      if (!removedBytes) return refuse();
+      if (!removedBytes) {
+        // A host that is gone without its receipt still refuses: its disappearance does not prove the registration was removed.
+        if (!["gone", "mismatch"].includes(assertRecordIdentity({ pid: Number(process.pid), token: String(process.token) }).kind)) return refuse();
+        ended ??= { pid: Number(process.pid), endpoint: intent.endpoint, instanceId: intent.instanceId };
+        continue;
+      }
       const removed = decodeLocalJson(removedBytes) as Record<string, unknown>;
       if (!removed || Object.keys(removed).length !== 7 || removed.schemaVersion !== 1 || removed.kind !== "exec-endpoint-registration-removed" || removed.space !== context.space || removed.serviceInstanceId !== context.instanceId || removed.launchRequestId !== request || removed.intentDigest !== serviceMetadataDigest(intent) || typeof removed.observedAt !== "string" || !Number.isFinite(Date.parse(removed.observedAt))) return refuse();
     } catch { return refuse(); }
   }
+  if (ended) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the host process of an earlier launch of this instance (pid ${ended.pid}) ended without recording that its native registration ${ended.endpoint} ${ended.instanceId} was removed, so this instance does not launch again`, {
+    remedy: `remove that registration with cotal endpoint deregister ${ended.endpoint} ${ended.instanceId} --yes, then start a fresh instance with cotal service start ${oneLine(context.definition)} --new-instance --space ${oneLine(context.space)}`,
+  });
 }
 
 export const execEndpointService: LocalProcess = {

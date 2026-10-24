@@ -24,7 +24,7 @@ import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, PROCESS_STOP_GRACE_MS, stopProcessService } from "../lib/service-process.js";
-import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { readStackRuns } from "../lib/stack-runs.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
@@ -282,22 +282,31 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   // The preview reads without the lock and writes nothing. The real stop holds the root's
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
   if (values["dry-run"] === true) return await previewStackStop(root, values, presentation, withAgents);
-  // A busy root's refusal names the recorded space, as every refusal after the lock does.
-  const recorded = readStackJournal(root)?.journal.space;
-  if (recorded !== undefined) recordOperationSpace(recorded);
-  const lock = acquireStackOperationLock(root);
-  // A signal ends the stop where it is, and the notice names the members that still run.
+  // A signal ends the stop where it is, and the notice names the members that still run. It is
+  // installed before the lock, so no moment of the stop exits without it.
   const release = noticeOnInterrupt(() => stackStopInterruptNotice(root));
-  try { await applyStackStop(root, values, presentation, interactive, withAgents, lock); }
-  finally { release(); releaseMaintenanceLock(lock); }
+  try {
+    // A busy root's refusal names the recorded space, as every refusal after the lock does.
+    const recorded = readStackJournal(root)?.journal.space;
+    if (recorded !== undefined) recordOperationSpace(recorded);
+    const lock = acquireStackOperationLock(root);
+    try { await applyStackStop(root, values, presentation, interactive, withAgents, lock); }
+    finally { releaseMaintenanceLock(lock); }
+  } finally { release(); }
 }
 
-/** What an interrupted bare down left: the members still running, and the down that finishes it. */
+/** What an interrupted bare down left: the members still running, and the down that finishes it. A
+ *  member it left `stopping` under a signal is stopped again by that down while it runs, and once it
+ *  has exited only `--abandon-stop` settles it, so the notice names both. */
 function stackStopInterruptNotice(root: string): string {
   const space = readStackJournal(root)?.journal.space;
   const running = space === undefined ? [] : runningStackRoles(space);
+  const signalled = space === undefined ? undefined : STACK_ROLES.flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])
+    .filter(({ record: { value } }) => !value.nativeStopRequired && value.state === "stopping").map(({ record: { value } }) => ({ role, requestId: value.requestId })))[0];
+  const left = running.length ? `${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
+  if (signalled) return `Interrupted while stopping the stack in ${root}; ${left}. The stop of ${signalled.role} is not confirmed: while it runs, cotal down --yes stops it again, and once it has exited, cotal down --abandon-stop ${signalled.requestId} --yes finishes the stop.`;
   return running.length
-    ? `Interrupted while stopping the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running. Run cotal down --yes to finish the stop.`
+    ? `Interrupted while stopping the stack in ${root}; ${left}. Run cotal down --yes to finish the stop.`
     : `Interrupted while stopping the stack in ${root}; no member is running. Run cotal down --yes to finish its cleanup.`;
 }
 

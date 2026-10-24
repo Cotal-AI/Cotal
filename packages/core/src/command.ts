@@ -146,6 +146,10 @@ export interface Command extends Extension {
   /** Explicitly opt out of composition-root target preparation when `--space` and `--server` are
    *  daemon/configuration inputs rather than the shared mesh-target grammar. */
   readonly prepareMeshTarget?: false;
+  /** The command installs its own interrupt notice. A composition root that reports an interrupt
+   *  before a command begins keeps that report past the command's start, until the command's notice
+   *  takes it over or the command releases it. */
+  readonly keepsStartupNotice?: true;
   run(args: ParsedArgs): Promise<void>;
   /** Optional shell-completion provider, owned by the command exactly as `run` is. Given the
    *  args typed so far (everything after the command name; the last element is the word being
