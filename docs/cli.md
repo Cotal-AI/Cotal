@@ -4645,6 +4645,14 @@ A `start` or `restart` whose environment does not set a variable that `envRefs` 
 `DEPENDENCY_UNAVAILABLE` (exit 2) before anything launches or stops. It names each missing variable
 and the child variable it feeds, never a value. `show` lists the references by name.
 
+A `start`, `restart` or `install`, or an installed unit, whose executable or working directory was
+moved, removed or changed mode since `add` refuses `DEPENDENCY_UNAVAILABLE` (exit 2) before anything
+launches or stops. The refusal names the path and what is wrong with it, with its mode when the
+mode is the cause. The Next names the fix, such as `chmod u+x <path>`. For a path that is gone, it
+also names `cotal service remove <name> --space <space> --yes`, after which you can add the service
+again with another path. `add` refuses a path that does not exist the same way and names the field
+to correct.
+
 `stop` and `restart` ask before they act in a terminal and need `--yes` in a script. Enter, Ctrl-C,
 Ctrl-D or closed input at that question leaves the service unchanged and exits 0. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
