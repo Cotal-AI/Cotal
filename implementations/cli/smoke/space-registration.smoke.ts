@@ -17,7 +17,8 @@
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
  * default channels file, have refused and left the root as it was; a default channels file that
- * begins with a UTF-8 byte-order mark seeds as the JSON after it. Create and a later `up` write the
+ * begins with a UTF-8 byte-order mark seeds as the JSON after it, and one saved as UTF-16 is refused
+ * by its encoding. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -783,6 +784,13 @@ if (process.platform === "linux") {
     escaped.status === 1 && escaped.stderr.startsWith("✗ ") && escaped.stderr.includes('"{"channels": \\u001b[2J}"') && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(escaped.stdout + escaped.stderr) &&
       cotalFiles() === beforeRuntime.files, shown(escaped));
   unlinkSync(escSeed);
+  const utf16Seed = join(fresh, "utf16-channels.json");
+  writeFileSync(utf16Seed, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('{"channels":{}}', "utf16le")]));
+  const utf16 = await json(["up", "--open", "--channels", utf16Seed, "--server", server], fresh);
+  check("up with a --channels file saved as UTF-16 is USAGE_INVALID, exit 1, naming its encoding and the step to save it as UTF-8",
+    refused(utf16, 1, "USAGE_INVALID") && utf16.env?.error?.message === `the channels file ${utf16Seed} cannot be read: it is saved as UTF-16, and Cotal reads only UTF-8` &&
+      utf16.env?.error?.remedy === `save ${utf16Seed} as UTF-8` && cotalFiles() === beforeRuntime.files, shown(utf16));
+  unlinkSync(utf16Seed);
   // The default file is read once the root is settled, so it refuses after the stack lock's layout
   // exists and before a store, a broker or a registration.
   const defaultSeed = join(fresh, ".cotal", "channels.json");

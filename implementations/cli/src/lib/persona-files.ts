@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
   acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
-  parseAgentFileSource, saveAgentFile, writeSecretFile, writeSecretFileAtomic,
+  parseAgentFileSource, saveAgentFile, utf16Problem, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
 import {
@@ -88,6 +88,9 @@ export function requirePersonaSource(path: string): PersonaSource {
  *  `name` is required of a new definition only. A stored one may launch under another name: the
  *  seeded `default` persona launches as `default_agent`. */
 export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
+  // Its encoding names no value from the file, so it is the one reason given.
+  const encoding = utf16Problem(bytes.toString("utf8"));
+  if (encoding) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let def: AgentDef;
   try { def = parseAgentFileSource(bytes.toString("utf8"), path); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }

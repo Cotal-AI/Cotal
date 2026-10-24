@@ -302,6 +302,19 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
   const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
+  // A catalog file saved as UTF-16 is named by its encoding, with the step to save it as UTF-8.
+  const utf16 = (home: string) => {
+    seeded(home);
+    writeFileSync(join(home, "..", ".cotal", "agents", "w16.md"), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(DEFAULT_AGENT, "utf16le")]));
+  };
+  const saved = "it is saved as UTF-16, and Cotal reads only UTF-8";
+  const listed16 = cotal(["persona", "--json"], utf16, noSeed);
+  check("persona names a UTF-16 catalog file by its encoding", listed16.status === 4 && listed16.stdout.includes(`w16.md: ${saved}; save it as UTF-8`), shown(listed16));
+  const shown16 = cotal(["persona", "show", "w16", "--json"], utf16, noSeed);
+  check("persona show refuses a UTF-16 file by its encoding and says to save it as UTF-8",
+    shown16.status === 1 && shown16.stdout.includes(`w16.md: ${saved}`) && /"remedy":"save \S+w16\.md as UTF-8"/.test(shown16.stdout), shown(shown16));
+  const old16 = cotal(["personas", "list"], utf16, noSeed);
+  check("personas list names it by its encoding too", old16.stdout.includes(`w16.md: ${saved}; save it as UTF-8`), shown(old16));
   for (const sub of ["list", "show", "edit", "new", "rm"]) {
     const help = cotal(["help", "personas", sub]);
     check(`help personas ${sub} prints that subcommand's help`, help.status === 0 && help.stdout.includes(`cotal personas ${sub}`), shown(help));

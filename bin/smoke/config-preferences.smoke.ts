@@ -9,7 +9,7 @@
  * the space's catalog does not hold saved with a warning that names the catalog, two concurrent
  * writers both landing, and the consumers outside `spawn`: color, the `personas edit` editor and the
  * detach key. A file that begins with a UTF-8 byte-order mark reads, and the next write leaves the
- * mark out.
+ * mark out; one saved as UTF-16 is refused by its encoding.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -431,6 +431,12 @@ if (process.platform !== "win32") {
     get.status === 0 && (get.envelope?.result as { setting?: Setting } | null)?.setting?.value === "vi", shown(get));
   const write = run(["config", "set", "editor", "ed"]);
   check("the next write leaves the byte-order mark out", write.status === 0 && !fileText()!.startsWith("\uFEFF") && fileText()!.includes('"ed"'), shown(write));
+  const utf8 = fileText()!;
+  writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(utf8, "utf16le")]), { mode: 0o600 });
+  const utf16 = run(["config", "get", "editor", "--json"]);
+  check("a preferences file saved as UTF-16 is refused by its encoding, saying to save it as UTF-8",
+    utf16.status === 1 && utf16.envelope?.error?.code === "SCHEMA_INVALID" && (utf16.envelope.error.message ?? "").endsWith("is invalid: it is saved as UTF-16, and Cotal reads only UTF-8; save it as UTF-8"), shown(utf16));
+  writeFileSync(file, utf8, { mode: 0o600 });
 }
 
 // ── a linked preferences file is refused as a private record's link is, and never replaced ──────────

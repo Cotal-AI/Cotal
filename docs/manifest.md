@@ -6,7 +6,8 @@ A manifest (`cotal.yaml`, `kind: Mesh`) describes a whole team (its channels, it
 and who may read and post where) in one file. It is **channel-centric**: you list the
 channels, and under each one name the agents that may read and post; Cotal inverts that
 into one least-privilege credential per agent. The manifest is a convenience over the CLI;
-it adds no wire concepts. Today it is **single-space** (one `space:` per file).
+it adds no wire concepts. Today it is **single-space** (one `space:` per file). The file is
+UTF-8; one saved as UTF-16 is refused with `SCHEMA_INVALID`, saying to save it as UTF-8.
 
 The lifecycle (`cotal topology view -f` / `up -f` / `team deploy` / `team remove` / `down`), ownership,
 and teardown behavior are in the guide: [Define a team](define-a-team.md).

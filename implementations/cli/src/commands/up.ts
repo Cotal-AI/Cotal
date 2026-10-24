@@ -58,6 +58,7 @@ import {
   realDirNoSymlink,
   writeSecretFile,
   writeSecretFileAtomic,
+  utf16Problem,
   type AuthPrepared,
   type SpaceAuth,
   type ChannelConfig,
@@ -4363,6 +4364,8 @@ function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   let text: string;
   try { text = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
+  const encoding = utf16Problem(text);
+  if (encoding) throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} cannot be read: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let value: unknown;
   // An editor on Windows can begin the file with a UTF-8 byte-order mark, which RFC 8259 lets a
   // reader ignore.

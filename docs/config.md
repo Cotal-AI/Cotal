@@ -174,7 +174,8 @@ command that could act on a default, with an error that names the file and the p
 completion, `version` and `docs` use no preference and still run. `status` reports the file as a part
 it could not read, exit 4, and gives the fix as its next step.
 Nothing resets it: fix or remove the file. A UTF-8 byte-order mark at its start, which some Windows
-editors write, is ignored, and the next write leaves it out. A `preferences.json` that is a symbolic link stops them the
+editors write, is ignored, and the next write leaves it out. A file saved as UTF-16 stops them the
+same way, saying to save it as UTF-8. A `preferences.json` that is a symbolic link stops them the
 same way with `PERMISSION_DENIED` (exit 2), naming the file it points to: `editor` runs as a shell
 command, so the file is neither read through the link nor replaced by `cotal config set`.
 
