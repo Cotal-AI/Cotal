@@ -856,13 +856,16 @@ root, as after `space forget`, there are no saved definitions, and the Next says
 and run `cotal up`. When members still run, it names the `cotal service stop` for each one first,
 manager first and broker last.
 
-A saved local record under the Cotal home that is not valid JSON, such as a service instance record
-under `services/` cut short the same way, is left as it is. `up`, `down`, `service` and
-`reset store` refuse it `SCHEMA_INVALID`, exit 1. `service` names its path and the `mv` that moves
-it aside, and so do the others for a stack that has run. Once it is moved, Cotal no longer tracks
-the process that record names, so stop that process yourself if it still runs. For a stopped
-space, `status` warns `SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place
-of `cotal up`.
+A service instance record under `services/` in the Cotal home that is not valid JSON, cut short the
+same way, is left as it is. `up`, `down`, `service` and `reset store` refuse it `SCHEMA_INVALID`,
+exit 1. `service` names its path and the `mv` that moves it aside, and so do the others for a stack
+that has run. Once it is moved, Cotal no longer tracks the process that record names, so stop that
+process yourself if it still runs. For a stopped space, `status` warns
+`SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place of `cotal up`. Any
+other saved record that is not valid JSON, such as a native install, uninstall or unit-action
+attempt, a supervisor receipt, a service definition or an endpoint reference, is refused
+`SCHEMA_INVALID` with no step: an attempt or receipt can be what holds a native step back, so
+nothing says to move it.
 
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
@@ -3091,7 +3094,12 @@ recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
 cap and the store's path. The first Next is `cotal history clear --space <space> --yes`, which makes
-room by purging the space's channel history. The `Delivery responder` row then says that the full
+room by purging the space's channel history, followed by `cotal up --root <dir>` when a member of the
+stack stopped. To keep that history, the Next goes on as `up` does: `kill -TERM <pid>` for the stack's
+manager on this host, as a full store refuses its stop, then `cotal down --yes` and
+`cotal up --max-file-store <bytes>` with a larger cap. From another folder, the Next names the stack's
+folder to run `cotal down --yes` in, and `up` carries `--root <dir>`. The `Delivery responder` row
+then says that the full
 store refuses the daemon's lease, so `up` starts the daemon only once there is room. The bytes are
 the space account's own, as
 `$JS.API.INFO` reports them; the cap counts every account on the broker. A broker started without
