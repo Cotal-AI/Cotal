@@ -6710,7 +6710,8 @@ credential (`--local` only; the manager serves no run-migrate command). It print
 migration is admissible, every orphaned step with its verdict and code, and exits 0 on admissible
 and non-zero on not. An edited program that does not validate is refused before the replay, with
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
-migration is not reachable yet, and the report says so. `check` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
+migration is not reachable yet, and the report says so. A run ID with no record on the endpoint is refused
+`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. `check` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
 commit does and the check files nothing. `--timeout` sets the default
 limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`

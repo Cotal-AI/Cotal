@@ -780,6 +780,15 @@ let P = "";
   c("a commit-side override is refused by name",
     override instanceof Exited && ERRS.some((l) => l.includes("--discard-approvals") && l.includes("only checks")),
     override instanceof Error ? override.message.slice(0, 160) : ERRS);
+
+  // A run ID nothing records is refused as `run show` refuses it: by code, with the list as Next.
+  const unrecorded = "run-0123456789abcdef0123456789abcdef";
+  const unknownCheck = await wf(["check", unrecorded], { file: CHECKPOINT }).then(() => undefined, (e: Error) => e);
+  c("a check of a run ID nothing records is refused TARGET_NOT_FOUND, exit 2, with the run list as its Next",
+    isCommandFailure(unknownCheck) && unknownCheck.code === "TARGET_NOT_FOUND" && exitCode(unknownCheck.outcome, unknownCheck.code) === 2
+      && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${EP}; a run that was never started cannot be checked`
+      && unknownCheck.remedy === "list the recorded runs with cotal run",
+    unknownCheck instanceof Error ? unknownCheck.message : unknownCheck);
   } finally { process.exit = origExit; }
 }
 
@@ -800,7 +809,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 88;
+const DECLARED = 89;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
