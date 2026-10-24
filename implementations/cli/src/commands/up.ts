@@ -214,6 +214,7 @@ import {
   controllerStackApplies,
   recheckExistingStore,
   requestedStackMode,
+  requestsTls,
   stackUp,
   stackUpForegroundNotice,
   stackUpInterruptNotice,
@@ -412,6 +413,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem.problem}; nothing was started or written`, { remedy: hostProblem.remedy });
   const spaceTooLong = typeof args.values.space === "string" ? spaceNameTooLong(args.values.space) : undefined;
   if (spaceTooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${spaceTooLong}; nothing was started or written`, { remedy: `choose a space name of at most ${SPACE_NAME_MAX} characters` });
+  // A prepared or controller-owned root has no route that serves TLS, so any TLS input refuses here,
+  // once and naming the route that does, before the checks below send it from one TLS form to another.
+  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot();
+  if (!args.values.file && requestsTls(args.values) && !readMaintenanceJournal(tlsRoot)) controllerStackApplies(tlsRoot, (args.values.space as string | undefined) ?? folderSpace(), args.values);
   // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
   // checks the certificate against the address it names.
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
