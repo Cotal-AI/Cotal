@@ -33,7 +33,7 @@
  *     at the stack's own root and broker is stopped through, and neither leaves a registration.
  *  9. A store directory that also holds the user's files. After `up --store-dir` and `down`,
  *     `reset store`, `reset space` and their dry runs refuse CONFLICT naming those files, and the
- *     folder keeps them.
+ *     folder keeps them. Once that store path is a link, they refuse naming it and its target.
  * 10. A deleted folder. With a whole stack running, its folder is deleted. `status` marks the folder
  *     gone, `down --space --yes` from another folder stops every member by signal and removes the
  *     stack definitions, no member process is left, and another folder starts the same name.
@@ -46,7 +46,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -183,7 +183,7 @@ try {
     writeFileSync(foreign, "not a credential\n", { mode: 0o600 });
     const saveService = (name: string, creds: string) => {
       const file = join(keys, `${name}.json`);
-      writeFileSync(file, JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 }, credentialRef: { kind: "file", path: creds } }));
+      writeFileSync(file, JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: "/bin/sh", args: ["-c", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 }, credentialRef: { kind: "file", path: creds } }));
       return cli(root, "service", "add", name, "--file", file, "--space", space, "--json");
     };
     const saved = [saveService("minted", minted), saveService("foreign", foreign)];
@@ -368,6 +368,16 @@ try {
       check(`reset ${kind} ${mode} refuses CONFLICT, naming the files beside the store`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`${store} also holds notes.txt, photos`)), shown(reset));
     }
     check("the folder keeps the user's files and the store", existsSync(join(store, "notes.txt")) && existsSync(join(store, "photos")) && existsSync(join(store, "jetstream")));
+    // The recorded store path replaced by a link: each reset names the path and its target.
+    const moved = `${store}-real`;
+    renameSync(store, moved);
+    roots.push(moved);
+    symlinkSync(moved, store);
+    for (const kind of ["store", "space"]) for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", kind, space, mode, "--json");
+      check(`reset ${kind} ${mode} refuses CONFLICT, naming the linked store path and the directory it points to`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`the recorded store path ${store} is a link to ${moved}`)) && Boolean(reset.env.error.remedy?.includes(`cotal reset ${kind} ${space} --dry-run`)), shown(reset));
+    }
+    check("nothing is removed through the link", existsSync(join(moved, "notes.txt")) && existsSync(join(moved, "jetstream")));
   }
 
   // 10. A stack whose folder is deleted stops from another folder, and its name starts again.

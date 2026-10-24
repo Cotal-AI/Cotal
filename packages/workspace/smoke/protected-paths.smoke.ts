@@ -12,7 +12,7 @@
  */
 import { strict as nodeAssert } from "node:assert";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
@@ -229,7 +229,15 @@ try {
   const link = join(dir, "link");
   symlinkSync(grouped, link);
   refused(() => protectedLocalDirectory(link, "the path", local), /: .*\/link is a symbolic link$/,
-    "use a physical path owned by you or root, without symlinks", "a real symlink");
+    `use the physical path ${shellPath(realpathSync.native(grouped))}`, "a real symlink names the path it resolves to");
+  // A link above the checked folder: the remedy names that folder's own physical path.
+  const clean = join(dir, "clean");
+  mkdirSync(join(clean, "sub"), { recursive: true, mode: 0o700 });
+  chmodSync(clean, 0o700);
+  const above = join(dir, "above");
+  symlinkSync(clean, above);
+  refused(() => protectedLocalDirectory(join(above, "sub"), "the project root", local), /: .*\/above is a symbolic link$/,
+    `use the physical path ${shellPath(realpathSync.native(join(clean, "sub")))}`, "a link above the folder names the folder's physical path");
 
   // A credential keeps its owner-only rule: group write refuses before any group is considered.
   const creds = join(dir, "creds");

@@ -471,7 +471,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
         const provider = await loadServiceAdapter(declaredAdapter!, value.launch.options);
         hold.check();
         const plan = await adapterCall(() => provider.build(context), Math.min(10000, value.readiness.timeoutMs));
-        const validated = validateServiceDefinition({ ...value, launch: { type: "process", ...plan }, readiness: { type: "process", timeoutMs: value.readiness.timeoutMs } }, value.space);
+        const validated = validateServiceDefinition({ ...value, launch: { type: "process", ...plan }, readiness: { type: "process", timeoutMs: value.readiness.timeoutMs } }, value.space, true, true);
         if (validated.launch.type !== "process") throw new Error("invalid adapter launch plan");
         const executablePath = executable(validated);
         if (provider.declaration.stop !== "native" && commandIsCotalSupervisor([executablePath, ...validated.launch.args].join(" "))) throw new CommandFailure("refused", "UNSUPPORTED", "the direct-process adapter ABI cannot bypass native manager agent-impact guards");

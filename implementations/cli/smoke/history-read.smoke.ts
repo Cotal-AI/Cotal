@@ -351,6 +351,11 @@ try {
   check("with no channel named, it reads #general and names #ops as denied, quoting the grant",
     everyAgent.status === 4 && JSON.stringify(texts(everyAgent)) === JSON.stringify(["deploy started", "looks good", "deploy finished"]) &&
       (everyAgent.envelope?.warnings ?? []).some((w) => w.code === "CHANNELS_DENIED" && w.message.endsWith("; its history grant is #general")), shown(everyAgent));
+  const ungranted = join(home, "agent-none.creds");
+  writeFileSync(ungranted, await provisionAgent(provisioner, auth, newIdentity(), { lifecycleUid: mintLifecycleUid(), subscribe: [], allowSubscribe: [], allowPublish: ["general"] }), { mode: 0o600 });
+  const none = await run(["history", "general", "--json", "--creds", ungranted]);
+  check("an agent credential whose grant names no channel is refused with that grant, before any read names a subject",
+    none.status === 2 && none.envelope?.error?.code === "PERMISSION_DENIED" && none.envelope.error.message === `this credential may not read #general in ${space}: its history grant is no channel`, shown(none));
 
   // ── a write the broker refuses for the credential's grant applied nothing ───────────────────────
   // An observer credential may read but not write channel metadata or purge history. Each refusal

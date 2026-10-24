@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, readCredsFile, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
+import { authDir, brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 
 const credsFlag = { name: "creds", type: "string", value: "<file>", description: "report what this credential file may do, from its own claims; no broker is contacted" } as const satisfies FlagSpec;
@@ -15,8 +15,10 @@ type Grant = readonly string[] | "all";
 export interface WhoamiResult {
   readonly kind: "identity";
   readonly space: string;
-  readonly server: string;
-  /** `null` when no registration here names the server, so its auth mode is not known. */
+  /** `null` for a prepared space no `up` has started: it has no broker yet. */
+  readonly server: string | null;
+  /** `null` when no registration here names the server, so its auth mode is not known, and for a
+   *  prepared space, which no `up` has given a mode yet. */
   readonly mode: "open" | "auth" | "user" | null;
   readonly identity: {
     /** `open`: the broker authenticates nothing. `space-signer`: this machine holds the space's
@@ -63,6 +65,8 @@ export interface WhoamiCredentialResult {
   readonly dms: "all" | "own" | "none" | null;
 }
 
+const none = { principal: null, owner: null, actor: null, subject: null, loginExpiresAt: null, grant: null };
+
 /** `cotal whoami`: what this CLI's one-shot identity holds in the selected space. It reads the
  *  registry, the login cache and, where it is on this machine, the grant ledger; it connects to
  *  nothing, since a one-shot process has no session to report. With `--creds`, it reports what that
@@ -79,7 +83,9 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   try { t = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space }); }
   catch (error) {
     if (isMeshRegistryError(error)) throw registryFailure(error);
-    throw error;
+    const prepared = isWorkspaceTargetError(error) && error.code === "not-started" && v.server === undefined && !error.details.rootMissing ? error.details : undefined;
+    if (prepared?.space === undefined || prepared.root === undefined || hasUserAuthState(prepared.root, prepared.space, { readOnly: true })) throw error;
+    return writePrepared(presentation, prepared.space, prepared.root);
   }
   // A folder whose records name no space was given the held default only to report on it, so the
   // target names the folder and the space it assumed.
@@ -90,7 +96,6 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   const server = brokerAddressForDisplay(t.server);
   if (server === undefined) throw new CommandFailure("refused", v.server === undefined ? "SCHEMA_INVALID" : "USAGE_INVALID", "the server address cannot be parsed safely; the raw value was not printed", { target });
   const base = { kind: "identity" as const, space: t.space, server, mode: t.mode };
-  const none = { principal: null, owner: null, actor: null, subject: null, loginExpiresAt: null, grant: null };
   let result: WhoamiResult;
   // A `--server` this space is not registered at says nothing about the broker there, and whoami does
   // not contact it. The folder's trust for the space does not reach an address nothing records.
@@ -243,6 +248,20 @@ function credentialView(r: WhoamiCredentialResult): Report {
   return { sections: [{ title: "Credential", blocks: [{ kind: "fields", rows }, { kind: "lines", lines: [hint] }] }] };
 }
 
+/** A prepared space no `up` has started has no broker and no mode yet, so whoami reports the identity
+ *  its folder's trust gives it: the space signer when the root holds it, else none. */
+function writePrepared(presentation: Presentation, space: string, root: string): void {
+  recordOperationSpace(space);
+  let signer: boolean;
+  try { signer = loadSpaceAuth(authDir(root), space) !== undefined; }
+  catch (e) { throw new MeshTargetError("unreadable-auth", (e as Error).message, { space, root }); }
+  const base = { kind: "identity" as const, space, server: null, mode: null };
+  const result: WhoamiResult = signer
+    ? { ...base, identity: { kind: "space-signer", ...none }, read: "all", post: "all", dms: true, capabilities: "all" }
+    : { ...base, identity: { kind: "no-credential", ...none }, read: [], post: [], dms: false, capabilities: [] };
+  writeResult(presentation, { command: "whoami", target: { space, root }, result }, (r) => whoamiView(r, false, root));
+}
+
 const grantText = (g: Grant | null, empty: string): Cell =>
   g === null ? { text: "unknown", tone: "waiting" } : g === "all" ? "all" : g.length ? g.map((x) => (x === ">" ? "all" : x)).join(", ") : { text: empty, tone: "hint" };
 
@@ -254,11 +273,11 @@ const KIND_TEXT: Record<WhoamiResult["identity"]["kind"], string> = {
   unknown: "unknown: this address is not registered here, and whoami does not contact the broker",
 };
 
-function whoamiView(r: WhoamiResult, assumed: boolean): Report {
+function whoamiView(r: WhoamiResult, assumed: boolean, preparedRoot?: string): Report {
   const id = r.identity;
   const rows: (readonly [string, Cell])[] = [
     ["space", { text: r.space, tone: "selected" }],
-    ["server", r.server],
+    ["server", r.server ?? { text: "not started", tone: "waiting" }],
     ["identity", id.kind === "user" && !id.subject ? "not signed in" : KIND_TEXT[id.kind]],
   ];
   if (id.kind === "user") {
@@ -269,7 +288,8 @@ function whoamiView(r: WhoamiResult, assumed: boolean): Report {
   const hints: Cell[] = [];
   if (id.kind === "user" && !id.subject) hints.push({ text: "sign in with `cotal login`", tone: "hint" });
   else if (id.grant === "not-granted") hints.push({ text: "the space's operator grants this identity with `cotal actor grant cli`", tone: "hint" });
-  if (id.kind === "no-credential") hints.push({ text: "commands against this space need `--creds <file>`", tone: "hint" });
+  if (preparedRoot !== undefined) hints.push({ text: `this space is prepared and not started; start it with \`cotal up\` in ${preparedRoot}`, tone: "hint" });
+  else if (id.kind === "no-credential") hints.push({ text: "commands against this space need `--creds <file>`", tone: "hint" });
   const identity: Section = { title: "Identity and access", blocks: [{ kind: "fields", rows }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] };
   // The heading names the space the folder was given; the line under it says it was only assumed.
   if (!assumed) return { sections: [identity] };
