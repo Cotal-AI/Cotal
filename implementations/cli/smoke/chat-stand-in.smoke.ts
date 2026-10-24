@@ -20,7 +20,10 @@
  *   - a disconnected native session whose endpoint warns that the session's consumer is gone ends
  *     itself with that reason, and the close exits 5;
  *   - what the native session reports before its first subscriber, such as its own presence
- *     `joined`, reaches that subscriber once.
+ *     `joined`, reaches that subscriber once;
+ *   - a full inbox reports its drops as one `inbox` gap with their total: a replay's when the front
+ *     end subscribes, later ones a second later or when `--stdio` input ends, and it leaves the
+ *     direct messages it lets go unacked.
  * Admission, retirement, delivery and every broker behavior are NOT covered here.
  *
  * Run: pnpm smoke:chat-stand-in
@@ -34,11 +37,12 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 import type { CotalEndpoint } from "@cotal-ai/core";
 import { publish } from "../src/chat/controller.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
+import { MAX_BUFFER } from "../src/chat/engine.js";
 import { NativeChatSession } from "../src/chat/native-session.js";
 import { parseRecipient } from "../src/chat/picker.js";
 import { runPlain } from "../src/chat/plain.js";
 import type { AdmittedChatSession, CloseReport, SessionEvent, SessionIdentity } from "../src/chat/session.js";
-import { dispatch, parseRequestLine } from "../src/chat/stdio.js";
+import { StdioParticipant, dispatch, parseRequestLine } from "../src/chat/stdio.js";
 import { ENDING_NOTICE_MS, closeSummary } from "../src/chat/view.js";
 import { shownTime } from "../src/lib/shown-time.js";
 import { closeExitCode } from "../src/commands/chat.js";
@@ -349,6 +353,52 @@ if (mode === "plain" || mode === "stdio") {
     const joined = (events: SessionEvent[]) => events.map((e) => e.type === "presence" ? `${e.change} ${e.row.name}` : e.type);
     check("the first subscriber gets the session's own joined from before it subscribed, then what follows", JSON.stringify(joined(first)) === JSON.stringify(["joined me", "joined peer"]), joined(first));
     check("...and a later subscriber gets only what follows it", second.length === 0, joined(second));
+  }
+
+  console.log("11. a full inbox reports its drops as one gap with their total");
+  {
+    const opened = () => {
+      const endpoint = Object.assign(new EventEmitter(), { stop: async () => {} });
+      const session = new NativeChatSession({ endpoint: endpoint as unknown as CotalEndpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), reopen: (channel) => `cotal chat ${channel}` });
+      let acks = 0;
+      const deliver = (n: number, kind: "channel" | "dm") => {
+        for (let i = 1; i <= n; i++)
+          endpoint.emit("message", { id: `${kind}${i}`, ts: i, space: "front-end-space", from: { id: "u_a.alice", name: "alice" }, ...(kind === "channel" ? { channel: "general" } : {}), parts: [{ kind: "text", text: `msg-${i}` }] },
+            { ack: () => acks++, nak() {}, durable: true }, { historical: kind === "channel", kind });
+      };
+      return { session, deliver, acks: () => acks };
+    };
+    const gaps = (events: SessionEvent[]) => events.flatMap((e) => e.type === "gap" ? [`${e.scope}: ${e.reason}`] : []);
+    // A replay past the bound before the front end subscribes.
+    const replay = opened();
+    replay.deliver(MAX_BUFFER + 100, "channel");
+    const seen: SessionEvent[] = [];
+    const unsubscribe = replay.session.subscribe((e) => seen.push(e));
+    const atSubscribe = gaps(seen);
+    unsubscribe();
+    check(`a replay of ${MAX_BUFFER + 100} is one gap when the front end subscribes, counting the 100 dropped and naming no direct messages`,
+      JSON.stringify(atSubscribe) === JSON.stringify(["inbox: buffer full: 100 channel message(s) dropped"]) && gaps(seen).length === 1, { atSubscribe, all: gaps(seen) });
+    check("...and the dropped channel copies were acked", replay.acks() === 100, replay.acks());
+    // Direct messages past the bound while subscribed: the gap waits a second for more.
+    const live = opened();
+    const heard: SessionEvent[] = [];
+    live.session.subscribe((e) => heard.push(e));
+    live.deliver(MAX_BUFFER + 3, "dm");
+    const before = gaps(heard).length;
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await live.session.close();
+    check("direct messages past the bound are one gap a second later, left for broker redelivery",
+      before === 0 && JSON.stringify(gaps(heard)) === JSON.stringify(["inbox: buffer full: 3 direct message(s) left for broker redelivery"]), { before, gaps: gaps(heard) });
+    check("...and none of them was acked", live.acks() === 0, live.acks());
+    // Drops just before --stdio input ends are reported before the end record.
+    const ending = opened();
+    const records: string[] = [];
+    const participant = new StdioParticipant(ending.session, (line) => records.push(line));
+    ending.deliver(MAX_BUFFER + 5, "channel");
+    await participant.endOfInput();
+    const types = records.map((line) => (JSON.parse(line) as { type: string; reason?: string }));
+    check("--stdio writes the drops' gap before its end record when input ends within the second",
+      JSON.stringify(types.map((r) => r.type === "gap" ? r.reason : r.type)) === JSON.stringify(["buffer full: 5 channel message(s) dropped", "end"]), types);
   }
 
   finish();
