@@ -2578,7 +2578,7 @@ error. Only an absent directory is an empty registry. The folder of prepared spa
 reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its place is named as
 `<path> is a file, not a folder`, with the step that moves it aside. A record in it that does not parse
 or is not a prepared space record refuses only a command about the space its file is named for, such
-as `use <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
+as `use <space>`, and names `cotal space forget <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
 file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
 `meshes.unreadable` and exits 4. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
