@@ -182,12 +182,14 @@
   "cli:actor--allow-publish": "current:auth grant --allow-publish",
   "cli:actor--allow-subscribe": "current:auth grant --allow-subscribe",
   "cli:actor--full": "current:auth grant --full",
+  "cli:actor--json": "current:actor --json",
   "cli:actor--label": "current:auth grant --label",
   "cli:actor--owner": [
    "current:auth grant --owner",
    "current:auth revoke --owner"
   ],
   "cli:actor--parent": "current:auth grant --parent",
+  "cli:actor--plain": "current:actor --plain",
   "cli:actor--role": "current:auth grant --role",
   "cli:actor--scope": "current:auth grant --scope",
   "cli:actor--space": "current:auth",
@@ -1171,6 +1173,7 @@
   "cli:who--space": "current:who",
   "cli:who--waiting": "current:who --waiting",
   "cli:whoami": "current:whoami",
+  "cli:whoami--creds": "current:whoami --creds",
   "cli:whoami--json": "current:whoami --json",
   "cli:whoami--plain": "current:whoami --plain",
   "cli:whoami--server": "current:whoami",
