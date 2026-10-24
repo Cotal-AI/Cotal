@@ -342,6 +342,8 @@ registered with `cotal space add` or a signed-in catalog, whose root must be `--
 the space's `harness` preference, runs the application's setup actions, and reconciles Cotal's
 skills. When you have no `harness` preference of your own, setup also records the application as
 yours, so a space you prepare later with `space create` uses it. A value you already set stays.
+A preferences folder another account could write is refused with `PERMISSION_DENIED`, exit 2, before
+anything is written (see [Preferences](config.md#preferences)).
 The result names the next command: `cotal up` in the project for a local space, or
 `cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
 setup wrote.
@@ -2071,7 +2073,8 @@ that it was never stopped cleanly. A prepared space is forgotten the same way, a
 that `space create` made stays. Forgetting the selected space clears the selection. Forget also
 removes the per-space preferences saved under that name, so a later space with the same name starts
 without them, and the receipt lists each removed key and value so you can set them again. If that
-removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it.
+removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it,
+after the `chmod` when the preferences folder is one another account could write.
 Forget also removes the stack definitions `cotal up` saved for the space at its root, with their
 stopped instance records, so another folder can start a stack under the same name. The result lists
 them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
@@ -5397,8 +5400,9 @@ Setting a value that is already saved, or
 unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
 with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
 refused with `CONFLICT`. A preferences folder you cannot write is refused with `PERMISSION_DENIED`
-(exit 2), naming the folder, before anything is changed. So is a linked `preferences.json`, which
-`config set` never replaces (see [Preferences](config.md#preferences)).
+(exit 2), naming the folder, before anything is changed. So is a folder another account could write,
+with the `chmod` that fixes it, and a linked `preferences.json`, which `config set` never replaces
+(see [Preferences](config.md#preferences)).
 
 `result.settings` (or `result.setting` for `get`) holds each key's `value`, its `winner`
 (`{source, name, value}`, where `source` is `environment`, `space`, `user` or `default`) and the
