@@ -637,10 +637,10 @@ try {
     check("rig: a write the store refused for permission made the broker disable JetStream",
       refused !== undefined && store?.state === "write-failed" && /permission denied$/.test(store.cause ?? "") && store.jetStreamDisabled === true, { refused: String(refused), store });
     const managerPid = pidOf(space, "stack-manager");
-    const remedy = `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down; give the account the broker runs as write access to ${storeDir} again, then run cotal up`;
+    const remedy = `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down; make ${storeDir} writable by this account again, as chmod -R u+w ${storeDir} does, then run cotal up`;
     const plain = cli(root, "status", "--plain");
-    check("status leads Next with the manager's SIGTERM, then down and up after write access is restored",
-      /^Next\n +kill -TERM \d+ /m.test(plain.stdout) && plain.stdout.includes(`kill -TERM ${managerPid}`) && plain.stdout.includes(`write access to ${storeDir} again first`), plain.stdout);
+    check("status leads Next with the manager's SIGTERM, then down, and up once the store is writable again",
+      /^Next\n +kill -TERM \d+ /m.test(plain.stdout) && plain.stdout.includes(`kill -TERM ${managerPid}`) && plain.stdout.includes(`First make ${storeDir} writable by this account again, as chmod -R u+w ${storeDir} does; then up starts the broker again with the history it kept`), plain.stdout);
     const preview = cli(root, "down", "--dry-run", "--json");
     check("down --dry-run predicts the refusal", preview.status === 0 && (preview.env?.result?.blockedBy as { code?: string } | null)?.code === "DEPENDENCY_UNAVAILABLE", shown(preview));
     const down = cli(root, "down", "--yes", "--json");
