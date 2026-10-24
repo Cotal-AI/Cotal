@@ -65,13 +65,23 @@ function runBlocks(runs: readonly DeletionRun[], removed: boolean): Block[] {
  *  itself, so it is not counted. A space registered for another machine's broker is not checked. */
 function liveStackRefusal(entry: MeshEntry, space: string, preview = false): CommandFailure | undefined {
   if (entry.origin !== "up") return undefined;
-  let controller: boolean, users: string[];
+  let controller: boolean, users: string[], services: { definition: string; instanceId: string }[];
   try {
-    ({ controller, members: users } = runningStackMembers(entry.root, space));
+    ({ controller, members: users, services } = runningStackMembers(entry.root, space));
   } catch { return new CommandFailure("refused", "TARGET_UNAVAILABLE", "this space's local service and process records could not be read, so a running stack was not ruled out; no broker was contacted", { target: { space, root: entry.root } }); }
   if (!users.length) return undefined;
   // A preview reads the broker before it reports this, so only the apply says no broker was contacted.
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${users.join(", ")}) and uses these streams${preview ? "" : "; no broker was contacted and nothing was deleted"}`, { target: { space, root: entry.root, running: users }, remedy: controller
+  const deleted = preview ? "" : "; no broker was contacted and nothing was deleted";
+  if (services.length) {
+    // `down` refuses while another service of the space runs, so each one is stopped first. With
+    // only the broker left after that, the delete itself applies.
+    const stack = users.filter((name) => !services.some((service) => service.definition === name));
+    const stops = services.map((service) => `cotal service stop ${service.definition} --instance ${service.instanceId} --space ${space} --yes`).join("; ");
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `services of this space still run here (${users.join(", ")}) and use these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: stack.length
+      ? `stop each service with ${stops}, then stop the stack with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
+      : `stop each service with ${stops}, then run cotal space delete ${space} again` });
+  }
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${users.join(", ")}) and uses these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: controller
     ? `stop it with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
     : `stop it with cotal down from ${entry.root}, then remove its stored streams with cotal clean store --force there` });
 }
@@ -336,6 +346,18 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   });
   if (fingerprint(initial) !== fingerprint(refreshed))
     throw new CommandFailure("refused", "CONFLICT", "the native streams or presence identities changed since the reviewed impact; no delete request was submitted", { target: { space: name }, remedy: "inspect the new impact with space delete <name> --dry-run before confirming again" });
+  // A typed confirmation was given for the message counts it showed, so a message stored or removed
+  // while it waited refuses too.
+  if (!yes) {
+    const reviewed = new Map(initial.result.streams.map((stream) => [stream.name, stream.messages]));
+    const changed = refreshed.result.streams.filter((stream) => reviewed.get(stream.name) !== stream.messages);
+    const count = (messages: number | null | undefined) => messages === null || messages === undefined ? "an unknown number of messages" : `${messages} message${messages === 1 ? "" : "s"}`;
+    if (changed.length)
+      throw new CommandFailure("refused", "CONFLICT", `the message counts changed while the confirmation waited (${changed.map((stream) => `${stream.name} holds ${count(stream.messages)}, ${count(reviewed.get(stream.name))} when reviewed`).join("; ")}); no delete request was submitted`, {
+        target: { space: name, changed: changed.map((stream) => ({ name: stream.name, reviewed: reviewed.get(stream.name) ?? null, messages: stream.messages })) },
+        remedy: `review the new impact and confirm it with cotal space delete ${name}`,
+      });
+  }
   // A stack started while the impact was reviewed refuses here too.
   const started = liveStackRefusal(refreshed.entry, name);
   if (started) throw started;

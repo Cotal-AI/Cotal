@@ -808,7 +808,10 @@ and the address is not `127.0.0.1`, cannot be reached and pins no bind host. `up
 `CONFLICT` before anything starts and names `cotal up --host <host>` with the address's own host,
 which replaces the recorded bind host once the broker is stopped. Legacy-only options refuse rather than switching launchers.
 `up -f`, recovery and existing legacy roots retain their native paths; those paths refuse the
-new JSON/plain flags. A legacy root is one with no stack journal that is neither prepared nor
+new JSON/plain flags. `up -f` checks its manifest before it refuses them. A manifest that does not
+validate is refused `SCHEMA_INVALID`, exit 1, naming each problem, and a file it cannot read is
+refused `USAGE_INVALID`, exit 1. A valid manifest is refused `UNSUPPORTED`, exit 2, and the remedy
+names only the flag to omit. A legacy root is one with no stack journal that is neither prepared nor
 registered for the controller, such as a folder an earlier release started and a normal `down` then
 unregistered. Plain `cotal up` there starts it again on its retained launcher, with its identity,
 store and history. Its `down` drops the registration that kept the broker address, so with no
@@ -2368,14 +2371,20 @@ still runs here, before any broker connection. On a controller root that is any 
 the space other than its broker, and on a legacy root any recorded daemon other than the broker.
 Deleting the streams under them leaves a stack that can neither start nor stop. The refusal names
 the running services and `cotal down`, then `cotal reset store <space> --yes` on a controller root or
-`cotal clean store --force` on a legacy one to remove the stored streams. The dry-run shows the same
-refusal as a warning.
+`cotal clean store --force` on a legacy one to remove the stored streams. When a service that is not
+one of the stack's members runs, such as one added with `cotal service add`, `cotal down` refuses
+too, so the refusal first names `cotal service stop <name> --instance <id> --space <space> --yes`
+for each one. With only the broker left after that, it names the delete again in place of
+`cotal down`. The dry-run shows the same refusal as a warning.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. A script supplies the exact positional name with `--yes`;
 `--json` without `--yes` refuses before a connection. After confirmation the command
 reads the broker again and refuses if the stream states, transfer names, presence
-identities, registration, trust or broker identity changed. It opens a separately
+identities, registration, trust or broker identity changed. After a typed confirmation it also
+refuses `CONFLICT`, exit 2, when a stream's message count differs from the impact it showed, as
+when a message is posted while the confirmation waits; the refusal names each changed count and
+deletes nothing. It opens a separately
 minted exact-target connection, checks each stream state again before the first delete,
 and submits one deletion at a time. A native acknowledgement is reported as deleted;
 prior absence is separate, and the receipt lists only the groups that have a name. It then checks each target's stream info and enumerates
@@ -2426,10 +2435,10 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh. Inside a project whose root has one
 registered or prepared space other than the selection, the command targets that space, as it does
-with nothing selected, and the note under its `Mesh:` heading says the selection applies outside the
-folder. Inside a project whose root has several spaces, none of them the selection, the command
-targets the selection. Before it acts, it warns on stderr and in its JSON `warnings` with
-`SELECTION_NOT_FOLDER_SPACE`, naming the folder's spaces and `--space <space>`.
+with nothing selected, and the note under its `Mesh:` heading, a refusal's included, says the
+selection applies outside the folder. Inside a project whose root has several spaces, none of them
+the selection, the command targets the selection. Before it acts, it warns on stderr and in its JSON
+`warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming the folder's spaces and `--space <space>`.
 An empty `--space` value, such as `--space "$S"` with `S` unset, is refused with `USAGE_INVALID`,
 exit 1, by every command that takes `--space`, before anything is read or written. It never falls
 back to the selection.
@@ -3863,7 +3872,7 @@ selected space's local `.cotal/agents` catalog without connecting, refreshing a 
 or seeding connectors. `--space` and `--server` select the same root used by launch. A prepared
 space has an offline catalog before it is started. Failed target resolution never falls back
 to the current directory: a `--server` that no registration names reads the project in this
-folder, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing. With
+folder, under the space prepared there, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing. With
 no space selected and no project here, the refusal says so. With `--on <manager>`, list, show and
 create work on that manager's catalog instead, and edit and remove refuse there, as
 [Personas on an exact manager](#personas-on-an-exact-manager) describes. `--announce <channel>`
@@ -6761,9 +6770,11 @@ A `team boot` in a root whose stack is up, with no `cotal down` since, refuses w
 `cotal down` before the boot.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
 attempted. Its broker inputs must be recorded, every applicable member must have its original
-settled stopped record, and no supervisor, retained custody or earlier team boot may remain. The
-broker requires its kernel-exit receipt. Auth and delivery use their settled process stop and
-released custody; that is not proof of credential, lease or authority retirement. A generic
+settled stopped record, and no supervisor, retained custody or earlier team boot may remain. A
+stack that an earlier team boot started refuses with `LIFECYCLE_BLOCKED`, and its Next names
+`cotal up` in the root, which starts that stack again, and `cotal team show <id>` with each earlier
+boot's ID. The broker requires its kernel-exit receipt. Auth and delivery use their settled process
+stop and released custody; that is not proof of credential, lease or authority retirement. A generic
 process stop now records a `process-exit` receipt on the stopped instance when that stop signalled
 the pinned process and saw it exit. `service stop --json` and `service status --json` expose it as
 `processStop`, including the stop request, original process identity, signal and observation time.

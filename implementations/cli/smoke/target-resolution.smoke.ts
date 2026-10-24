@@ -4,7 +4,9 @@
  * terminal the command asks which space, uses the answer for that one run and leaves the selection
  * alone; a script, `--json` and `--no-input` refuse with `TARGET_AMBIGUOUS` and the remedy apart from
  * the message. A manifest's declared space is the target of `up -f` and `spawn -f`, so a `--space`
- * that names another space is refused before anything is written. In a folder whose records name no
+ * that names another space is refused before anything is written. `up -f --json` checks its manifest
+ * first: one that does not validate refuses `SCHEMA_INVALID` with its problem, and a valid one refuses
+ * `UNSUPPORTED`, naming only `--json` to omit. In a folder whose records name no
  * space, as after `space forget`, `whoami` and `spawn --dry-run` keep exit 0 under the held default's
  * heading, say it was assumed, and name the folder and that space in their target.
  *
@@ -144,6 +146,15 @@ const QUESTION = "Which one?";
   const away = run(["who"]);
   check("control: the selection is the target in its own root and from a folder with no project, with no note",
     [inAlpha, away].every((r) => /\bin alpha\b/.test(r.stdout + r.stderr) && !/this folder's space/.test(r.stdout + r.stderr)), [inAlpha, away].map(shown));
+  // A folder prepared for its own space and not started yet refuses there, under the same note.
+  const deltaPrepared = join(home, "delta");
+  mkdirSync(deltaPrepared);
+  const prepared = run(["space", "create", "delta"], deltaPrepared);
+  const unstarted = run(["who"], deltaPrepared);
+  check("a refusal in a folder prepared for another space keeps the note under its heading",
+    prepared.status === 0 && unstarted.status === 2 && /TARGET_UNAVAILABLE/.test(unstarted.stderr) &&
+      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
+  run(["space", "forget", "delta"], deltaPrepared);
   // A root with several spaces, none of them selected, keeps the selection and warns first.
   recordMesh({ space: "gamma", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const NOTE = `this targets the selected space "alpha", not this folder's spaces "beta", "gamma"; pass --space <space> to target one of them`;
@@ -163,7 +174,7 @@ const QUESTION = "Which one?";
   check("in a prepared space's folder, before its first up, that space is the target and the refusal is its own",
     envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
       envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
-      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout + inDeltaText.stderr), { json: shown(inDelta), text: shown(inDeltaText) });
+      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout), { json: shown(inDelta), text: shown(inDeltaText) });
   // The listing, `space show` and `use` there name it as the target too.
   const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
   check("in that folder space marks it as this folder's, and space show and use name it as the target there",
@@ -209,6 +220,14 @@ const QUESTION = "Which one?";
     const contradicted = run(["up", "-f", "user.yaml", "--open"], fresh);
     check("up -f refused after its lock, for a flag the manifest contradicts, leaves the folder as it found it",
       contradicted.status === 1 && /--open contradicts this manifest's broker\.auth/.test(contradicted.stderr) && entries() === "list.yaml,user.yaml", { ...shown(contradicted), entries: entries() });
+    // up -f always takes the retained launcher, so --json is refused after its manifest is checked.
+    const invalidJson = run(["up", "-f", "list.yaml", "--dry-run", "--json"], fresh);
+    check("up -f --dry-run --json with a manifest that does not validate refuses SCHEMA_INVALID, exit 1, naming the problem",
+      invalidJson.status === 1 && envelope(invalidJson)?.error?.code === "SCHEMA_INVALID" && /list\.yaml:4:\d+: [^;]+ \(at broker\.servers\)$/.test(envelope(invalidJson)?.error?.message ?? "") &&
+        envelope(invalidJson)?.target?.issues?.map((issue: { path: string[] }) => issue.path.join(".")).join() === "broker.servers" && entries() === "list.yaml,user.yaml", { ...shown(invalidJson), entries: entries() });
+    const validJson = run(["up", "-f", "user.yaml", "--dry-run", "--json"], fresh);
+    check("up -f --dry-run --json with a valid manifest refuses UNSUPPORTED, exit 2, naming only the flag to omit",
+      validJson.status === 2 && envelope(validJson)?.error?.code === "UNSUPPORTED" && envelope(validJson)?.error?.remedy === "omit --json" && entries() === "list.yaml,user.yaml", { ...shown(validJson), entries: entries() });
     const json = run(["up", "--json", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("up --json on the retained launcher refuses UNSUPPORTED, exit 2, and leaves the folder as it found it",
       json.status === 2 && envelope(json)?.error?.code === "UNSUPPORTED" && entries() === "list.yaml,user.yaml", { ...shown(json), entries: entries() });
