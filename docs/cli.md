@@ -277,7 +277,7 @@ partway, so check what it did before you retry. A reader that closes the output 
 does, ends the command quietly with the status it had already set, or 0. A command that follows a
 stream, such as `watch`, `history --follow`, `console` or `channel members --follow`, notices the
 closed reader at its next line, so on a quiet mesh it runs until a message arrives or it is
-interrupted. Ctrl-C ends it at once: `watch` exits 130, and the other three exit 0.
+interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above.
 
 ## Commands
 
