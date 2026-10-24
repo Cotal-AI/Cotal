@@ -215,8 +215,14 @@ const QUESTION = "Which one?";
   const listedAway = run(["space", "--json"]), usedAway = run(["use", "--json"]);
   check("control: from a folder with no project space and use name no folder space",
     envelope(listedAway)?.result?.folder === null && envelope(usedAway)?.result?.folder === null, { listed: shown(listedAway), used: shown(usedAway) });
-  removePreparedSpace("delta");
+  // With nothing selected, a bare space show there still shows the folder's space, as a command there targets it.
   clearCurrent();
+  const shownUnselected = run(["space", "show", "--json"], delta), shownUnselectedText = run(["space", "show"], delta), shownAway = run(["space", "show", "--json"]);
+  check("with nothing selected, a bare space show in that folder shows delta with no note, and away from any project it refuses",
+    shownUnselected.status === 0 && envelope(shownUnselected)?.result?.space === "delta" && /^space: +delta$/m.test(shownUnselectedText.stdout) && !/this folder's space/.test(shownUnselectedText.stdout) &&
+      shownAway.status === 2 && envelope(shownAway)?.error?.code === "TARGET_NOT_FOUND" && getCurrent() === undefined,
+    { here: shown(shownUnselected), text: shown(shownUnselectedText), away: shown(shownAway) });
+  removePreparedSpace("delta");
 }
 
 // ── A manifest's space is its target ────────────────────────────────────────────────────────────────

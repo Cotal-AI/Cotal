@@ -5,6 +5,7 @@ import {
   brokerAnswers,
   findMesh,
   findPreparedSpace,
+  folderSpace,
   folderSpaceOverSelection,
   getCurrent,
   isMeshRegistryError,
@@ -163,8 +164,9 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     if (rest.length > 1) throw usage("usage: cotal space show [<name>]");
     const current = getCurrent() ?? null;
     // Without a name it shows the space a command without --space targets here.
-    const folder = rest[0] === undefined ? folderSpaceOverSelection(process.cwd(), current) : undefined;
-    if (folder !== undefined && current !== null) noteFolderSpace(folder, current);
+    // With no name it shows what a command without `--space` targets: this folder's space, selected or not.
+    const folder = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
+    if (folder !== undefined && current !== null && folder !== current) noteFolderSpace(folder, current);
     const name = rest[0] ?? folder ?? current;
     if (name === null)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });

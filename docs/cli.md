@@ -2390,7 +2390,7 @@ read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 `recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
-so is a bare `space show` with nothing selected. Each entry under `prepared` has `space`, `root`,
+so is a bare `space show` outside a project with nothing selected. Each entry under `prepared` has `space`, `root`,
 `preparedAt`, `current`, `rootMissing`, which is true when its project folder no longer exists,
 `state` and `lastOperation`. `state` is `prepared` for a space that never started, `stopped` for one
 whose stack ran and was stopped, and `unsettled` when its last `up` or `down` recorded no outcome.
