@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -49,6 +49,8 @@ import {
   type ServiceDefinitionInput,
   type UserAuthInfo,
   unparsableDaemonCreds,
+  loopbackListeners,
+  readProcessCommand,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
@@ -485,6 +487,23 @@ function reusedWithoutJetStream(caught: unknown, brokerReused: boolean, root: st
   return jetStreamDisabledRefusal(disabled, root, space, "up cannot check the space's streams on it", "its running members were left as they are", { root, space }, manager?.process?.pid);
 }
 
+/** What holds a stopped stack's recorded broker address, as bare up's own bind check finds it, with
+ *  the listening processes of this account named. Undefined while the address is free, could not be
+ *  checked, or this stack's broker runs there. */
+async function recordedAddressHeld(space: string, server: string): Promise<{ says: string; frees: string } | undefined> {
+  const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
+  if (brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running") return undefined;
+  const bindError = await listenerBindError(server);
+  if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return undefined;
+  const { host, port } = brokerListenAddress(server);
+  const held = addressHolder("that address", host, port);
+  const holders = loopbackListeners(server).map((pid) => {
+    const command = readProcessCommand(pid);
+    return command.kind === "command" ? `${pid} (${basename(command.command.split(" ")[0]!)})` : String(pid);
+  });
+  return holders.length ? { says: `${held.says}, where process ${holders.join(", ")} of this account listens`, frees: held.frees } : held;
+}
+
 /** The running broker of an unregistered space: what an up stopped before registration leaves. */
 function strandedBroker(space: string): ServiceInstance | undefined {
   if (findMesh(space)) return undefined;
@@ -599,8 +618,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const recordedTarget = { root, space, recorded: { space: previous?.journal.space, server: previous?.journal.server }, requested: { space, server: request.server } };
   if (previous && previous.journal.space !== space)
     throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded for space ${previous.journal.space}, and this up asked for ${space}; it was not rebound`, { target: recordedTarget, remedy: `run bare cotal up from ${root} to start ${previous.journal.space}` });
-  if (previous && canonicalServer(previous.journal.server) !== canonicalServer(request.server))
-    throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded at ${previous.journal.server}, and this up asked for ${request.server}; a recorded stack is not moved to another address`, { target: recordedTarget, remedy: `run bare cotal up from ${root} to start it at ${previous.journal.server}` });
+  // No command moves a stack that ran to another address. While another program holds the recorded
+  // one, bare up refuses too, so the refusal names that holder rather than sending the operator there.
+  if (previous && canonicalServer(previous.journal.server) !== canonicalServer(request.server)) {
+    const held = await recordedAddressHeld(space, previous.journal.server);
+    throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded at ${previous.journal.server}, and this up asked for ${request.server}; a recorded stack is not moved to another address${held ? `, and ${held.says}` : ""}`, { target: recordedTarget, remedy: held ? `${held.frees}, then run bare cotal up from ${root}; no command moves a stack that ran to another address, so it starts only at ${previous.journal.server}` : `run bare cotal up from ${root} to start it at ${previous.journal.server}` });
+  }
   // The broker service's own address rules run before anything is written, so an address it would
   // refuse never becomes this root's recorded broker address.
   brokerListenAddress(request.server);
