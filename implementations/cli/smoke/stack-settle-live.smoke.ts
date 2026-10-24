@@ -240,6 +240,19 @@ const fillStore = async (root: string, space: string): Promise<unknown> => {
   return refused;
 };
 
+/** How many messages `channel` holds, read in this process as `history` counts them, over a
+ *  provisioner credential, which may read the stream's state. A CLI read of 900 KB messages prints
+ *  more than a child's output buffer takes. */
+const channelMessages = async (root: string, space: string, channel: string): Promise<number | undefined> => {
+  const auth = (await getSpaceAuth(workspaceSecretStore(root), space))!;
+  const id = newIdentity();
+  const reader = new CotalEndpoint({ space, servers: findMesh(space)!.server, creds: await mintCreds(auth, id, "provisioner"), card: { id: id.id, name: "counter", kind: "endpoint" }, consume: false, watchChannels: false, watchPresence: false, registerPresence: false });
+  reader.on("error", () => {});
+  await reader.start();
+  try { return (await reader.listChannels()).find((row) => row.channel === channel)?.messages; }
+  finally { await reader.stop().catch(() => {}); }
+};
+
 process.on("exit", () => {
   for (const pid of owned) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
   rmSync(home, { recursive: true, force: true });
@@ -583,7 +596,7 @@ try {
     check("up with a 70 MB cap starts", up.status === 0, shown(up));
     const refused = await fillStore(root, space);
     check("rig: the broker refuses a publish once the store is over its cap", (refused as { code?: unknown } | undefined)?.code === 10023, String(refused));
-    const before = (cli(root, "history", "general", "--limit", "500", "--json").env?.result?.items as unknown[] | undefined)?.length;
+    const before = await channelMessages(root, space, "general");
     const manager = pidOf(space, "stack-manager");
     if (manager !== null) process.kill(manager, "SIGTERM");
     check("rig: the manager exits on SIGTERM", manager !== null && await until(() => !alive(manager), 30_000), manager);
@@ -593,7 +606,7 @@ try {
     const again = cli(root, "up", "--max-file-store", "134217728", "--json");
     track(space);
     check("up with a larger cap right after waits out that lease and starts every member", again.status === 0 && again.env?.outcome === "ok", shown(again));
-    const after = (cli(root, "history", "general", "--limit", "500", "--json").env?.result?.items as unknown[] | undefined)?.length;
+    const after = await channelMessages(root, space, "general");
     check("the history is kept", typeof before === "number" && before > 0 && after === before, { before, after });
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
