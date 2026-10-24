@@ -357,7 +357,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
-  if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the address the local broker listens on, for example ${serverExample(String(args.values.server))}`);
+  if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server))}`);
   // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
   // before the controller stack writes its journal or trust.
   const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
@@ -404,9 +404,9 @@ function assertUpRootWritable(root: string): void {
 }
 
 /** Why `--server` cannot be the address a local broker listens on, or undefined when it can. Both
- *  launch routes need one nats:// or tls:// URL with a host and a TCP port, and without this check
- *  a typo reached their first write. The message never repeats the value, which may carry a
- *  credential. */
+ *  launch routes need one nats:// or tls:// URL with an IP address and a TCP port, and without this
+ *  check a typo reached their first write. The message names at most the host, never the whole
+ *  value, which may carry a credential. */
 function upServerProblem(server: string): string | undefined {
   let url: URL;
   try { url = new URL(server); } catch { return "--server is not a URL"; }
@@ -418,6 +418,8 @@ function upServerProblem(server: string): string | undefined {
   if (!url.port) return "--server names no port";
   if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
   if (url.hostname.startsWith("[")) return IPV6_UNSERVED("--server");
+  // The broker reports its listener by IP address, which is how both launch routes find it ready.
+  if (!isIP(url.hostname)) return `--server names the host ${url.hostname}, and up needs the IP address the broker listens on`;
   return undefined;
 }
 

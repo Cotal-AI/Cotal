@@ -5,9 +5,10 @@
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from an empty
  * folder outside them. Nothing is started; each refusal comes from validation. A `--server` that no
- * local broker can serve is refused as the short classified report with an example on the port
- * passed. In the home folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT
- * and writes nothing there, and `down` there finds no stack to stop.
+ * local broker can serve, a host name included, is refused the same way in an unprepared and a
+ * prepared folder, as the short classified report with an example on the port passed. In the home
+ * folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing
+ * there, and `down` there finds no stack to stop.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -56,6 +57,8 @@ for (const { args, message } of cases) {
 
 const servers: { server: string; message: RegExp; example: string }[] = [
   { server: "http://127.0.0.1:43131", message: /--server must be a nats:\/\/ or tls:\/\/ URL/, example: "--server nats://127.0.0.1:43131" },
+  { server: "nats://localhost:43131", message: /--server names the host localhost/, example: "--server nats://127.0.0.1:43131" },
+  { server: "tls://broker.example:4443", message: /--server names the host broker\.example/, example: "--server tls://127.0.0.1:4443" },
   { server: "nats://127.0.0.1", message: /--server names no port/, example: "--server nats://127.0.0.1:<port>" },
 ];
 for (const { server, message, example } of servers) {
@@ -64,6 +67,14 @@ for (const { server, message, example } of servers) {
 }
 
 check("nothing was written in the folder", readdirSync(folder).length === 0, readdirSync(folder));
+
+const prepared = mkdtempSync(join(tmpdir(), "cotal-up-usage-prepared-"));
+process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
+const created = run(["space", "create", "upusage", "--root", prepared, "--json"]);
+check("space create prepares a folder", created.status === 0, shown(created));
+const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
+check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
+check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
 
 // Port 1 cannot be bound, so a regression here starts no usable broker.
 const homeUp = run(["up", "--server", "nats://127.0.0.1:1", "--json"], home);

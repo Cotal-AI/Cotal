@@ -109,7 +109,7 @@ try {
     check("up --server notaurl in a prepared folder refuses USAGE_INVALID, exit 1", prepared.status === 1 && prepared.env?.error?.code === "USAGE_INVALID", shown(prepared));
     const port = await freePort();
     const named = cli(root, "up", "--server", `nats://localhost:${port}`, "--json");
-    check("a DNS-named address refuses on the controller route, exit 2", named.status === 2 && named.env?.error?.code === "UNSUPPORTED", shown(named));
+    check("a DNS-named address refuses USAGE_INVALID before the controller route, exit 1", named.status === 1 && named.env?.error?.code === "USAGE_INVALID", shown(named));
     check("neither refusal wrote a stack journal or a registration", !existsSync(journalOf(root)) && findMesh(space) === undefined);
     const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
     check("the same folder then starts on a valid address", started.status === 0, shown(started));
