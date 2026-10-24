@@ -6,6 +6,9 @@ Channel permissions decide who can read, who can post, and what each agent tunes
 Use this page when wiring a team's access. The authority is [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization);
 this page maps it to the fields you actually write.
 
+Channel names keep their case. `General` and `general` are different channels. Use the same
+spelling in channel commands and permission rules.
+
 ## The three verbs
 
 An agent's channel access is three separate concepts. Each is a list of channel names (or
