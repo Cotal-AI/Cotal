@@ -19,41 +19,27 @@ import {
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { credsSpace, findMesh, inputDisabledByFlag, readCredsFileOrExit, refreshRegistrationPolicy, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
+import { CommandFailure, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
-import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 
-// The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
-// sentence instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
-// BEFORE ep.start) and ep.start itself. Known TLS negotiation refusal is rendered here too.
+// The plan's stale-cred fail-fast gate: an unprovisioned / auth-rejected join is ONE classified
+// refusal instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
+// BEFORE ep.start) and ep.start itself. Known TLS negotiation refusal is classified here too.
 // Unexpected failures still propagate unchanged.
-function renderJoinAuthError(e: unknown, space: string, credsLifecycle?: string): boolean {
+function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): CommandFailure | undefined {
   const msg = (e as Error)?.message ?? String(e);
-  if (msg === "server does not support 'tls'") {
-    console.error(c.red(`TLS is required to join ${space}, but this server does not support TLS. Ask the mesh operator for its TLS-enabled broker address.`));
-    return true;
-  }
+  if (msg === "server does not support 'tls'")
+    return new CommandFailure("refused", "UNSUPPORTED", `TLS is required to join ${space}, but this server does not support TLS`, { remedy: "ask the mesh operator for its TLS-enabled broker address" });
   // A --creds join binds the inbox its lifecycle was provisioned with. A credential minted without
   // --provision has none, and neither `cotal up` nor another --creds can make one from here.
-  if (credsLifecycle !== undefined && /consumer not found|no responders|not provisioned/i.test(msg)) {
-    console.error(
-      c.red(`${space} has no inbox provisioned for this credential's lifecycle ${credsLifecycle}, so it cannot join with it. `) +
-        c.red(`Ask the space's owner to mint the credential with `) +
-        c.bold("cotal auth mint <name> --provision") +
-        c.red(`, then join with the lifecycle UID that mint reports.`),
-    );
-    return true;
-  }
-  if (/consumer not found|no responders|not provisioned/i.test(msg)) {
-    console.error(
-      c.red(`${space} isn't provisioned for a console session yet - run `) +
-        c.bold("cotal up") +
-        c.red(` first, or join with --creds/--token.`),
-    );
-    return true;
-  }
+  if (credsLifecycle !== undefined && /consumer not found|no responders|not provisioned/i.test(msg))
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credsLifecycle}, so it cannot join with it`, {
+      remedy: "ask the space's owner to mint the credential with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports",
+    });
+  if (/consumer not found|no responders|not provisioned/i.test(msg))
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} isn't provisioned for a console session yet`, { remedy: "run `cotal up` first, or join with --creds/--token" });
   if (/authoriz|permission|not authorized/i.test(msg)) {
     // #1576. THIS USED TO NAME CREDENTIALS AND NOTHING ELSE, and an operator holding valid,
     // unexpired creds spent days pursuing that hypothesis. A durable join is authorized by the
@@ -61,21 +47,45 @@ function renderJoinAuthError(e: unknown, space: string, credsLifecycle?: string)
     // consumer the join needs and the failure surfaces here as a permission error — indistinguishable
     // from a genuinely bad credential unless this sentence says so. Credentials remain the first
     // cause because they usually are; the daemon is now named as the second rather than left out.
-    console.error(
-      c.red(`not authorized to join ${space}'s channels.\n`) +
-        c.red(`  - if your credentials are wrong or missing: pass --creds/--token, or ask the mesh operator for a join link.\n`) +
-        c.red(`  - if they are valid: the space's DELIVERY DAEMON may not have its responder bound, which denies durable joins with this same message. Ask the operator to check \`cotal status --components\` (delivery row); a join needs it bound.`),
-    );
-    return true;
+    return new CommandFailure("refused", "PERMISSION_DENIED", `not authorized to join ${space}'s channels`, {
+      remedy:
+        "if your credentials are wrong or missing, pass --creds/--token, or ask the mesh operator for a join link. " +
+        "If they are valid, the space's DELIVERY DAEMON may not have its responder bound, which denies durable joins with this same message: ask the operator to check `cotal status --components` (delivery row), since a join needs it bound",
+    });
   }
-  return false;
+  return undefined;
 }
 
+/** Refresh a manual user-auth registration's policy before anything is dialed. A refresh that fails
+ *  refuses the join, because the entry cannot say whether the space requires events. */
+async function registrationPolicy(target: { space: string; policy?: MeshEntry["policy"] }): Promise<void> {
+  try {
+    await refreshRegistrationPolicy(target);
+  } catch (e) {
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${(e as Error).message}; nothing was joined`, { cause: e });
+  }
+}
+
+/** `cotal join`. A refusal from the connect path ends it under the refusal's own code, as join's
+ *  own refusals do. */
 export async function join(args: ParsedArgs): Promise<void> {
+  try {
+    await joinSpace(args);
+  } catch (e) {
+    throw isConnectRefusal(e) ? e.failure() : e;
+  }
+}
+
+async function joinSpace(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean };
 
   // A join link carries server + auth + space; explicit flags still override it.
-  const link = values.link ? parseJoinLink(values.link) : undefined;
+  let link: ReturnType<typeof parseJoinLink> | undefined;
+  try {
+    link = values.link ? parseJoinLink(values.link) : undefined;
+  } catch (e) {
+    throw new CommandFailure("refused", "USAGE_INVALID", (e as Error).message, { remedy: "pass the cotal:// or cotals:// link the space's operator gave you", cause: e, selfContained: true });
+  }
   const name = values.name ?? userInfo().username;
   // A HUMAN joining from a terminal, not a persona-driven agent: they typed `cotal join` to land
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
@@ -85,7 +95,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFileOrExit(values.creds) : undefined,
+    creds: values.creds ? readCredsFile(values.creds) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
@@ -101,32 +111,23 @@ export async function join(args: ParsedArgs): Promise<void> {
   // COTAL_LIFECYCLE_UID without --creds is just a shell leaking a spawned agent's env - silently
   // IGNORE it (an open/token/link/bare join never inherits another incarnation's uid; it
   // self-mints). Only WITH --creds is either read, as the launcher's pairing.
-  if (flagUid !== undefined && !values.creds) {
-    console.error(
-      c.red(`✗ --lifecycle-uid applies only to an explicit `) +
-        c.bold("--creds") +
-        c.red(` join - an open/token/link/bare join self-mints a fresh per-session lifecycle. Drop the flag, or pass --creds.`),
-    );
-    process.exit(1);
-  }
+  if (flagUid !== undefined && !values.creds)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--lifecycle-uid applies only to an explicit --creds join - an open/token/link/bare join self-mints a fresh per-session lifecycle", { remedy: "drop the flag, or pass --creds", selfContained: true });
   let lifecycleUid: string | undefined = values.creds ? (flagUid ?? envUid) : undefined;
   if (lifecycleUid !== undefined) {
     try {
       assertLifecycleToken(lifecycleUid);
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
-      process.exit(1);
+      throw new CommandFailure("refused", "USAGE_INVALID", (e as Error).message, { remedy: "pass the lifecycle UID minted alongside this credential", cause: e, selfContained: true });
     }
   }
-  if (values.creds && lifecycleUid === undefined) {
-    console.error(
-      c.red(`✗ --creds is lifecycle-paired (SPEC 13.1): pass `) +
-        c.bold("--lifecycle-uid <uid>") +
-        c.red(` (or set COTAL_LIFECYCLE_UID) with the uid minted alongside this credential at provision time. `) +
-        c.red(`The credential's durable grants name exact lifecycle-keyed resources; a made-up uid would name durables it cannot bind.`),
+  if (values.creds && lifecycleUid === undefined)
+    throw new CommandFailure(
+      "refused",
+      "USAGE_INVALID",
+      "--creds is lifecycle-paired (SPEC 13.1): the credential's durable grants name exact lifecycle-keyed resources, so a made-up uid would name durables it cannot bind",
+      { remedy: "pass --lifecycle-uid <uid> (or set COTAL_LIFECYCLE_UID) with the uid minted alongside this credential at provision time", selfContained: true },
     );
-    process.exit(1);
-  }
 
   let space: string;
   let server: string;
@@ -141,26 +142,21 @@ export async function join(args: ParsedArgs): Promise<void> {
     // address, or the address the space is registered at. The default address is never assumed for it.
     const recorded = (values.server ?? link?.servers) === undefined ? findMesh(space) : undefined;
     const paired = values.server ?? link?.servers ?? recorded?.server;
-    if (paired === undefined) {
-      console.error(c.red(`✗ ${values.creds ? "--creds" : "--token"} needs --server <url> or a registered --space: space "${space}" is not registered here, so nothing was dialed`));
-      console.error(c.dim("  pass the broker this credential belongs to with --server <url>, or join with its link"));
-      process.exit(1);
-    }
+    if (paired === undefined)
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.creds ? "--creds" : "--token"} needs --server <url> or a registered --space: space "${space}" is not registered here, so nothing was dialed`, {
+        remedy: "pass the broker this credential belongs to with --server <url>, or join with its link",
+        target: { space },
+      });
     server = paired;
     if (recorded?.tlsRequired) auth.tls = true;
-    try {
-      await refreshRegistrationPolicy({ space, policy: findMesh(space)?.policy });
-    } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
-      process.exit(1);
-    }
+    await registrationPolicy({ space, policy: findMesh(space)?.policy });
     // An omitted server must still match a recorded user mesh on a non-default port, so the check
     // gets the caller's own server and not the one resolved from the record.
-    refuseStaticCredsForKnownUserAuthOrExit(space, values.server ?? link?.servers, "interactive join");
+    refuseStaticCredsForKnownUserAuth(space, values.server ?? link?.servers, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
-    await reachableOrExit(server, auth);
+    await reachableOrThrow(server, auth);
   } else {
     // Self-mint: a bare `cotal join` becomes a console on the running mesh. In auth mode it self-provisions
     // exactly like the manager does at spawn — open a short-lived `provisioner`, pre-create THIS console's
@@ -170,24 +166,19 @@ export async function join(args: ParsedArgs): Promise<void> {
     // same containment as the manager's `withProvisioner`. This fixes the unprovisioned-console
     // ConsumerNotFound (a self-minted console had no manager to pre-create its dm_<id> durable) AND drops
     // the last broad `manager` mint off the console. Open mode (no auth) is unchanged — connect bare.
-    const target = await resolveTargetOrExit({ server: values.server, space: values.space });
-    try {
-      await refreshRegistrationPolicy(target);
-    } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
-      process.exit(1);
-    }
+    const target = await resolveTargetOrThrow({ server: values.server, space: values.space });
+    await registrationPolicy(target);
     space = target.space;
     server = target.server;
     // Join never launches or attaches a harness, even headless. Required events apply to native
     // harness turns, not this endpoint's messages. Do not invent AG-UI runs for terminal sends.
     if (target.mode === "user") {
-      userConnection = await connectUserControlOrExit({ space, server });
+      userConnection = await connectUserControlOrThrow({ space, server });
       if (!userConnection.bearer || !userConnection.sentinelCreds || !userConnection.epCaller)
         throw new Error("interactive join requires a complete user bearer, sentinel and lifecycle");
       lifecycleUid = userConnection.epCaller.uid;
     } else {
-      await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
+      await preflightOrThrow(target); // one refusal if the mesh is down / won't auth, + stale-prune
     }
     if (target.mode !== "user" && target.auth) {
       const identity = newIdentity();
@@ -228,8 +219,7 @@ export async function join(args: ParsedArgs): Promise<void> {
       } catch (e) {
         // The self-mint step runs BEFORE ep.start(), so its auth/provisioning failure must render
         // legibly too — same fail-fast gate, not a raw NATS error leaked through the on-error channel.
-        if (!renderJoinAuthError(e, space)) throw e;
-        process.exit(1);
+        throw joinAuthFailure(e, space) ?? e;
       }
     }
   }
@@ -355,9 +345,8 @@ export async function join(args: ParsedArgs): Promise<void> {
     await ep.start();
   } catch (e) {
     // A bare `cotal join` binds a durable DM inbox nobody pre-created on an unprovisioned space;
-    // surface that (and an auth reject) as ONE human sentence, not a raw NATS stack.
-    if (!renderJoinAuthError(e, space, values.creds ? lifecycleUid : undefined)) throw e;
-    process.exit(1);
+    // surface that (and an auth reject) as ONE classified refusal, not a raw NATS stack.
+    throw joinAuthFailure(e, space, values.creds ? lifecycleUid : undefined) ?? e;
   }
 
   const shutdown = async () => {

@@ -5307,6 +5307,13 @@ For `nats://` and `tls://` addresses, if TLS is required but the broker does not
 refuses with a request for the operator's TLS-enabled broker address. It never retries over
 plaintext. A `ws://` address uses plaintext WebSocket. Use `wss://` for TLS.
 
+`join` has no `--json`. A refusal before the session starts prints on stderr with its code and
+exits 1 for `USAGE_INVALID` and 2 for any other refusal: `TARGET_NOT_FOUND` for a space not
+registered here, a creds file that does not exist, a lifecycle with no inbox or a space not
+provisioned for a console session, `PERMISSION_DENIED` for credentials the broker rejects,
+`TARGET_UNAVAILABLE` for a broker that does not answer, and `UNSUPPORTED` for a broker without the
+TLS the join requires.
+
 ## Manifest deploys
 
 A `cotal.yaml` manifest declares a whole mesh (channels, personas, roles, and ACLs) in one file.
