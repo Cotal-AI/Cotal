@@ -885,7 +885,9 @@ if (process.platform === "linux") {
   const started = findMesh("demo");
   check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
   const bomSeeded = await json(["channel", "show", "bomseed", "--space", "demo"]);
-  // An explicit --channels replaces the default file for that up, and is read once.
+  // An explicit --channels replaces the default file, and only a start seeds, so the FIFO seed is
+  // read by the next start after a down.
+  check("down --yes stops it for the FIFO start", (await json(["down", "--yes"], fresh)).status === 0);
   const fifoUp = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--channels", seedFifo], {}, fresh);
   feeder.kill();
   unlinkSync(seedFifo);
