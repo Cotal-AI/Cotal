@@ -156,19 +156,23 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (prompts.isCancel(answer)) return cancelled("Service creation cancelled");
     name = localRecordName(answer);
   }
-  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: { ...target, name }, remedy: `to change it, stop its instances, forget it with cotal service remove ${name} --space ${oneLine(space)} --yes, then add it again` });
   const named = { ...target, name };
   /** A refusal while the definition is built names the space and name it was for. */
   const forName = <T>(build: () => T): T => {
     try { return build(); }
     catch (error) { throw isCommandFailure(error) && error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target: named, remedy: error.remedy, native: error.native, changed: error.changed }) : error; }
   };
+  // A file names its space, so a definition for another space is refused before its name is looked
+  // up in the selected one, whose service of that name it does not concern.
+  const file = args.values.file;
+  const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
+  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with cotal service remove ${name} --space ${oneLine(space)} --yes, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
   if (typeof args.values.preset === "string") {
     chosenPreset = args.values.preset;
     const preset = chosenPreset;
     definition = forName(() => servicePresetDefinition(resolveServicePreset(preset), space, args.values));
-  } else if (typeof args.values.file === "string") { const file = args.values.file; definition = forName(() => importServiceDefinition(resolve(file), space)); }
+  } else if (imported !== undefined) definition = imported;
   else {
     const available = servicePresets();
     const choice = available.length ? await prompts.select({ message: "Definition source", options: [{ value: "file:", label: "Import a version-1 definition file" }, ...available.map((row) => ({ value: `preset:${row.preset.name}`, label: oneLine(row.preset.name), hint: oneLine(row.preset.summary) }))] }) : "file:";

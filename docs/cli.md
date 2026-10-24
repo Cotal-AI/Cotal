@@ -4005,9 +4005,11 @@ loopback health URL answers 200:
 | `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
 
-No other field is accepted. The file is at most 256 KiB. A `readiness` value that breaks these rules
-refuses `SCHEMA_INVALID`, exit 1, naming the field and its rule, such as a `timeoutMs` outside 1 to
-120000, a field the chosen type does not take, or a `url` that is not on loopback.
+A `space` that names another space is refused `SCHEMA_INVALID`, exit 1, before `add` checks whether
+the selected space already has a service of that name. No other field is accepted. The file is at
+most 256 KiB. A `readiness` value that breaks these rules refuses `SCHEMA_INVALID`, exit 1, naming
+the field and its rule, such as a `timeoutMs` outside 1 to 120000, a field the chosen type does not
+take, or a `url` that is not on loopback.
 
 ### Running a service
 
