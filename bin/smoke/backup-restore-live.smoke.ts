@@ -343,7 +343,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const running = run("up", "-f", "cotal.yaml");
     assert.equal(running.status, 2, `${mode} up -f while the restored stack runs refuses, exit 2\n${running.stdout}\n${running.stderr}`);
     assert.match(running.stderr, /Code: +CONFLICT/);
-    assert.ok(running.stderr.includes(`stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes, then run cotal up -f cotal.yaml again`), `${mode} up -f names the way out\n${running.stderr}`);
+    assert.ok(running.stderr.includes(`stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history, which deletes the previous store and the ${leftOut} only it holds, then run cotal up -f cotal.yaml again`), `${mode} up -f names the way out\n${running.stderr}`);
     // Any other `up` over the restored broker refuses before it touches the journal, which stays active.
     for (const args of [["up"], ["up", "--server", server]]) {
       const again = run(...args);
@@ -359,7 +359,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const stopped = run("up", "-f", "cotal.yaml");
     assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
     assert.match(stopped.stderr, /Code: +LIFECYCLE_BLOCKED/);
-    assert.ok(stopped.stderr.includes(`retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes, then run cotal up -f cotal.yaml again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
+    assert.ok(stopped.stderr.includes(`retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history, which deletes the previous store and the ${leftOut} only it holds, then run cotal up -f cotal.yaml again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
     rmSync(manifest);
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the

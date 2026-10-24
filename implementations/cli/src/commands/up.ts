@@ -2112,12 +2112,18 @@ function unrecordedStackServer(root: string, space: string, host: string | undef
 }
 
 /** A start over the broker a committed restore left running here. `up -f` boots a fresh mesh, so its
- *  way out also retires the restore. */
-function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string): CommandFailure {
+ *  way out also retires the restore with `retire`. */
+function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string, retire?: string): CommandFailure {
   return new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${pid}), and a new start does not run beside it; nothing was started`, {
     target: { root, attempt, pid },
-    remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${attempt} --yes, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
+    remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with ${retire}, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
   });
+}
+
+/** The cleanup that retires an active restore. One that left something out keeps its only copy in the
+ *  previous store, so its cleanup deletes that store only with `--discard-history`. */
+function retireRestore(attempt: string, leftOut: string | undefined): string {
+  return `cotal backup cleanup-fallback ${attempt} --yes${leftOut ? ` --discard-history, which deletes the previous store and the ${leftOut} only it holds` : ""}`;
 }
 
 /** `manifest` is the `up -f` file, which boots a fresh mesh and so needs the restore retired first. */
@@ -2125,13 +2131,13 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: str
   const maintenance = readMaintenanceJournal(root);
   if (!maintenance) return;
   if (maintenance.state === "active") {
-    const attempt = maintenance.restore.attemptId, retire = `cotal backup cleanup-fallback ${attempt} --yes`;
+    const attempt = maintenance.restore.attemptId, retire = retireRestore(attempt, restoreLeftOut(maintenance));
     if (!isManagerCommittedRestore(maintenance))
       throw new Error(`restore attempt ${attempt} is active without durable manager commit evidence`);
     if (!maintenance.listenerProof)
       throw new Error(`restore attempt ${attempt} is active without a bound listener proof`);
     const status = localProcessOwnerStatus(maintenance.listenerProof.processOwner);
-    if (status === "alive") throw restoredBrokerRuns(root, attempt, maintenance.listenerProof.processOwner.pid, manifest);
+    if (status === "alive") throw restoredBrokerRuns(root, attempt, maintenance.listenerProof.processOwner.pid, manifest, retire);
     if (status !== "dead")
       throw new Error(`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`);
     // `up -f` boots a fresh mesh, so the restore it would start over is retired first.

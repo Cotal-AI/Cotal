@@ -1926,7 +1926,8 @@ resumes only a stopped stack whose manager never launched, and a restored stack'
 ran, so start it with bare `cotal up` instead. `cotal up -f` boots a fresh mesh, so it starts only
 once the restore is retired. While the restored broker runs, it refuses `CONFLICT`, exit 2, naming
 the broker's PID, and its Next is `cotal down`, then `backup cleanup-fallback <attempt> --yes`, then
-`cotal up -f` again. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
+`cotal up -f` again. After a restore that left history or workflow runs out, that cleanup step
+includes `--discard-history` and says it deletes the previous store. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
 the cleanup. Nothing is started either way. While the restored broker runs, any other `cotal up`,
 bare or with `--server`, refuses `CONFLICT` too, naming its PID, and leaves the restore journal as it
 was. Its Next is `cotal down`, then `cotal up`, which starts the restored stack again.
