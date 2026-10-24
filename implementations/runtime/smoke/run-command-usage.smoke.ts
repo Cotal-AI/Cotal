@@ -10,13 +10,14 @@
  *
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EpEnvelopeError, EP_UNANSWERED, registry, type Command } from "@cotal-ai/core";
-import { exitCode, isCommandFailure } from "@cotal-ai/workspace";
+import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
+import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
-import { unansweredManagerRefusal, workflowArguments } from "../src/run-command.js";
+import { managerRefusal, renderLangProblem, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
+import { printRunDetail } from "../src/workflow-views.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -164,10 +165,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const mark = (rail?: string) => [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", ...(rail !== undefined ? { rail } : {}) }];
   const legacy = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep rail", mark("ep")));
   c("legacy rail: the question and the --local remedy stand (one rail, and nothing answered on it)",
-    legacy.startsWith("no manager answered on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
+    legacy.startsWith("the manager registered for this space did not answer on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
   const v1 = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail", mark("ep.v1")));
   c("versioned rail: the refusal names ep.v1 and states what the silence does not establish",
-    v1.startsWith("no manager answered on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
+    v1.startsWith("the manager registered for this space did not answer on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
     && v1.includes("does not tell no manager running apart from one older than ep.v1"), v1);
   c("versioned rail: neither the false question nor the --local remedy that follows from it is printed",
     !v1.includes("is a manager running for this mesh?") && !v1.includes("--local"), v1);
@@ -176,7 +177,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
 }
 
 // A scripted checkpoint result is read by the simulator only for an `expired` status, so a
-// malformed one would simulate as an answer. The results file is refused before the simulation.
+// malformed one would simulate as an answer. The results file is refused before the simulation,
+// and a simulation that stops names why.
 {
   const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
   const program = join(dir, "p.cotal.js");
@@ -213,6 +215,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a gate scripted expired under the default onExpiry is a completed simulation whose program failed at that gate with L4007",
     expired === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "failed" && envelope.result.failure?.code === "L4007"
       && envelope.result.failure.step === "/checkpoint:go#0" && envelope.result.failure.stepOutcome === "expired" && envelope.result.effects?.some((e) => e.step === "/checkpoint:go#0") === true, { expired, envelope });
+  writeFileSync(program, 'throw "boom";\n');
+  const thrown = await simulate({});
+  c("a program that throws fails naming what it threw, not an unscripted effect",
+    isCommandFailure(thrown) && thrown.code === "OPERATION_FAILED" && thrown.message.includes('boom') && !thrown.message.includes("unscripted"), thrown);
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -228,6 +234,56 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a validator warning names its code, title, position and fix on stderr",
     said.includes(`L3021 \`fanOut\` has no stable key (${program}:1:7)`) && said.includes("Fix: Pass a key function"), said);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// A workflow source that cannot be read is refused naming its path and the cause, before any plane.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-source-"));
+  mkdirSync(join(dir, "adir"));
+  symlinkSync(join(dir, "nowhere.cotal.js"), join(dir, "dangling.cotal.js"));
+  writeFileSync(join(dir, "locked.cotal.js"), "x\n", { mode: 0o000 });
+  const cases: [string, string, string][] = [
+    ["missing.cotal.js", "TARGET_NOT_FOUND", "does not exist"],
+    ["adir", "USAGE_INVALID", "is a directory"],
+    ["dangling.cotal.js", "TARGET_NOT_FOUND", "is a link whose target does not exist"],
+    // root reads a mode-000 file, so the permission case runs only for another user.
+    ...(process.getuid?.() === 0 ? [] : [["locked.cotal.js", "PERMISSION_DENIED", "is not readable"] as [string, string, string]]),
+  ];
+  for (const [name, code, says] of cases) {
+    const path = join(dir, name);
+    const got = await attempt(["start", path]);
+    c(`run start of ${name} refuses ${code} naming its path and cause`, isCommandFailure(got) && got.code === code && got.message.includes(path) && got.message.includes(says), got);
+  }
+  const dash = await attempt(["start", "-"]);
+  c("run start - says that - does not mean standard input", isCommandFailure(dash) && dash.code === "TARGET_NOT_FOUND" && dash.message.includes("- does not mean standard input"), dash);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// `journal --limit` says how many of the last journal rows the text view prints. The view printed only
+// the last 20, and the only way to read more was --json, which holds the whole journal and so takes
+// no --limit. A ps --limit still belongs to --page.
+{
+  const ok50 = gate(["journal", "run-0"], { limit: "50" });
+  c("run journal takes --limit from 1 to 1000", !(ok50 instanceof Error) && ok50.values.limit === "50"
+    && !(gate(["show", "run-0"], { limit: "1000" }) instanceof Error), ok50);
+  for (const limit of ["0", "1001", "x"])
+    c(`run show --limit ${limit} is refused`, usageRefusal(gate(["show", "run-0"], { limit }), "--limit must be between 1 and 1000"), limit);
+  c("run journal --limit with --json is refused", usageRefusal(gate(["journal", "run-0"], { limit: "5", json: true }), "--json returns the whole journal"));
+  c("run ps --limit without --page is still refused", usageRefusal(gate(["ps"], { limit: "5" }), "diagnostic paging requires run --page"));
+  const view = { runId: "run-0", endpoint: "manager", spec: {} as RunStatusView["spec"],
+    journal: Array.from({ length: 30 }, (_, n) => ({ n, kind: "activation" as const, holder: "h", epoch: n, replayedTo: 0 })) } satisfies RunStatusView;
+  const printed = (limit?: string): string => {
+    const out: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { out.push(a.map(String).join(" ")); };
+    try { printRunDetail("usage", view, { plain: true, ...(limit === undefined ? {} : { limit }) }); } finally { console.log = origLog; process.exitCode = 0; }
+    return out.join("\n");
+  };
+  const rows = (text: string) => text.split("\n").filter((line) => line.includes("holder activation")).length;
+  const bare = printed(), limited = printed("25");
+  c("the text view prints the last 20 rows by default and the last n under --limit n",
+    bare.includes("last 20 of 30") && rows(bare) === 20 && limited.includes("last 25 of 30") && rows(limited) === 25 && limited.includes("epoch 29") && !limited.split("\n").some((line) => line.trimEnd().endsWith("epoch 4")),
+    { bare: rows(bare), limited: rows(limited) });
 }
 
 // A source file that cannot be read is refused with the path to check.
@@ -255,6 +311,70 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     c(`a hosted start refuses a source file that ${says} the same way, before any connect`, isCommandFailure(started) && started.code === "SCHEMA_INVALID" && started.message.includes(says), started);
   }
   rmSync(dir, { recursive: true, force: true });
+}
+
+// An open checkpoint with a `to` shows beside its question whom it escalates to, and once it has
+// escalated, until when that attempt is open. The escalation's attempt is armed with `proceed`.
+{
+  const detail = (journal: object[]) => {
+    const out: string[] = [];
+    const log = console.log, error = console.error;
+    console.log = console.error = (...args: unknown[]) => { out.push(args.map(String).join(" ")); };
+    try { printRunDetail("s", { runId: "run-1", endpoint: "manager", status: { state: "running" }, journal } as unknown as RunStatusView, {}); }
+    finally { console.log = log; console.error = error; }
+    return out.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  };
+  const open = (name: string, more: object) => ({ n: 1, kind: "step", step: `/checkpoint:${name}#0`, effect: "checkpoint", name, state: "pending", outcome: "pending", startedAt: 0, asks: `${name}?`, ...more });
+  const shown = detail([
+    open("first", { addressee: "dana", deadlineAt: 0, onExpiry: "escalate" }),
+    open("second", { addressee: "erik", deadlineAt: Date.UTC(2026, 9, 24, 6, 0, 0), onExpiry: "proceed" }),
+    open("third", { onExpiry: "fail" }),
+  ]);
+  c("an open checkpoint names whom it escalates to, and an escalated one its addressee and deadline",
+    /Step\s+Request\s+Escalation/.test(shown) && /first\?\s+to dana if it expires/.test(shown) && shown.includes("second?  escalated to erik, open until 2026-10-24T06:00:00.000Z"), shown);
+  c("with no checkpoint addressed, the table has no Escalation column", !detail([open("third", { onExpiry: "fail" })]).includes("Escalation"));
+}
+
+// An answer refused for a step key the run holds no open request at names the open keys whose step
+// name matches what was typed, as `frage` names `/checkpoint:frage#0`.
+{
+  const notFound = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "the run has no open checkpoint at frage", { remedy: "read the run's open requests with cotal run show run-1" });
+  const row = (step: string, state: string, asks?: string) => ({ kind: "step", step, state, ...(asks ? { asks } : {}) });
+  const view = (...journal: object[]) => async () => ({ journal }) as unknown as RunStatusView;
+  const one = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "Proceed?"), row("/checkpoint:done#0", "pending", "Done?")));
+  c("an answer to a checkpoint's name names its open key and the command, with the code and message kept",
+    one instanceof CommandFailure && one.code === "TARGET_NOT_FOUND" && one.message === "the run has no open checkpoint at frage"
+    && one.remedy === "the open request '/checkpoint:frage#0' matches; answer it with cotal run answer run-1 '/checkpoint:frage#0' --value '<json>'", one);
+  const pinned = await withMatchingKeys(notFound(), "run-1", "frage", { on: "mgr-1" }, view(row("/checkpoint:frage#0", "pending", "Proceed?")));
+  c("the suggested command keeps an explicit --on", pinned instanceof CommandFailure && pinned.remedy?.endsWith(" --on mgr-1") === true, pinned);
+  const two = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"), row("/fanOut:x#0/checkpoint:frage#1", "pending", "B?")));
+  c("several matching open keys are listed to pick from", two instanceof CommandFailure && two.remedy === "the open requests that match are '/checkpoint:frage#0', '/fanOut:x#0/checkpoint:frage#1'; pass one of them as the step", two);
+  const settled = notFound();
+  c("a settled step with that name is not offered", await withMatchingKeys(settled, "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"), row("/checkpoint:frage#0", "settled"))) === settled);
+  const unread = notFound();
+  c("a run view that cannot be read leaves the refusal as it was", await withMatchingKeys(unread, "run-1", "frage", {}, async () => { throw new Error("no answer"); }) === unread);
+  const other = new CommandFailure("refused", "LIFECYCLE_BLOCKED", "revoked");
+  c("a refusal other than TARGET_NOT_FOUND is left as it was", await withMatchingKeys(other, "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"))) === other);
+  const escaped = await withMatchingKeys(notFound(), "run-1", "fr\x1b[2Jage", {}, view(row("/checkpoint:fr\x1b[2Jage#0", "pending", "A?")));
+  c("a step name from the program is escaped before the terminal shows it", escaped instanceof CommandFailure && !escaped.remedy?.includes("\x1b") && escaped.remedy?.includes("\\u001b") === true, escaped instanceof CommandFailure ? escaped.remedy : escaped);
+}
+
+// A resume the manager refuses as a precondition, as of a completed run, appended nothing, so the
+// next step reads the run's recorded state, keeping an explicit pin.
+{
+  const finished = { code: "failed-precondition", message: "run run-1 is already completed, so there is nothing to resume; a resume continues a run that is running or released" };
+  const blocked = managerRefusal("run-resume", "s", { runId: "run-1" }, finished);
+  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with cotal run show run-1", blocked);
+  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with cotal run show run-1 --on mgr-1");
+  c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
+}
+
+// A validation problem a hosted start prints quotes the program, so a step name's control characters
+// reach the terminal escaped, as run validate shows them.
+{
+  const name = "\u001b]52;c;SGFsbG8=\u0007\u001b]0;FENSTER\u0007";
+  const shown = renderLangProblem({ kind: LANG_PROBLEM_DETAIL_KIND, code: "L3014", title: "Malformed step name", where: { file: "osc.cotal.js", line: 1, column: 28 }, cause: `"${name}" is not a well-formed step name.`, fix: "Use kebab-case." });
+  c("a hosted start's problem line escapes a step name's control characters", !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(shown) && shown.includes("\\u001b]52;c;SGFsbG8=\\u0007") && shown.startsWith("  L3014 Malformed step name (osc.cotal.js:1:28)\n    "), shown);
 }
 
 restore();

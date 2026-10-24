@@ -3,7 +3,7 @@ import { spaceFlag, serverFlag } from "./flags.js";
 import { CommandFailure, jsonFlag, plainFlag } from "./output.js";
 import { presentationOf } from "./present.js";
 
-export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance" } as const satisfies FlagSpec;
+export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance", completion: "files" } as const satisfies FlagSpec;
 export const credentialMintFlags = [
   { name: "profile", type: "string", value: "<agent|observer|admin>", description: "existing credential profile (default agent); never an internal host profile" },
   privateOutputFlag,
@@ -16,7 +16,8 @@ export const credentialMintFlags = [
   { name: "expires-in", type: "string", value: "<seconds>", description: "positive integer credential lifetime (fixed profiles default to 86400, 24 hours); never with --expires-at or --no-expiry" },
   { name: "expires-at", type: "string", value: "<unix-seconds>", description: "absolute credential expiry; never with --expires-in or --no-expiry" },
   { name: "no-expiry", type: "boolean", description: "fixed profiles: issue a credential with no expiry claim and record that choice beside its file" },
-  { name: "identity", type: "string", value: "<private-creds>", description: "reuse this file's native nkey; the actual resulting lifecycle is reported" },
+  { name: "identity", type: "string", value: "<private-creds>", description: "reuse this file's native nkey; the actual resulting lifecycle is reported", completion: "files" },
+  { name: "replace", type: "boolean", description: "replace the label's standing credential when it has expired or has no expiry; never with --out" },
   spaceFlag, serverFlag, jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
@@ -70,5 +71,6 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   // A past or present expiry writes a credential the broker already refuses, under a label that is
   // then taken.
   if (values["expires-at"] !== undefined && Number(values["expires-at"]) <= Math.floor(Date.now() / 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-at is not in the future, so the credential would already be expired; nothing was written", { remedy: "give a later Unix time in seconds, or a lifetime with --expires-in <seconds>" });
+  if (values.replace !== undefined && values.out !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--replace replaces the label's standing credential, so it takes no --out; an --out file is re-minted with its matching --identity", { remedy: "drop --out to replace the standing credential, or pass the --out file's own --identity" });
   for (const key of ["identity", "out"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !values[key].trim() || /[\u0000-\u001f\u007f]/u.test(values[key]))) throw new CommandFailure("refused", "USAGE_INVALID", "credential paths must be nonempty and contain no terminal controls");
 }

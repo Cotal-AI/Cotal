@@ -14,6 +14,11 @@
  * before anything launches, naming that variable and the child variable it feeds, and `service show`
  * lists the references by name.
  *
+ * A bare executable name is looked up on `add`'s PATH and saved as the absolute path found, so a
+ * start under another PATH runs that same file. A PATH with a relative or empty entry refuses the
+ * lookup, and so does a name not on PATH. A definition an earlier release saved with a bare name
+ * refuses to start and records no instance.
+ *
  * A process definition whose HTTP readiness never answers exits 3 naming the loopback address, the
  * expected status, the deadline and the refused connection it saw, never the URL's path, and its
  * Next stops that exact instance and names `service show`. One that answers 503 exits 5 naming that
@@ -21,6 +26,17 @@
  * naming the address and that instance, and no instance is recorded for it. A process with process
  * readiness that exits at once fails its start, exit 5, recording its exit code, and its restart is
  * partial, exit 4, naming that exit code and its log.
+ *
+ * A process executable that every other local account can write, or one in a folder they can
+ * write, is refused at `add` naming that path with its `chmod o-w`, and so is a link in such a
+ * folder, by the link's folder. A saved one that later becomes writable is refused at `start` and
+ * `restart` before anything launches or stops. World write is used because group write is refused
+ * or accepted by whether the host proves a private group. The Node services run a copy of Node in
+ * the suite's private home, since a shared tool cache can be writable by other accounts.
+ * A definition whose readiness breaks the schema refuses SCHEMA_INVALID, exit 1, naming the field
+ * and the rule it breaks, such as a timeoutMs out of range or a field the chosen type does not take.
+ *
+ * `service remove` of a controller stack member's definition refuses UNSUPPORTED and keeps it.
  *
  * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
  * before a child in two isolated homes: with the account only in the child's home and only in the
@@ -31,13 +47,14 @@
  * Run: pnpm smoke:service-preparation-refusal
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSpaceAuth } from "@cotal-ai/core";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, recordMesh, saveSpaceAuth, spaceKey } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
@@ -60,8 +77,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1" };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args, "--json"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], extra: NodeJS.ProcessEnv = {}) => {
+  const r = spawnSync(process.execPath, [BIN, ...args, "--json"], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout) as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope };
@@ -91,7 +108,7 @@ check("stop finds nothing to stop: a no-op, exit 0", stopped.status === 0 && sto
 // Two records of one process service make the bare forms ambiguous. The refusal names each record
 // with its state and the command that clears a stopped one, and clearing one frees the bare form.
 const workerFile = join(home, "worker.json");
-writeFileSync(workerFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: process.execPath, args: ["-e", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 } }));
+writeFileSync(workerFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 } }));
 const workerAdded = run(["service", "add", "worker", "--file", workerFile, "--space", "b1"]);
 const firstWorker = run(["service", "start", "worker", "--space", "b1"]);
 const secondWorker = run(["service", "start", "worker", "--new-instance", "--space", "b1"]);
@@ -138,6 +155,75 @@ check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemo
 const gone = run(["service", "show", "envsvc", "--space", "b1"]);
 check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 2, naming where the saved ones are", gone.status === 2 && gone.envelope?.error?.code === "TARGET_NOT_FOUND" && gone.envelope.error.remedy === "see the saved definitions with `cotal service`", shown(gone));
 
+// A readiness value that breaks the schema names the field and its rule, never the value, and its
+// Next says to correct readiness.
+const readinessCases: [string, unknown, string][] = [
+  ["no timeoutMs", { type: "process" }, "readiness.timeoutMs is required for process readiness, which takes type, timeoutMs"],
+  ["a zero timeoutMs", { type: "process", timeoutMs: 0 }, "readiness.timeoutMs must be a whole number of milliseconds from 1 to 120000"],
+  ["a timeoutMs given as text", { type: "process", timeoutMs: "5000" }, "readiness.timeoutMs must be a whole number of milliseconds from 1 to 120000"],
+  ["an unknown type", { type: "tcp", timeoutMs: 5000 }, "readiness.type must be process, http or adapter"],
+  ["no type", { timeoutMs: 5000 }, "readiness.type is required: process, http or adapter"],
+  ["an http readiness with no url", { type: "http", expectedStatus: 200, timeoutMs: 5000 }, "readiness.url is required for http readiness, which takes type, url, expectedStatus, timeoutMs"],
+  ["a status out of range", { type: "http", url: "http://127.0.0.1:8080/health", expectedStatus: 700, timeoutMs: 5000 }, "readiness.expectedStatus must be a whole number from 100 to 599"],
+  ["a field the type does not take", { type: "process", timeoutMs: 5000, retries: 3 }, "readiness.retries is not a field of process readiness, which takes type, timeoutMs"],
+  ["a url off loopback", { type: "http", url: "https://example.com/health", expectedStatus: 200, timeoutMs: 5000 }, "readiness.url must be an http:// URL on 127.0.0.1 or [::1] with a path, such as http://127.0.0.1:8080/health"],
+  ["a readiness that is not an object", "process", "readiness must be an object with a type of process, http or adapter and a timeoutMs"],
+];
+for (const [what, readiness, rule] of readinessCases) {
+  const file = join(home, "readiness.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exit 0"], cwd: root }, readiness }));
+  const bad = run(["service", "add", "badready", "--file", file, "--space", "b1"]);
+  check(`a definition with ${what} refuses SCHEMA_INVALID, exit 1, naming the rule, with a Next`,
+    bad.status === 1 && bad.envelope?.error?.code === "SCHEMA_INVALID" && bad.envelope.error.message === `service definition: ${rule}` && bad.envelope.error.remedy === "correct readiness in the definition as the message says, then add it again", shown(bad));
+}
+check("no refused definition was saved", run(["service", "show", "badready", "--space", "b1"]).envelope?.error?.code === "TARGET_NOT_FOUND");
+
+// A controller stack member's definition stays with its stack, whose up and down read it. Its name
+// marks it, so a definition saved under one stands for the stack's here.
+const member = run(["service", "add", "stack-manager", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", "b1"]);
+check("rig: a definition under a stack member's name is saved", member.status === 0, shown(member));
+const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
+check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming down and space forget, and keeps it",
+  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === "it goes with the stack: cotal down --yes, then cotal space forget b1"
+    && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
+
+// A bare executable name, looked up once on add's PATH. The pinned script and a decoy of the same
+// name each record which one ran.
+{
+  const pinned = mkdtempSync(join(home, "pinned-")), decoy = mkdtempSync(join(home, "decoy-")), ran = join(home, "ran.log"), file = join(home, "bare.json");
+  for (const [dir, mark] of [[pinned, "pinned"], [decoy, "decoy"]]) writeFileSync(join(dir, "smoke-tick"), `#!/bin/sh\necho ${mark} >> ${ran}\nexec sleep 60\n`, { mode: 0o700 });
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "smoke-tick", args: [], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));
+  const hostPath = process.env.PATH ?? "";
+  const refusedLookup = (r: ReturnType<typeof run>) => r.status === 2 && r.envelope?.error?.code === "UNSUPPORTED" && /this PATH has a relative or empty entry; nothing was saved/.test(r.envelope.error.message);
+  const relative = run(["service", "add", "bare", "--file", file, "--space", "b1"], { PATH: `.:${pinned}:${hostPath}` });
+  check("add with a relative PATH entry refuses the lookup UNSUPPORTED, exit 2", refusedLookup(relative), shown(relative));
+  const empty = run(["service", "add", "bare", "--file", file, "--space", "b1"], { PATH: `${pinned}::${hostPath}` });
+  check("add with an empty PATH entry refuses it the same way", refusedLookup(empty), shown(empty));
+  const missing = run(["service", "add", "bare", "--file", file, "--space", "b1"]);
+  check("add of a name not on PATH refuses DEPENDENCY_UNAVAILABLE, exit 2", missing.status === 2 && missing.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE", shown(missing));
+  const afterRefused = run(["service", "--space", "b1"]);
+  const definitionsNow = afterRefused.envelope?.result?.definitions as { name?: string }[] | undefined;
+  check("none of the refused adds saved a definition", Array.isArray(definitionsNow) && !definitionsNow.some((row) => row.name === "bare"), definitionsNow);
+  const added = run(["service", "add", "bare", "--file", file, "--space", "b1"], { PATH: `${pinned}:${hostPath}` });
+  check("add saves the bare name as the absolute path it finds on PATH, and reports it", added.status === 0 && added.envelope?.result?.executable === join(pinned, "smoke-tick"), shown(added));
+  const started = run(["service", "start", "bare", "--space", "b1"], { PATH: `${decoy}:${hostPath}` });
+  const id = started.envelope?.result?.instanceId;
+  check("a start under a PATH whose first match is another file runs the pinned one", started.status === 0 && readFileSync(ran, "utf8") === "pinned\n", { start: shown(started), ran: existsSync(ran) ? readFileSync(ran, "utf8") : null });
+  check("rig: it stops", run(["service", "stop", "bare", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
+  check("rig: the definition is forgotten", run(["service", "remove", "bare", "--space", "b1", "--yes"]).status === 0);
+  // An earlier release saved the bare name itself.
+  const definitions = join(env.COTAL_HOME, "services", spaceKey("b1"), "definitions");
+  mkdirSync(definitions, { recursive: true, mode: 0o700 });
+  writeFileSync(join(definitions, `${spaceKey("legacy")}.json`), JSON.stringify({ recordVersion: 1, revision: randomUUID(), value: JSON.parse(readFileSync(file, "utf8")) }), { mode: 0o600 });
+  const legacy = run(["service", "start", "legacy", "--space", "b1"], { PATH: `${pinned}:${hostPath}` });
+  check("a definition saved with a bare name refuses to start SCHEMA_INVALID, exit 1, naming the remove and add again",
+    legacy.status === 1 && legacy.envelope?.error?.code === "SCHEMA_INVALID" && /names its executable by a bare name/.test(legacy.envelope.error.message) && /add it again/.test(legacy.envelope.error.remedy ?? ""), shown(legacy));
+  const legacyRows = run(["service", "--space", "b1"]).envelope?.result?.instances as { definition?: string }[] | undefined;
+  check("...and records no instance", Array.isArray(legacyRows) && !legacyRows.some((row) => row.definition === "legacy"), legacyRows);
+  check("...and runs nothing", readFileSync(ran, "utf8") === "pinned\n");
+  check("rig: the legacy definition is forgotten", run(["service", "remove", "legacy", "--space", "b1", "--yes"]).status === 0);
+}
+
 // A process service whose HTTP readiness never answers: nothing listens at its loopback address.
 {
   const port = await freePort(), httpDefinition = join(home, "http.json");
@@ -156,7 +242,10 @@ check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 
 }
 
 // A process service that answers its own HTTP readiness with a status, as a Node child on a free port.
-const answering = (port: number, status: number) => ({ type: "process", executable: process.execPath, args: ["-e", `require("node:http").createServer((_, res) => { res.statusCode = ${status}; res.end(); }).listen(${port}, "127.0.0.1")`], cwd: root });
+const node = join(home, "node");
+copyFileSync(process.execPath, node);
+chmodSync(node, 0o700);
+const answering = (port: number, status: number) => ({ type: "process", executable: node, args: ["-e", `require("node:http").createServer((_, res) => { res.statusCode = ${status}; res.end(); }).listen(${port}, "127.0.0.1")`], cwd: root });
 {
   const port = await freePort(), file = join(home, "unready.json");
   writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: answering(port, 503), readiness: { type: "http", url: `http://127.0.0.1:${port}/health`, expectedStatus: 200, timeoutMs: 1500 } }));
@@ -201,6 +290,50 @@ const answering = (port: number, status: number) => ({ type: "process", executab
   check("no instance was recorded for it", (listed.envelope?.result?.instances as { definition?: string }[] | undefined)?.filter((row) => row.definition === "web").length === 1, listed.envelope?.result);
   check("rig: the first instance stops", run(["service", "stop", "web", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
   check("rig: the definition is forgotten", run(["service", "remove", "web", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A process executable another local account could write, by its own mode, its folder's, or the
+// folder a link to it is in.
+{
+  const dir = mkdtempSync(join(home, "exe-")), script = join(dir, "run.sh"), file = join(home, "exe.json");
+  writeFileSync(script, "#!/bin/sh\nexec sleep 60\n", { mode: 0o700 });
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: script, args: [], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));
+  const unsafe = (r: ReturnType<typeof run>, what: string, path: string) => r.status === 2 && r.envelope?.error?.code === "PERMISSION_DENIED"
+    && r.envelope.error.message === `${what} is not protected against other local writers: ${realpathSync(path)} is writable by every local account` && r.envelope.error.remedy === `chmod o-w ${realpathSync(path)}`;
+  chmodSync(script, 0o702);
+  const fileAdd = run(["service", "add", "unsafe", "--file", file, "--space", "b1"]);
+  check("add refuses a world-writable executable PERMISSION_DENIED, exit 2, naming it, with chmod o-w as its Next", unsafe(fileAdd, "the service executable", script), shown(fileAdd));
+  chmodSync(script, 0o700);
+  chmodSync(dir, 0o707);
+  const folderAdd = run(["service", "add", "unsafe", "--file", file, "--space", "b1"]);
+  check("add refuses an executable in a world-writable folder, naming the folder", unsafe(folderAdd, "the service executable", dir), shown(folderAdd));
+  chmodSync(dir, 0o700);
+  const links = mkdtempSync(join(home, "links-")), link = join(links, "run.sh"), linkFile = join(home, "link.json");
+  symlinkSync(script, link);
+  chmodSync(links, 0o707);
+  writeFileSync(linkFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: link, args: [], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));
+  const linkAdd = run(["service", "add", "linked", "--file", linkFile, "--space", "b1"]);
+  check("add refuses a link in a world-writable folder to a protected file, naming the link's folder", unsafe(linkAdd, "the service executable's folder", links), shown(linkAdd));
+  chmodSync(links, 0o700);
+  const saved = run(["service", "--space", "b1"]);
+  const savedNames = ((saved.envelope?.result?.definitions as { name: string }[] | undefined) ?? []).map((row) => row.name);
+  check("no refused definition was saved", Array.isArray(saved.envelope?.result?.definitions) && !savedNames.includes("unsafe") && !savedNames.includes("linked"), savedNames);
+  check("rig: the protected executable is saved", run(["service", "add", "unsafe", "--file", file, "--space", "b1"]).status === 0);
+  const started = run(["service", "start", "unsafe", "--space", "b1"]);
+  const id = started.envelope?.result?.instanceId;
+  check("rig: it starts", started.status === 0 && typeof id === "string", shown(started));
+  chmodSync(script, 0o702);
+  const restart = run(["service", "restart", "unsafe", "--space", "b1", "--yes"]);
+  check("a restart once the executable is world-writable refuses before it stops anything", unsafe(restart, "the service executable", script), shown(restart));
+  const kept = run(["service", "status", "unsafe", "--space", "b1"]);
+  check("the running instance is left running", kept.envelope?.result?.instanceId === id && kept.envelope?.result?.recordedState === "running", kept.envelope?.result);
+  const another = run(["service", "start", "unsafe", "--new-instance", "--space", "b1"]);
+  check("a start refuses it the same way", unsafe(another, "the service executable", script), shown(another));
+  const listed = run(["service", "--space", "b1"]);
+  check("the refused start recorded no instance", (listed.envelope?.result?.instances as { definition?: string }[] | undefined)?.filter((row) => row.definition === "unsafe").length === 1, listed.envelope?.result);
+  chmodSync(script, 0o700);
+  check("rig: its instance stops", run(["service", "stop", "unsafe", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
+  check("rig: the definition is forgotten", run(["service", "remove", "unsafe", "--space", "b1", "--yes"]).status === 0);
 }
 
 // A Linear service whose envRefs give the child HOME from SERVICE_HOME. With COTAL_HOME unset, each

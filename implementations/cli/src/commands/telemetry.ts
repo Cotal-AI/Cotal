@@ -42,6 +42,8 @@ export function validateTelemetryArguments(args: ParsedArgs): void {
 export async function telemetry(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const wanted = args.positionals[0] as TelemetryLevel | undefined;
+  // The intake is checked at every level, before a level is saved, since this report names it.
+  const url = telemetryUrl();
   const before = effectiveTelemetry(process.env);
   const optedOut = wanted !== undefined && before.source !== "file" && before.level === "off";
   const noOp = optedOut || (wanted !== undefined && !before.created && before.settings?.level === wanted);
@@ -53,7 +55,7 @@ export async function telemetry(args: ParsedArgs): Promise<void> {
     source: state.source,
     installId: state.level === "off" ? null : state.settings?.installId ?? null,
     account: state.level === "regular" ? accountHash() : null,
-    url: telemetryUrl(),
+    url,
     file: telemetrySettingsPath(),
   };
   const warnings = optedOut

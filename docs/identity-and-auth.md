@@ -55,7 +55,8 @@ An unavailable or denied service does not trigger another credential or server f
 the same library ([CLI](cli.md)). The out-of-band profiles last 24 hours unless
 `--expires-in <seconds>` or `--expires-at` sets another lifetime, and a standing-renewal consumer
 requires a bounded credential. `--no-expiry` issues one with no expiry, which `cotal doctor auth`
-reports as a warning; it reports any other unbounded credential as a finding. `--identity <creds>` reuses a file's nkey and principal,
+reports as a warning; it reports any other unbounded credential as a finding. `--replace` replaces a
+label's credential once it has expired or when it has no expiry. `--identity <creds>` reuses a file's nkey and principal,
 but the out-of-band agent mint allocates a new lifecycle UID. It does not reuse the old
 bind-only inboxes; clients must use the UID in the receipt and explicitly provision it when
 needed. Minting static creds is a

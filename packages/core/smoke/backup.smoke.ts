@@ -7,6 +7,7 @@ import {
 } from "@nats-io/jetstream";
 import {
   CREDENTIAL_LIFETIMES,
+  admissionBucket,
   backupProfilePermissions,
   canonicalBackupStreamConfig,
   chatStream,
@@ -24,6 +25,7 @@ import {
   inboxStream,
   mintLifecycleUid,
   principalKey,
+  recordsKvStreamName,
   restoreProfilePermissions,
   spaceBackupInventory,
   taskDurableConfig,
@@ -32,27 +34,30 @@ import {
   validatePersistentConsumer,
   validatePersistentConsumerInventory,
   validateSpaceBackupInventory,
+  wfjStreamName,
 } from "../src/index.js";
 
 const space = "backup_smoke";
 const connId = "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const inventory = spaceBackupInventory(space);
 
-assert.equal(inventory.full.length, 8);
+assert.equal(inventory.full.length, 11);
 const endpointStreams = endpointPlaneStreamNames(space);
 assert.equal(endpointStreams.length, 15);
 assert.equal(new Set(endpointStreams).size, 15);
+// The workflow run stores are endpoint stores that a full artifact holds: the step journal, the
+// records store and the run admission store (SPEC 14.8), which together resume a run.
+const workflowStreams = inventory.backedUp.filter((stream) => stream.class === "workflow").map((stream) => stream.name);
+assert.deepEqual(workflowStreams, [wfjStreamName(space), recordsKvStreamName(space), `KV_${admissionBucket(space)}`]);
 assert.deepEqual(
   inventory.excluded.filter((stream) => stream.class === "control").map((stream) => stream.name).sort(),
-  [...endpointStreams].sort(),
+  endpointStreams.filter((name) => !workflowStreams.includes(name)).sort(),
 );
-// The five legacy exclusions remain alongside fifteen nonportable endpoint/control resources. The
+// The five legacy exclusions remain alongside twelve nonportable endpoint/control resources. The
 // artifact object store keeps its own class because pin extends lifetime, not durability; endpoint
 // state is recreated empty after restore rather than misrepresented as derived or transient data.
-// The issued-authority and run-admission stores (SPEC 13.15, 14.8) ride with the run, program and
-// journal state they authorize: a restore recreates all of them empty, so no run is resumable and
-// none is taken back under authority the restore could not verify.
-assert.equal(inventory.excluded.length, 20);
+// The issued-authority stores (SPEC 13.15) stay excluded and come back empty.
+assert.equal(inventory.excluded.length, 17);
 // Comparator mechanics ONLY: the list below is synthesized from the inventory itself, so this line
 // can never fail for a family the inventory lost or never knew. That is the #643 circularity; the claim
 // it used to carry (that the inventory agrees with a real broker) is proved by the GATED live

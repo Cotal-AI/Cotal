@@ -25,8 +25,9 @@
  *     naming the changed count. With only the broker running the delete applies, and its receipt
  *     names `cotal up`, and `cotal down --yes` with `cotal space forget`. History, send and
  *     `run ps` then refuse naming the missing streams, and `status` shows them absent with `up
- *     --root` first in its Next. A bare `up` creates the streams again on the running broker,
- *     empty, says so and starts delivery, and a later `up` finds them held.
+ *     --root` first in its Next. A run waiting at a checkpoint is listed with its state in the
+ *     preview and the receipt, and a finished run is not. A bare `up` creates the streams again on
+ *     the running broker, empty, says so and starts delivery, and a later `up` finds them held.
  *  7. A partial loss. When the running broker lost only the delivery bucket, `up` leaves the rest as
  *     they are and refuses TARGET_NOT_FOUND (exit 2) naming the restart, which creates it.
  *  8. A stack whose registration an older CLI dropped or replaced. With none, `down --yes` refuses
@@ -36,8 +37,11 @@
  *     at the stack's own root and broker is stopped through, and neither leaves a registration.
  *  9. A store directory that also holds the user's files. After `up --store-dir` and `down`,
  *     `reset store`, `reset space` and their dry runs refuse CONFLICT naming those files, and the
- *     folder keeps them.
- * 10. An open space deleted under its running stack. Another Cotal home adds the space and deletes
+ *     folder keeps them. Once that store path is a link, they refuse naming it and its target.
+ * 10. A deleted folder. With a whole stack running, its folder is deleted. `status` marks the folder
+ *     gone, `down --space --yes` from another folder stops every member by signal and removes the
+ *     stack definitions, no member process is left, and another folder starts the same name.
+ * 11. An open space deleted under its running stack. Another Cotal home adds the space and deletes
  *     it. `status` says the space was deleted under the running stack and leads its Next with
  *     `cotal down --yes`, then `cotal up`; history, send and `run ps` refuse with that cause and
  *     remedy. `down --yes` and `up` give the space its streams back.
@@ -46,7 +50,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -184,7 +188,7 @@ try {
     writeFileSync(foreign, "not a credential\n", { mode: 0o600 });
     const saveService = (name: string, creds: string) => {
       const file = join(keys, `${name}.json`);
-      writeFileSync(file, JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 }, credentialRef: { kind: "file", path: creds } }));
+      writeFileSync(file, JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: "/bin/sh", args: ["-c", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 }, credentialRef: { kind: "file", path: creds } }));
       return cli(root, "service", "add", name, "--file", file, "--space", space, "--json");
     };
     const saved = [saveService("minted", minted), saveService("foreign", foreign)];
@@ -240,12 +244,31 @@ try {
     const created = cli(home, "space", "create", space, "--root", root, "--json");
     check("space create prepares a third controller root", created.status === 0, shown(created));
     anchor(root);
-    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
     const services = cli(root, "service", "--space", space, "--json");
-    const delivery = (services.env?.result?.instances as { definition: string; instanceId: string }[] | undefined)?.find((row) => row.definition === "stack-delivery")?.instanceId;
-    check("up starts the broker and delivery", started.status === 0 && typeof delivery === "string", { up: shown(started), services: shown(services) });
-    const stoppedDelivery = cli(root, "service", "stop", "stack-delivery", "--instance", String(delivery), "--space", space, "--yes", "--json");
-    check("the delivery member stops on its own", stoppedDelivery.status === 0, shown(stoppedDelivery));
+    const instance = (definition: string) => (services.env?.result?.instances as { definition: string; instanceId: string }[] | undefined)?.find((row) => row.definition === definition)?.instanceId;
+    const delivery = instance("stack-delivery"), manager = instance("stack-manager");
+    check("up starts the broker, delivery and the manager", started.status === 0 && typeof delivery === "string" && typeof manager === "string", { up: shown(started), services: shown(services) });
+    // One run waits at a checkpoint and one finishes; the delete names only the first.
+    writeFileSync(join(root, "wait.js"), 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
+    writeFileSync(join(root, "done.js"), 'log("done");\n');
+    const waiting = cli(root, "run", "start", "wait.js", "--space", space, "--json"), finishing = cli(root, "run", "start", "done.js", "--space", space, "--json");
+    const runId = (waiting.env?.result?.result as { runId?: string } | undefined)?.runId;
+    check("a run that waits and a run that finishes start", waiting.status === 0 && typeof runId === "string" && finishing.status === 0, { waiting: shown(waiting), finishing: shown(finishing) });
+    let runs: { unfinished?: { runId: string; state: string }[]; finished?: number } | undefined;
+    for (let i = 0; i < 40; i++) {
+      runs = cli(home, "space", "delete", space, "--dry-run", "--json").env?.result?.runs as typeof runs;
+      if (runs?.finished === 1) break;
+      await new Promise((settle) => setTimeout(settle, 250));
+    }
+    check("the finished run is counted and only the waiting run is listed, with its state", runs?.finished === 1 && runs.unfinished?.length === 1 && runs.unfinished[0]?.runId === runId && runs.unfinished[0].state === "running", runs);
+    for (const [definition, id] of [["stack-manager", manager], ["stack-delivery", delivery]] as const) {
+      const stoppedMember = cli(root, "service", "stop", definition, "--instance", String(id), "--space", space, "--yes", "--json");
+      check(`the ${definition} member stops on its own`, stoppedMember.status === 0, shown(stoppedMember));
+    }
+    const runPreview = cli(home, "space", "delete", space, "--dry-run");
+    check("the delete preview lists the waiting run and says it goes with the streams",
+      runPreview.status === 0 && /Workflow runs that have not finished/.test(runPreview.stdout) && runPreview.stdout.includes(runId ?? "-") && runPreview.stdout.includes("cotal run show <run>"), shown(runPreview));
     // A service the user added still uses the streams, and `down` refuses beside it, so the refusal
     // names that service's own stop and then the delete again.
     writeFileSync(join(root, "idle.json"), JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", "setTimeout(() => {}, 600000)"], cwd: root }, readiness: { type: "process", timeoutMs: 10000 } }));
@@ -279,6 +302,7 @@ try {
 
     const deleted = cli(home, "space", "delete", space, "--yes");
     check("space delete applies with only the broker running", deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), shown(deleted));
+    check("its receipt lists the waiting run it removed", /Workflow runs removed/.test(deleted.stdout) && deleted.stdout.includes(runId ?? "-"), shown(deleted));
     check("its receipt names the route back: cotal up there, or cotal down --yes and cotal space forget",
       /Next/.test(deleted.stdout) && deleted.stdout.includes("cotal up") && deleted.stdout.includes(`Run in ${root}: create the space's streams again`) && deleted.stdout.includes("cotal down --yes") && deleted.stdout.includes(`cotal space forget ${space}`), shown(deleted));
     // Before that up, history used to read "0 messages" and send exited 3 with "no responders".
@@ -297,7 +321,9 @@ try {
     check("run ps refuses TARGET_UNAVAILABLE naming the same cause", runsGone.status === 2 && runsGone.stderr.includes(`the streams of ${space} are not on its broker; a space delete removes them`), shown(runsGone));
     const bare = cli(root, "up", "--json");
     const members = (bare.env?.result?.members as { role: string; state: string }[] | undefined) ?? [];
-    check("a bare up creates the streams again on the running broker and starts delivery", bare.status === 0 && bare.env?.result?.streamsRecreated === true && members.some((row) => row.role === "broker" && row.state === "reused") && members.some((row) => row.role === "delivery" && row.state === "started"), shown(bare));
+    check("a bare up creates the streams again on the running broker and starts delivery", bare.status === 0 && bare.env?.result?.streamsRecreated === true && members.some((row) => row.role === "broker" && row.state === "reused") && members.some((row) => row.role === "delivery" && row.state === "started"), shown(bare))
+    const gone = cli(root, "run", "show", runId ?? "-", "--space", space, "--json");
+    check("the removed run is gone after the streams return", gone.status === 2 && gone.env?.error?.code === "TARGET_NOT_FOUND", shown(gone));;
     const sent = cli(root, "send", "-c", "general", "after the delete", "--space", space, "--json");
     check("the space takes a message again", sent.status === 0, shown(sent));
     const again = cli(root, "up", "--json");
@@ -399,9 +425,51 @@ try {
       check(`reset ${kind} ${mode} refuses CONFLICT, naming the files beside the store`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`${store} also holds notes.txt, photos`)), shown(reset));
     }
     check("the folder keeps the user's files and the store", existsSync(join(store, "notes.txt")) && existsSync(join(store, "photos")) && existsSync(join(store, "jetstream")));
+    // The recorded store path replaced by a link: each reset names the path and its target.
+    const moved = `${store}-real`;
+    renameSync(store, moved);
+    roots.push(moved);
+    symlinkSync(moved, store);
+    for (const kind of ["store", "space"]) for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", kind, space, mode, "--json");
+      check(`reset ${kind} ${mode} refuses CONFLICT, naming the linked store path and the directory it points to`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`the recorded store path ${store} is a link to ${moved}`)) && Boolean(reset.env.error.remedy?.includes(`cotal reset ${kind} ${space} --dry-run`)), shown(reset));
+    }
+    check("nothing is removed through the link", existsSync(join(moved, "notes.txt")) && existsSync(join(moved, "jetstream")));
   }
 
-  // 10. An open space another machine deleted under its running stack.
+  // 10. A stack whose folder is deleted stops from another folder, and its name starts again.
+  {
+    const space = "tear7";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a root that is then deleted", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    const listed = cli(root, "service", "--space", space, "--json");
+    const pids = ((listed.env?.result?.instances as { pid: number | null }[] | undefined) ?? []).map((row) => row.pid);
+    check("up starts the broker, delivery and the manager", started.status === 0 && pids.length === 3 && pids.every((pid) => typeof pid === "number"), { up: shown(started), services: shown(listed) });
+    anchors.delete(root);
+    rmSync(root, { recursive: true, force: true });
+    const other = folder(`${space}-other`);
+    anchor(other);
+    const status = cli(other, "status", "--space", space, "--json");
+    check("status says the project folder is gone", (status.env?.result?.selected as { rootGone?: unknown } | undefined)?.rootGone === true, shown(status));
+    const stopped = cli(other, "down", "--space", space, "--yes", "--json");
+    const members = (stopped.env?.result?.members as { result: string }[] | undefined) ?? [];
+    check("down --space from another folder stops every member by signal and removes the stack definitions",
+      stopped.status === 0 && stopped.env?.result?.kind === "gone-root-stack-stop" && members.length === 3 && members.every((row) => row.result === "stopped")
+        && JSON.stringify(stopped.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]), shown(stopped));
+    check("no member process is left", pids.every((pid) => { try { process.kill(pid!, 0); return false; } catch { return true; } }), pids);
+    const elsewhere = folder(`${space}b`);
+    const again = cli(home, "space", "create", space, "--root", elsewhere, "--json");
+    anchor(elsewhere);
+    const reused = cli(elsewhere, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
+    const last = cli(elsewhere, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 11. An open space another machine deleted under its running stack.
   {
     const space = "tear9";
     const root = folder(space);

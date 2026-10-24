@@ -472,17 +472,18 @@ const heardOnChannel = (...senders: readonly (readonly [string, string])[]): Par
 // ---- 8. a channel outside the grant --------------------------------------------------------------
 console.log("8. a channel outside the session's grant refuses before any effect");
 {
-  const none = grantRefusal([], "review", "post");
+  const reopen = (channel: string) => `cotal chat ${channel} --stdio --space a2`;
+  const none = grantRefusal([], "review", "post", reopen);
   check("a session opened on no channel refuses a post as a permission denial",
     none?.outcome === "refused" && none.code === "PERMISSION_DENIED", none);
-  check("...says so and names the command that opens a session on the channel",
-    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("cotal chat review"), none);
-  const read = grantRefusal(["general"], "other", "read");
+  check("...says so and names the command that opens a session on the channel with this session's flags",
+    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("Leave and run cotal chat review --stdio --space a2 to open"), none);
+  const read = grantRefusal(["general"], "other", "read", reopen);
   check("a channel outside a read grant refuses as a permission denial", read?.code === "PERMISSION_DENIED" && read.message === "#other is outside this session's read grant", read);
   check("no refusal shows a broker subject or calls the session an agent",
     [none, read].every((r) => !/cotal\.|subject|agent/i.test(r?.message ?? "")), [none, read]);
   check("a granted channel, a matching wildcard and an open grant pass",
-    grantRefusal(["general"], "general", "post") === undefined && grantRefusal(["team.>"], "team.a", "read") === undefined && grantRefusal([">"], "review", "post") === undefined);
+    grantRefusal(["general"], "general", "post", reopen) === undefined && grantRefusal(["team.>"], "team.a", "read", reopen) === undefined && grantRefusal([">"], "review", "post", reopen) === undefined);
 }
 
 // ---- 9. times -------------------------------------------------------------------------------------

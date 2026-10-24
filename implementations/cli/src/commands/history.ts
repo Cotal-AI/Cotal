@@ -1,4 +1,4 @@
-import { CotalEndpoint, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
+import { CotalEndpoint, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
 import {
   brokerAddressForDisplay,
   CommandFailure,
@@ -46,7 +46,7 @@ const followFlag = { name: "follow", type: "boolean", description: "keep listeni
 export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 export const historySubcommands = [
-  { name: "clear", summary: "confirm and purge all retained channel history in the selected space", usage: "clear [--dms] [--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+  { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the selected space", usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete `clear` and the channels the target space's personas declare, as `send -c` offers, then
@@ -63,6 +63,19 @@ const MAX_LIMIT = 1000;
 /** How many message ids a follow remembers to drop duplicates: a re-tap after a reconnect and the
  *  snapshot both overlap the live feed. */
 const SEEN_IDS = 10_000;
+/** How many characters of a message a text or plain row shows. */
+const ROW_TEXT = 500;
+
+/** A message's text as a row shows it: whole up to `ROW_TEXT` characters, else cut there and marked
+ *  with its size, since `--limit` bounds messages and one message can be close to a megabyte. */
+function rowText(text: string): string {
+  let head = "", count = 0;
+  for (const char of text) {
+    if (count++ === ROW_TEXT) return `${head}… (cut from ${Buffer.byteLength(text)} bytes; --json carries the whole text)`;
+    head += char;
+  }
+  return text;
+}
 /** How long a `--dms` read waits for the roster that names DM recipients before it shows principals. */
 const ROSTER_MS = 2_000;
 
@@ -174,6 +187,37 @@ function keep(item: HistoryItem, since: Since | undefined, from: string | undefi
 
 const denial = (e: unknown): boolean => /permission|not authori[sz]ed|read acl|may not read/i.test(e instanceof Error ? e.message : String(e));
 
+/** How a raw credential reads chat history, from the grants it carries. One that holds the bare
+ *  multi-filter consumer create, as the observer and admin profiles do, reads across channels and
+ *  gets `undefined`. An agent's reads one channel at a time through its own
+ *  `chathist_<owner>-<actor>-<uid>` consumer: that lifecycle UID, and the channels the create grant
+ *  names. One that may create no chat consumer at all reads no channel: no UID, and no channels. Any
+ *  other shape, and a user bearer, gets `undefined`; a bearer's own lifecycle comes with the
+ *  connection. */
+function credentialReader(conn: Connection): { lifecycleUid: string | undefined; channels: string[] } | undefined {
+  if (conn.creds === undefined || conn.bearer !== undefined) return undefined;
+  const allow = credsClaims(conn.creds).nats?.pub?.allow ?? [];
+  const create = `$JS.API.CONSUMER.CREATE.${chatStream(conn.space)}`;
+  if (allow.some((row) => subjectMatches(row, create))) return undefined;
+  const actor = idFromCreds(conn.creds), filter = `${spacePrefix(conn.space)}.chat.*.*.`;
+  let lifecycleUid: string | undefined;
+  const channels: string[] = [];
+  for (const row of allow) {
+    if (!row.startsWith(`${create}.chathist_`)) continue;
+    const [name = "", ...tail] = row.slice(create.length + 1).split(".");
+    const uid = name.slice(name.lastIndexOf("-") + 1);
+    try { if (name !== chatHistDurable(DEV_OWNER, actor, uid)) continue; } catch { continue; }
+    lifecycleUid ??= uid;
+    const subject = tail.join(".");
+    if (subject.startsWith(filter)) channels.push(subject.slice(filter.length));
+  }
+  if (lifecycleUid !== undefined) return { lifecycleUid, channels };
+  return allow.some((row) => row.startsWith(`${create}.`) || subjectMatches(row, `${create}.reader`)) ? undefined : { lifecycleUid, channels };
+}
+
+/** The channels a credential's history grant names, as a refusal quotes them. */
+const grantedText = (channels: readonly string[]): string =>
+  channels.includes(">") ? "every channel" : channels.length ? channels.map((ch) => `#${ch}`).join(", ") : "no channel";
 /** A bare number that reads as a year, which `--since` still takes as a sequence. */
 const yearShaped = (input: string): boolean => /^(19|20)\d\d$/.test(input);
 
@@ -221,11 +265,12 @@ export async function history(args: ParsedArgs): Promise<void> {
   const target = { space: conn.space, channel: channel ?? null, dms: Boolean(v.dms) };
   recordOperationSpace(conn.space);
   const errors: string[] = [];
+  const reader = credentialReader(conn);
   const ep = new CotalEndpoint({
     space: conn.space,
     servers: conn.server,
     ...endpointAuth(conn),
-    ...(conn.mode === "user" ? { lifecycleUid: conn.epCaller?.uid } : {}),
+    ...(conn.mode === "user" ? { lifecycleUid: conn.epCaller?.uid } : reader?.lifecycleUid ? { lifecycleUid: reader.lifecycleUid } : {}),
     channels: [],
     consume: false,
     registerPresence: false,
@@ -285,10 +330,16 @@ interface WindowRequest {
 export async function readWindow(ep: CotalEndpoint, conn: Connection, req: WindowRequest): Promise<{ result: HistoryResult; warnings: OutputWarning[] }> {
   const warnings: OutputWarning[] = [];
   const user = conn.mode === "user";
+  // A credential that reads one channel at a time reads as a user-auth identity does.
+  const reader = user ? undefined : credentialReader(conn);
   if (user && req.dms)
     throw new CommandFailure("refused", "PERMISSION_DENIED", "DM history is readable only with the space signer's audit credential; a user-auth identity holds no DM read grant", { target: req.target });
+  if (reader && req.dms)
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "DM history is readable only with the space signer's audit credential; this credential holds no DM read grant", { target: req.target });
   if (user && req.since?.kind === "seq")
     throw new CommandFailure("refused", "UNSUPPORTED", "stream-sequence cursors are not supported for user-auth history; give --since a time", { target: req.target });
+  if (reader && req.since?.kind === "seq")
+    throw new CommandFailure("refused", "UNSUPPORTED", "stream-sequence cursors are not supported for a credential that reads one channel at a time; give --since a time", { target: req.target });
 
   // The channel list with its retained counts. A named channel needs it only for the count, so a
   // failure there is a part not read; reading every channel needs it to know what to read.
@@ -307,7 +358,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   let read: HistoryItem[] = [];
   let olderRetained: boolean | null = null;
   const denied: string[] = [];
-  if (!user) {
+  if (!user && !reader) {
     let rows: { channel: string; seq: number; msg: CotalMessage }[];
     try {
       rows = await ep.multiChannelHistory(channels, { limit: req.limit });
@@ -331,6 +382,13 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     const signal = AbortSignal.timeout(30_000);
     let incomplete = false;
     for (const ch of channels) {
+      // A credential whose own grant leaves the channel out is told what it does grant, unread.
+      if (reader && !reader.channels.some((granted) => subjectMatches(granted, ch))) {
+        if (req.channel !== undefined)
+          throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not read #${ch} in ${conn.space}: its history grant is ${grantedText(reader.channels)}`, { target: req.target, remedy: `read a channel it grants, or mint one that reads #${ch} with \`cotal auth mint <label> --space ${conn.space} --allow-subscribe ${ch} --out <file>\`` });
+        denied.push(ch);
+        continue;
+      }
       try {
         const page = await ep.channelHistoryPage(ch, { limit: req.limit, signal });
         read.push(...page.items.map((msg) => itemOf(msg, { channel: ch })));
@@ -345,7 +403,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       }
     }
     if (denied.length)
-      warnings.push({ code: "CHANNELS_DENIED", target: req.target, message: `this identity may not read ${denied.length === 1 ? "one channel" : `${denied.length} channels`} (${denied.map((ch) => `#${ch}`).join(", ")}), so their messages are not shown` });
+      warnings.push({ code: "CHANNELS_DENIED", target: req.target, message: `this identity may not read ${denied.length === 1 ? "one channel" : `${denied.length} channels`} (${denied.map((ch) => `#${ch}`).join(", ")}), so their messages are not shown${reader ? `; its history grant is ${grantedText(reader.channels)}` : ""}` });
     read.sort((a, b) => a.ts.localeCompare(b.ts));
     olderRetained = incomplete || read.length > req.limit;
     read = read.slice(-req.limit);
@@ -567,7 +625,7 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],
-                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: item.text })),
+                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: rowText(item.text) })),
               }]
             : []),
           { kind: "lines" as const, lines: notes },

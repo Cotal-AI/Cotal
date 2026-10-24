@@ -5942,6 +5942,9 @@ characters**, which is an id token by construction. The reference implementation
   step's amendments beside its accepted answer in the order the records bucket committed them (each
   record's revision); `at` is the filer's clock and never decides the order. The last one listed is
   the step's current recorded position, and the accepted answer remains what the program acted on.
+  A pause in a branch that lost a `race`, or one cancelled after it accepted an answer, settled
+  with an answer the program never read: the run surface lists that answer as not acted on and
+  names the branch the race took.
 - A held `once` step (`spec/cotal-lang.md` §7.8) is answered like a checkpoint, addressed by its
   step key; the driver presents the hold id (`spec/cotal-lang.md` §7.8) as the token, whatever kind
   the step is, and reads the step's accepted answer and amendments under the same id once it
@@ -6106,6 +6109,13 @@ independently of the recorded state. A running record with a marker does not pro
 a released record with a marker cannot resume. A failed marker read MUST be reported as unreadable,
 not as marker absence or permission to resume. A terminal record remains terminal whether or not
 it has a marker.
+
+A `run-status` request MAY carry `journal: { offset }`, a row offset into the journal. The reply
+then carries `journalTotal`, the journal's row count, and its `journal` holds the rows from
+`offset`, in journal order, that fit in one reply under the serving connection's payload limit: at
+least one row while any remain, and none when `offset` is at or past the end. A record that does not
+fit in a reply with no rows, or a single row that does not fit, MUST be refused
+`resource-exhausted`. A request without `journal` returns the whole journal in one reply.
 
 Each cancellation intent is keyed by the full served subject, not just the envelope id. A pending
 intent prevents a new local launch but does not stop an existing drive. Only an observed durable
@@ -6493,7 +6503,9 @@ single-function profiles, each granting only the verbs its function needs and no
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
   human-CLI and maintenance surfaces, each scoped to its verbs. `teardown` also lists stream names,
   so space deletion finds the transfer buckets (§8), and holds `STREAM.INFO` and `STREAM.DELETE` on
-  each transfer stream named at its mint. The ephemeral teardown connection may read only its own
+  each transfer stream named at its mint. It also holds one non-fencing direct get on the records
+  bucket, `DIRECT.GET.KV_cotal_records_<space>.$KV.cotal_records_<space>.run.*.*.status`, and no
+  other read or write of it, so space deletion names the workflow runs it removes. The ephemeral teardown connection may read only its own
   broker user/account identity before native impact or deletion; this grants no other principal lookup.
 - `issuer`: one issuance window (§13.15), minted per mint or per lifecycle terminal by the party
   holding the space signer; the issued and accepted stores plus one auth-store liveness read.

@@ -77,6 +77,17 @@ export function assertBareDownServicesVerified(space: string, rows: readonly Bar
   });
 }
 
+/** `down --preserve-state` stops the broker without stopping this space's saved services, so it
+ *  refuses while one may still run, naming each with the command that stops or inspects it. */
+export function assertNoServicesForPreserve(space: string): void {
+  const rows = planBareDownServices(space).filter((row) => row.action !== "already-stopped");
+  if (!rows.length) return;
+  throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `saved services in this space still run or could not be verified and depend on its broker (${rows.map((row) => `${row.definition} instance ${row.instanceId}: ${row.action === "stop" ? row.process : row.reason}`).join("; ")}); down --preserve-state stopped nothing`, {
+    target: { space, services: rows.map((row) => ({ definition: row.definition, instanceId: row.instanceId, process: row.process, reason: row.reason })) },
+    remedy: `${rows.map((row) => row.action === "stop" ? `stop ${row.definition} with cotal service stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes` : row.remedy).join("; ")}, then run cotal down --preserve-state again`,
+  });
+}
+
 export function bareDownServicesView(space: string, rows: readonly BareDownService[]): Report {
   const plan = (row: BareDownService) => row.action === "stop" ? "stop" : row.action === "already-stopped" ? "already stopped, skipped" : `blocked: ${row.reason}`;
   return { space, sections: [{ title: "Services bare down stops first", blocks: [

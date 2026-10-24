@@ -1,4 +1,4 @@
-/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle. */
+/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -287,12 +287,18 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     }
     rmSync(existingStore, { recursive: true });
     if (mode === "open") {
+      // Another process on the recorded address is refused before the resume or the restore journals
+      // or starts anything, so the cut stays ready for the run after it leaves.
       const occupied = await occupy(port);
       const blocked = run("up", "--detach", "--server", server, "--space", space);
-      assert.notEqual(blocked.status, 0);
-      assert.match(blocked.stderr, /refuses the (?:unproven )?occupied listener/);
-      const degraded = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string };
-      assert.equal(degraded.state, "resume-degraded");
+      assert.equal(blocked.status, 2, `${blocked.stdout}${blocked.stderr}`);
+      assert.match(blocked.stderr, /to have no listener; the resumed broker needs that address, so nothing was started/);
+      assert.equal(readMaintenanceJournal(root)?.state, "ready", "a refused resume leaves the cut ready");
+      const blockedRestore = run("backup", "restore", artifact, "--json");
+      const envelope = JSON.parse(blockedRestore.stdout) as { error?: { code?: string } };
+      assert.equal(blockedRestore.status, 2, `${blockedRestore.stdout}${blockedRestore.stderr}`);
+      assert.equal(envelope.error?.code, "CONFLICT");
+      assert.equal(readMaintenanceJournal(root)?.state, "ready", "a refused restore leaves the cut ready");
       await closeServer(occupied);
     }
     must("ordinary same-principal resume", run("up", "--detach", "--server", server, "--space", space));
@@ -308,21 +314,53 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const active = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as {
       state: string;
       restore: { attemptId: string; selection?: string; previousSource?: { identity: { path: string } } };
+      launch?: { previousCutNewer?: boolean };
     };
     assert.equal(active.state, "active");
     assert.equal(active.restore.selection, restoreArtifact === registryArtifact ? "registry" : "full", `${mode} restore journals its selection`);
-    // The receipt names the restore attempt and the cleanup that retires it, with --discard-history
-    // only for a registry restore.
+    // Both artifacts predate the cut this restore replaced, which was preserved after the resume
+    // above. So each restore leaves something only in the store it set aside: the registry restore
+    // every other stream, and the full restore what that resume wrote.
+    assert.equal(active.launch?.previousCutNewer, true, `${mode} restore journals that the cut it replaced is newer than its artifact`);
+    const leftOut = restoreArtifact === registryArtifact ? "chat and DM history and workflow runs" : "newer chat and DM history and workflow runs";
+    // The receipt names the restore attempt and the cleanup that retires it, with --discard-history.
     assert.ok(restored.stdout.includes(`✓ restored the backup ${restoreArtifact === registryArtifact ? "registry" : "in full"} as restore attempt ${active.restore.attemptId}`), `${mode} up --restore names its attempt\n${restored.stdout}`);
     const cleanupNext = restored.stdout.split("\n").find((line) => line.startsWith("next: ")) ?? "";
-    assert.ok(cleanupNext.includes(`cotal backup cleanup-fallback ${active.restore.attemptId} --yes`) && cleanupNext.includes("--discard-history") === (restoreArtifact === registryArtifact), `${mode} up --restore names the cleanup that retires it\n${restored.stdout}`);
+    assert.ok(cleanupNext.includes(`cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history`) && cleanupNext.includes(`the only copy of the ${leftOut} it left out`), `${mode} up --restore names the cleanup that retires it\n${restored.stdout}`);
     // A registry restore says history starts empty and names the store that holds its only copy.
     if (restoreArtifact === registryArtifact) {
-      assert.match(restored.stdout, /channel settings only, so chat and DM history start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
+      assert.match(restored.stdout, /channel settings only, so chat and DM history and workflow runs start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
       const previous = active.restore.previousSource?.identity.path;
-      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of that history. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
-    } else assert.doesNotMatch(restored.stdout, /history start empty/);
+      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of them. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
+    } else {
+      assert.doesNotMatch(restored.stdout, /history start empty/);
+      const previous = active.restore.previousSource?.identity.path;
+      assert.ok(previous && restored.stdout.includes("This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.") && restored.stdout.includes(`The previous store at ${previous} holds the only copy of the ${leftOut}.`), `${mode} full restore of an older artifact names the newer history it left out\n${restored.stdout}`);
+    }
+    // `up -f` boots a fresh mesh, so it refuses while the restore is active and names the way out.
+    const manifest = join(root, "cotal.yaml");
+    writeFileSync(manifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${server}\n${mode === "open" ? "  auth: false\n" : ""}channels:\n  general:\n    subscribe: []\n`);
+    const running = run("up", "-f", "cotal.yaml");
+    assert.equal(running.status, 2, `${mode} up -f while the restored stack runs refuses, exit 2\n${running.stdout}\n${running.stderr}`);
+    assert.match(running.stderr, /Code: +CONFLICT/);
+    assert.ok(running.stderr.includes(`stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes, then run cotal up -f cotal.yaml again`), `${mode} up -f names the way out\n${running.stderr}`);
+    // Any other `up` over the restored broker refuses before it touches the journal, which stays active.
+    for (const args of [["up"], ["up", "--server", server]]) {
+      const again = run(...args);
+      assert.equal(again.status, 2, `${mode} ${args.join(" ")} while the restored stack runs refuses, exit 2\n${again.stdout}\n${again.stderr}`);
+      assert.ok(/Code: +CONFLICT/.test(again.stderr) && again.stderr.includes("stop the restored stack with cotal down, then run cotal up again"), `${mode} ${args.join(" ")} names the way out\n${again.stderr}`);
+      assert.equal((JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string }).state, "active", `${mode} ${args.join(" ")} leaves the restore journal active`);
+    }
+    // `status` names the same cleanup for the attempt it shows under Maintenance.
+    const status = run("status", "--space", space);
+    const statusNext = status.stdout.split("\n").find((line) => line.includes(`cotal backup cleanup-fallback ${active.restore.attemptId}`)) ?? "";
+    assert.ok(statusNext.includes("--discard-history") && statusNext.includes(`the only copy of the ${leftOut} it left out`), `${mode} status names the cleanup that retires the restore\n${status.stdout}`);
     must("down", run("down"));
+    const stopped = run("up", "-f", "cotal.yaml");
+    assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
+    assert.match(stopped.stderr, /Code: +LIFECYCLE_BLOCKED/);
+    assert.ok(stopped.stderr.includes(`retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes, then run cotal up -f cotal.yaml again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
+    rmSync(manifest);
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the
       // exact recorded active target (a different --store-dir is refused) without retiring it.
@@ -333,28 +371,28 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       );
       must("later down", run("down"));
     }
-    if (restoreArtifact === registryArtifact) {
-      // The previous store holds the only copy of the history the registry restore left out, so the
-      // preview warns and both cleanup commands refuse to delete it without --discard-history.
+    {
+      // The previous store holds the only copy of what the restore left out, so the preview warns and
+      // both cleanup commands refuse to delete it without --discard-history.
       const previous = active.restore.previousSource!.identity.path;
       const preview = run("backup", "cleanup-fallback", active.restore.attemptId, "--dry-run", "--json");
       must("cleanup-fallback preview", preview);
       assert.ok((JSON.parse(preview.stdout) as { warnings: { code: string }[] }).warnings.some((w) => w.code === "HISTORY_ONLY_IN_PREVIOUS_STORE"), `${mode} preview warns about the only copy\n${preview.stdout}`);
-      // The attempt row names a restore attempt, not a full restore, since this one was registry-only.
+      // The attempt row names a restore attempt, not a full restore.
       const previewText = run("backup", "cleanup-fallback", active.restore.attemptId, "--dry-run");
       assert.ok(previewText.status === 0 && /Restore attempt:\s+restore-/.test(previewText.stdout) && !previewText.stdout.includes("Full restore attempt"), `${mode} the preview labels the attempt as a restore attempt\n${previewText.stdout}`);
       const kept = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes", "--json");
       assert.equal(kept.status, 1, `${mode} cleanup-fallback without --discard-history refuses\n${kept.stdout}\n${kept.stderr}`);
       assert.match(kept.stdout, /"code":"USAGE_INVALID"/);
       const keptPlain = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes");
-      assert.ok(keptPlain.status === 1 && keptPlain.stderr.includes("cleanup deletes it only with --discard-history; nothing was deleted") && !keptPlain.stderr.includes("Usage"), `${mode} the refusal names --discard-history without the command help\n${keptPlain.stderr}`);
+      assert.ok(keptPlain.status === 1 && keptPlain.stderr.includes(`only copy of the ${leftOut} it left out, and cleanup deletes it only with --discard-history; nothing was deleted`) && !keptPlain.stderr.includes("Usage"), `${mode} the refusal names --discard-history without the command help\n${keptPlain.stderr}`);
       assert.ok(existsSync(previous), `${mode} cleanup-fallback without --discard-history keeps the previous store`);
       const keptByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
-      assert.equal(keptByClean.status, 1, `${mode} clean restore-fallback without --discard-history refuses\n${keptByClean.stdout}\n${keptByClean.stderr}`);
+      assert.ok(keptByClean.status === 1 && keptByClean.stderr.includes(`holds the only copy of the ${leftOut} it left out; nothing was deleted`) && keptByClean.stderr.includes(`cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history`) && !keptByClean.stderr.includes("Usage"), `${mode} clean restore-fallback without --discard-history refuses, naming the flag without the command help\n${keptByClean.stdout}\n${keptByClean.stderr}`);
       assert.ok(existsSync(previous), `${mode} clean restore-fallback without --discard-history keeps the previous store`);
       must("cleanup fallback", run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history"));
       assert.equal(existsSync(previous), false, `${mode} --discard-history deletes the previous store`);
-    } else must("cleanup fallback", run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force"));
+    }
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "fallback cleanup retires the restore journal");
   } finally {
     run("down");
@@ -377,11 +415,13 @@ async function occupiedRestoreScenario(): Promise<void> {
     assert.equal(run("down", "--preserve-state").status, 0);
     assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
     occupied = await occupy(port);
+    // The restore probes the address its broker will bind before anything moves, so another listener
+    // there is refused and the cut stays ready.
     const blocked = run("up", "--restore", artifact, "--detach", "--server", server, "--space", space);
-    assert.notEqual(blocked.status, 0);
-    assert.match(blocked.stderr, /refuses the (?:unproven )?occupied listener/);
+    assert.equal(blocked.status, 2, `${blocked.stdout}${blocked.stderr}`);
+    assert.match(blocked.stderr, /to have no listener; the restored broker needs that address, so the preserved cut was not changed/);
     const journal = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string };
-    assert.equal(journal.state, "degraded");
+    assert.equal(journal.state, "ready");
     assert.equal(existsSync(join(root, ".cotal", "nats.pid")), false);
   } finally {
     if (occupied) await closeServer(occupied).catch(() => {});

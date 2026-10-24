@@ -3,22 +3,25 @@
  * database proves the group is the caller's user private group, as Debian's OpenSSH does for
  * StrictModes, the account list comes only from local name services, and the entry has no
  * extended ACL. World write, a foreign owner and a symlink always refuse, a root-owned sticky
- * ancestor is accepted, and a credential file keeps its owner-only rule. The account database and
- * the ACL read are injected, so no case reads this machine's accounts or ACLs. Only `win32`
+ * ancestor is accepted, and a credential file keeps its owner-only rule. A declared adapter path in
+ * Cotal's own install, as the launcher runs it, names `cotal update` as the fix. The account database and
+ * the ACL read are injected, so no case reads this machine's accounts or ACLs. A record this account
+ * may not open names the folder that withholds it, and a link keeps the no-follow refusal. Only `win32`
  * selects the Windows record model; the platform is passed in, so that runs here. Broker-free.
  *
  * Run: pnpm smoke:protected-paths
  */
 import { strict as nodeAssert } from "node:assert";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
 import {
   assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
-  protectedLocalDirectory, protectedLocalEntries, protectedLocalEntry, protectedPathPolicy, type AccountDatabase, type ProtectedPathPolicy,
+  protectedLocalDirectory, protectedLocalEntries, protectedLocalEntry, protectedPathPolicy, readLocalRecordSource, type AccountDatabase, type ProtectedPathPolicy,
 } from "../src/protected-records.js";
+import { validateServiceAdapterPaths } from "../src/service-adapter.js";
 
 if (process.platform === "win32") skipSuite("protected paths are POSIX-only");
 const counted = countedAssert(nodeAssert);
@@ -227,7 +230,15 @@ try {
   const link = join(dir, "link");
   symlinkSync(grouped, link);
   refused(() => protectedLocalDirectory(link, "the path", local), /: .*\/link is a symbolic link$/,
-    "use a physical path owned by you or root, without symlinks", "a real symlink");
+    `use the physical path ${shellPath(realpathSync.native(grouped))}`, "a real symlink names the path it resolves to");
+  // A link above the checked folder: the remedy names that folder's own physical path.
+  const clean = join(dir, "clean");
+  mkdirSync(join(clean, "sub"), { recursive: true, mode: 0o700 });
+  chmodSync(clean, 0o700);
+  const above = join(dir, "above");
+  symlinkSync(clean, above);
+  refused(() => protectedLocalDirectory(join(above, "sub"), "the project root", local), /: .*\/above is a symbolic link$/,
+    `use the physical path ${shellPath(realpathSync.native(join(clean, "sub")))}`, "a link above the folder names the folder's physical path");
 
   // A credential keeps its owner-only rule: group write refuses before any group is considered.
   const creds = join(dir, "creds");
@@ -241,7 +252,75 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 
-// 6. One place picks the record model from the platform. Only win32 takes the Windows access-list
+// 5b. A handler in Cotal's own install, as the launcher runs it, refuses with `cotal update` as the
+//     fix, because the update removes that write. Any other path keeps its chmod. World write is used,
+//     since group write is accepted on a host that proves the user's private group.
+{
+  const base = mkdtempSync(join(tmpdir(), "cotal-launcher-install-"));
+  const install = join(base, "cotal");
+  const runtime = join(install, "runtime", "node-v0-linux-x64");
+  const prior = { launcher: process.env.COTAL_LAUNCHER, prefix: process.env.npm_config_prefix };
+  try {
+    mkdirSync(join(runtime, "bin"), { recursive: true });
+    const handler = join(runtime, "bin", "node");
+    writeFileSync(handler, "", { mode: 0o755 });
+    for (const path of [install, join(install, "runtime"), runtime]) chmodSync(path, 0o757);
+    const declaration = { abiVersion: 1, paths: { handler: "file" } } as unknown as Parameters<typeof validateServiceAdapterPaths>[0];
+    const refusal = (): CommandFailure => {
+      try { validateServiceAdapterPaths(declaration, { handler }); } catch (error) { if (error instanceof CommandFailure) return error; throw error; }
+      throw new Error("the handler was accepted");
+    };
+    delete process.env.COTAL_LAUNCHER;
+    assert.equal(refusal().remedy, `chmod o-w ${runtime} ${join(install, "runtime")} ${install}`, "outside the launcher the handler refusal keeps its chmod");
+    process.env.COTAL_LAUNCHER = "1";
+    process.env.npm_config_prefix = install;
+    const own = refusal();
+    assert.ok(own.message.endsWith(`; those folders belong to Cotal's own install at ${install}`), `under the launcher the refusal says the folders are Cotal's own install: ${own.message}`);
+    assert.match(own.remedy ?? "", /^cotal update, /, "and its Next is cotal update");
+    chmodSync(base, 0o757);
+    assert.match(refusal().remedy ?? "", /^chmod o-w /, "a gap outside the install keeps the chmod");
+  } finally {
+    if (prior.launcher === undefined) delete process.env.COTAL_LAUNCHER; else process.env.COTAL_LAUNCHER = prior.launcher;
+    if (prior.prefix === undefined) delete process.env.npm_config_prefix; else process.env.npm_config_prefix = prior.prefix;
+    chmodSync(base, 0o700);
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// 6. A record this account may not open is refused with the folder that withholds it, which is often
+//    a folder above the file. A link stays the no-follow refusal; an absent file is no record.
+if (process.getuid?.() !== 0) {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "cotal-protected-read-")));
+  try {
+    const shut = join(base, "shut");
+    mkdirSync(join(shut, ".cotal"), { recursive: true, mode: 0o700 });
+    const record = join(shut, ".cotal", "record.json");
+    writeFileSync(record, "{}", { mode: 0o600 });
+    chmodSync(shut, 0o000);
+    let thrown: unknown;
+    try { readLocalRecordSource(record); } catch (error) { thrown = error; }
+    chmodSync(shut, 0o700);
+    assert.ok(thrown instanceof CommandFailure && thrown.code === "PERMISSION_DENIED", "a record under a folder this account cannot search refuses");
+    assert.equal((thrown as CommandFailure).message, `${shut} cannot be read by this account (EACCES), so ${record} was not read`, "the refusal names the folder, not the file or a link");
+    assert.equal((thrown as CommandFailure).remedy, `make it readable by you, for example with chmod u+rx ${shut}`, "its remedy is the chmod on that folder");
+    chmodSync(record, 0o000);
+    thrown = undefined;
+    try { readLocalRecordSource(record); } catch (error) { thrown = error; }
+    chmodSync(record, 0o600);
+    assert.equal((thrown as CommandFailure | undefined)?.message, `${record} cannot be read by this account (EACCES)`, "an unreadable file in a readable folder is named itself");
+    const link = join(base, "link.json");
+    symlinkSync(record, link);
+    thrown = undefined;
+    try { readLocalRecordSource(link); } catch (error) { thrown = error; }
+    assert.equal((thrown as CommandFailure | undefined)?.message, "the local record source could not be opened without following links", "a link keeps the no-follow refusal");
+    assert.equal(readLocalRecordSource(join(base, "absent.json")), undefined, "an absent file is no record");
+  } finally {
+    try { chmodSync(join(base, "shut"), 0o700); } catch { /* already restored */ }
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// 7. One place picks the record model from the platform. Only win32 takes the Windows access-list
 //    model; every other platform keeps the owner, mode and link checks, and this host has them.
 assert.equal(localRecordAccess("win32"), "windows-acl", "win32 selects the Windows access-list model");
 for (const platform of ["linux", "darwin", "freebsd"] as const)

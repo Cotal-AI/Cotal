@@ -2,7 +2,8 @@ import { isAbsolute, join } from "node:path";
 import { readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { spaceSegment } from "./auth-paths.js";
-import { canonicalRoot, homeCotalDir } from "./mesh-registry.js";
+import { MeshRegistryError, canonicalRoot, homeCotalDir } from "./mesh-registry.js";
+import { prepareCotalHomeForWrite } from "./protected-records.js";
 
 /**
  * A local space `cotal space create` prepared and no `cotal up` has started: its name and root.
@@ -26,15 +27,16 @@ export function preparedSpacesDir(): string {
 
 const preparedFile = (space: string): string => join(preparedSpacesDir(), `${spaceSegment(space)}.json`);
 
-/** Every prepared space. A file that is not a prepared space record throws naming it, as the
- *  registry does, so a damaged record is never read as an absent one. */
+/** Every prepared space. A file that is not a prepared space record, and a folder that exists and
+ *  cannot be read, such as a regular file in its place, throw a {@link MeshRegistryError} naming
+ *  it, as the registry does, so a damaged record is never read as an absent one. */
 export function loadPreparedSpaces(): PreparedSpace[] {
   let files: string[];
   try {
     files = readdirSync(preparedSpacesDir()).filter((f) => f.endsWith(".json"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw e;
+    throw new MeshRegistryError(preparedSpacesDir(), `the prepared spaces folder ${preparedSpacesDir()} could not be read: ${(e as Error).message}`, { cause: e });
   }
   return files.sort().map((f) => readPreparedFile(join(preparedSpacesDir(), f)));
 }
@@ -44,10 +46,10 @@ function readPreparedFile(file: string): PreparedSpace {
   try {
     doc = JSON.parse(readFileSync(file, "utf8")) as Partial<PreparedSpace>;
   } catch (e) {
-    throw new Error(`${file} does not parse as a prepared space record (${(e as Error).message}) - remove it`);
+    throw new MeshRegistryError(file, `${file} does not parse as a prepared space record (${(e as Error).message}) - remove it`, { cause: e });
   }
   if (typeof doc.space !== "string" || typeof doc.root !== "string" || !isAbsolute(doc.root) || typeof doc.ts !== "string" || file !== preparedFile(doc.space))
-    throw new Error(`${file} is not a usable prepared space record - remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable prepared space record - remove it`);
   return { space: doc.space, root: doc.root, ts: doc.ts };
 }
 
@@ -63,6 +65,7 @@ export function preparedSpaceAt(root: string): PreparedSpace | undefined {
 
 /** Write a prepared space: atomic, 0600, in a directory only this user can list. Returns the file. */
 export function recordPreparedSpace(p: PreparedSpace): string {
+  prepareCotalHomeForWrite();
   mkSecretDir(preparedSpacesDir());
   const file = preparedFile(p.space);
   const tmp = `${file}.${process.pid}.tmp`;

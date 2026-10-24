@@ -1,8 +1,11 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot } from "./auth-paths.js";
+import { homeCotalDir } from "./cotal-home.js";
+import { prepareCotalHomeForWrite } from "./protected-records.js";
+
+export { homeCotalDir, userCotalDir } from "./cotal-home.js";
 
 /**
  * The registry of meshes this machine can reach, so a `cotal spawn` from *any* directory can find
@@ -121,6 +124,10 @@ export interface MeshEntry {
    *  rather than reading agreement out of an address. Absent means no such acceptance was given,
    *  which is every record written before the flag existed. */
   unencryptedOverlay?: boolean;
+  /** Present and true when `space add --force` wrote the record without checking the broker, so its
+   *  `mode` is what the operator gave, not what the broker was seen to enforce. Absent means it was
+   *  checked, or the record predates this field. */
+  unchecked?: boolean;
   /** ISO timestamp of when the record was written. */
   ts: string;
 }
@@ -190,24 +197,6 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
     ...(o.sentinelCredsPath ? { sentinelCredsPath: o.sentinelCredsPath } : {}) };
 }
 
-/** The cotal machine-home dir, overridable via `COTAL_HOME`.
- *
- *  WHAT THE OVERRIDE ENFORCES (and only this): the mesh registry (`meshes/`), the current-mesh
- *  pointer, the onboard marker, prepared spaces (`prepared/`) and service records (`services/`)
- *  resolve under this directory. POSIX default `~/.cotal`; Windows `%LOCALAPPDATA%\Cotal`.
- *
- *  WHAT IT DOES NOT ENFORCE: project-root state. `cotal up`, broker launch policy
- *  (`.cotal/broker-policy.json`), the NATS store, manager/delivery pidfiles, and auth material all
- *  resolve via {@link findCotalRoot} (walk up from cwd for a `.cotal/`). Setting only `COTAL_HOME`
- *  does not redirect those paths. A test or probe that sets `COTAL_HOME` and runs a real
- *  `cotal up` from a tree whose walked root is the operator home can still write live operator
- *  config. Sandbox the project root too (temp dir with its own `.cotal/`, and run the CLI with
- *  `cwd` there) — or you have sandboxed the registry label, not the launch surface. */
-export function homeCotalDir(): string {
-  if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
-  return userCotalDir();
-}
-
 /** Why `COTAL_HOME` can hold no record, or undefined when it is unset, a directory, or not created
  *  yet. A file, or a path under one, can never be read or written as the machine-home dir. */
 export function cotalHomeProblem(): string | undefined {
@@ -219,15 +208,6 @@ export function cotalHomeProblem(): string | undefined {
     if ((e as NodeJS.ErrnoException).code !== "ENOTDIR") return undefined;
   }
   return `COTAL_HOME ${home} is not a directory, so it can hold no Cotal records`;
-}
-
-/** The OS user's own Cotal directory, which `COTAL_HOME` never redirects: POSIX `~/.cotal`, Windows
- *  `%LOCALAPPDATA%\Cotal`. Telemetry keeps its settings here, so every workspace one person runs
- *  under their own account shares one install id. */
-export function userCotalDir(): string {
-  if (process.platform === "win32" && process.env.LOCALAPPDATA)
-    return join(process.env.LOCALAPPDATA, "Cotal");
-  return join(homedir(), ".cotal");
 }
 
 /** The variables {@link homeCotalDir} falls back to on `platform` when `COTAL_HOME` is unset:
@@ -314,6 +294,7 @@ export function recordMeshes(entries: Iterable<MeshEntry>): void {
     // The filenames in here ARE the space names, so a world-traversable dir would leak them to other
     // local users even though the file contents are private. Keep the dir readable only by us
     // (0700 POSIX / hardened ACL win32).
+    prepareCotalHomeForWrite();
     mkSecretDir(meshesDir());
     const file = meshFile(m.space);
     // Per-process temp name so two concurrent `up`s for the same space can't stomp each other's
@@ -604,7 +585,7 @@ export function readCurrent(): string | undefined {
 }
 
 export function setCurrent(space: string): void {
-  mkSecretDir(homeCotalDir());
+  prepareCotalHomeForWrite();
   writeSecretFile(currentFile(), space);
 }
 

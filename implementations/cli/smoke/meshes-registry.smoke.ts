@@ -321,6 +321,11 @@ try {
   check("add --mode with a junk value fails loud", badMode.code === 1 && badMode.out.includes("auth, open or user"), badMode.out);
   const badUsage = await run(["add"], { server: LIVE, root });
   check("add without a space name prints usage", badUsage.code === 1 && badUsage.out.includes("usage:"), badUsage.out);
+  // A name that starts with - reads as an option, so `use`, `--space` and the stack's own children could not take it.
+  const dashed = await run(["add", "-x"], { server: DEAD, root, force: true });
+  check("add refuses a space name that starts with -, even with --force, naming the rule, and records nothing",
+    dashed.code === 1 && dashed.out.includes('the space name "-x" starts with "-", so it cannot be passed as a flag value') &&
+      dashed.out.includes("choose a name that starts with a letter, digit or underscore") && findMesh("-x") === undefined, dashed.out);
 
   // MODE HONESTY. A NATS broker with no auth configured accepts a credential-bearing CONNECT and
   // ignores it, so "the creds were accepted" is not evidence of enforcement. Registering `auth`
@@ -442,6 +447,11 @@ try {
   const bundlePath = join(root, "bundle.json");
   writeFileSync(bundlePath, JSON.stringify(bundleFor()));
   const hostedRoot = projectRoot("hosted");
+  const dashedPath = join(root, "dashed-bundle.json");
+  writeFileSync(dashedPath, JSON.stringify(bundleFor({ space: "-hosted" })));
+  const dashedUser = await run(["add"], { mode: "user", "user-auth-file": dashedPath, root: hostedRoot });
+  check("a user-auth bundle for a space whose name starts with - is refused, and records nothing",
+    dashedUser.code === 1 && dashedUser.out.includes("cannot be passed as a flag value") && findMesh("-hosted") === undefined, dashedUser.out);
 
   // ── REMOTE CONSUMER IS LIVE ───────────────────────────────────────────────────────────────────
   // The remote bearer client consumes the pinned exchange and sentinel carried by this entry, so
@@ -1098,6 +1108,13 @@ try {
   check("list shows the offline registered mesh", listed.out.includes("remote-dead") && listed.out.includes("offline"), listed.out);
   check("list tags it as registered", listed.out.includes("registered"), listed.out);
   check("`meshes list` is the same as bare `meshes`", (await run(["list"])).out === listed.out);
+  // The table ran past a narrow terminal; it now gets one labeled record per mesh, as other tables do.
+  setCurrent("remote-dead");
+  const { isTTY, columns } = process.stdout;
+  Object.assign(process.stdout, { isTTY: true, columns: 60 });
+  const narrow = (await run([]).finally(() => Object.assign(process.stdout, { isTTY, columns }))).out.replace(/\x1b\[[0-9;]*m/g, "");
+  check("a narrow terminal lists each mesh as a labeled record, the default marked after its name",
+    /^space: +remote-dead \(default\)$/m.test(narrow) && /^notes: +registered (·|-) offline$/m.test(narrow) && !/^SPACE /m.test(narrow), narrow);
 
   // ── rm ────────────────────────────────────────────────────────────────────────────────────────
   setCurrent("remote-dead");

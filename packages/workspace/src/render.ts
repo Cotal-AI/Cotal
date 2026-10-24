@@ -1,5 +1,6 @@
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { userCotalDir } from "./mesh-registry.js";
+import { shellPath } from "./protected-records.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
@@ -17,7 +18,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
  */
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
-  | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean }
+  | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean; pid?: number }
   | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout"; server: string; hasAuth: boolean };
 
 /** A workspace failure in two parts: what happened, and what to run next when there is something. */
@@ -35,7 +36,7 @@ export function workspaceErrorParts(e: WorkspaceError): WorkspaceErrorParts {
     case "target":
       return targetErrorParts(e.error);
     case "preflight":
-      return preflightFailureParts(e.failure, e.target, e.pruned);
+      return preflightFailureParts(e.failure, e.target, e.pruned, e.pid);
     case "reachable":
       return reachableParts(e.reason, e.server, e.hasAuth);
   }
@@ -91,7 +92,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);
       if (d.lastRun) return parts(`the mesh in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
-        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${d.root}\`, then start it with \`cotal up\` there`)
+        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}\`, then start it with \`cotal up\` there`)
         : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());
     }
     case "user-auth-unrecorded":
@@ -109,14 +110,14 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
 const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broker process is not stopped or overloaded and that the link to it is not too slow";
 
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
-function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean): WorkspaceErrorParts {
+function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   switch (kind) {
     case "unreachable":
       // Nothing records the default space that was assumed for a folder whose records name no
       // space, so the folder is what to name, with the step that prepares a space in it again.
       if (t.namesNoSpace)
-        return parts(`no space is registered or prepared here for ${t.root}`, `prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\``);
+        return parts(`no space is registered or prepared here for ${t.root}`, `prepare one there with \`cotal space create <name> --root ${shellPath(t.root)}\`, or select one with \`cotal use <name>\``);
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual" || t.origin === "catalog")
@@ -156,6 +157,11 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       return parts(
         `mesh "${t.space}" at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the registry entry was kept`,
         NOT_ANSWERING_REMEDY,
+      );
+    case "broker-stopped":
+      return parts(
+        `mesh "${t.space}" at ${server} is served by process ${pid}, which is stopped, so it accepts the connection and never answers; the registry entry was kept`,
+        `resume it with kill -CONT ${pid}`,
       );
   }
 }

@@ -23,7 +23,7 @@ export function readHandleFile(file: string) {
     throw new CommandFailure("refused", "SCHEMA_INVALID",
       creds ? "this is a NATS credential file, not a capability handle, which is a signed JSON grant; its contents were not echoed"
         : "this file is not a capability handle: a handle is a signed JSON grant, and this file is not UTF-8 JSON; its contents were not echoed",
-      { remedy: creds ? "a credential file is passed with --creds; give this command a handle file, one signed grant or a JSON array of a handle chain" : "give this command a handle file: one signed grant, or a JSON array of a handle chain" });
+      { remedy: creds ? "see what a credential file may do with `cotal whoami --creds <file>`; give this command a handle file, one signed grant or a JSON array of a handle chain" : "give this command a handle file: one signed grant, or a JSON array of a handle chain" });
   }
   const artifacts: unknown[] = Array.isArray(value) ? value : [value];
   if (!artifacts.length || artifacts.length > HANDLE_MAX_CHAIN_LENGTH) throw new CommandFailure("refused", "SCHEMA_INVALID", "the presented handle chain exceeds the native bound or is empty");

@@ -4,11 +4,13 @@
  * `endpoints` in that root used to target nats://127.0.0.1:4222 while the stack journal recorded
  * another port, so any broker on the default port would have been dialed. They now refuse as not
  * started, name the recorded broker and say how to start it: `space create` prepares the journal's
- * space at the root again, then `cotal up`. A folder whose `.cotal` is a link to the project's is
- * told it is a link, and its status names the link once. A journal cut short or emptied, as an
- * interrupted write leaves it, is named with its path and the way out, and status warns about it. A
- * moved folder whose space this machine does not record is told only to adopt the journal, since
- * moving it back would not start it, and status and whoami name the same step. With the space
+ * space at the root again, then `cotal up`. In a folder whose `.cotal` is a link, to the project's or
+ * to any other folder, or leads nowhere, `up` and `down` refuse before anything reads through it,
+ * naming the link, where it leads and the next step, and status warns once with the same step. A
+ * journal cut short or emptied, as an interrupted write leaves it, is named with its path and the way
+ * out by `up`, `down`, `clean` and `space create`, and status warns about it. A moved folder whose
+ * space this machine does not record is told only to adopt the journal, since moving it back would
+ * not start it, and status and whoami name the same step. With the space
  * prepared at the old path, up, down, whoami and status there all name moving back, or forgetting and
  * adopting, and up says to move aside first any folders found at the old path.
  * `space create` in a copy refuses; where the folder its journal names holds no journal, as for a
@@ -26,7 +28,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -40,7 +42,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string | null } | null;
-  result: { selected?: { resolved: boolean; code?: string; message?: string } } | null;
+  result: { selected?: { resolved: boolean; code?: string; message?: string }; hints?: string[] } | null;
   error?: { code: string; message: string; remedy?: string };
   warnings?: { code: string; message: string }[];
 }
@@ -91,18 +93,23 @@ check("status names no default broker address", noDefault(status), shown(status)
 const components = run(["status", "--components"]);
 check("status --components refuses the target and probes no default broker", /target\s+refused · not-started/.test(components.stdout) && noDefault(components), shown(components));
 
-// A journal cut short or emptied names its path, and with no member running, says to remove it.
+// A journal cut short or emptied names its path. No space is recorded at this root, so there are no
+// saved definitions, and the way out is to remove it and run `cotal up`.
 {
   const path = join(root, ".cotal", "stack-controller.json"), whole = readFileSync(path);
   const named = (r: ReturnType<typeof run>) => r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID"
     && r.envelope.error.message === `the stack journal ${path} is not valid JSON, as an interrupted write or a full disk can leave it; no stack membership or stopped state was inferred`
-    && r.envelope.error.remedy === `no member of this stack is running, so remove ${path}; the next cotal up from ${root} starts the stack again from its saved definitions`;
+    && r.envelope.error.remedy === `no space is recorded at this root, so remove ${path} and run cotal up from ${root}`;
   writeFileSync(path, whole.subarray(0, 40));
   const cut = run(["up", "--json"]);
   check("up over a truncated journal refuses SCHEMA_INVALID, naming its path and saying to remove it", named(cut), shown(cut));
   writeFileSync(path, "");
   const down = run(["down", "--yes", "--json"]);
   check("down over an empty journal refuses the same way", named(down), shown(down));
+  for (const space of ["la07", "other"]) {
+    const create = run(["space", "create", space, "--json"]);
+    check(`space create ${space} over it refuses the same way, not as a root that already holds a space`, named(create) && !existsSync(join(home, ".cotal", "prepared", `space.${Buffer.from(space).toString("hex")}.json`)), shown(create));
+  }
   const clean = run(["clean", "all", "--force"]);
   check("clean all over it refuses, exit 1, naming the path and the way out", clean.status === 1 && clean.stderr.includes(`the stack journal ${path} is not valid JSON`) && clean.stderr.includes(`so remove ${path}`), shown(clean));
   const status = run(["status", "--json"]);
@@ -130,7 +137,7 @@ renameSync(moved, root);
 check("up in a moved folder whose space this machine does not record refuses CONFLICT and names only --adopt",
   movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === adoptOnly, shown(movedUp));
 check("status and whoami there name the same next step",
-  (movedStatus.envelope?.result?.selected?.message ?? "").endsWith(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
+  (movedStatus.envelope?.result?.hints ?? []).includes(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
 check("with empty folders at the old path it is still moved, and names the same step",
   recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === adoptOnly, shown(recreatedUp));
 // With la07 prepared at the old path, moving back starts it again; adopting it here needs a forget first.
@@ -148,23 +155,54 @@ check("with empty folders at the old path it is still moved, and names the same 
   check("up, down, whoami and whoami --space there all name moving back, or forgetting and adopting",
     routes.every((r) => r.status === 2 && r.envelope?.error?.remedy === back), routes.map(shown));
   check("status --space there says the folder was moved and names the same step",
-    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there - ${back}`, shown(status));
+    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there` && (status.envelope?.result?.hints ?? []).includes(back), shown(status));
   check("with empty folders at the old path, up says to move them aside first",
     recreated.status === 2 && recreated.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; ${adopt}`, shown(recreated));
   check("rig: forget la07", run(["space", "forget", "la07", "--json"]).status === 0);
 }
-// A folder whose .cotal links to this project's reads the same journal through the link.
-const linked = `${root}-linked`;
+// A folder whose .cotal links to this project's is refused by up and down before anything reads through
+// the link, and status names the link once.
+const linked = `${root}-linked`, linkPath = join(linked, ".cotal"), linkTarget = join(root, ".cotal");
 mkdirSync(linked);
-symlinkSync(join(root, ".cotal"), join(linked, ".cotal"));
-const linkedUp = run(["up", "--json"], linked);
-check("up in a folder whose .cotal is a link refuses CONFLICT, naming the link and the recorded folder",
-  linkedUp.status === 2 && linkedUp.envelope?.error?.code === "CONFLICT" && linkedUp.envelope.error.message === `${join(linked, ".cotal")} is a link to ${join(root, ".cotal")}, whose stack journal was recorded at ${root}; a controller stack runs only from the folder it started in` && linkedUp.envelope.error.remedy === `use the stack from ${root}, which holds it; this folder only links to its records`, shown(linkedUp));
+symlinkSync(linkTarget, linkPath);
+const linkedUp = run(["up", "--json"], linked), linkedDown = run(["down", "--yes", "--json"], linked);
+const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
+  && r.envelope.error.message === `${linkPath} is a link to ${linkTarget}, and a stack runs only from a folder whose .cotal is its own directory; nothing was ${effect}`
+  && r.envelope.error.remedy === `run cotal ${command} from ${root}, whose .cotal this links to, or ${here}`;
+check("up in a folder whose .cotal is a link refuses CONFLICT, naming the link, where it leads and that project",
+  linkRefused(linkedUp, "up", "started", `remove the link and prepare this folder with cotal space create <space> --root ${linked}`), shown(linkedUp));
+check("down --yes --json there refuses the same way, with no stack trace",
+  linkRefused(linkedDown, "down", "stopped", "remove the link, then run cotal down again") && !linkedDown.stderr.includes("    at "), shown(linkedDown));
 const linkedStatus = run(["status", "--json"], linked);
 const linkedCodes = (linkedStatus.envelope?.warnings ?? []).map((w) => w.code);
-check("status there warns once that it did not read the attempt inventories through the link",
-  linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${join(root, ".cotal")}`)), shown(linkedStatus));
+check("status there warns once that it did not read the attempt inventories through the link, with the next step",
+  linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${linkTarget}`) && w.message.endsWith(`; run commands for that project from ${root}, or remove the link and prepare this folder with cotal space create <space> --root ${linked}`)), shown(linkedStatus));
 rmSync(linked, { recursive: true, force: true });
+// A link to a folder that is no project's .cotal, and a link that leads nowhere, which the walk to a
+// root passes over.
+{
+  const empty = `${root}-empty`, toEmpty = `${root}-to-empty`, dangling = `${root}-dangling`, nowhere = join(`${root}-nowhere`, ".cotal");
+  for (const dir of [empty, toEmpty, dangling]) mkdirSync(dir);
+  symlinkSync(empty, join(toEmpty, ".cotal"));
+  symlinkSync(nowhere, join(dangling, ".cotal"));
+  const emptyUp = run(["up", "--json"], toEmpty);
+  check("up where .cotal links to a folder that is no project's .cotal names only removing the link",
+    emptyUp.status === 2 && emptyUp.envelope?.error?.code === "CONFLICT" && (emptyUp.envelope.error.message ?? "").startsWith(`${join(toEmpty, ".cotal")} is a link to ${empty}, `) && emptyUp.envelope.error.remedy === `remove the link and prepare this folder with cotal space create <space> --root ${toEmpty}`, shown(emptyUp));
+  const danglingUp = run(["up", "--json"], dangling), danglingDown = run(["down", "--dry-run", "--json"], dangling), danglingStatus = run(["status", "--json"], dangling);
+  const nowhereRefused = (r: ReturnType<typeof run>, effect: string, remedy: string) => r.status === 2 && r.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && r.envelope.error.message === `${join(dangling, ".cotal")} links to ${nowhere}, which does not exist; nothing was ${effect}` && r.envelope.error.remedy === remedy;
+  check("up where .cotal leads nowhere refuses TARGET_NOT_FOUND, naming the link and where it leads, not the home .cotal",
+    nowhereRefused(danglingUp, "started", `remove the link and prepare this folder with cotal space create <space> --root ${dangling}`), shown(danglingUp));
+  check("down --dry-run there refuses the same way", nowhereRefused(danglingDown, "stopped", "remove the link, then run cotal down again"), shown(danglingDown));
+  check("status there warns COTAL_DIR_DANGLING with the next step and exits 4",
+    danglingStatus.status === 4 && (danglingStatus.envelope?.warnings ?? []).some((w) => w.code === "COTAL_DIR_DANGLING" && w.message === `this folder's .cotal links to ${nowhere}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with cotal space create <space> --root ${dangling}`), shown(danglingStatus));
+  const emptyStatus = run(["status", "--json"], toEmpty), emptyHints = emptyStatus.envelope?.result?.hints ?? [];
+  check("status there names the same refusal and next step, and not cotal up",
+    emptyStatus.status === 4 && (emptyStatus.envelope?.result?.selected?.message ?? "").startsWith(`${join(toEmpty, ".cotal")} is a link to ${empty}, and a stack runs only from a folder whose .cotal is its own directory, so `)
+      && emptyHints.includes(`remove the link and prepare this folder with cotal space create <space> --root ${toEmpty}`) && !emptyHints.some((hint) => hint.includes("to start one")), shown(emptyStatus));
+  check("nothing was written through either link", readdirSync(empty).length === 0 && !existsSync(`${root}-nowhere`));
+  for (const dir of [empty, toEmpty, dangling]) rmSync(dir, { recursive: true, force: true });
+}
 
 // space create in a copy refuses, and names --adopt where the copy may take the journal over.
 {
@@ -183,7 +221,7 @@ rmSync(linked, { recursive: true, force: true });
     plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with ${command}`, shown(plain));
   const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
   check("status there names the same step as up, which adopts it",
-    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with ${command};`) && (status.envelope?.result?.selected?.message ?? "").endsWith(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
+    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with ${command};`) && (status.envelope?.result?.hints ?? []).includes(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], brought);
   const journal = JSON.parse(readFileSync(path, "utf8")) as { root: string; space: string; server: string; broker?: { storeDir: string }; members: { instanceId: string | null; state: string }[] };
   renameSync(away, root);

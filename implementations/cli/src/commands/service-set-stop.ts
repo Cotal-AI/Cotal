@@ -7,6 +7,7 @@ import { instanceProjection, observeServiceProcess, serviceInstances, type Servi
 import { preflightProcessServiceStop, prepareNativeServiceStop, selectServiceInstance, stopProcessService } from "../lib/service-process.js";
 import { stackMemberFor } from "../lib/stack-journal.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { yesRequired } from "../lib/confirmation-required.js";
 import { nativeImpactView } from "./service-actions.js";
 
 type Hold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
@@ -95,7 +96,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "down", target, result: { kind: "service-set-stop-preview", rows: preview, dryRun: true, reserved: false, nativeImpactChecked: false, stopped: false } }, (result) => ({ sections: [...setView(result.rows, "Named service stop preview").sections, { blocks: [{ kind: "lines", lines: ["Metadata and owned process roles only. No provider code, native impact query, reservation, process signal or instance-record write was requested. This preview does not authorize a stop."] }] }] }));
     return;
   }
-  if (!args.values.yes && !interactive) throw new ConfirmationRequired("stopping a named service set requires --yes outside an interactive terminal", { target, remedy: `run cotal down ${args.positionals.join(" ")} --yes to stop them; cotal down ${args.positionals.join(" ")} --dry-run shows what it stops` });
+  if (!args.values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping a named service set", presentation === "json"), { target, remedy: `run cotal down ${args.positionals.join(" ")} --yes to stop them; cotal down ${args.positionals.join(" ")} --dry-run shows what it stops` });
   for (const [index, member] of members.entries()) {
     member.impact = await prepareNativeServiceStop(member.definition, member.instance);
     rows[index]!.impact = member.impact ?? null;

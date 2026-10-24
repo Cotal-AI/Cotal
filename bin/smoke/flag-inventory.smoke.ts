@@ -30,7 +30,7 @@
 import nodeAssert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { registry, type Command } from "@cotal-ai/core";
+import { commandUsage, registry, type Command, type Subcommand } from "@cotal-ai/core";
 import { GLOBAL_FLAGS } from "@cotal-ai/workspace";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
@@ -103,7 +103,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // harness transcript store a preserve-state cut captures. `--file`/`--run` are the historical
   // `spawn -f` teardown, which the redesign moves to `team remove <deployment-id>`. `--abandon-stop`
   // (2026-10) names the one member stop request a controller stack's down abandons.
-  down: { flags: ["abandon-stop:string", "dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
+  down: { flags: ["abandon-launch:string", "abandon-stop:string", "dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
   backup: { flags: ["accept-missing-source:boolean", "discard-history:boolean", "dry-run:boolean", "json:boolean:j", "only:string", "plain:boolean", "store-dir:string", "yes:boolean:y"], positionals: true },
   reset: { flags: ["dry-run:boolean", "json:boolean:j", "plain:boolean", "yes:boolean:y"], positionals: true },
   // `space` (2026-10): the registered spaces and one in full, on the structured output contract.
@@ -122,7 +122,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   doctor: { flags: ["fix:boolean", "json:boolean:j", "plain:boolean", "space:string"], positionals: true },
   // `who` and `whoami` (2026-10): the roster and the CLI's own identity, on the structured output contract.
   who: { flags: [...TARGET, "all:boolean", "waiting:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
-  whoami: { flags: ["space:string:s", "server:string", "json:boolean:j", "plain:boolean"], positionals: false },
+  whoami: { flags: ["space:string:s", "server:string", "creds:string", "json:boolean:j", "plain:boolean"], positionals: false },
   // Stage 2a: spawn absorbs the detached mode: the full launch grammar (launchFlags) + --detach,
   // and gains --model/--cwd (parity) + --creds (control-caller, --detach only, guarded in run).
   // The shared short forms are -n/-m/-C/-p/-H. `--harness` picks the application, `--foreground`
@@ -260,12 +260,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--full` (2026-10): a grant takes the wide ACL defaults only when asked; without it the grant
   // must name --scope, --allow-subscribe and --allow-publish. `--no-expiry` (2026-10): `auth mint`
   // issues a credential with no expiry only when asked, and records the request; the default is 24 h.
+  // `--replace` (2026-10): `auth mint` replaces a label's standing credential that has expired or has
+  // no expiry.
   auth: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
       "expires-in:string", "force:boolean", "full:boolean", "identity:string", "json:boolean:j", "label:string",
       "no-expiry:boolean", "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
-      "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
+      "replace:boolean", "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
     ],
     positionals: true,
   },
@@ -411,12 +413,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Each refuses with its literal replacement and keeps the old flags so the old line parses.
   // Stage 2a: `start` errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
-  // `mint` moved to `auth mint` / `auth signer --out`.
+  // `mint` moved to `auth mint` / `auth signer --out`. It declares `auth mint`'s flags, so a line
+  // written for either parses and reaches the replacement.
   mint: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
       "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "no-expiry:boolean", "out:string",
-      "plain:boolean", "profile:string", "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
+      "plain:boolean", "profile:string", "provision:boolean", "replace:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
     ],
     positionals: true,
   },
@@ -465,8 +468,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Per-user auth (D4c): the actor-ledger operator surface.
   actor: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "full:boolean", "label:string", "owner:string",
-      "parent:string", "role:string", "scope:string", "space:string", "sub:string",
+      "allow-publish:string", "allow-subscribe:string", "full:boolean", "json:boolean:j", "label:string", "owner:string",
+      "parent:string", "plain:boolean", "role:string", "scope:string", "space:string", "sub:string",
     ],
     positionals: true,
   },
@@ -503,6 +506,21 @@ const table = doc.slice(tableStart, doc.indexOf("\n## ", tableStart + 1));
 const rows = [...table.matchAll(/^\| ([^|]+?) \| \[`([^`]+)`\]\(#[^)]+\) \|/gm)].map((match) => ({ section: match[1]!, name: match[2]! }));
 assert.deepEqual(rows.map((row) => row.name).sort(), helpAll.map((cmd) => cmd.name).sort(), "the docs Commands table has one row per command help --all lists");
 for (const row of rows) assert.equal(row.section, helpAll.find((cmd) => cmd.name === row.name)?.group ?? "Commands", `the docs Commands table puts \`${row.name}\` under its help section`);
+// Help: every listed command's usage and every listed subcommand's starts with its whole `cotal …`
+// path, and a subcommand of a command with flags names its own, so `help channel set` neither drops
+// the channel name nor offers `--purge`.
+for (const cmd of commands.filter((c) => !c.hidden)) {
+  assert.ok(commandUsage(cmd).startsWith(`cotal ${cmd.name}`), `usage of \`${cmd.name}\` starts with cotal ${cmd.name}`);
+  const walk = (path: string, subs: readonly Subcommand[] = []): void => {
+    for (const sub of subs.filter((s) => !s.hidden)) {
+      const at = `${path} ${sub.name}`;
+      assert.ok(sub.usage?.startsWith(`cotal ${at}`), `\`${at}\` declares a usage that starts with cotal ${at}`);
+      if (cmd.flags?.length) assert.ok(sub.flagNames, `\`${at}\` names its own options`);
+      walk(at, sub.subcommands);
+    }
+  };
+  walk(cmd.name, cmd.subcommands);
+}
 
 console.log(`✓ flag-inventory smoke passed (${commands.length} commands)`);
 emitSentinel({ passed: cells(), failed: 0 });

@@ -6,7 +6,8 @@
  * The fixture drives the shipped binary against its own isolated broker with a supported
  * multi-space account root. It runs both filename orders, then verifies that an absent requested
  * space and a record rooted elsewhere still refuse. An `up --space` for a space that runs at the
- * named address from another folder refuses, naming that folder, and offers no other port.
+ * named address from another folder refuses, naming that folder, and offers no other port. So does
+ * one with `--json` or `--plain`, or with no `--server`, and none of them writes in that folder.
  *
  * Also carries the #1697 `--host` shape refusals (broker-free, first section): a URL typed into
  * `--host` used to be bracketed into `nats://[nats://…]:4222` and either misfired as an unrelated
@@ -16,7 +17,7 @@
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -31,7 +32,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 3 + 13 + 5 + 14; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 14; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -192,6 +193,19 @@ async function namedSpaceElsewhere(): Promise<void> {
     check("up --space from another folder at its running address names the folder it runs from, not another port",
       again.status === 2 && again.stderr.includes(`space "home-space" runs at ${fixture.server}, started in ${fixture.root}`) &&
         again.stderr.includes("--space home-space") && !again.stderr.includes("with a free port"), `${again.stdout}${again.stderr}`);
+    const refusal = `space "home-space" runs at ${fixture.server}, started in ${fixture.root}, so up did not start it again`;
+    for (const extra of [["--server", fixture.server, "--plain"], [], ["--plain"]]) {
+      const r = spawnSync(TSX, [CLI, "up", "--space", "home-space", ...extra], { cwd: other, env: fixture.env, encoding: "utf8", timeout: 120_000 });
+      check(`up --space ${["home-space", ...extra].join(" ")} from another folder is the same CONFLICT, naming that folder`, r.status === 2 && r.stderr.includes(refusal) && r.stderr.includes("CONFLICT"), `${r.stdout}${r.stderr}`);
+    }
+    for (const extra of [["--server", fixture.server], []]) {
+      const r = spawnSync(TSX, [CLI, "up", "--space", "home-space", ...extra, "--json"], { cwd: other, env: fixture.env, encoding: "utf8", timeout: 120_000 });
+      let envelope: { outcome?: string; error?: { code?: string; message?: string }; target?: { root?: string } } = {};
+      try { envelope = JSON.parse(r.stdout); } catch { /* shown below */ }
+      check(`up --space ${["home-space", ...extra].join(" ")} --json from another folder is the CONFLICT envelope, aimed at that folder`,
+        r.status === 2 && envelope.outcome === "refused" && envelope.error?.code === "CONFLICT" && envelope.error.message === refusal && envelope.target?.root === fixture.root, `${r.stdout}${r.stderr}`);
+    }
+    check("none of those refusals wrote anything in the folder it ran from", !existsSync(join(other, ".cotal")), join(other, ".cotal"));
     started = !(await stop(fixture));
   } finally {
     if (started) await stop(fixture);
