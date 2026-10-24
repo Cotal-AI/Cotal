@@ -827,7 +827,11 @@ folder whose `.cotal` is a link to another project's `.cotal` is told that it is
 the stack from that project. `up` and `down` there refuse `CONFLICT`, exit 2, before anything reads
 through the link, naming the link and where it leads. When it leads to another project's `.cotal`,
 they name that project; otherwise the next step is to remove the link and prepare the folder with
-`space create`. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
+`space create`. When the `.cotal` it leads to holds this folder's own records, because its stack
+journal was recorded here, as after moving `.cotal` away and linking it back, they name the way back
+instead: `rm` the link, which removes only the link, then `mv` that `.cotal` back in its place, which
+keeps the history. Nothing moves it for you. In the folder the records were moved to, commands say
+they were moved there from this folder and name the same step. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
 naming where it leads. `status` there does not read the folder's boot and additive attempt
 inventories through the link. It warns `COTAL_DIR_LINKED`, or `COTAL_DIR_DANGLING` for a link that
 leads nowhere, with the same next step, and exits 4. For a linked folder, its selected space names

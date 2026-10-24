@@ -1,7 +1,7 @@
-import { existsSync, lstatSync, readFileSync, type Stats } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MEMBERSHIP_MAX_BYTES, personaDir, type SpaceAuth } from "@cotal-ai/core";
-import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { parsePid, probeLiveness, readPidfile } from "./pid.js";
@@ -416,6 +416,26 @@ export function stackRunsUnderOtherHome(root: string, journal: { space?: unknown
   }
 }
 
+/** Whether `root`'s `.cotal` is a link to the `.cotal` directory of `holder`, whose stack journal was
+ *  recorded at `root`: `root`'s own records, moved to `holder` and linked back. Through the link both
+ *  folders seem to hold the journal, so each would name the other as the place to run from. */
+export function recordsMovedTo(root: string, holder: string): boolean {
+  const link = cotalDirLink(root), dir = join(holder, ".cotal");
+  if (link === undefined) return false;
+  try {
+    return !lstatSync(dir).isSymbolicLink() && realpathSync(dir) === link && stackJournalRoot(holder) === canonicalRoot(root);
+  } catch {
+    return false;
+  }
+}
+
+/** The way back for records moved from `root` to `holder` and linked back ({@link recordsMovedTo}):
+ *  the link replaced by the directory it leads to. Nothing here moves them. */
+export function moveRecordsBack(root: string, holder: string): string {
+  const link = shellPath(join(root, ".cotal"));
+  return `move the records back to the folder the stack started in: rm ${link}, which removes only the link, then mv ${shellPath(join(holder, ".cotal"))} ${link}, which keeps the history`;
+}
+
 /** Why `space create --adopt` may not take over a stack journal another folder recorded. */
 export interface StackAdoptionBlock { kind: "link" | "copy" | "known" | "recorded"; message: string; remedy: string }
 
@@ -435,6 +455,7 @@ function journalInstanceIds(members: unknown): string[] {
 export function stackAdoptionBlock(root: string, recordedRoot: string, space: string, members: unknown): StackAdoptionBlock | undefined {
   const link = cotalDirLink(root);
   if (link !== undefined) return { kind: "link", message: `${join(root, ".cotal")} is a link to ${link}, so this folder has no records of its own to adopt`, remedy: `use the stack from ${recordedRoot}, which holds it` };
+  if (recordsMovedTo(recordedRoot, root)) return { kind: "link", message: `${join(recordedRoot, ".cotal")} is a link to this folder's .cotal, so these are the records of the stack that started in ${recordedRoot}`, remedy: moveRecordsBack(recordedRoot, root) };
   if (existsSync(stackJournalPath(recordedRoot))) return { kind: "copy", message: `${recordedRoot} still holds the stack journal of "${space}", so this folder is a copy of a stack that runs from there`, remedy: `use the stack from ${recordedRoot}, which holds it` };
   const instances = new ProtectedRecordStore("services", space, (value) => value, "instances");
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
@@ -451,6 +472,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
  *  it back would then not start it. A recorded path that `cotal up` refuses is never the way back. */
 export function stackElsewhereRemedy(root: string, recordedRoot: string, space: string, members: unknown): string {
   if (cotalDirLink(root) !== undefined) return `use the stack from ${recordedRoot}, which holds it; this folder only links to its records`;
+  if (recordsMovedTo(recordedRoot, root)) return `${moveRecordsBack(recordedRoot, root)}; then use the stack from ${recordedRoot}`;
   if (existsSync(stackJournalPath(recordedRoot))) return `use the stack from ${recordedRoot}, which holds it; this copy does not`;
   let block: StackAdoptionBlock | undefined | null;
   try { block = stackAdoptionBlock(root, recordedRoot, space, members); } catch { block = null; }

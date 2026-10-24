@@ -6,7 +6,9 @@
  * started, name the recorded broker and say how to start it: `space create` prepares the journal's
  * space at the root again, then `cotal up`. In a folder whose `.cotal` is a link, to the project's or
  * to any other folder, or leads nowhere, `up` and `down` refuse before anything reads through it,
- * naming the link, where it leads and the next step, and status warns once with the same step. A
+ * naming the link, where it leads and the next step, and status warns once with the same step. When
+ * the project's own `.cotal` was moved to another folder and linked back, the project and that folder
+ * both name moving it back. A
  * journal cut short or emptied, as an interrupted write leaves it, is named with its path and the way
  * out by `up`, `down`, `clean` and `space create`, and status warns about it. A moved folder whose
  * space this machine does not record is told only to adopt the journal, since moving it back would
@@ -178,6 +180,33 @@ const linkedCodes = (linkedStatus.envelope?.warnings ?? []).map((w) => w.code);
 check("status there warns once that it did not read the attempt inventories through the link, with the next step",
   linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${linkTarget}`) && w.message.endsWith(`; run commands for that project from ${root}, or remove the link and prepare this folder with cotal space create <space> --root ${linked}`)), shown(linkedStatus));
 rmSync(linked, { recursive: true, force: true });
+// The project's .cotal moved to another folder and linked back. Through the link each folder seems to
+// hold the journal, so both used to name the other. Both now name moving the records back.
+{
+  const holder = `${root}-holder`, link = join(root, ".cotal"), moved = join(holder, ".cotal");
+  mkdirSync(holder);
+  renameSync(link, moved);
+  symlinkSync(moved, link);
+  const listing = () => JSON.stringify([readdirSync(moved).sort(), readFileSync(join(moved, "stack-controller.json"), "utf8")]);
+  const before = listing();
+  const back = `move the records back to the folder the stack started in: rm ${link}, which removes only the link, then mv ${moved} ${link}, which keeps the history`;
+  const rootUp = run(["up", "--json"], root), holderUp = run(["up", "--json"], holder), rootStatus = run(["status", "--json"], root);
+  const adopt = run(["space", "create", "la07", "--adopt", "--json"], holder);
+  const after = listing();
+  rmSync(link);
+  renameSync(moved, link);
+  rmSync(holder, { recursive: true, force: true });
+  check("up in the folder whose .cotal was moved and linked back names moving the records back, not the folder it links to",
+    rootUp.status === 2 && rootUp.envelope?.error?.code === "CONFLICT" && rootUp.envelope.error.remedy === `${back}; then run cotal up again`, shown(rootUp));
+  check("up where the records were moved says they were moved there from the project and names the same step, not that folder",
+    holderUp.status === 2 && holderUp.envelope?.error?.code === "CONFLICT"
+      && holderUp.envelope.error.message === `this folder's stack journal was recorded at ${root}, whose .cotal is a link to this folder's .cotal, so these records were moved here from there; a controller stack runs only from the folder it started in`
+      && holderUp.envelope.error.remedy === `${back}; then use the stack from ${root}`, shown(holderUp));
+  check("status in the project names the same step", (rootStatus.envelope?.result?.hints ?? []).includes(back), shown(rootStatus));
+  check("space create --adopt where the records were moved refuses and names the same step",
+    adopt.status === 2 && adopt.envelope?.error?.remedy === back, shown(adopt));
+  check("nothing was written through the link or in the folder the records were moved to", after === before);
+}
 // A link to a folder that is no project's .cotal, and a link that leads nowhere, which the walk to a
 // root passes over.
 {

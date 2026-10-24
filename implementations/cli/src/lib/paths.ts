@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { canonicalRoot, CommandFailure, findCotalRoot, homeCotalDir } from "@cotal-ai/workspace";
+import { canonicalRoot, CommandFailure, findCotalRoot, homeCotalDir, moveRecordsBack, recordsMovedTo } from "@cotal-ai/workspace";
 
 /** The project's `.cotal/` root, found by walking up from cwd (like git finds `.git`), so every
  *  command resolves the same `.cotal/` whether you're at the project root or a subdirectory. */
@@ -48,9 +48,11 @@ export function cotalLinkHere(): { root: string; path: string; target: string; d
   }
 }
 
-/** The next step in a folder whose `.cotal` links to `target`: the project whose `.cotal` it is, when
- *  it is one, or giving this folder records of its own. */
+/** The next step in a folder whose `.cotal` links to `target`: moving the records back when they are
+ *  this folder's own ({@link recordsMovedTo}), else the project whose `.cotal` it is, when it is one,
+ *  or giving this folder records of its own. */
 export function linkedCotalRemedy(root: string, target: string): string {
+  if (recordsMovedTo(root, dirname(target))) return moveRecordsBack(root, dirname(target));
   const prepare = `remove the link and prepare this folder with cotal space create <space> --root ${root}`;
   return basename(target) === ".cotal" ? `run commands for that project from ${dirname(target)}, or ${prepare}` : prepare;
 }
@@ -67,6 +69,7 @@ export function linkedCotalRefusal(command: "up" | "down"): CommandFailure | und
   if (link.dangling) return new CommandFailure("refused", "TARGET_NOT_FOUND", `${path} links to ${target}, which does not exist; nothing was ${effect}`, { target: failureTarget, remedy: here });
   return new CommandFailure("refused", "CONFLICT", `${path} is a link to ${target}, and a stack runs only from a folder whose .cotal is its own directory; nothing was ${effect}`, {
     target: failureTarget,
-    remedy: basename(target) === ".cotal" ? `run cotal ${command} from ${dirname(target)}, whose .cotal this links to, or ${here}` : here,
+    remedy: recordsMovedTo(root, dirname(target)) ? `${moveRecordsBack(root, dirname(target))}; then run cotal ${command} again`
+      : basename(target) === ".cotal" ? `run cotal ${command} from ${dirname(target)}, whose .cotal this links to, or ${here}` : here,
   });
 }
