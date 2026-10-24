@@ -1062,7 +1062,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   presentationOf(values);
   const [raw = "list", first, second, ...extra] = args.positionals;
   const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
-  const usage = (message: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message); };
+  // A refusal that names its own fix prints that fix and no help; any other prints the help.
+  const usage = (message: string, remedy?: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message, remedy === undefined ? {} : { remedy, selfContained: true }); };
   if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
   // A run id is an id token, so a malformed one is refused here, before any contact, rather than
   // by whichever plane reads it first.
@@ -1089,7 +1090,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (first !== undefined) usage(`run ${raw} takes no positional argument`);
   } else if (verb === "answer" || verb === "amend") {
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
-  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`);
+  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "cotal run turns lists your turns; run cotal run yield <turn-id>" : `cotal run ps lists the runs; run cotal run ${raw} <run-id>`);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
     "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],

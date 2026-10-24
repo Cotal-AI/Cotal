@@ -374,6 +374,20 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const r = cotal(argv, persona, editor);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && /^✗ .*\n {2}(edit interactively|confirm with cotal persona remove x --yes)/.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
   }
+  // A refusal of a value that names its own fix gives that fix, not the command's help.
+  for (const [argv, said] of [
+    [["ps", "--on", "nosuchinstance"], /^✗ instanceId "nosuchinstance" is not a valid lifecycle token/],
+    [["ps", "--on", ""], /^✗ --on requires a manager instance id/],
+    [["ps", "--on", "local.UABCDEFG"], /^✗ "local\.UABCDEFG" is a principal id/],
+    [["spawn", "dev", "--on", "a".repeat(30)], /^✗ attaching to a manager's launch needs usable input and output terminals.*\n {2}add -d to wait for readiness/],
+    [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}add -d to launch it through a manager/],
+    [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run cotal ps, then cotal attach <name>/],
+    [["run", "show"], /^✗ run show takes one identifier\n {2}cotal run ps lists the runs; run cotal run show <run-id>/],
+    [["run", "yield"], /^✗ run yield takes one identifier\n {2}cotal run turns lists your turns; run cotal run yield <turn-id>/],
+  ] as const) {
+    const r = cotal([...argv], undefined, noSeed);
+    check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
+  }
   // An editor setting that is the path of an existing file runs as that program, spaces and all.
   const spacedDir = mkdtempSync(join(tmpdir(), "cotal entry editor "));
   cleanup.push(spacedDir);
