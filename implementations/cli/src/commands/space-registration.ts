@@ -571,7 +571,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       // Its own record cannot be read, so it names no root to release definitions at: remove the file.
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
       removePreparedSpace(name);
-      return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [] }, preferencesRevision);
+      return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
     }
     if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, target, "see the registered spaces with `cotal space`");
     const release = releaseStackDefinitions(p.root, name), keptServices = savedServicesLeft(name, release.kept);
