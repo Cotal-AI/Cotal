@@ -97,7 +97,10 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   writeResult(presentation, { command: `backup ${mode}`, target, result: result!, failure }, (data): Report => ({ sections: [{ title: mode === "recover" ? "Stale restore attempt recovered" : data.restoreMethod === "disaster" ? "Completed restore journal retired" : "Retained old source cleaned", blocks: [
     { kind: "fields", rows: [["Root", data.root], ["Space", data.space], ["Restore attempt", data.attemptId], ["State", data.state], ["Preserved source", data.preservedSource], ["Active target", data.activeTarget ?? "not activated by this operation"], ["Process signals", "none"]] },
     { kind: "lines", lines: [{ text: mode === "recover" ? "The native stale-attempt rollback returned the source to its ready state. No live coordinator override, broker start or restore retry was performed. Resuming the space remains a separate guarded operation." : data.restoreMethod === "disaster" ? "This restore replaced a missing source and retained no old store, so nothing was removed. The completed restore journal was retired after the native finalization checks, so a later down --preserve-state can start a new backup cycle. The restored target was not deleted." : `Native cleanup completed for the recorded old-source identity and retired the completed restore journal.${data.historyDiscarded ? ` That store held the only copy of the ${leftOut} the restore left out, so they are gone.` : ""} The restored target was not deleted. No broad reset, identity rotation or live process signal was performed.`, tone: "hint" }] },
-  ] }] }));
+  ] }, ...(mode === "recover" ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [
+    { command: "cotal up", description: "Resume the space from its preserved state" },
+    { command: "cotal backup restore <directory>", description: "Try the restore again from its artifact" },
+  ] }] }] : [])] }));
 }
 
 /** Release an interrupted `backup create`: once its claim is stale, remove only the paths it owns
@@ -141,6 +144,9 @@ async function recoverBackupAttempt(args: ParsedArgs, root: string, recorded: Re
   const kept = paths.filter((path) => lstatSync(path, { throwIfNoEntry: false }));
   writeResult(presentation, { command: "backup recover", target, result: { kind: "backup-attempt-recovered", operation: "recover", ...target, state: "ready", removed: paths.filter((path) => !kept.includes(path)), kept } }, (data): Report => ({ sections: [{ title: "Interrupted backup released", blocks: [
     { kind: "fields", rows: [["Root", data.root], ["Space", data.space], ["Backup attempt", data.attemptId], ["State", data.state]] },
-    { kind: "lines", lines: [...data.removed.map((path) => `Removed ${path}`), ...data.kept.map((path) => `Kept ${path}: a published artifact, or no longer this attempt's`), { text: "The preserved cut is ready again: create a new backup, or resume with cotal up.", tone: "hint" }] },
-  ] }] }));
+    { kind: "lines", lines: [...data.removed.map((path) => `Removed ${path}`), ...data.kept.map((path) => `Kept ${path}: a published artifact, or no longer this attempt's`), { text: "The preserved cut is ready again.", tone: "hint" }] },
+  ] }, { title: "Next", blocks: [{ kind: "commands", items: [
+    { command: "cotal backup create <directory>", description: "Create a new backup from the preserved cut" },
+    { command: "cotal up", description: "Resume the space from its preserved state" },
+  ] }] }] }));
 }

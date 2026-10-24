@@ -1649,7 +1649,8 @@ brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`,
 partial artifact, the clone and the broker files, each matched by inode, and a create to another
 directory does the same before it starts, then backs up the cut's recorded store, a custom
 `--store-dir` one included. A create naming the partial artifact refuses `CONFLICT`
-and names that recovery.
+and names that recovery. The release's receipt names `cotal backup create <directory>` and
+`cotal up` as its next steps.
 
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
 hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
@@ -1688,7 +1689,9 @@ read path refuses unsupported file-protection environments rather than using a w
 `backup recover <full-attempt-id>` uses the original root's pre-commit restore journal, not a
 manifest path or selected-space guess. It rolls the attempt back once it is stale: its restore
 process and every recorded watchdog and broker are proven dead, and either every broker this root
-started is proven gone or the claim's deadline has passed. Commit intent forbids rollback.
+started is proven gone or the claim's deadline has passed. Commit intent forbids rollback. The
+receipt names `cotal up`, which resumes the space from its preserved state, and
+`cotal backup restore <directory>`, which tries the restore again, as its next steps.
 `backup cleanup-fallback <full-attempt-id>` requires the matching healthy active restore and
 removes only its unchanged retained old-store identity; it never removes the restored target.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
