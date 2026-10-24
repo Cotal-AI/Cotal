@@ -4,13 +4,13 @@
  * and for one space, the refusals (a read, set or unset for a space this machine does not know among
  * them), a value left for a removed space, the named environment tiers, the selected space, an invalid
  * file stopping every command but help and completion without being reset, a linked file stopping
- * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a config
- * folder that is a file stopping every command but help, version, docs and completion, a folder other
- * accounts can write refusing a write and warning on a read, a relative `COTAL_HOME` refused, a home
- * other accounts can write taking no write and one they can only read made private on the write, a
- * stale write refused, a persona the space's catalog does not hold saved with a warning that names the
- * catalog, two concurrent writers both landing, and the consumers outside `spawn`: color, the
- * `personas edit` editor and the detach key.
+ * them the same way, a FIFO stopping them without being opened, a `COTAL_HOME` that is not a directory
+ * stopping them the same way, a config folder that is a file stopping every command but help, version,
+ * docs and completion, a folder other accounts can write refusing a write and warning on a read, a
+ * relative `COTAL_HOME` refused, a home other accounts can write taking no write and one they can only
+ * read made private on the write, a stale write refused, a persona the space's catalog does not hold
+ * saved with a warning that names the catalog, two concurrent writers both landing, and the consumers
+ * outside `spawn`: color, the `personas edit` editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -506,6 +506,23 @@ if (process.platform !== "win32") {
   const help = run(["help"], { COTAL_HOME: notHome });
   check("help still works", help.status === 0 && help.stdout !== "", shown(help));
   check("and the file is left as it was", readFileSync(notHome, "utf8") === "a file\n");
+}
+
+// ── a preferences.json that is a FIFO stops them by its file type, without waiting on it ─────────
+if (process.platform !== "win32") {
+  rmSync(file, { force: true });
+  spawnSync("mkfifo", ["-m", "0600", file]);
+  for (const args of [["config", "get", "harness", "--json"], ["config", "set", "harness", "claude", "--json"]]) {
+    const r = run(args);
+    check(`\`${args.join(" ")}\` refuses a FIFO preferences.json with PERMISSION_DENIED, naming it, without waiting on it`,
+      r.status === 2 && r.envelope?.error?.code === "PERMISSION_DENIED" &&
+        r.envelope.error.message === `the preferences file ${file} is not a regular file, such as a FIFO or a device; preferences are kept only in a regular file, so nothing was read or changed` &&
+        r.envelope.error.remedy === `remove ${file}, or replace it with a regular file`, shown(r));
+  }
+  const status = run(["status"]);
+  check("status reports the FIFO as a part it could not read, exit 4", status.status === 4 && status.stderr.includes(`the preferences file ${file} is not a regular file`), shown(status));
+  check("and the FIFO is left as it was", lstatSync(file).isFIFO());
+  rmSync(file);
 }
 
 // ── a config folder that is a file stops every command but help, version, docs and completion ────

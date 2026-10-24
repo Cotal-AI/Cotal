@@ -175,7 +175,9 @@ completion, `version` and `docs` use no preference and still run. `status` repor
 it could not read, exit 4, and gives the fix as its next step.
 Nothing resets it: fix or remove the file. A `preferences.json` that is a symbolic link stops them the
 same way with `PERMISSION_DENIED` (exit 2), naming the file it points to: `editor` runs as a shell
-command, so the file is neither read through the link nor replaced by `cotal config set`.
+command, so the file is neither read through the link nor replaced by `cotal config set`. A
+`preferences.json` that is a FIFO, a device or a folder stops them with `PERMISSION_DENIED` too,
+before it is opened, so no command waits on it.
 
 The folder that holds the file, and every folder above it, must be one only you or root can write.
 Group write is accepted only for your own private group with no extended ACL, and world write never
