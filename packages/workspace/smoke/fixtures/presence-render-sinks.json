@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 704,
+    "total": 708,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
-    "non-render/control": 599
+    "non-render/control": 603
   },
   "renderers": [
     {
@@ -2935,9 +2935,16 @@
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
-      "anchor": "esAt} (expired)`, tone: \"waiting\" } : r.expiresAt],\n    [",
+      "anchor": "esAt} (expired)`, tone: \"waiting\" } : r.expiresAt],\n    .",
       "class": "non-render/control",
       "rationale": "Whoami expiry field: \"waiting\" is the color tone for an expired credential, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/whoami.ts",
+      "kind": "status-token",
+      "anchor": "arts after that`, tone: \"waiting\" }] as const]),\n    [\"re",
+      "class": "non-render/control",
+      "rationale": "Whoami revocation field: the color tone marks a credential revocation recorded by the account, not a peer's presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
@@ -4154,9 +4161,23 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": "t: \"not started\", tone: \"waiting\" }], [\"root\", p.root], [",
+      "anchor": "t: \"not started\", tone: \"waiting\" };\n}\n\nfunction row(m: M",
       "class": "non-render/control",
       "rationale": "Prepared space view: \"waiting\" is the color tone for a broker not started, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": ".lastOperation}`, tone: \"waiting\" };\n  if (p.state === \"u",
+      "class": "non-render/control",
+      "rationale": "Prepared space lifecycle cell: the color tone describes a recorded stopped stack, not a peer's presence or progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": ".lastOperation}`, tone: \"waiting\" };\n  return { text: \"no",
+      "class": "non-render/control",
+      "rationale": "Prepared space lifecycle cell: the color tone describes an unsettled recorded stack operation, not a peer's presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
@@ -4953,9 +4974,16 @@
     {
       "path": "implementations/cli/src/commands/use.ts",
       "kind": "status-token",
-      "anchor": "\"waiting\"",
+      "anchor": " ${s.current}\\``, tone: \"waiting\" }\n    : s.preparedState",
       "class": "non-render/control",
       "rationale": "Use report line: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": "s or settles it`, tone: \"waiting\" }\n    : { text: `  prep",
+      "class": "non-render/control",
+      "rationale": "Use report line: the color tone describes an unsettled recorded stack operation, not a peer's presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/use.ts",
