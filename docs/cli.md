@@ -906,6 +906,10 @@ says to run `cotal down` from the root, because `down` stops only the stack of t
 and it offers `cotal up --root <root>` to add the manager. When another space stays selected, the
 receipt says so and names `cotal use <space>`, as a legacy `up` does. When no registered or prepared space is
 selected, `up` selects the space it started and says so.
+The receipt also names each service saved for the space that `up` does not start, such as one
+`cotal service add` saved, and `--json` carries their names as `result.savedServices`. Saved
+services belong to the space name, so a space forgotten under that name leaves its services to the
+next one; `cotal service show <name>` shows what one runs.
 
 On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
 every stack mode. It refuses while validating its arguments, before the confirmation and before any
@@ -2277,6 +2281,11 @@ them. While a member was not stopped cleanly, or the root holds preserved state,
 result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
 names `cotal down --yes` in the root and then `space forget` again. When the stack's folder is
 gone, it names `cotal down --space <space> --yes`, which stops the stack and removes them.
+Forget keeps the other services saved under the name, such as one `cotal service add` saved, with
+their instance records. The result names them as `keptServices`, and a later space with the same
+name inherits them: its `cotal service` lists them and its `up` names them. `cotal service remove
+<name> --space <space> --yes` in that space forgets one. While no space has the name, `cotal service`
+finds no space for it, so remove a service before you forget its space to drop it at once.
 `status` in a forgotten space's root then selects no space and probes no broker. When nothing left
 in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
 because a bare `cotal up` there would start the default space `main` in that folder. A command run

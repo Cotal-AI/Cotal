@@ -324,7 +324,8 @@ export function keptOnUp(space: string, kept: string): string {
 }
 
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
- *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
+ *  own receipt, which names the saved services it does not start. The stack is up by then, so a
+ *  persona that cannot be written, or saved services that cannot be listed, is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
   const before = usableSelection();
   const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation } = await startControllerStack(request, native);
@@ -342,7 +343,16 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  // A space forgotten under this name leaves its saved services to this one, so the receipt names
+  // each saved service up does not start.
+  const stackDefinitions = new Set(Object.values(STACK_DEFINITION));
+  let savedServices: string[] = [];
+  try {
+    savedServices = serviceDefinitionStore(space).list().map((row) => row.name).filter((name) => !stackDefinitions.has(name));
+  } catch (error) {
+    warnings.push({ code: "SAVED_SERVICES_NOT_READ", target: { root, space }, message: `the saved services of ${space} could not be listed: ${(error as Error).message}` });
+  }
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, savedServices, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const exposed = result.listeners && exposedPlaintext(result.listeners);
     const listening: Report["sections"] = [{ title: "Listeners", blocks: [
@@ -359,11 +369,15 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     ] }] }];
     const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
     const kept: Report["sections"] = selection ? [{ blocks: [{ kind: "lines", lines: [{ text: selection, tone: "hint" }] }] }] : [];
+    const saved: Report["sections"] = result.savedServices.length ? [{ blocks: [{ kind: "lines", lines: [
+      { text: `saved services up does not start: ${result.savedServices.join(", ")}`, tone: "hint" },
+      { text: `  a space forgotten under the name ${space} leaves its saved services to the next one; \`cotal service show <name> --space ${space}\` shows what one runs`, tone: "hint" },
+    ] }] }] : [];
     const rotated: Report["sections"] = result.rotatedSystemAccount ? [{ title: "System account rotated", blocks: [
       { kind: "fields", rows: [["Generation", String(result.rotatedSystemAccount.generation)], ["$SYS creds valid to", result.rotatedSystemAccount.expiresAt?.slice(0, 10) ?? "no expiry"]] },
       { kind: "lines", lines: ["membership-observer.creds and connection-evictor.creds were minted against the new system account, and the broker started on a configuration rendered from it. The data account, every agent credential and the JetStream store are unchanged. Old $SYS creds are refused by any broker that loads this configuration."] },
     ] }] : [];
-    return { ...view, sections: [...view.sections, ...rotated, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...kept, ...next] };
+    return { ...view, sections: [...view.sections, ...rotated, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...saved, ...kept, ...next] };
   });
 }
 
