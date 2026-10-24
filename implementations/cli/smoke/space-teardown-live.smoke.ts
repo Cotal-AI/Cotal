@@ -58,6 +58,9 @@
  *     the space was deleted and no step that creates its streams again empty. Each Next makes the
  *     store writable again, and `status` leads with the same step. With the store writable, `down
  *     --yes` and `up` bring back every message stored before the failure.
+ * 14. A moved folder. With a stack running, its folder is renamed. `down --space --yes` from another
+ *     folder stops it, and its Next names `cotal space create <space> --adopt --root <folder>` before
+ *     `cotal space create <space>`. Adopting the renamed folder keeps its history, and `up` starts it there.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -626,6 +629,37 @@ try {
       spawnSync("chmod", ["-R", "u+w", join(store, "jetstream")]);
     }
     const last = cli(root, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 14. A stack whose folder is renamed while it runs stops from another folder, and adopting the
+  // folder where it is now keeps its history.
+  {
+    const space = "tear14";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a root that is then renamed", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    const sent = cli(root, "send", "-c", "general", "kept across the move", "--json");
+    check("up starts the stack and a message is stored", started.status === 0 && sent.status === 0, { up: shown(started), send: shown(sent) });
+    anchors.delete(root);
+    const moved = `${root}-moved`;
+    renameSync(root, moved);
+    roots.push(moved);
+    const other = folder(`${space}-other`);
+    const stopped = cli(other, "down", "--space", space, "--yes");
+    const text = stopped.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+    const next = text.slice(text.indexOf("\nNext\n")).split("\n").map((line) => line.trim().split(/\s{2,}/)[0]).filter((command) => command.startsWith("cotal "));
+    check("down --space from another folder stops it, and its Next names the adopt route before another folder",
+      stopped.status === 0 && text.includes("Stack stopped; its folder was gone") && JSON.stringify(next) === JSON.stringify([`cotal space create ${space} --adopt --root <folder>`, `cotal space create ${space}`]), shown(stopped));
+    const adopted = cli(other, "space", "create", space, "--adopt", "--root", moved, "--json");
+    anchor(moved);
+    const restarted = cli(moved, "up", "--json");
+    const kept = cli(moved, "history", "general", "--json");
+    check("adopting the renamed folder keeps its history, and up starts it there",
+      adopted.status === 0 && restarted.status === 0 && ((kept.env?.result?.items ?? []) as { text?: string }[]).some((m) => m.text === "kept across the move"), { adopt: shown(adopted), up: shown(restarted), history: shown(kept) });
+    const last = cli(moved, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
   }
 } finally {

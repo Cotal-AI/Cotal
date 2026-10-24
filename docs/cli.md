@@ -1397,7 +1397,11 @@ refused. A member that does not exit within its window, 90 seconds for the manag
 others, ends the stop with `OPERATION_UNKNOWN` and later members are not stopped. Once every member
 is stopped, `down` removes the stack's saved definitions, their instance records and the
 registration that names the folder, so the space can be created and started in another folder.
-Outside a terminal it needs `--yes`, and `--dry-run` lists each member with its pid and process.
+The same stop runs for a folder moved or renamed while its stack ran, which took its journal, store
+and trust with it. Its Next names `cotal space create <space> --adopt --root <folder>` first, which
+adopts those records where the folder is now and keeps its history, then
+`cotal space create <space>` for another folder. Outside a terminal it needs `--yes`, and
+`--dry-run` lists each member with its pid and process.
 `cotal status` marks such a project folder as gone, with `selected.rootGone` set to `true` in its
 JSON, and its Next names `cotal down --space <space> --yes`. A command that connects to a static-auth
 space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, because the seed went
