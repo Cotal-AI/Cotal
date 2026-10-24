@@ -1,8 +1,8 @@
 import { lstatSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
-import { ArtifactFileFault, inspectBackupArtifact, TRUST_BOUND_TEXT } from "../lib/backup-artifact.js";
+import { ArtifactFileFault, inspectBackupArtifact, missingBackupPath, missingBackupPathText, TRUST_BOUND_TEXT } from "../lib/backup-artifact.js";
 
 /** Integrity is a file observation, never evidence of a successful restore or authority continuity. */
 export function backupRead(args: ParsedArgs): void {
@@ -11,6 +11,8 @@ export function backupRead(args: ParsedArgs): void {
   try { result = inspectBackupArtifact(directory!, mode === "verify"); }
   catch (error) {
     if (isCommandFailure(error)) throw error;
+    const missing = missingBackupPath(resolve(directory!));
+    if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(resolve(directory!), missing)}; nothing was checked`, { target: { directory: resolve(directory!), folder: dirname(resolve(directory!)), missing }, remedy: "name an existing backup artifact folder" });
     if (manifestMissing(resolve(directory!))) throw new CommandFailure("refused", "SCHEMA_INVALID", `${resolve(directory!)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`, { target: { directory: resolve(directory!), fault: "manifest-missing" }, remedy: "it cannot be verified or restored. In the folder it was created from, cotal status names the interrupted backup attempt, and cotal backup recover <attempt> --yes removes this directory; then create a new backup" });
     if (error instanceof ArtifactFileFault) throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; no file content or other manifest value was printed`, { target: { directory: resolve(directory!), file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: verify another copy of the same artifact, or create a new backup from a stopped preserved cut; this command did not restore, start a broker or write a staging directory" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the artifact is missing, unreadable, changed, or does not match its declared format/inventory/integrity; raw manifest values were not printed", { remedy: "inspect the original private artifact without editing it; this command did not restore, start a broker or write a staging directory" });

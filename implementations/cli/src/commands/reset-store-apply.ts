@@ -12,7 +12,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
-import { readStackJournal, stackNeverStarted } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, readStackJournal, stackNeverStarted } from "../lib/stack-journal.js";
 import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
@@ -88,8 +88,10 @@ export function selectResetTarget(space: string, command: ResetCommand): ResetTa
     if (isCommandFailure(error)) throw error;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the prepared root's stack journal could not be read; no reset target was inferred", { target: { space, root } });
   }
+  // A legacy root has no stack journal, and its down removes the registration a reset selects, so it
+  // is cleared with clean from that root instead.
   if (!root || !recorded || recorded.journal.space !== space)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} needs a space this machine started; this one has no local registration and no stopped controller stack`, { target: { space }, remedy: `see the space with cotal space show ${space}` });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} needs a space this machine started; this one has no local registration and no stopped controller stack`, { target: { space }, remedy: `if it ran from a legacy root, whose down removes the registration a reset selects, run cotal clean ${command === "reset space" ? "all" : "store"} --force from that root, adding --store-dir <dir> if it used a custom store; cotal space lists the spaces this machine still registers` });
   const journal = recorded.journal, operation = journal.operation;
   if (stackNeverStarted(journal))
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} found nothing to reset: no member of this root's controller stack ever started, so no broker wrote a store; nothing was removed`, { target: { space, root }, remedy: `start it with cotal up from ${root}` });
@@ -151,7 +153,10 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   catch { throw new CommandFailure("refused", "CONFLICT", "the root's broker holds several spaces or an unreadable tenant record; a single-space reset cannot be scoped", { target: where }); }
   let store: ReturnType<typeof safeStoreCleanupPath>;
   try { store = safeStoreCleanupPath(root, target.storeDir); }
-  catch { throw new CommandFailure("refused", "CONFLICT", "the recorded store path is not one real directory the reset may remove; nothing was removed", { target: { ...where, storeDir: target.storeDir ?? null } }); }
+  catch (error) {
+    if (error instanceof CommandFailure) throw error;
+    throw new CommandFailure("refused", "CONFLICT", "the recorded store path is not one real directory the reset may remove; nothing was removed", { target: { ...where, storeDir: target.storeDir ?? null } });
+  }
   let maintenance: ReturnType<typeof readMaintenanceJournal>, running: string[], legacy: boolean, stoppedByDown: boolean;
   try {
     maintenance = readMaintenanceJournal(root); running = liveMeshProcesses(root, space, true);
@@ -214,9 +219,13 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
       return;
     }
   }
+  // A live holder, such as a racing `up`, is named by its pid, as whole-stack commands name it.
   let lock: ReturnType<typeof acquireMaintenanceLock>;
-  try { lock = acquireMaintenanceLock(root); }
-  catch { throw new CommandFailure("refused", "CONFLICT", "the exclusive local maintenance lock could not be acquired; no store was removed", { target }); }
+  try { lock = acquireStackOperationLock(root); }
+  catch (error) {
+    if (isCommandFailure(error)) throw error;
+    throw new CommandFailure("refused", "CONFLICT", "the exclusive local maintenance lock could not be acquired; no store was removed", { target });
+  }
   let removed: string[] | undefined;
   let submitted = false;
   let failure: CommandFailure | undefined;

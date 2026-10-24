@@ -455,7 +455,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   topology: { flags: ["file:string:f"], positionals: true },
-  clean: { flags: [...TARGET, "attempt:string", "discard-history:boolean", "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
+  clean: { flags: [...TARGET, "attempt:string", "discard-history:boolean", "dms:boolean", "dry-run:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Per-user auth (D4c): the actor-ledger operator surface.
   actor: {
     flags: [

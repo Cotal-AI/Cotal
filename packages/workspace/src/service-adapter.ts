@@ -312,8 +312,7 @@ function pathFacts(path: string): string {
 
 /** Reference protection is checked without reading file contents or importing provider code. A
  *  refusal names the option and, as the protected-path rule does, every unprotected entry on the
- *  path with its reason and one remedy, so a single change fixes them all. It ends with what the
- *  shallowest entry's metadata shows. */
+ *  path once, with its reason and one remedy, so a single change fixes them all. */
 export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>): void {
   for (const [name, kind] of Object.entries(declaration.paths ?? {})) {
     const path = options[name];
@@ -325,7 +324,7 @@ export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclarati
       const link = paths.find((entry) => lstatSync(entry, { throwIfNoEntry: false })?.isSymbolicLink());
       if (link) linked(link);
       const refused = paths.at(-1)!;
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `${refusal.message}; ${pathFacts(refused)}`, { target: { option: name, path, refused, paths }, remedy: refusal.remedy });
+      throw new CommandFailure("refused", "PERMISSION_DENIED", refusal.message, { target: { option: name, path, refused, paths }, remedy: refusal.remedy });
     };
     // A link can be repointed after this check, so only a physical path is checked and pinned.
     const linked = (link: string): never => {

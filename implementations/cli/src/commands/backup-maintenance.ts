@@ -10,6 +10,7 @@ import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { heldClaim, restoreNextStep } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { acquireStackOperationLock } from "../lib/stack-journal.js";
+import { MissingFlags } from "../lib/missing-flags.js";
 import { cotalRoot } from "../lib/paths.js";
 import { canPrompt } from "./meshes-wizard.js";
 
@@ -23,9 +24,9 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   try { assertSingleSpaceBroker(authDir(root), `cotal backup ${mode}`); recorded = readMaintenanceJournal(root); }
   catch (error) { throw new CommandFailure("refused", isMaintenanceError(error) && error.code === "journal-missing" ? "TARGET_NOT_FOUND" : "LIFECYCLE_BLOCKED", "the local root has no safely readable single-space maintenance record; no recovery or cleanup was attempted", { target: { root, attemptId } }); }
   if (attemptId.startsWith("backup-")) return recoverBackupAttempt(args, root, recorded, attemptId);
-  if (!recorded || !("restore" in recorded) || recorded.restore.attemptId !== attemptId) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no maintenance record at this root names that full restore attempt; no source manifest or prefix was used", { target: { root, attemptId }, remedy: recorded && "restore" in recorded ? `this root holds restore attempt ${recorded.restore.attemptId} (state ${recorded.state}); ${restoreNextStep(recorded.state, recorded.restore.attemptId)}` : mode === "cleanup-fallback" ? "this root holds no restore attempt; a completed cleanup-fallback retires its journal, so a repeated cleanup finds nothing to do" : "this root holds no restore attempt; cotal status shows its maintenance state" });
-  if (mode === "recover" && recorded.state !== "restore-ready") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "pre-commit recovery requires restore-ready; a committed, active or degraded restore must recover forward instead of rolling back", { target: { root, space: recorded.space, attemptId, state: recorded.state }, remedy: restoreNextStep(recorded.state, attemptId) });
-  if (mode === "cleanup-fallback" && recorded.state !== "active") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "fallback cleanup requires the matching healthy active restore; no stopped or degraded state was promoted", { target: { root, space: recorded.space, attemptId, state: recorded.state }, remedy: restoreNextStep(recorded.state, attemptId) });
+  if (!recorded || !("restore" in recorded) || recorded.restore.attemptId !== attemptId) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no maintenance record at this root names that full restore attempt; no source manifest or prefix was used", { target: { root, attemptId }, remedy: recorded && "restore" in recorded ? `this root holds restore attempt ${recorded.restore.attemptId} (state ${recorded.state}); ${restoreNextStep(recorded.state, recorded.restore.attemptId, recorded.restore.selection)}` : mode === "cleanup-fallback" ? "this root holds no restore attempt; a completed cleanup-fallback retires its journal, so a repeated cleanup finds nothing to do" : "this root holds no restore attempt; cotal status shows its maintenance state" });
+  if (mode === "recover" && recorded.state !== "restore-ready") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "pre-commit recovery requires restore-ready; a committed, active or degraded restore must recover forward instead of rolling back", { target: { root, space: recorded.space, attemptId, state: recorded.state }, remedy: restoreNextStep(recorded.state, attemptId, recorded.restore.selection) });
+  if (mode === "cleanup-fallback" && recorded.state !== "active") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "fallback cleanup requires the matching healthy active restore; no stopped or degraded state was promoted", { target: { root, space: recorded.space, attemptId, state: recorded.state }, remedy: restoreNextStep(recorded.state, attemptId, recorded.restore.selection) });
   const snapshot = recorded as RecoveryRecord;
   const target = { root, space: snapshot.space, attemptId, revision: snapshot.revision };
   const restore = snapshot.restore;
@@ -44,7 +45,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
     return;
   }
   if (onlyCopy && !args.values["discard-history"])
-    throw new CommandFailure("refused", "USAGE_INVALID", `this restore was registry-only, so the previous store at ${onlyCopy} holds the only copy of the chat and DM history it left out; nothing was deleted`, { target, remedy: `keep that store, or delete it and that history with cotal backup cleanup-fallback ${attemptId} --yes --discard-history` });
+    throw new MissingFlags(`this restore was registry-only, so the previous store at ${onlyCopy} holds the only copy of the chat and DM history it left out, and cleanup deletes it only with --discard-history; nothing was deleted`, `keep that store, or delete it and that history with cotal backup cleanup-fallback ${attemptId} --yes --discard-history`, target);
   if (!args.values.yes) {
     if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with cotal backup ${mode} ${attemptId} --dry-run, then run cotal backup ${mode} ${attemptId} --yes${onlyCopy ? " --discard-history" : ""}` });
     const confirmed = await prompts.confirm({ message: `${mode === "recover" ? "Recover the stale pre-commit attempt" : restore.method === "disaster" ? "Retire the completed restore journal for" : onlyCopy ? "Remove the unchanged retained old source, the only copy of the history the registry-only restore left out, for" : "Remove only the unchanged retained old source for"} ${oneLine(attemptId)} in ${oneLine(snapshot.space)}? Root ${oneLine(root)}; source ${oneLine(mode === "recover" ? snapshot.source.path : restore.previousSource?.identity.path ?? "not recorded")}. No live-owner, identity or journal guard is bypassed.`, initialValue: false });
@@ -64,7 +65,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
     const current = readMaintenanceJournal(root);
     if (!current || current.revision !== snapshot.revision || current.state !== snapshot.state || !("restore" in current) || current.restore.attemptId !== attemptId) throw new CommandFailure("refused", "CONFLICT", "the reviewed maintenance journal changed; no recovery or cleanup was submitted", { target });
     if (mode === "recover") {
-      if (current.state !== "restore-ready") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "pre-commit recovery requires restore-ready; no rollback was submitted", { target, remedy: restoreNextStep(current.state, attemptId) });
+      if (current.state !== "restore-ready") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "pre-commit recovery requires restore-ready; no rollback was submitted", { target, remedy: restoreNextStep(current.state, attemptId, current.restore.selection) });
       const unrecordedOwnersDead = attemptProcessesGone(root);
       const held = assessRestoreClaim(current, { unrecordedOwnersDead });
       if (held !== "stale") throw heldClaim(root, attemptId, current.claim, "cotal backup recover", held);

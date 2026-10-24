@@ -33,7 +33,7 @@ import {
   deprecatedDaemonEntry, type MeshEntry,
 } from "@cotal-ai/workspace";
 import { Manager, rejectionText } from "./manager.js";
-import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, type ManagerServiceChild } from "./service-child.js";
+import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
@@ -583,18 +583,24 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   let releaseSettledRecord: (() => void) | undefined;
   const releasePidRecord = () => { releaseSettledRecord?.(); releaseStartingCustody?.(); };
   // Signals and cooperative requests share the sparing default. Only the process-bound
-  // `cotal down --with-agents` intent authorizes an agent reap; a managed child accepts only its
-  // request-bound native stop handoff.
+  // `cotal down --with-agents` intent authorizes an agent reap; a managed child accepts its
+  // request-bound native stop handoff, or a plain SIGTERM when none is published.
   let shuttingDown = false;
   // A start that failed under a pending stop leaves the exit to its own error once that stop settles.
   let startFailed = false;
   let stopped: Promise<void> | undefined;
   let disposeObserver: (() => void) | undefined;
-  const shutdown = () => {
+  const shutdown = (signal?: NodeJS.Signals) => {
     if (shuttingDown) return;
     let request: NativeServiceStopRequest | undefined;
     let withAgents: boolean;
-    if (service) {
+    if (service && signal === "SIGTERM" && !managerServiceStopRequested(service)) {
+      // A SIGTERM from kill, a systemd stop or a system shutdown carries no request, so it runs the
+      // sparing stop and leaves no stop receipt. A SIGINT without one is still ignored below: Ctrl-C
+      // reaches this child together with the CLI that publishes the request.
+      console.error(`• manager: received SIGTERM with no stop request; stopping with the default agent policy (space ${space})`);
+      withAgents = false;
+    } else if (service) {
       try { request = acceptManagerServiceStop(mgr, service); withAgents = request.withAgents; }
       catch { console.error(c.yellow("! the managed manager stop handoff was not accepted; inspect its original request and phase records")); return; }
     } else {

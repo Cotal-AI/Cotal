@@ -33,7 +33,7 @@ import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, r
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
-import { stackManagerAbsent } from "../lib/stack-journal.js";
+import { runningStackManagerPid, stackManagerAbsent } from "../lib/stack-journal.js";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -749,6 +749,10 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   // that still lists that manager after its process died: no manager answered the read.
   if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined && stackManagerAbsent(t.root, t.space))
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  // A stack manager whose process runs but does not answer, as a hung one, is named with the way out.
+  const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
+  if (!scatter.ok && silentPid !== undefined)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare cotal up starts the manager again` });
   if (!scatter.ok) throw readFailure(scatter, target);
   // Stable ordering: reachable instances first, then by instance id.
   const instances = [...scatter.instances].sort(
