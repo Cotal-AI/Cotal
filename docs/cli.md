@@ -857,7 +857,9 @@ route described below. Recovery re-entry keeps its recorded mode.
 
 A whole-stack `up` or `down` takes the root's maintenance lock before it reads the journal. While
 another whole-stack or maintenance command holds it, the command refuses `LIFECYCLE_BLOCKED` and
-names that command's pid. Taking the lock makes `.cotal/maintenance` when the folder has none. A
+names that command's pid. A lock whose holder is no longer running, as a command killed by
+`SIGKILL` leaves it, is taken over by the next command that needs it, which warns
+`MAINTENANCE_LOCK_TAKEN_OVER` with the pid and start time of the process that left it. Taking the lock makes `.cotal/maintenance` when the folder has none. A
 command that then refuses or fails, such as `up -f` with a manifest that does not validate or `up
 --json` on the retained launcher, releases the lock and removes those folders again while they are
 empty, so a fresh folder is left without a `.cotal` that later commands would read as a project. A crashed member, or an `up` or `down` killed before it recorded its
@@ -1656,6 +1658,10 @@ directory is removed as a store, whatever that directory holds.
 store, credential, record and registration the command would remove, then removes nothing and takes
 no maintenance lock. A check that would refuse the command refuses its dry run the same way.
 
+Ctrl-C or `SIGTERM` during `store` or `all` releases the maintenance lock, reports what the clean
+left and exits 130 or 143. The outcome is `failed` when nothing was removed yet, and `unknown`, naming
+the paths removed, once removal began.
+
 `store` and `all` also refuse every maintenance journal state, with `LIFECYCLE_BLOCKED`, exit 2. The
 refusal names the attempt and, as Next, the step `cotal status` shows for it, such as bare
 `cotal up` to resume a preserved cut; once the root holds no maintenance state and its mesh is
@@ -1786,6 +1792,11 @@ A replacement registration is kept and reported as partial.
 
 The receipt retains acknowledged deletion paths even if later cleanup fails, and lists each path
 once.
+
+Ctrl-C or `SIGTERM` during either apply releases the maintenance lock, reports what the reset left
+and exits 130 or 143. Before the removal was submitted the outcome is `failed` and the store and
+identity are as they were. After it, the outcome is `unknown`, `reset space` lists the paths removed
+so far, and Next is the route's `--dry-run`.
 Unconfirmed effects are unknown and are not retried. Personas, saved service
 definitions and stopped-instance records, installed packages, login sessions
 and remote data remain. Local cleanup does not revoke a remote credential or
@@ -2451,6 +2462,13 @@ a live process can recreate a stream after the final read. The result
 does not claim that processes stopped, or remove registrations, credentials or local
 files. Open-mode impact and receipt label that any broker client can delete the space.
 `space forget` is not a substitute for live deletion.
+
+Ctrl-C or `SIGTERM` during the apply reports what the command left and exits 130 or 143; with
+`--json` the report is the envelope on stdout. Before any delete was submitted the outcome is
+`failed` and the streams are as they were. Once a delete was acknowledged it is `partial`, listing
+the acknowledged streams and any delete still unconfirmed, with `cotal space delete <name> --dry-run`
+to see what remains. After every delete was acknowledged and before the check that nothing remains,
+it is `unknown`.
 
 The receipt's Next names the route back. On a space this machine started, the broker keeps running
 without the streams. Until they are created again, `cotal history`, `cotal send` and `cotal run ps`
@@ -5109,9 +5127,11 @@ channel the identity may read. The channel may be written as `#general`, and a n
 `>` is refused with `name one concrete channel, without wildcards` before connecting. A channel with
 no retained messages and no saved entry warns `CHANNEL_NOT_FOUND`, names the channels that hold
 messages, and reports no replay policy for it. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
-filter that window on this machine. They do not search the whole stream. `result.window` says how
-many messages were read, whether older retained messages exist that the window did not reach, and
-whether the window goes back to `--since`. The report names the local time and the ISO instant a
+filter that window on this machine. They do not search the whole stream, and with older retained
+messages behind the window the report says that `--from` and `--grep` searched only the messages
+read. At `--limit 1000`, the most it reads, the report says older retained messages are not shown and
+names no larger limit. `result.window` says how many messages were read, whether older retained
+messages exist that the window did not reach, and whether the window goes back to `--since`. The report names the local time and the ISO instant a
 time `--since` resolved to, or the chat stream sequence a bare number was read as. A four-digit
 number from 1900 to 2099 is still a sequence, and the report says to write a date in full. A bare
 number past the chat stream's newest sequence names no message, so it is a `USAGE_INVALID` refusal
@@ -6074,7 +6094,9 @@ values a write accepts. `docs` offers its pages, `watch --view` its views and `s
 modes. A channel name for `send -c`, `history` or `channel show`, `members`, `set` and `remove` comes
 from the channels the target space's personas declare, because the broker keeps the others. A
 candidate that holds a control character, such as a persona file name with an escape sequence or a
-newline in it, is not offered. `persona` still lists that file with the characters escaped. The bash
+newline in it, is not offered. `persona` still lists that file with the characters escaped. A
+persona catalog folder that cannot be read fails the completion of a persona name, so the shell
+offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints the folder. The bash
 and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own
 candidates.
 
@@ -6350,7 +6372,8 @@ and non-zero on not. An edited program that does not validate is refused before 
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
 migration is not reachable yet, and the report says so. `migrate` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
 commit does and the check files nothing. `--timeout` sets the default
-checkpoint timeout for a drive (default 1h). `--on <instance>` sends a hosted verb to one manager
+limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). It takes a duration
+longer than zero, such as `30m`, and refuses anything else with `USAGE_INVALID` before the run starts. `--on <instance>` sends a hosted verb to one manager
 instance, with the same rules as [`ps`](#managed-seats). On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust

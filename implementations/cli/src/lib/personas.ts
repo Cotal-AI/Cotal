@@ -111,9 +111,16 @@ export function readPersonas(root: string): PersonaEntry[] {
   });
 }
 
-/** Just the persona names — the completion source for `cotal spawn` and `personas show/rm`. */
+/** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas
+ *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
+ *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
-  return listPersonas(root).map((p) => p.name);
+  try {
+    return readPersonas(root).map((p) => p.name);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    throw new Error(`cannot read the persona catalog ${personaDir(root)}: ${code === "EACCES" || code === "EPERM" ? "permission denied" : code ?? (e as Error).message}`);
+  }
 }
 
 /** Collect a deduped, sorted set of values declared across every persona file, via `pick`.

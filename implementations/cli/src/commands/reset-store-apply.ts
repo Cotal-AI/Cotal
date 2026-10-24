@@ -18,6 +18,7 @@ import { acquireStackOperationLock, readStackJournal, stackNeverStarted } from "
 import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
 
 /** What a named reset acts on. A running or crashed space is selected by its locally started
  *  registration. A controller stack that a completed `down` stopped has none: its prepared record
@@ -229,24 +230,30 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
   const target = { space, root };
   if (root === canonicalRoot(homedir()) || selected.storeDir !== undefined && !isAbsolute(selected.storeDir))
     throw new CommandFailure("refused", "CONFLICT", "the selected root or custom store path is not a safe absolute project target", { target });
+  // From here an interrupt says what the reset left, and releases the lock so the next run does not find it held.
+  let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
+  let submitted = false;
+  const stopReporting = reportOnInterrupt(presentation, "reset", () => submitted
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", "reset store was interrupted while it removed the stopped store; part of it may remain", { target, remedy: `see what remains with cotal reset store ${space} --dry-run before you run it again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", "reset store was interrupted before it removed anything; the store is as it was", { target, remedy: `run cotal reset store ${space} --yes again` }),
+  () => { if (lock) releaseMaintenanceLock(lock); });
   const expected = await assertResetEligible(selected, "reset store");
   const recordedRuns = runsAtLastDown(root);
   if (!yes) {
     const answer = await prompts.confirm({ message: `Delete only the stopped store at ${oneLine(expected.path)} for ${oneLine(space)} on ${oneLine(brokerAddressForDisplay(selected.server) ?? "the recorded broker")}? Its ${storeContentsText(STORE_CONTENTS)} go with it${recordedRuns?.read ? ` (as of the last down: ${runCounts(recordedRuns)})` : ""}. Trust, credentials and registration stay.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
+      stopReporting();
       writeResult(presentation, { command: "reset", target, result: { kind: "reset-store", confirmed: false, deleted: false }, noOp: true }, (): Report => ({ sections: [{ title: "Store kept", blocks: [{ kind: "lines", lines: ["No store path was removed."] }] }] }));
       return;
     }
   }
   // A live holder, such as a racing `up`, is named by its pid, as whole-stack commands name it.
-  let lock: ReturnType<typeof acquireMaintenanceLock>;
   try { lock = acquireStackOperationLock(root); }
   catch (error) {
     if (isCommandFailure(error)) throw error;
     throw new CommandFailure("refused", "CONFLICT", "the exclusive local maintenance lock could not be acquired; no store was removed", { target });
   }
   let removed: string[] | undefined;
-  let submitted = false;
   let failure: CommandFailure | undefined;
   try {
     const pinned = await assertResetEligible(selected, "reset store");
@@ -264,6 +271,7 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
         ? new CommandFailure("partial", "OPERATION_PARTIAL", "the store cleanup returned but maintenance lock release was not confirmed", { target, changed: removed, native: { outcome: "unknown" } })
         : new CommandFailure("failed", "OPERATION_FAILED", "maintenance lock release was not confirmed; no store cleanup was submitted", { target });
     }
+    stopReporting();
   }
   if (failure) throw failure;
   const paths = removed ?? [];

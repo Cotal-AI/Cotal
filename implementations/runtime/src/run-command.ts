@@ -68,7 +68,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { LangErrors, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
   CommandFailure,
   commandFailureReport,
@@ -1079,6 +1079,9 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],
   };
   for (const [flag, modes] of Object.entries(scopes)) if (args.values[flag] !== undefined && !modes.includes(verb)) usage(`--${flag} is not taken by this run command`);
+  // The limit of every checkpoint, ask and turn that sets none of its own, so a zero expires each at once.
+  if (values.timeout !== undefined && !(isDuration(values.timeout) && parseDuration(values.timeout) > 0))
+    usage(isDuration(values.timeout) ? "--timeout must be longer than zero, or every checkpoint, ask and turn that sets no limit of its own expires at once" : `--timeout ${new DurationError(values.timeout).message}`);
   if (verb === "journal" && values.limit !== undefined) {
     if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
     if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);

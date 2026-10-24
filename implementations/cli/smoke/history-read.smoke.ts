@@ -499,6 +499,16 @@ try {
     check("a retention gap is a fact about history, not a partial read", gap.envelope?.outcome === "ok" && gap.envelope.completeness === "complete", { outcome: gap.envelope?.outcome, completeness: gap.envelope?.completeness, warnings: gap.envelope?.warnings });
     const gapPlain = await run(["history", "general", "--space", openSpace, "--limit", "3", "--plain"]);
     check("the report names the gap", new RegExp(`gap: #general holds ${cap} from carol, the per-sender limit, so their older messages there are gone`).test(gapPlain.stdout), gapPlain.stdout);
+    // At the cap a larger --limit does not exist, and a filter finds only what the window read.
+    const [capPlain, fromCarol] = await Promise.all([
+      run(["history", "general", "--space", openSpace, "--limit", "1000", "--plain"]),
+      run(["history", "general", "--space", openSpace, "--limit", "1000", "--from", "carol", "--plain"]),
+    ]);
+    check("at --limit 1000 the report says history reads at most the newest 1000, and names no larger --limit",
+      capPlain.stdout.includes("older retained messages are not shown; history reads at most the newest 1000\n") && !capPlain.stdout.includes("raise --limit"), shown(capPlain));
+    check("below it the report still names the raise", gapPlain.stdout.includes("older retained messages are not shown; raise --limit (up to 1000) to read further back\n"), shown(gapPlain));
+    check("--from with older retained messages says it searched only the messages read",
+      fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
   }
 
   // ── destructive clear accepts no selection or read mode ──────────────────────────────────────

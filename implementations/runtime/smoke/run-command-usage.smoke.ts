@@ -86,6 +86,19 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
 }
 
 {
+  // --timeout is the limit of every checkpoint, ask and turn that sets none of its own. A value that
+  // is not a duration, or is zero, used to start the run and then fail it at the first checkpoint.
+  const bad = ["5", "PT5M", "1.5s", "", "5S"].flatMap((t) =>
+    [["start", "p.cotal.js"], ["resume", "run-0"]].map((positionals) => [t, positionals.join(" "), gate(positionals, { timeout: t })] as const));
+  c("a --timeout that is not a duration is refused USAGE_INVALID on start and resume, with the duration's own text",
+    bad.every(([t, , got]) => usageRefusal(got, `--timeout "${t}" is not a duration`)), bad.filter(([t, , got]) => !usageRefusal(got, `--timeout "${t}" is not a duration`)));
+  const zero = gate(["start", "p.cotal.js"], { timeout: "0s" });
+  c("and so is a zero one", usageRefusal(zero, "--timeout must be longer than zero"), zero);
+  const fine = gate(["start", "p.cotal.js"], { timeout: "30m" });
+  c("a duration longer than zero passes the gate", !(fine instanceof Error) && fine.verb === "start", fine);
+}
+
+{
   // A malformed run id is the same local check on every verb that takes one, so each refuses it as
   // usage before any contact, naming the id format.
   const idFormat = 'is not a run id, which is 1 to 64 letters, digits, "_" or "-"';

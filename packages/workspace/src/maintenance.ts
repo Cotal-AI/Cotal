@@ -22,6 +22,7 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { hardenPrivate, wfjStreamName } from "@cotal-ai/core";
+import { recordOperationWarning } from "./output.js";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
 export const MAINTENANCE_JOURNAL_VERSION = 1 as const;
@@ -1009,6 +1010,7 @@ export function acquireMaintenanceLock(
     throw error;
   }
 
+  let takenOver: ProcessOwner | undefined;
   try {
     let existing: { token: string; owner: ProcessOwner } | undefined;
     try {
@@ -1036,6 +1038,7 @@ export function acquireMaintenanceLock(
         });
       unlinkSync(paths.lock);
       fsyncDirectory(paths.maintenanceDir);
+      takenOver = existing.owner;
     }
   } finally {
     removeReaper(paths.reaper, reaperToken);
@@ -1052,6 +1055,12 @@ export function acquireMaintenanceLock(
       });
     throw error;
   }
+  // A lock is taken over only from an owner proven dead, and the run that takes it says so.
+  if (takenOver) recordOperationWarning({
+    code: "MAINTENANCE_LOCK_TAKEN_OVER",
+    target: { root: paths.root, path: paths.lock, owner: { pid: takenOver.pid, host: takenOver.host, startedAt: takenOver.startedAt } },
+    message: `took over the maintenance lock in ${paths.root} that process ${takenOver.pid} (started ${takenOver.startedAt}) left; that process is no longer running, so the command it ran there ended without releasing it`,
+  });
   return { root: paths.root, path: paths.lock, token, owner };
 }
 
