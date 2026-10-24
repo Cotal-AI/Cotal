@@ -2068,6 +2068,8 @@ underscores or hyphens, so any other name refuses with `USAGE_INVALID`, exit 1, 
 written. The limit is 64 because each local file that carries a space spells its name twice over,
 and a file name holds at most 255 bytes. `cotal up` refuses a longer name that an earlier release
 prepared the same way, before it starts anything, and names `cotal space forget` and a shorter name.
+`space add` and `meshes add` refuse a longer name with `USAGE_INVALID`, exit 1, and write no
+record, because a space added from elsewhere is carried by the same files.
 It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
 space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so

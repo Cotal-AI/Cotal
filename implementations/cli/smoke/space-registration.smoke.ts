@@ -13,8 +13,9 @@
  * another Cotal home: create, down and status there name that home. A folder path with a control
  * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
- * A space name over 64 characters is refused by create and `up --space` before anything is written,
- * and `up` of a longer name an earlier release prepared refuses before its journal is written.
+ * A space name over 64 characters is refused by create, `up --space`, `space add` and `meshes add`
+ * before anything is written, and `up` of a longer name an earlier release prepared refuses before its
+ * journal is written.
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
@@ -172,6 +173,14 @@ setCurrent("keep");
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
   check("--from without a terminal is USAGE_INVALID and names --file", refused(fromScript, 1, "USAGE_INVALID") && /--file/.test(fromScript.env?.error?.remedy ?? ""), shown(fromScript));
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
+  // A space added from elsewhere is carried by the same local files as one created here.
+  for (const length of [65, 117]) {
+    const long = "r".repeat(length), limit = `the space name has ${length} characters, and a space name holds at most 64`;
+    const added = await json(["space", "add", long, "--server", LIVE, "--mode", "open", "--root", root, "--force", "--yes"]);
+    check(`space add of a ${length}-character name is USAGE_INVALID, exit 1, naming the limit`, refused(added, 1, "USAGE_INVALID") && (added.env?.error?.message ?? "").startsWith(limit), shown(added));
+    const meshes = await run(["meshes", "add", long, "--server", LIVE, "--mode", "open", "--root", root, "--force"]);
+    check(`meshes add of a ${length}-character name exits 1 naming the limit`, meshes.status === 1 && meshes.stderr.includes(limit), shown(meshes));
+  }
   check("no usage refusal wrote anything", JSON.stringify(registryFiles()) === JSON.stringify(before));
 }
 
