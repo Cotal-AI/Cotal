@@ -39,7 +39,10 @@
  *     history and name the manager's SIGTERM that keeps it. After that clear `send` stores again. When
  *     the manager instead ends on its own host's SIGTERM, `down` stops the rest and keeps the delivery
  *     credential, because the full store refused the daemon's release, and the next `up` with a larger
- *     cap waits out that lease and starts every member with the history kept. A project folder renamed while its stack runs: the broker names
+ *     cap waits out that lease and starts every member with the history kept. A store that refused a
+ *     write for permission makes the broker disable JetStream: `down`, `service stop stack-manager`
+ *     and `up` refuse `DEPENDENCY_UNAVAILABLE` naming the logged failure and the manager's SIGTERM on
+ *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
  *     `status --space` from the renamed folder name the move and the way back, `status` there offers
  *     no `clean store`, and after the move back `down` stops it.
@@ -238,6 +241,19 @@ const fillStore = async (root: string, space: string): Promise<unknown> => {
   try { for (let i = 0; i < 120 && refused === undefined; i++) await filler.multicast("x".repeat(900_000), { channel: "general" }).catch((error: unknown) => { refused = error; }); }
   finally { await filler.stop().catch(() => {}); }
   return refused;
+};
+
+/** How many messages `channel` holds, read in this process as `history` counts them, over a
+ *  provisioner credential, which may read the stream's state. A CLI read of 900 KB messages prints
+ *  more than a child's output buffer takes. */
+const channelMessages = async (root: string, space: string, channel: string): Promise<number | undefined> => {
+  const auth = (await getSpaceAuth(workspaceSecretStore(root), space))!;
+  const id = newIdentity();
+  const reader = new CotalEndpoint({ space, servers: findMesh(space)!.server, creds: await mintCreds(auth, id, "provisioner"), card: { id: id.id, name: "counter", kind: "endpoint" }, consume: false, watchChannels: false, watchPresence: false, registerPresence: false });
+  reader.on("error", () => {});
+  await reader.start();
+  try { return (await reader.listChannels()).find((row) => row.channel === channel)?.messages; }
+  finally { await reader.stop().catch(() => {}); }
 };
 
 process.on("exit", () => {
@@ -583,7 +599,7 @@ try {
     check("up with a 70 MB cap starts", up.status === 0, shown(up));
     const refused = await fillStore(root, space);
     check("rig: the broker refuses a publish once the store is over its cap", (refused as { code?: unknown } | undefined)?.code === 10023, String(refused));
-    const before = (cli(root, "history", "general", "--limit", "500", "--json").env?.result?.items as unknown[] | undefined)?.length;
+    const before = await channelMessages(root, space, "general");
     const manager = pidOf(space, "stack-manager");
     if (manager !== null) process.kill(manager, "SIGTERM");
     check("rig: the manager exits on SIGTERM", manager !== null && await until(() => !alive(manager), 30_000), manager);
@@ -593,8 +609,54 @@ try {
     const again = cli(root, "up", "--max-file-store", "134217728", "--json");
     track(space);
     check("up with a larger cap right after waits out that lease and starts every member", again.status === 0 && again.env?.outcome === "ok", shown(again));
-    const after = (cli(root, "history", "general", "--limit", "500", "--json").env?.result?.items as unknown[] | undefined)?.length;
+    const after = await channelMessages(root, space, "general");
     check("the history is kept", typeof before === "number" && before > 0 && after === before, { before, after });
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3h. A store that stopped taking writes under a running broker. nats-server disables JetStream
+  // after a write refused for permission, so the manager's stop cannot be recorded until the broker
+  // restarts, and the way out ends the manager's process on its host. Root bypasses the mode.
+  if (process.getuid?.() !== 0) {
+    const space = "latched";
+    const root = prepare(space);
+    const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    track(space);
+    check("up starts", up.status === 0, shown(up));
+    check("a first message is stored", cli(root, "send", "-c", "general", "before the store stopped taking writes", "--json").status === 0);
+    const storeDir = readStackJournal(root)!.journal.broker!.storeDir;
+    const jetstream = join(storeDir, "jetstream");
+    const stored = await channelMessages(root, space, "general");
+    spawnSync("chmod", ["-R", "a-w", jetstream]);
+    let refused: unknown;
+    try { refused = await fillStore(root, space); } finally { spawnSync("chmod", ["-R", "u+w", jetstream]); }
+    const store = cli(root, "status", "--json").env?.result?.store as { state?: string; cause?: string; jetStreamDisabled?: boolean } | undefined;
+    check("rig: a write the store refused for permission made the broker disable JetStream",
+      refused !== undefined && store?.state === "write-failed" && /permission denied$/.test(store.cause ?? "") && store.jetStreamDisabled === true, { refused: String(refused), store });
+    const managerPid = pidOf(space, "stack-manager");
+    const remedy = `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down; give the account the broker runs as write access to ${storeDir} again, then run cotal up`;
+    const plain = cli(root, "status", "--plain");
+    check("status leads Next with the manager's SIGTERM, then down and up after write access is restored",
+      /^Next\n +kill -TERM \d+ /m.test(plain.stdout) && plain.stdout.includes(`kill -TERM ${managerPid}`) && plain.stdout.includes(`write access to ${storeDir} again first`), plain.stdout);
+    const preview = cli(root, "down", "--dry-run", "--json");
+    check("down --dry-run predicts the refusal", preview.status === 0 && (preview.env?.result?.blockedBy as { code?: string } | null)?.code === "DEPENDENCY_UNAVAILABLE", shown(preview));
+    const down = cli(root, "down", "--yes", "--json");
+    check("down --yes refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming the logged failure and the way out",
+      down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && /permission denied, and disabled JetStream until it restarts, so stopping the manager needs a credential whose issuance record the broker cannot store; no member was stopped$/.test(down.env.error.message ?? "")
+        && down.env.error.remedy === remedy && managerPid !== null && alive(managerPid) && !gone(space, "stack-delivery"), shown(down));
+    const stop = cli(root, "service", "stop", "stack-manager", "--space", space, "--yes", "--json");
+    check("service stop stack-manager refuses the same way and the manager runs on",
+      stop.status === 2 && stop.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && stop.env.error.remedy === remedy && managerPid !== null && alive(managerPid), shown(stop));
+    const again = cli(root, "up", "--json");
+    check("up refuses DEPENDENCY_UNAVAILABLE with the same way out", again.status === 2 && again.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && again.env.error.remedy === remedy, shown(again));
+    if (managerPid !== null) process.kill(managerPid, "SIGTERM");
+    check("rig: the manager exits on SIGTERM", managerPid !== null && await until(() => !alive(managerPid), 30_000), managerPid);
+    check("down --yes then stops the other members", cli(root, "down", "--yes", "--json").status === 0);
+    const restarted = cli(root, "up", "--json");
+    track(space);
+    check("up then starts the stack with JetStream", restarted.status === 0, shown(restarted));
+    const kept = await channelMessages(root, space, "general");
+    check("every message stored before the failure is kept", stored !== undefined && stored >= 1 && kept !== undefined && kept >= stored, { stored, kept });
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 

@@ -19,7 +19,7 @@ import { followServiceJournal, readServiceJournal } from "../lib/service-journal
 import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
-import { fullStoreStopRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
 import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { stackMemberFor } from "../lib/stack-journal.js";
@@ -304,7 +304,11 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }
   catch (error) {
     // The stop's credential could not be recorded, so nothing was submitted, as `down` refuses it.
-    if (!storeRefusedWrite(error)) throw error;
+    if (!storeRefusedWrite(error)) {
+      const disabled = jetStreamDisabled(root, space);
+      if (!disabled || isCommandFailure(error) && error.outcome !== "unknown") throw error;
+      throw jetStreamDisabledRefusal(disabled, root, space, `stopping ${oneLine(name)} needs a credential whose issuance record the broker cannot store`, "nothing was stopped", target, selected!.record.value.process?.pid);
+    }
     let store: { path: string; cap?: number } | undefined;
     try { store = recordedStore(root, space); } catch { store = undefined; }
     const pid = mode === "stop" ? selected!.record.value.process?.pid : undefined;

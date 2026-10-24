@@ -14,6 +14,7 @@ import { refuseSharedStoreRemoval } from "../lib/store-dir.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
+import { cotalLinkAt, linkedCotalRefusal } from "../lib/paths.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { acquireStackOperationLock, readStackJournal, stackNeverStarted } from "../lib/stack-journal.js";
 import type { StackRuns } from "../lib/stack-runs.js";
@@ -78,15 +79,23 @@ export function storeContentsSection(removed: readonly string[], runs: StackRuns
   ] }] : [];
 }
 
+/** A selected root whose `.cotal` is a link: no reset reads or removes anything through it. */
+function refuseLinkedRoot(root: string, command: ResetCommand): void {
+  const linked = linkedCotalRefusal(command, cotalLinkAt(root));
+  if (linked) throw linked;
+}
+
 export function selectResetTarget(space: string, command: ResetCommand): ResetTarget {
   let entry: ReturnType<typeof findMesh>, prepared: ReturnType<typeof findPreparedSpace>;
   try { entry = findMesh(space); prepared = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local registration could not be read; no reset target was inferred", { target: { space } }); }
   if (entry) {
     if (entry.origin !== "up") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} needs a space this machine started; a manual or discovered registration grants no storage authority`, { target: { space }, remedy: `see where it runs with cotal space show ${space}` });
+    refuseLinkedRoot(canonicalRoot(entry.root), command);
     return { space, root: canonicalRoot(entry.root), server: entry.server, storeDir: entry.storeDir, mode: entry.mode, tlsRequired: entry.tlsRequired === true, remoteUser: entry.userAuth?.remote === true, source: "registration", fingerprint: JSON.stringify(entry) };
   }
   const root = prepared ? canonicalRoot(prepared.root) : undefined;
+  if (root) refuseLinkedRoot(root, command);
   let recorded: ReturnType<typeof readStackJournal>;
   try { recorded = root ? readStackJournal(root) : undefined; }
   catch (error) {

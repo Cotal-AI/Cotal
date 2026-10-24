@@ -29,7 +29,7 @@ import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c, presenceFacts } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, refuseUnregisteredManager, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -132,6 +132,12 @@ export async function stop(args: ParsedArgs): Promise<void> {
   } else {
     name = managedTarget(args, "stop");
     on = await pinForTarget({ ...v, name } as never, "cotal stop");
+    // A typed pin the registry does not list is refused at once, as spawn refuses it. Stop's admin
+    // instrument holds no registry read, so the check uses the one ps reads the registry with.
+    if (v.on !== undefined && on !== undefined) {
+      const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+      if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
+    }
     t = await resolveControlTarget(v, "control-caller-admin", on);
   }
   recordOperationSpace(t.space);
@@ -569,6 +575,9 @@ export interface ManagerAnswer {
   /** A refusal's own sentence, with the endpoint's code when it carried one. */
   readonly error?: string;
   readonly code?: string;
+  /** The host name an answered instance gave in its own status reply, asked within a short shared
+   *  bound. What the manager says about itself, shown for reading only: never a route for `--on`. */
+  readonly reportedHost?: string;
 }
 
 /** What `cotal ps` read: each seat (or, with `--slots`, each static slot) exactly as its manager
@@ -594,7 +603,7 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
   // Its instance id is still shown, with or without agents, because it is what `--on` takes.
   if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) return { sections: [
     { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
-    ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId]] }] })),
+    ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId], ...(m.reportedHost ? [["reported host", m.reportedHost] as [string, string]] : [])] }] })),
     { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
       { command: "cotal attach <name>", description: "Return to an agent's terminal" },
       { command: "cotal stop <name>", description: "Stop one agent" },
@@ -605,7 +614,7 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
   // refused instances are shown, never dropped.
   return {
     sections: result.managers.map((m): Section => {
-      const title = `manager ${m.instanceId}`;
+      const title = `manager ${m.instanceId}${m.reportedHost ? ` · reports host ${m.reportedHost}` : ""}`;
       if (m.state === "silent") {
         const silent = silentManager(m.liveness, m.instanceId, mode);
         return { title, blocks: [{ kind: "lines", lines: [silent.state, ...(silent.remedy ? [{ text: `↳ ${silent.remedy}`, tone: "hint" } as const] : [])] }] };
@@ -740,6 +749,8 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   // this resolve, and a credential cannot gain an instance rail after it is minted.
   const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   recordOperationSpace(t.space);
+  // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
+  if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
 
   // One manager instance: `--on <instance>` pins ps to its `inst` route on a multi-manager mesh,
   // and in USER MODE (bearer present) the borrowed manager view pins one authorized instance and
@@ -776,7 +787,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   // freeze rows; every registered instance is attributed, and a non-answering one is labeled with
   // what this command established about it (pin 3).
   const target = { space: t.space, scope: "all-managers" };
-  const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
+  const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth, undefined, { reportHosts: true });
   // An empty manager registry on this root's own controller stack, whose manager does not run, is
   // a known boundary with a remedy; the registry's own failure stays the cause. So is a registry
   // that still lists that manager after its process died: no manager answered the read. While an
@@ -825,7 +836,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
       continue;
     }
     const rows = (inst.data as unknown[]) ?? [];
-    managers.push({ instanceId: inst.instanceId, state: "answered" });
+    managers.push({ instanceId: inst.instanceId, state: "answered", ...(inst.reportedHost ? { reportedHost: inst.reportedHost } : {}) });
     rowsOf.set(inst.instanceId, rows);
     items.push(...rows);
   }

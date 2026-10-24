@@ -1743,8 +1743,18 @@ function nextActions(r: StatusResult): Section {
   if (r.stackManager?.endpoint === "not-answering")
     items.unshift({ command: `kill -KILL ${r.stackManager.pid}`, description: `The stack manager does not answer, so ${cmd} down cannot stop it. If it stays that way, end its process; ${cmd} down --yes then records it stopped` });
   // The broker keeps a store write error until it restarts, so messages sent meanwhile may be lost.
-  if (r.store?.state === "write-failed")
-    items.unshift({ command: `${cmd} down`, description: `First ${storeWriteRepair(r.store, r.selected.resolved ? r.selected.root : undefined, r.selected.space ?? "")}; then ${cmd} up starts the broker again with the history it kept` });
+  if (r.store?.state === "write-failed") {
+    const repair = storeWriteRepair(r.store, r.selected.resolved ? r.selected.root : undefined, r.selected.space ?? "");
+    const first = `${repair[0]!.toUpperCase()}${repair.slice(1)} first`;
+    // A broker without JetStream cannot record the manager's stop, and it stops only after the manager.
+    if (r.store.jetStreamDisabled && r.stackManager && r.selected.resolved)
+      items.unshift(
+        { command: `kill -TERM ${r.stackManager.pid}`, description: "The broker disabled JetStream after the write failure and serves none until it restarts, which needs the manager stopped first. On this host, end the manager; it stops its agents by its default policy" },
+        { command: own ? `${cmd} down --yes` : `${cmd} down --space ${r.selected.space} --yes`, description: "Then stop the other members" },
+        { command: own ? `${cmd} up` : `${cmd} up --root ${shellWord(r.selected.root)}`, description: `${first}; then up starts the broker again` },
+      );
+    else items.unshift({ command: `${cmd} down`, description: `${first}; then ${cmd} up starts the broker again` });
+  }
   // The broker refuses every write while the store is over its cap, so sends store nothing.
   if (r.store?.state === "full" && r.selected.resolved)
     items.unshift({ command: `${cmd} history clear --space ${r.selected.space} --yes`, description: `Make room in the full store: this purges the space's channel history; --dms also purges its direct messages` });

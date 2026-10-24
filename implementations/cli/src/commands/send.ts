@@ -460,8 +460,10 @@ export async function send(args: ParsedArgs): Promise<void> {
       if (spaceStreamsExpected(space, connection.mode) && await chatStreamGone(ep)) throw streamsAbsent(connection);
       // A broker sends nothing back for a stream it cannot write, so its own log here may name why.
       const store = connection.root ? brokerStoreWrite(connection.root, space) : undefined;
-      if (store?.state === "write-failed")
-        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `${storeWriteRepair(store, connection.root, space)}, then restart the broker with cotal down and cotal up before sending again` });
+      if (store?.state === "write-failed") {
+        const repair = storeWriteRepair(store, connection.root, space);
+        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `${repair[0]!.toUpperCase()}${repair.slice(1)}, then restart the broker with cotal down and cotal up before sending again.${store.jetStreamDisabled ? " The broker disabled JetStream, so if cotal down refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first." : ""}` });
+      }
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "No storage acknowledgement was established. The message may have been stored; it was not retried.", { target, remedy: "Inspect the destination before sending again. The native publisher did not return a message identifier." });
     }
     receipt = { kind: "send", messageId, sequence, destination: peer?.card.id ?? input.target, sender: { principal: ep.card.id, kind: ep.card.kind }, stored: true, delivery: null, acceptance: null, completion: null, replyListener: false, replyTo: values["reply-to"] ?? null, bodySource: input.source, mentions: [...new Set(mentions)], channelPolicy: policy };

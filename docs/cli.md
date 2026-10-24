@@ -827,7 +827,11 @@ folder whose `.cotal` is a link to another project's `.cotal` is told that it is
 the stack from that project. `up` and `down` there refuse `CONFLICT`, exit 2, before anything reads
 through the link, naming the link and where it leads. When it leads to another project's `.cotal`,
 they name that project; otherwise the next step is to remove the link and prepare the folder with
-`space create`. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
+`space create`. When the `.cotal` it leads to holds this folder's own records, because its stack
+journal was recorded here, as after moving `.cotal` away and linking it back, they name the way back
+instead: `rm` the link, which removes only the link, then `mv` that `.cotal` back in its place, which
+keeps the history. Nothing moves it for you. In the folder the records were moved to, commands say
+they were moved there from this folder and name the same step. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
 naming where it leads. `status` there does not read the folder's boot and additive attempt
 inventories through the link. It warns `COTAL_DIR_LINKED`, or `COTAL_DIR_DANGLING` for a link that
 leads nowhere, with the same next step, and exits 4. For a linked folder, its selected space names
@@ -1296,7 +1300,18 @@ starts the stack again with its history. The signal reaches only a process on th
 `cotal service stop stack-manager` and `restart` refuse the same way before submitting a stop, and
 name `cotal history clear --space <space> --yes` and then the same command again. A stop also
 names `kill -TERM <pid>` as the way to keep that history. A dry run
-names that refusal as a warning when the space holds more than the recorded cap. Controller roots refuse
+names that refusal as a warning when the space holds more than the recorded cap.
+
+nats-server disables JetStream when its store refuses a write for permission or for space, and
+only a restart brings it back. While the broker's log on this machine shows that, the manager's
+stop cannot record its credential either, so `down`, `service stop stack-manager` and `restart`
+refuse `DEPENDENCY_UNAVAILABLE`, exit 2, before any stop, and name the logged failure. `up` refuses
+the same way, because it cannot check the space's streams on that broker. A dry run names the
+refusal as a warning. Each names the way out: end the manager on the stack's host with
+`kill -TERM <pid>`, which stops every agent it runs by its default policy, then run `cotal down`,
+fix the logged cause, and run `cotal up`. Fixing the cause alone does not bring JetStream back.
+
+Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help. A stop records each step in the stack journal in the root's
@@ -1719,6 +1734,12 @@ and their dry runs refuse `CONFLICT` (exit 2), name that space, its root and its
 nothing. Keep the folder while either space needs its history; once neither does, stop both and
 remove it by hand.
 
+In a folder whose `.cotal` is a link, every target but `history`, and both dry runs, refuse before
+anything reads through it: `CONFLICT`, exit 2, naming the link and where it leads, or
+`TARGET_NOT_FOUND` for a link that leads nowhere, which is not passed over to the records of a
+folder above it. When the link leads to this folder's own records, moved away and linked back, the
+Next names moving them back, as [up](#up) does.
+
 `--dry-run` runs the same checks as `store` or `all` and prints `would remove <path>` for each
 store, credential, record and registration the command would remove, then removes nothing and takes
 no maintenance lock. A check that would refuse the command refuses its dry run the same way.
@@ -1803,7 +1824,10 @@ exclude aliases, remote tenants or live attachments. A negative credless probe
 cannot prove absence for TLS-first listeners. A custom store path must be
 absolute and one real directory. A recorded store path that is a link refuses `CONFLICT` in the
 preview and the apply of both resets, naming the path and the directory it points to, and nothing
-is removed. Replace the link with that directory to reset it. A store in the project folder itself
+is removed. Replace the link with that directory to reset it. A selected root whose `.cotal` is a
+link refuses both resets and their previews `CONFLICT`, exit 2, before anything reads through it,
+naming the link, and nothing is removed; when the records were moved away and linked back, the Next
+names moving them back. A store in the project folder itself
 refuses both resets `CONFLICT` as it refuses `clean store`, naming the store's own entries to remove
 by hand. The preview takes no maintenance lock and cannot establish exclusive
 custody or a complete identity deletion set.
@@ -2989,7 +3013,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
-| `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause` and `path`; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
+| `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
 
 `store` covers only a broker whose log is on this machine: a controller stack's `stack-broker`
@@ -2999,9 +3023,11 @@ system-account user, so `status` reads a bounded tail of that log instead and ke
 with the running broker's process ID since its last start. When the broker logged a store write
 failure, such as a full disk, the selected space shows a `Store` row with its time, cause and file.
 The broker keeps that error until it restarts, so messages sent meanwhile are not stored. The first
-Next is `cotal down`, after the repair the cause calls for: free space on the disk for a full disk,
-or make the store writable by this account again for a permission denied. `cotal up` then starts the
-broker again with the history it kept.
+Next is `cotal down`, to run once the logged cause is fixed: write access to the store again for a
+permission error, or free space for a full disk. Then `cotal up` starts the broker again. When the
+broker also disabled JetStream, which `store.jetStreamDisabled` shows, the manager's stop cannot be
+recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on this host, then
+`cotal down --yes` and `cotal up`.
 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
@@ -3361,7 +3387,7 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--harness <connector>`, `-H` | all registered applications | Application whose catalog to list |
-| `--on <manager-instance>` | native selection | Ask only the named manager instance, or on a user-auth mesh the manager a name or host picks, as [`ps`](#managed-seats) takes them. An unavailable or unauthorized pin refuses without choosing another. |
+| `--on <manager-instance>` | native selection | Ask only the named manager instance, or on a user-auth mesh the manager a name or host picks, as [`ps`](#managed-seats) takes them. An unavailable or unauthorized pin refuses without choosing another. On a static or open mesh an id the registry lists for no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on` does. |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
 | `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate, and `result.notAskedManagerInstanceIds` lists the live managers an unpinned read did not ask, or is `null` when no registry was read |
 | `--plain` | off | The same report without color |
@@ -3769,6 +3795,13 @@ manager is listed under `Manager` as its `instance`, and with several each gets 
 header. With no agents its Next is `cotal spawn`, or `cotal setup` when no agent application is set
 up here, as `status` reports it.
 
+When `ps` asks every manager, it then asks each manager that answered for the host name in its own
+status reply. The host shows as `· reports host <host>` after the id, or as a `reported host` row
+under `Manager`. It is that manager's own claim, and `ps` does not check it. Two managers on one
+host report the same name, and `--on` never takes it on a static or open mesh. These asks share one
+2-second limit. A manager that has not answered by then is listed without a host, and the read
+stays as complete as the census found it. `ps` does not show a manager's name.
+
 The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
 one envelope whose `result` is:
 
@@ -3776,7 +3809,7 @@ one envelope whose `result` is:
 |---|---|
 | `kind` | `seats`, or `slots` with `--slots` |
 | `items` | Each seat (or slot) row as its manager returned it, unchanged |
-| `managers` | Each manager instance asked: `{instanceId, state}`, where `state` is `answered`, `silent` (registered, no answer within the deadline, with the `liveness` this command established), `refused` (with its `error` and `code`) or `contract-mismatch` |
+| `managers` | Each manager instance asked: `{instanceId, state}`, where `state` is `answered`, `silent` (registered, no answer within the deadline, with the `liveness` this command established), `refused` (with its `error` and `code`) or `contract-mismatch`. An `answered` manager that gave a host name in time also has `reportedHost` |
 
 `target` is `{space, scope: "all-managers"}` for the class scatter, and
 `{space, scope: "manager", managerInstanceId}` for `--on` or a user-auth mesh. A manager that is not
@@ -3842,8 +3875,10 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   and did not answer. It does not say the host is down, because a dead host never deregisters itself and a
   live one can be slow; if it is gone, deregister it.
   `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
-  rather than falling through: a well-formed id that no live manager carries is reported as
-  `manager instance <id> did not answer` (nothing else is asked), and a credential without that
+  rather than falling through. On a static or open mesh a well-formed id that the registry lists for
+  no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on`
+  does; a registered one that does not answer is reported as `manager instance <id> did not answer`
+  (nothing else is asked). A credential without that
   instance's rail is reported as refused by the broker, not as an unresponsive manager. A manager
   that answers with a refusal is shown with its own cause; "no manager reachable" is said only when
   nothing answered at all. If the scatter's own registry read fails (the freeze or the reconcile),
@@ -3876,7 +3911,9 @@ as Next. When an instance did not answer for itself, the seat may run there, so 
 `TARGET_UNAVAILABLE` (exit 2) and name that instance. `--json` carries either refusal.
 
 `--on <instance>` remains the override, for when you already know where the seat lives or the
-lookup itself is degraded. On a **user-auth mesh**, the exchange selects one authorized manager
+lookup itself is degraded. On a static or open mesh, `stop --on` with an id the registry lists for
+no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on` is.
+On a **user-auth mesh**, the exchange selects one authorized manager
 for a short-lived `manager-caller` view. `--on` requests a specific instance. Without it, a command
 run from a managed seat's shell selects the manager that launched the seat (`COTAL_MANAGER_INSTANCE`),
 and any other caller's selection must be unique. Discovery and the command use that instance route.
@@ -4950,8 +4987,10 @@ a larger cap applies after that through `cotal down` and `cotal up --max-file-st
 unknown and never retried automatically. A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
-says the message was probably not stored. Its Next repairs that cause, by freeing disk space or by
-making the store writable again, and restarts the broker before the message is sent again.
+says the message was probably not stored. Its Next names the fix for that cause, write access to
+the store for a permission error or free space for a full disk, and restarts the broker before the
+message is sent again. When the broker disabled JetStream, it adds that `cotal down` names the
+manager's process to end first if the manager's stop cannot be recorded.
 The command sends once and exits. It does not wait for an answer, retain an inbox
 or transfer replies to a later chat session.
 

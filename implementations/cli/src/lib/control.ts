@@ -8,6 +8,7 @@ import {
   epProbeInstanceInterest,
   freezeExpectedSet,
   instancePinnedInstrumentCapabilities,
+  invokeCommand,
   invokeRepairingSplit,
   issuedUserCaller,
   mintCreds,
@@ -30,10 +31,12 @@ import {
   type ControlReply,
   type EpCaller,
   type EpInstanceLiveness,
+  type EpScatterResult,
   type EpVerbTarget,
   type FlagSpec,
   type GoalResultFact,
   type Profile,
+  type ResolvedService,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -465,6 +468,9 @@ export interface ScatterInstanceReply {
   code?: string;
   /** Set on unreachable slots only: a slot that ANSWERED needs no liveness verdict. */
   liveness?: ScatterInstanceLiveness;
+  /** The host name this instance gave in its own `status` reply, when the caller asked for it.
+   *  Display metadata the manager reports about itself: never checked and never a route. */
+  reportedHost?: string;
 }
 /** A failed scatter's `noLiveManager` says the registry was read and lists no live manager. */
 export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean; noLiveManager?: true };
@@ -632,6 +638,32 @@ const SCATTER_PROFILE: Profile = "control-caller-privileged";
  *  well inside the gather. */
 const PROBE_DEADLINE_MS = 5_000;
 
+/** How long the host names a census shows may take, all together. They are display metadata, so an
+ *  instance that has not answered by then is listed without one. */
+const REPORTED_HOST_BUDGET_MS = 2_000;
+const HOST_NAME = /^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,251}[A-Za-z0-9_])?$/;
+
+/** Ask each instance that answered the census for its own `status`, on its `inst` route at the
+ *  epoch it answered with, where this credential's pinned rails reach it. One bound covers every
+ *  ask and aborts what is still out. Only a well-formed host name from that exact instance is kept;
+ *  anything else leaves the instance without one, and nothing here changes what the census found. */
+async function askReportedHosts(nc: NatsConnection, space: string, service: ResolvedService, answered: EpScatterResult["replies"], instances: ScatterInstanceReply[], reachable: ReadonlySet<string>): Promise<void> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), REPORTED_HOST_BUDGET_MS);
+  try {
+    await Promise.all(instances.filter((slot) => slot.error === undefined && reachable.has(slot.instanceId)).map(async (slot) => {
+      const epoch = answered.get(slot.instanceId)?.responder.epoch;
+      if (epoch === undefined) return;
+      try {
+        const pinned: ResolvedService = { ...service, responder: { instanceId: slot.instanceId, epoch }, pinnedInstanceId: slot.instanceId };
+        const answer = await invokeCommand(nc, space, pinned, "status", undefined, { deadlineMs: REPORTED_HOST_BUDGET_MS, signal: abort.signal });
+        const host = answer.reply.ok === true ? (answer.reply.data as { host?: unknown } | undefined)?.host : undefined;
+        if (answer.responder.instanceId === slot.instanceId && typeof host === "string" && HOST_NAME.test(host)) slot.reportedHost = host;
+      } catch { /* display metadata only: the instance is listed without a host */ }
+    }));
+  } finally { clearTimeout(timer); }
+}
+
 /**
  * Whether the scatter's liveness probe rides a BARE connection, a freshly minted pinned instrument,
  * or nothing at all. The sixth seed reach on the attach path, made explicit.
@@ -691,6 +723,7 @@ async function askManagerScatterEp(
   auth: ControlAuth,
   spaceAuth: SpaceAuth | undefined,
   timeoutMs?: number,
+  reportHosts = false,
 ): Promise<ScatterReply> {
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
@@ -756,6 +789,7 @@ async function askManagerScatterEp(
       // (pin 3) — and now carries WHY it is silent, as far as this command could establish it.
       for (const instanceId of result.missing)
         instances.push({ instanceId, reachable: false, liveness: livenessOf(instanceId) });
+      if (reportHosts) await askReportedHosts(nc, space, service, result.replies, instances, probed);
       return { ok: true, instances };
     });
   } catch (e) {
@@ -779,10 +813,11 @@ export async function scatterManager(
   auth: ControlAuth = {},
   spaceAuth?: SpaceAuth,
   timeoutMs?: number,
+  opts: { reportHosts?: boolean } = {},
 ): Promise<ScatterReply> {
   const who = controlCaller(auth);
   if ("refusal" in who) return { ok: false, error: who.refusal };
-  return askManagerScatterEp(space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs);
+  return askManagerScatterEp(space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs, opts.reportHosts === true);
 }
 
 /** The refusal `ps` gives, raised before an unpinned operator read when the registry lists no live

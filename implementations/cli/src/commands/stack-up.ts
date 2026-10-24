@@ -52,6 +52,7 @@ import {
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { jetStreamDisabled, jetStreamDisabledRefusal } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
@@ -474,6 +475,16 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   });
 }
 
+/** The refusal of an up whose running broker disabled JetStream after a store write failure: no
+ *  stream check or later member start reaches it. Undefined for an error already classified. */
+function reusedWithoutJetStream(caught: unknown, brokerReused: boolean, root: string, space: string): CommandFailure | undefined {
+  if (!brokerReused || isCommandFailure(caught) && caught.outcome !== "unknown") return undefined;
+  const disabled = jetStreamDisabled(root, space);
+  if (!disabled) return undefined;
+  const manager = serviceInstances(space, STACK_DEFINITION.manager).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running");
+  return jetStreamDisabledRefusal(disabled, root, space, "up cannot check the space's streams on it", "its running members were left as they are", { root, space }, manager?.process?.pid);
+}
+
 /** The running broker of an unregistered space: what an up stopped before registration leaves. */
 function strandedBroker(space: string): ServiceInstance | undefined {
   if (findMesh(space)) return undefined;
@@ -855,7 +866,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // leaves it, gets none back here; a broker start creates the missing ones.
     const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)
       ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the running broker is missing some of this space's streams, and up creates them on a running broker only when every one is gone, as after cotal space delete", { remedy: "restart the stack with cotal down --yes, then cotal up, which creates the missing ones" })
-      : caught;
+      : reusedWithoutJetStream(caught, brokerReused, root, space) ?? caught;
     // A broker this call started that could not create the space's streams serves no stack, and a
     // later up would reuse it and fail the same way. It is stopped again here, so the next up starts
     // a fresh broker, and the run is a failure whose cause its log names.
