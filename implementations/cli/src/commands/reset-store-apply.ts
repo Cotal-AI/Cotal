@@ -10,6 +10,7 @@ import {
   presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, STORE_CONTENTS, storeContentsText, writeResult, type Block, type Report, type Section,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses, removeLocalState, safeStoreCleanupPath } from "./clean.js";
+import { refuseSharedStoreRemoval } from "../lib/store-dir.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
@@ -177,6 +178,7 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   try { assertSingleSpaceBroker(authDir(root), command); }
   catch { throw new CommandFailure("refused", "CONFLICT", "the root's broker holds several spaces or an unreadable tenant record; a single-space reset cannot be scoped", { target: where }); }
   const store = resetStorePath(root, target.storeDir, where, review);
+  if (store.identity) refuseSharedStoreRemoval(store.path, space);
   let maintenance: ReturnType<typeof readMaintenanceJournal>, running: string[], legacy: boolean, stoppedByDown: boolean;
   try {
     maintenance = readMaintenanceJournal(root); running = liveMeshProcesses(root, space, true);

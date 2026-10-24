@@ -1,6 +1,7 @@
 import { writeSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { isAbsolute, resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -64,6 +65,7 @@ import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
+import { shellWord } from "./lib/endpoint-errors.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
@@ -416,6 +418,11 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
   if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
     failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true);
+  // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
+  // names a folder called ~ in the working folder.
+  const storeDir = parsed.values["store-dir"];
+  if (typeof storeDir === "string" && (!storeDir.trim() || storeDir.startsWith("~")))
+    failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
   const canonical = canonicalSubcommand(cmd, parsed);
@@ -433,6 +440,13 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string" && brokerUrlHasUserinfo(canonical.values.server))
     failureExit(cmd, brokerUrlCredentialRefusal("--server"), json, canonical.values.plain === true);
   return canonical;
+}
+
+/** The refusal of a `--store-dir` that is empty, or that starts with a `~` no shell expanded. */
+function storeDirRefusal(value: string): CommandFailure {
+  if (!value.trim()) return new CommandFailure("refused", "USAGE_INVALID", "--store-dir is empty; the command did not run", { remedy: "name the store directory, or omit --store-dir to use the default store", selfContained: true });
+  const home = value === "~" || value.startsWith("~/") ? join(homedir(), value.slice(2)) : undefined;
+  return new CommandFailure("refused", "USAGE_INVALID", `--store-dir ${JSON.stringify(value)} starts with ~, which no shell expanded, so it names a folder called ${value.split("/")[0]} in ${process.cwd()}; the command did not run`, { target: { storeDir: value }, remedy: home ? `name the absolute path: --store-dir ${shellWord(home)}` : "name the store directory by its absolute path", selfContained: true });
 }
 
 /** The commands that never read the working folder, so they run from one that was removed. */

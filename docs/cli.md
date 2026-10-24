@@ -567,7 +567,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. The broker's plaintext websocket and the manager's plain HTTP console bind the same host, so a wildcard bind opens all three listeners on every interface. Each of these refusals, and a concrete IPv6 address, refuses `USAGE_INVALID` (exit 1) before anything is written. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's space | Space name, at most 64 characters; a longer one refuses `USAGE_INVALID` before anything is written |
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
-| `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f`. A path that is a link refuses `USAGE_INVALID`, naming the directory it points to |
+| `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f`. A path that is a link refuses `USAGE_INVALID`, naming the directory it points to. A store folder belongs to one space: a folder another space uses refuses `CONFLICT`, naming that space |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108865: the space's membership bucket reserves 67108864 (64 MiB), and nats-server creates each of the other streams only while one more byte is free. A smaller value refuses `USAGE_INVALID`, naming 67108865, before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Once the space holds more than the cap, the broker refuses every write: `send` refuses naming the cap, and `status` shows the store full. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry. `up` reads the file once, so a pipe or a FIFO such as `--channels <(…)` works. A default `.cotal/channels.json` that is not a regular file, such as a FIFO, refuses `USAGE_INVALID` the same way |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
@@ -714,6 +714,11 @@ instance are published the same way. A file Cotal writes in place under `~/.cota
 project's `.cotal`, such as a generated configuration, a credential, a process marker, a persona,
 a seat record or one of those logs, is never written through a symlink.
 
+Every command that takes `--store-dir` refuses an empty value `USAGE_INVALID` (exit 1) before it
+runs, rather than reading it as the default store. A value that starts with `~` refuses the same
+way: no shell expanded it, so it would name a folder called `~`, and the refusal names the absolute
+path to pass instead.
+
 An explicit `--store-dir` on `up`, `up --restore` or `backup restore` must name a directory or a
 path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it. The
 existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
@@ -729,6 +734,22 @@ not, other than the preserved store, with `USAGE_INVALID` (exit 1) and restore n
 directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
 other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
 with credentials and records, or with another root's store, and `reset store` could not remove it.
+
+A store folder belongs to one space. nats-server takes no lock on its store folder, so a broker of
+another space starts on it, and a reset or clean of the folder would remove that space's data too.
+A `--store-dir` on `up`, with or without `-f`, refuses `CONFLICT` (exit 2) before anything starts
+when another space uses the folder: its registration, its prepared stack journal or the broker
+configuration its root last rendered names the folder, or the folder's `jetstream` tree holds its
+`CHAT_`, `DM_` or `TASK_` streams, whether or not its broker runs. The refusal names each such
+space, the root a record names for it and its streams. A store an earlier release let two spaces
+share still starts from its stack's recorded store, from a legacy root's last served store, or as
+the default store, and `up` warns `STORE_SHARED`, naming the other space; `--json` carries the
+warning. `clean store`, `clean all`, `reset store` and `reset space` refuse such a folder, as
+[clean](#clean) and [reset](#reset) describe. A controller stack whose recorded store folder is
+missing, as after it was removed by hand, starts its broker on a new empty store there and warns
+`STORE_MISSING`: the space's history starts empty. A legacy root whose last broker served a missing
+folder warns the same.
+
 A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
 that is not a regular file is refused and left unchanged. A private directory is set to `0700`
 through its path, which follows a symlink; this step does not refuse a symlinked `~/.cotal` or
@@ -1659,8 +1680,14 @@ store the root's last broker served, as a start does: while the default `.cotal/
 JetStream data and that store does, such as after `backup restore --store-dir`, they remove that
 store, and the dry run names it. Custom cleanup targets must contain either the Cotal store-generation marker or a
 real `jetstream/` store directory; filesystem roots, project roots, and Cotal auth/maintenance trees
-are always refused. Its contents are not checked, so a directory that holds only a `jetstream/`
-directory is removed as a store, whatever that directory holds.
+are always refused. A store in the project folder itself, as `up --store-dir .` makes, refuses
+`CONFLICT` (exit 2), since the folder holds the project's own files; its Next names the store's own
+entries to remove by hand once the space is stopped. Its contents are not checked, so a directory that holds only a `jetstream/`
+directory is removed as a store, whatever that directory holds. The one exception is another
+space's data: when another space uses the store folder, as [up](#up) checks it, `store` and `all`
+and their dry runs refuse `CONFLICT` (exit 2), name that space, its root and its streams, and remove
+nothing. Keep the folder while either space needs its history; once neither does, stop both and
+remove it by hand.
 
 `--dry-run` runs the same checks as `store` or `all` and prints `would remove <path>` for each
 store, credential, record and registration the command would remove, then removes nothing and takes
@@ -1743,7 +1770,9 @@ exclude aliases, remote tenants or live attachments. A negative credless probe
 cannot prove absence for TLS-first listeners. A custom store path must be
 absolute and one real directory. A recorded store path that is a link refuses `CONFLICT` in the
 preview and the apply of both resets, naming the path and the directory it points to, and nothing
-is removed. Replace the link with that directory to reset it. The preview takes no maintenance lock and cannot establish exclusive
+is removed. Replace the link with that directory to reset it. A store in the project folder itself
+refuses both resets `CONFLICT` as it refuses `clean store`, naming the store's own entries to remove
+by hand. The preview takes no maintenance lock and cannot establish exclusive
 custody or a complete identity deletion set.
 
 Bare `reset store <space>` checks those conditions, displays a scoped terminal
@@ -1767,7 +1796,8 @@ credentials and registration. A cleanup with an unconfirmed outcome is reported
 as unknown and is not retried. Credless nonresponse and the recorded process
 checks are not proof that no unrecorded process exists. A store directory that holds anything
 besides the store refuses both routes and their dry runs as it refuses `clean store`, naming those
-entries.
+entries. A store folder another space uses refuses both routes and their dry runs `CONFLICT` the
+same way, naming that space, its root and its streams; the store dry-run shows it as its verdict.
 
 `reset space <space>` adds local identity cleanup through the existing native
 clean-all operation. This route currently requires Linux, a space selected as above and a
