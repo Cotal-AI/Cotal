@@ -3092,7 +3092,12 @@ recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
 cap and the store's path. The first Next is `cotal history clear --space <space> --yes`, which makes
-room by purging the space's channel history. The `Delivery responder` row then says that the full
+room by purging the space's channel history, followed by `cotal up --root <dir>` when a member of the
+stack stopped. To keep that history, the Next goes on as `up` does: `kill -TERM <pid>` for the stack's
+manager on this host, as a full store refuses its stop, then `cotal down --yes` and
+`cotal up --max-file-store <bytes>` with a larger cap. From another folder, the Next names the stack's
+folder to run `cotal down --yes` in, and `up` carries `--root <dir>`. The `Delivery responder` row
+then says that the full
 store refuses the daemon's lease, so `up` starts the daemon only once there is room. The bytes are
 the space account's own, as
 `$JS.API.INFO` reports them; the cap counts every account on the broker. A broker started without
