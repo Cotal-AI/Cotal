@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -274,6 +274,12 @@ export async function status(args: ParsedArgs): Promise<void> {
   const selected = resolveSelected(cwd, values);
   const gaps = new Gaps();
   const hints: string[] = [];
+  // A folder this account cannot read hides everything in it, so that is the one gap reported for it.
+  const blocked = folderReadProblem(root);
+  if (blocked) {
+    gaps.add("FOLDER_UNREADABLE", `this folder ${root} cannot be read by this account (${blocked}), so nothing in it was read`, { root });
+    hints.push(`make it readable by you, for example with chmod u+rx ${root}`);
+  }
   // Every command warns about a preferences folder another account could write; status also lists its fix.
   const preferencesFolder = preferencesFolderWarning();
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
@@ -283,12 +289,12 @@ export async function status(args: ParsedArgs): Promise<void> {
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
   const responder = await readResponderAxis(selected);
-  const folder = await readFolder(root, selected, values, responder.state, gaps, hints);
+  const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(selected, Boolean(values.all), gaps);
   const target = await readSelected(selected, responder, gaps, hints);
   const services = readOwnedServices(selected, gaps);
-  const bootAttempts = readBootAttempts(root, gaps);
-  const maintenance = readMaintenance(root, gaps);
+  const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
+  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
   const store = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
   const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
@@ -313,6 +319,21 @@ export async function status(args: ParsedArgs): Promise<void> {
     (result) => statusView(result, Boolean(values.verbose)),
   );
   if (values.components) await printComponentHealth(cwd, values);
+}
+
+/** Why this account cannot list or search `root`, or undefined when it can. */
+function folderReadProblem(root: string): string | undefined {
+  try { accessSync(root, constants.R_OK | constants.X_OK); return undefined; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EACCES" || code === "EPERM" ? code : undefined;
+  }
+}
+
+/** The folder section for a folder this account cannot read: every part of it is unread. */
+function unreadFolder(root: string, code: string): StatusResult["folder"] {
+  const error = `${root} cannot be read by this account (${code})`;
+  return { root, auth: { state: "unreadable", spaces: [], userAuth: false, error }, personas: { root: personaDir(root), default: "unreadable", demo: null, error }, launches: null, processes: null, processSpace: null, storedState: false, controllerStack: false, noManager: false, stackBlock: null };
 }
 
 /** The folder's maintenance journal, read only. An unreadable one is reported, never taken for none. */

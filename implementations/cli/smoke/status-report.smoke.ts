@@ -12,7 +12,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { connect } from "node:net";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
@@ -283,6 +283,27 @@ if (!brokerDisplayOnly) {
   check("the selection is unresolved by the unreadable record", env?.result?.selected.resolved === false && env.result.selected.code === "registry-unreadable", env?.result?.selected);
   const plain = run(["status", "--space", "alpha", "--plain", "--verbose"]);
   check("the report names the record under the recorded meshes", plain.status === 4 && /unreadable: .*space\.dead\.json does not parse/.test(plain.stdout.split("\nRecorded Meshes\n")[1]?.split("\nSelected Mesh\n")[0] ?? ""), shown(plain));
+}
+
+// ── a folder this account cannot read is the one gap, named with its chmod ───────────────────────
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const { home } = sandbox();
+  // No `.cotal` above it, so the folder is its own root, as a fresh project folder is.
+  const outside = mkdtempSync(join(tmpdir(), "cotal-status-unreadable-"));
+  roots.push(outside);
+  const folder = join(outside, "z");
+  mkdirSync(folder, { mode: 0o700 });
+  const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  // The shell enters the folder before its mode drops, as it would for an operator already in it.
+  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 000 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
+  chmodSync(folder, 0o700);
+  const envelope = (r.stdout ?? "").startsWith("{") ? (JSON.parse(r.stdout) as Envelope) : undefined;
+  const shownR = { status: r.status, stdout: (r.stdout ?? "").slice(0, 900), stderr: (r.stderr ?? "").slice(0, 600) };
+  check("status in a folder this account cannot read is partial, exit 4, with a warning naming the folder",
+    r.status === 4 && envelope?.outcome === "partial" && envelope.warnings.some((w) => w.code === "FOLDER_UNREADABLE" && w.message === `this folder ${folder} cannot be read by this account (EACCES), so nothing in it was read`), shownR);
+  check("…and no other warning about a part of that folder, such as an auth.json it does not hold",
+    envelope?.warnings.every((w) => !/^(AUTH_UNREADABLE|PERSONAS_UNREADABLE|FRESH_BOOT_RECORD_UNAVAILABLE|ADDITIVE_ATTEMPT_UNAVAILABLE|MAINTENANCE_JOURNAL_UNREADABLE)$/.test(w.code)) === true && !(envelope?.result?.hints ?? []).some((h) => h.includes("auth.json")), envelope?.warnings);
+  check("…and its Next is the chmod that makes it readable", (envelope?.result?.hints ?? []).includes(`make it readable by you, for example with chmod u+rx ${folder}`), envelope?.result?.hints);
 }
 
 // ── usage ────────────────────────────────────────────────────────────────────────────────────────

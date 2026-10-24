@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure } from "./output.js";
@@ -62,6 +62,20 @@ function privateDirectory(path: string, access: LocalRecordAccess): void {
     throw new CommandFailure("refused", "PERMISSION_DENIED", "the local-record store must use owned private directories without symlinks", { target: { path } });
 }
 
+/** The first folder on the way to `path` that this account may not search, or undefined. Such a
+ *  folder hides every entry below it, whatever their own modes are. */
+export function unsearchableFolder(path: string): string | undefined {
+  const folders: string[] = [];
+  for (let dir = dirname(resolve(path)); ; dir = dirname(dir)) {
+    folders.unshift(dir);
+    if (dirname(dir) === dir) break;
+  }
+  for (const dir of folders) {
+    try { accessSync(dir, constants.X_OK); } catch { return dir; }
+  }
+  return undefined;
+}
+
 /** Establish a regular descriptor, then read only bounded bytes. POSIX opens nonblocking and
  *  without following a link, and checks a private file's owner and mode; Windows does neither. */
 export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, privateFile = false): Buffer | undefined {
@@ -70,7 +84,13 @@ export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, p
   let fd: number;
   try { fd = openSync(path, posix ? constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK : constants.O_RDONLY); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    // Permission is named with the folder that withholds it, which is often not the file itself.
+    if (code === "EACCES" || code === "EPERM") {
+      const folder = unsearchableFolder(path);
+      throw new CommandFailure("refused", "PERMISSION_DENIED", folder ? `${folder} cannot be read by this account (${code}), so ${path} was not read` : `${path} cannot be read by this account (${code})`, { target: { path, ...(folder ? { folder } : {}) }, remedy: folder ? `make it readable by you, for example with chmod u+rx ${folder}` : `make it readable by you, for example with chmod u+r ${path}` });
+    }
     throw new CommandFailure("refused", "PERMISSION_DENIED", posix ? "the local record source could not be opened without following links" : "the local record source could not be opened", { target: { path } });
   }
   try {
