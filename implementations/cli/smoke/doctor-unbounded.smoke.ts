@@ -6,8 +6,9 @@
  * by rotating the space identity, and the run ends failed (exit 5). One `cotal
  * auth mint --no-expiry` asked for, whose record beside it names its bytes, is a warning with the same
  * ways out and the run ends ok (exit 0); a record that names other bytes covers nothing. An
- * incarnation file, which is no label's standing credential, is bounded by removing it instead. An
- * expired label's file names the same `--replace` beside the managed renewal; an expired incarnation
+ * incarnation file, which is no label's standing credential, is bounded by removing it instead. Each
+ * `--replace` names the file's grants, since the replacement is a new key that holds only what its
+ * mint names. An expired label's file names the same `--replace` beside the managed renewal; an expired incarnation
  * keeps the managed guidance only. A bounded agent credential beside them is no finding, and once the
  * unbounded and expired files are gone the same root reports no findings. Broker-free; the doctor
  * reads a staged static root.
@@ -43,7 +44,10 @@ mkdirSync(sysDir, { recursive: true, mode: 0o700 });
 writeFileSync(join(sysDir, "membership-observer.creds"), await mintMembershipObserverCreds(auth, newIdentity()), { mode: 0o600 });
 writeFileSync(join(sysDir, "connection-evictor.creds"), await mintConnectionEvictorCreds(auth, newIdentity()), { mode: 0o600 });
 const credsDir = agentCredsDir(root, SPACE);
-const replaceFor = (label: string) => `\`${displayCmd()} auth mint ${label} --replace --space ${SPACE}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
+// A replacement is a new key, which holds only the grants its mint names, so the hint names the
+// file's grants; a file with none names both ACLs empty.
+const NO_GRANTS = " --allow-subscribe '' --allow-publish ''";
+const replaceFor = (label: string, grants = NO_GRANTS) => `\`${displayCmd()} auth mint ${label} --replace --space ${SPACE}${grants}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
 mkdirSync(credsDir, { recursive: true, mode: 0o700 });
 // alice: an unbounded credential nobody recorded asking for. bob: the same mint with an expiry.
 const unbounded = join(credsDir, "alice.creds");
@@ -147,13 +151,14 @@ try {
     const now = Math.floor(Date.now() / 1000);
     const expiredLabel = join(credsDir, "erin.creds");
     const expiredIncarnation = join(credsDir, `frank.${mintLifecycleUid()}.creds`);
-    for (const path of [expiredLabel, expiredIncarnation]) writeFileSync(path, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 60 }), { mode: 0o600 });
+    writeFileSync(expiredLabel, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 60, allowSubscribe: ["general", "ops"], allowPublish: ["general"], role: "rev" }), { mode: 0o600 });
+    writeFileSync(expiredIncarnation, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 60 }), { mode: 0o600 });
     const { envelope, code } = await diagnose();
     const item = (path: string) => envelope.result.items.find((i) => i.label === path.slice(credsDir.length + 1));
     assert.ok(item(incarnation)?.repair?.includes(`Or bound it: stop what uses it, remove ${incarnation} and mint a replacement without --no-expiry`), "an unbounded incarnation file is bounded by removing it");
     assert.ok(!item(incarnation)?.repair?.includes("--replace"), "  and its guidance names no --replace");
     assert.equal(item(expiredLabel)?.state, "expired", "fixture: erin.creds has expired");
-    assert.ok(item(expiredLabel)?.repair?.includes(`If \`${displayCmd()} auth mint\` wrote it, replace it with ${replaceFor("erin")}`), "an expired label's file names --replace for that label");
+    assert.ok(item(expiredLabel)?.repair?.includes(`If \`${displayCmd()} auth mint\` wrote it, replace it with ${replaceFor("erin", " --allow-subscribe 'general,ops' --allow-publish general --role rev")}`), "an expired label's file names --replace for that label, with the grants the file holds");
     assert.match(item(expiredLabel)?.repair ?? "", /^if a manager runs this agent, inspect this original lifecycle under it; supported managed renewal can re-sign the same nkey/, "  after the managed renewal that re-signs its nkey");
     assert.equal(item(expiredIncarnation)?.state, "expired", "fixture: the incarnation file has expired");
     assert.match(item(expiredIncarnation)?.repair ?? "", /^inspect this original lifecycle under its manager/, "an expired incarnation keeps the managed guidance");
