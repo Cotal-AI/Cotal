@@ -146,7 +146,8 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
   } catch (e) {
     // An address that is not a broker URL is invalid input; one this policy will not dial is a refusal.
     const malformed = e instanceof JoinRefusal && (e.code === "not-a-url" || e.code === "bad-scheme" || e.code === "no-host");
-    return bad(`✗ ${(e as Error).message}`, malformed ? "USAGE_INVALID" : "UNSUPPORTED");
+    const remedy = e instanceof JoinRefusal ? e.remedy : undefined;
+    return { ok: false, message: `✗ ${(e as Error).message}`, code: malformed ? "USAGE_INVALID" : "UNSUPPORTED", ...(remedy ? { remedy } : {}) };
   }
 }
 
@@ -256,6 +257,15 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
   if (mode === "user" && enforces === "unreachable")
     return bad(`✗ no broker answered at ${server} - a user-auth registration is verified by the broker's own auth-required refusal, so it cannot be recorded while the broker is unreachable`, "TARGET_UNAVAILABLE");
   return good(undefined);
+}
+
+/** {@link checkEnforcement} against what {@link probeEnforcement} finds at `server`. A refusal because
+ *  no broker answered says why, as {@link verifyTarget} does; `what` names the input that gave the
+ *  address. */
+export async function checkEnforcementAt(mode: MeshEntry["mode"], server: string, space: string, root: string, what: string): Promise<Check<void>> {
+  const enforces = await probeEnforcement(server);
+  const check = checkEnforcement(mode, enforces, server, space, root);
+  return !check.ok && enforces === "unreachable" ? (await unreachableAt(server, what)) ?? check : check;
 }
 
 // ---- the user arm: supplied pinned trust ----------------------------------------------------
@@ -404,7 +414,7 @@ const DEFAULT_PORTS: Readonly<Record<string, number>> = { nats: 4222, tls: 4222,
 /** Why no broker answered at a single `server` address: nothing took a connection at its port, or a
  *  broker answers there under another scheme, which the remedy names. `undefined` for an address
  *  this cannot take apart, such as a list, so the general sentence stands. */
-async function unreachableAt(server: string): Promise<Check<never> | undefined> {
+async function unreachableAt(server: string, what = "--server"): Promise<Check<never> | undefined> {
   if (server.includes(",")) return undefined;
   let url: URL;
   try { url = new URL(server.includes("://") ? server : `nats://${server}`); } catch { return undefined; }
@@ -415,7 +425,7 @@ async function unreachableAt(server: string): Promise<Check<never> | undefined> 
   const refused = (message: string, remedy: string): Check<never> => ({ ok: false, message: `✗ ${message}`, code: "TARGET_UNAVAILABLE", remedy });
   const answer = await portAnswer(url.hostname.replace(/^\[|\]$/g, ""), port);
   if (answer === "unresolved")
-    return refused(`no broker answered at ${server}: the host name ${url.hostname} does not resolve`, "check the host name in --server");
+    return refused(`no broker answered at ${server}: the host name ${url.hostname} does not resolve`, `check the host name in ${what}`);
   if (answer === "silent")
     return refused(`no broker answered at ${server}: nothing accepted a connection at ${at}`, `check that the mesh is up and listening on port ${port} of ${url.hostname}, or pass --server with the port it listens on`);
   // A websocket route keeps its path, which a TCP address cannot have.
@@ -429,7 +439,7 @@ async function unreachableAt(server: string): Promise<Check<never> | undefined> 
     const plain = (scheme === "tls" || scheme === "wss") && (other === "nats" || other === "ws") ? ", without TLS" : "";
     return refused(`no broker answered at ${server}, but one answers at ${candidate}${plain}`, `run it again with --server ${candidate}`);
   }
-  return refused(`no broker answered at ${server}: something accepted the connection at ${at}, but no broker answered there as ${schemes.slice(0, -1).join(", ")} or ${schemes.at(-1)}`, `check that --server names the broker's own address and port`);
+  return refused(`no broker answered at ${server}: something accepted the connection at ${at}, but no broker answered there as ${schemes.slice(0, -1).join(", ")} or ${schemes.at(-1)}`, `check that ${what} names the broker's own address and port`);
 }
 
 /** Whether anything accepts a TCP connection at `host:port`: `silent` when the port refuses or does

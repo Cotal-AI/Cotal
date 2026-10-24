@@ -22,6 +22,7 @@ import {
   candidateTarget,
   checkDialPolicy,
   checkEnforcement,
+  checkEnforcementAt,
   checkMode,
   checkRoot,
   checkServer,
@@ -390,7 +391,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   // under --force: unlike a static mesh, there is no "register it while it is down" story here —
   // an unverifiable pin set is not a record worth writing.
   take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)));
-  take(checkEnforcement("user", await probeEnforcement(server), server, space, root));
+  take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"));
 
   const result = persistRemoteUserEntry(space, server, root, bundle, tlsRequired, Boolean(dial.residual));
   console.log(c.green(`✓ registered "${space}"`), c.dim(`${server}  user  ${root}`));

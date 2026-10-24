@@ -46,6 +46,7 @@ import {
   candidateTarget,
   checkDialPolicy,
   checkEnforcement,
+  checkEnforcementAt,
   checkMode,
   checkRoot,
   checkServer,
@@ -295,7 +296,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   take(checkMode(space, root, [], "user", true), spaceTarget);
   const replaced = replaceable(space, v.force === true, spaceTarget);
   take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)), spaceTarget);
-  take(checkEnforcement("user", await probeEnforcement(server), server, space, root), spaceTarget);
+  take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"), spaceTarget);
   const rows: [string, string][] = [
     ["space", space],
     ["broker", `${server}${tlsRequired ? " (TLS required)" : ""}`],

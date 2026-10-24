@@ -167,6 +167,9 @@ setCurrent("keep");
   check("--file with --mode open is USAGE_INVALID", refused(await json(["space", "add", "--file", file, "--mode", "open", "--root", userRoot]), 1, "USAGE_INVALID"));
   check("--mode user with no bundle is USAGE_INVALID", refused(await json(["space", "add", "x", "--server", LIVE, "--mode", "user", "--root", root]), 1, "USAGE_INVALID"));
   check("a malformed --server is USAGE_INVALID", refused(await json(["space", "add", "x", "--server", "not a url", "--root", root]), 1, "USAGE_INVALID"));
+  const fenced = await json(["space", "add", "x", "--server", "nats://broker.example.com:4222", "--mode", "open", "--root", root]);
+  check("a host name without TLS is refused, and its next step is the tls:// form of the same address",
+    refused(fenced, 2, "UNSUPPORTED") && fenced.env?.error?.remedy === "use tls://broker.example.com:4222, or pass --tls" && !(fenced.env.error.message ?? "").includes("Pass the address itself"), shown(fenced));
   check("--mode with another value is USAGE_INVALID", refused(await json(["space", "add", "x", "--server", LIVE, "--mode", "token", "--root", root]), 1, "USAGE_INVALID"));
   check("an add flag on another form is USAGE_INVALID", refused(await json(["space", "--server", LIVE]), 1, "USAGE_INVALID") && refused(await json(["space", "forget", "keep", "--force"]), 1, "USAGE_INVALID"));
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
@@ -293,6 +296,13 @@ setCurrent("keep");
   const foreign = await json(["space", "add", "--file", file, "--root", userRoot]);
   check("an exchange that answers as another issuer is CONFLICT", refused(foreign, 2, "CONFLICT"), shown(foreign));
   exchangeIssuer = userExchangeIssuer("hosted");
+  // A bundle's broker is diagnosed like a --server one when it does not answer, over TLS too.
+  const closed = await freePort();
+  writeFileSync(join(home, "closed-broker.json"), JSON.stringify(bundle({ server: `tls://127.0.0.1:${closed}` })));
+  const closedBroker = await json(["space", "add", "--file", join(home, "closed-broker.json"), "--root", userRoot]);
+  check("a bundle whose tls:// broker port takes no connection says so, with the port check as its remedy",
+    refused(closedBroker, 2, "TARGET_UNAVAILABLE") && (closedBroker.env?.error?.message ?? "").includes(`nothing accepted a connection at 127.0.0.1:${closed}`) &&
+      (closedBroker.env?.error?.remedy ?? "").startsWith(`check that the mesh is up and listening on port ${closed} of 127.0.0.1`), shown(closedBroker));
   writeFileSync(join(home, "open-broker.json"), JSON.stringify(bundle({ server: LIVE })));
   const openBroker = await json(["space", "add", "--file", join(home, "open-broker.json"), "--root", userRoot]);
   check("a bundle whose broker accepts a bare connect is CONFLICT", refused(openBroker, 2, "CONFLICT"), shown(openBroker));
