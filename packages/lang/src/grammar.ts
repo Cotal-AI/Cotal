@@ -1802,7 +1802,7 @@ export function validate(source: string, file = "program.cotal.js"): ValidateRes
                 code: "L1008",
                 span,
                 cause: `This program is not valid JavaScript, so none of the language rules could be checked: ${message}.`,
-                fix: "Fix the syntax at the marked position. Statements terminate explicitly here; there is no automatic semicolon insertion.",
+                fix: "Fix the syntax at the marked position.",
               },
         ),
       ],
