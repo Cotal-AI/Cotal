@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath, maintenanceLockHolder } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -392,6 +392,17 @@ export function newStackOperation(kind: "up" | "down", withAgents = false): Stac
  *  records it, so the stack runs no manager by choice. */
 export function stackStartedWithoutManager(journal: StackJournal): boolean {
   return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+}
+
+/** Whether an `up` on this root is starting the stack's manager for `space` now: the journal records
+ *  an unsettled `up` that planned the manager, and a live process holds the root's maintenance lock,
+ *  as every whole-stack operation does for its whole run. An `up` that died there is not starting. */
+export function stackManagerStarting(root: string, space: string): boolean {
+  try {
+    const journal = readStackJournal(root)?.journal;
+    if (journal?.space !== space || journal.operation.kind !== "up" || !stackOperationUnsettled(journal)) return false;
+    return journal.members.some((row) => row.role === "manager" && row.state === "planned") && maintenanceLockHolder(root) === "alive";
+  } catch { return false; }
 }
 
 /** Whether this root records a controller stack for `space` with no live manager instance. False

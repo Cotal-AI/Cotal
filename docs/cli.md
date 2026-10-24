@@ -3098,7 +3098,10 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
 runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A stack manager whose
 process died stays registered, so `ps` waits out the manager's answer deadline first, then refuses
-the same way and names bare `cotal up`, which starts it again.
+the same way and names bare `cotal up`, which starts it again. While an `up` is still starting the
+stack's manager, `ps` refuses `TARGET_UNAVAILABLE` saying the manager is starting, and its Next is
+to run `cotal ps` again once `up` reports it started. That `up` holds the root's maintenance lock;
+once it has exited, `ps` gives the refusal above.
 
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry

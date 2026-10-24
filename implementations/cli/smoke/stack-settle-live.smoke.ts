@@ -8,6 +8,8 @@
  *  2. Broker crash after start. The next `up` restarts the broker from its records. After a manager
  *     crash, the next `up` relaunches the manager over the pidfile the killed process left. Once
  *     delivery is killed, `status` reads its ready row as stale instead of bound.
+ *  2b. A `ps` while an `up` is still starting the manager says it is starting. Once that `up` is
+ *     killed, `ps` gives the no-manager refusal again.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
  *     launches nothing; once the port is free the same `up` starts. A second space whose first `up`
  *     finds that stack's broker answering refuses CONFLICT naming the address and that space, with a
@@ -233,6 +235,32 @@ try {
     check("status reads the live daemon's ready row as bound and a killed daemon's as stale", killedDelivery !== null && liveResponder === "bound" && deadResponder === "stale", { killedDelivery, liveResponder, deadResponder });
     const finalDown = cli(root, "down", "--yes", "--json");
     check("down --yes stops the repaired stack", finalDown.status === 0 && (replacement === null || !alive(replacement)), shown(finalDown));
+  }
+
+  // 2b. A ps while an up is still starting the manager. Delivery is frozen once pinned, so the up
+  // waits on its readiness with the manager planned.
+  {
+    const space = "starting";
+    const root = prepare(space);
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
+    const pinned = await until(() => pidOf(space, "stack-delivery") !== null, 120_000);
+    const delivery = pidOf(space, "stack-delivery");
+    if (delivery !== null) process.kill(delivery, "SIGSTOP");
+    track(space);
+    const manager = () => readStackJournal(root)?.journal.members.find((row) => row.role === "manager")?.state;
+    const starting = cli(root, "ps", "--space", space, "--json");
+    check("ps while an up starts the stack says its manager is starting, TARGET_UNAVAILABLE, exit 2",
+      pinned && child.exitCode === null && manager() === "planned" && starting.status === 2 && starting.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        starting.env.error.message === "the stack's manager is starting, so it has no managed agents to list yet", { ...shown(starting), manager: manager() });
+    child.kill("SIGKILL");
+    await exited(child);
+    const dead = cli(root, "ps", "--space", space, "--json");
+    check("...and once that up is killed, ps says no manager is running", dead.status === 2 && dead.env?.error?.message === "no manager is running for this space, so it has no managed agents to list", shown(dead));
+    if (delivery !== null) process.kill(delivery, "SIGKILL");
+    await until(() => gone(space, "stack-delivery"), 10_000);
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down --yes settles that up and stops its broker", stopped.status === 0, shown(stopped));
   }
 
   // 3. A busy port on the first up (B2-02).
