@@ -1,0 +1,2 @@
+# Manager and delivery descriptor attribution through built stops, with owned children and pins.
+smoke:local-process-attribution

@@ -1519,6 +1519,11 @@ a pidfile with no pin. Teardown, and a daemon removing its own record on exit, t
 remove the record only while the pidfile still names the pid they stopped, so a stop that races a
 publish leaves the new record whole.
 
+The manager and delivery stops attribute a readable command through their process descriptor before
+checking the identity pin. If it proves the pid runs a different component, the stop clears the stale
+pid record and pin without signalling that process. Otherwise a mismatching pin still refuses the
+stop and preserves the record.
+
 The web dashboard service claims `web.pid` with an exclusive create, so a second dashboard for the
 same mesh is refused, and writes its pin right after the claim. A stop that runs between the two
 reads a legacy record. Any existing `web.pid` refuses the start, whether or not its process still

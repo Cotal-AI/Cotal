@@ -331,6 +331,7 @@ export const MANAGER_PROCESS = {
   order: 10,
   pidFile: MANAGER_PIDFILE,
   cooperativeStop: true,
+  isOwnCommand: commandIsCotalSupervisor,
   artifacts: [MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY],
 } satisfies LocalProcess;
 
@@ -357,7 +358,6 @@ export async function stopManager(
   }
   const found = await stopLocalProcess(MANAGER_PROCESS, context, {
     pid,
-    owns: commandIsCotalSupervisor,
     beforeSignal: (attempt) => {
       if (attempt.target.token === undefined) {
         // Upgrade compatibility follows the shared identity contract: a live pre-pin record
