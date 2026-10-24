@@ -234,6 +234,19 @@ try {
   const all = await run(["who", "--all", "--json"]);
   check("--all adds the infrastructure endpoint, with no managed answer", rowsOf(all).logger?.kind === "endpoint" && rowsOf(all).logger?.managed === null && all.envelope?.result?.hidden === 0, rowsOf(all).logger);
 
+  // `endpoints --json` carries the presence values; the report words them.
+  const live = await run(["endpoints", "--json"]);
+  const liveRows: Record<string, Record<string, unknown>> = Object.fromEntries(((live.envelope?.result?.items ?? []) as unknown as Record<string, unknown>[]).map((row) => [String(row.name), row]));
+  const stamp = (v: unknown) => typeof v === "string" && new Date(Date.parse(v)).toISOString() === v;
+  check("endpoints --json items carry presence values and no rendered text",
+    live.status === 0 && Object.values(liveRows).length > 0 &&
+    Object.values(liveRows).every((row) => Object.keys(row).sort().join() === "activeAt,activity,activitySince,condition,id,kind,name,reportedStatus,role,statusSince" && stamp(row.statusSince)) &&
+    (liveRows.carol?.condition as { code?: string } | null)?.code === "auth" && liveRows.bob?.activity === "reviewing the change" && stamp(liveRows.bob?.activitySince) && liveRows.alice?.activitySince === null,
+    { status: live.status, bob: liveRows.bob, carol: liveRows.carol });
+  const livePlain = await run(["endpoints", "--plain"]);
+  check("the endpoints report words the condition and the ages from those values",
+    livePlain.status === 0 && /carol\s.*idle \(auth for \d+s\) - unchanged for \d+s/.test(livePlain.stdout) && /reviewing the change \(set \d+s ago\)/.test(livePlain.stdout), shown(livePlain));
+
   const plain = await run(["who", "--plain"], { FORCE_COLOR: "1" });
   const rich = await run(["who"], { FORCE_COLOR: "1" });
   check("the plain report is a table with every state word and no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && new RegExp(`^Who's here - ${space}\\n {2}Agent\\s+State\\s+Attention`, "m").test(plain.stdout) && /bob\/reviewer\s+waiting/.test(plain.stdout) && /idle \(auth for/.test(plain.stdout), shown(plain));

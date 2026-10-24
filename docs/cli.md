@@ -6047,7 +6047,9 @@ provider, and the receipt says so.
 `endpoints --json` and `endpoints --plain` show the authorized live presence snapshot, including
 agents and infrastructure. This legacy live read is labeled as presence, not a saved-reference
 inventory or proof that a service registration is active. Native contract resolution remains a
-separate read.
+separate read. Each `--json` item carries the presence values: `reportedStatus`, `condition`,
+`activity`, and the ISO 8601 times `statusSince`, `activitySince` and `activeAt`, each null when the
+record has none. The report works out the ages it prints from those times.
 
 
 ### Managed launch view
