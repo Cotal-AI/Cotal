@@ -374,11 +374,15 @@ in with `cotal login` and choose Self-hosted, because a Cloud space is registere
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
 is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form below and not the full command help:
+scripted form for the destination and not the full command help. The local form, filled in:
 
 ```bash
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
 ```
+
+The `self-hosted` form also takes `--connection-file <bundle.json>`. A space name `cotal up` cannot
+start is refused with the name respelled in letters, digits, `-` and `_` as the remedy, and an
+unknown `--harness` with the known ones and `cotal ext add <npm-package>`.
 
 A local space is prepared as `cotal space create` prepares it. A self-hosted space is one already
 registered with `cotal space add` or a signed-in catalog, whose root must be `--project`, or one
