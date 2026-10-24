@@ -7,7 +7,9 @@
  *     refusal.
  *  2. Broker crash after start. The `up` that adds the manager and `service status` list the broker's
  *     client and websocket listeners and the manager's console; a wildcard configuration lists them
- *     on every interface and names the plaintext ones. The next `up` restarts the broker from its
+ *     on every interface and names the plaintext ones. `service add` refuses a broker `--server`
+ *     that is no broker address, by preset or `--file`, quoting it unless it may hold a credential, and
+ *     starting such a definition saved earlier names its `server` option. The next `up` restarts the broker from its
  *     records. After a manager crash, the next `up` relaunches the manager over the pidfile the
  *     killed process left. Once delivery is killed, `status` reads its ready row as stale instead of
  *     bound. The `down --yes` that stops it prints one receipt: the mesh once, the members in stop
@@ -106,6 +108,8 @@ const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTA
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
+// Registers the broker adapter, which a definition saved from this process is checked against.
+await import("../src/lib/broker-service.js");
 const { definitionListeners, exposedPlaintext, listenerRow } = await import("../src/lib/stack-listeners.js");
 
 const { check, finish } = createSuite();
@@ -234,6 +238,33 @@ try {
       JSON.stringify(wild.map(listenerRow)) === JSON.stringify([["Broker client", "0.0.0.0:4999 · every interface · plaintext"], ["Broker websocket", "0.0.0.0:5000 · every interface · plaintext"], ["Manager console", "0.0.0.0, on a port the manager picks when it starts · every interface · plaintext HTTP"]])
         && exposedPlaintext(wild) === "The broker client, broker websocket and manager console listeners are plaintext and reachable from other machines, so what crosses them is not encrypted."
         && exposedPlaintext(listed ?? []) === undefined, wild);
+
+    // A broker definition's address is checked when it is added, as its paths are. A start applied
+    // the address rules only after it recorded an instance, and named neither the option nor the value.
+    // The stack's own broker configuration and binary, which pass the path checks.
+    const stackLaunch = serviceDefinitionStore(space).read("stack-broker")?.record.value.launch;
+    const [brokerConfig, brokerBinary] = stackLaunch?.type === "adapter" ? [String(stackLaunch.options.config), String(stackLaunch.options.binary)] : ["", ""];
+    const addBroker = (name: string, server: string) => cli(root, "service", "add", name, "--preset", "broker", "--root", root, "--config", brokerConfig, "--binary", brokerBinary, "--server", server, "--json");
+    const word = addBroker("bad-word", "hallo welt");
+    check('service add --preset broker refuses --server "hallo welt" USAGE_INVALID, exit 1, quoting it, and saves nothing',
+      word.status === 1 && word.env?.error?.code === "USAGE_INVALID" && word.env.error.message === '--server "hallo welt": the broker address must be one nats:// or tls:// URL; nothing was saved' && serviceDefinitionStore(space).read("bad-word") === undefined, shown(word));
+    const credential = addBroker("bad-cred", "nats://user:secret@127.0.0.1:4999");
+    check("an address with a credential is refused without printing it",
+      credential.status === 1 && credential.env?.error?.code === "USAGE_INVALID" && /^--server \(not printed/.test(credential.env.error.message) && !`${credential.stdout}${credential.stderr}`.includes("secret") && serviceDefinitionStore(space).read("bad-cred") === undefined, shown(credential));
+    const brokerFile = (server: string) => ({ schemaVersion: 1 as const, space, launch: { type: "adapter" as const, adapter: "nats-broker", options: { root, config: brokerConfig, binary: brokerBinary, server } }, readiness: { type: "adapter" as const, timeoutMs: 30_000 } });
+    const badFile = join(home, "bad-server.json");
+    writeFileSync(badFile, JSON.stringify(brokerFile("nats://127.0.0.1:4999x")));
+    const imported = cli(root, "service", "add", "bad-file", "--file", badFile, "--json");
+    check("service add --file refuses that address SCHEMA_INVALID, exit 1, naming launch.options.server and the value",
+      imported.status === 1 && imported.env?.error?.code === "SCHEMA_INVALID" && imported.env.error.message.startsWith(`the definition's launch.options.server "nats://127.0.0.1:4999x": `) && serviceDefinitionStore(space).read("bad-file") === undefined, shown(imported));
+    // Saved as an older CLI saved it, before the check.
+    serviceDefinitionStore(space).commit("old-broker", undefined, brokerFile("hallo welt"));
+    const oldStart = cli(root, "service", "start", "old-broker", "--json");
+    check("starting a definition saved before the check refuses UNSUPPORTED, exit 2, naming its server option and value and how to add it again",
+      oldStart.status === 2 && oldStart.env?.error?.code === "UNSUPPORTED" && oldStart.env.error.message.includes(`the definition's server option "hallo welt": the broker address must be one nats:// or tls:// URL`)
+        && Boolean(oldStart.env.error.remedy?.startsWith(`remove it with cotal service remove old-broker --space ${space} --yes, then add it again`)), shown(oldStart));
+    const oldRemoved = cli(root, "service", "remove", "old-broker", "--yes", "--json");
+    check("rig: the old definition and its failed instance are removed", oldRemoved.status === 0 && serviceDefinitionStore(space).read("old-broker") === undefined, shown(oldRemoved));
 
     const crashed = pidOf(space, "stack-broker");
     if (crashed !== null) process.kill(crashed, "SIGKILL");

@@ -3984,7 +3984,9 @@ option is refused with each one named.
 `add` checks the options against the preset's schema, and checks that each declared path exists
 with its required protection. It does not check that a root or credential suits the preset, such
 as a root's auth mode or which credential a file holds. Those are checked when the service starts.
-A refusal names the option or field at fault. Option values are not printed.
+A refusal names the option or field at fault. Option values are not printed, except the `broker`
+preset's `server`: `add` checks it against the address rules a start applies, and its refusal quotes
+the address unless it holds an `@`, which may be a credential.
 
 `--file` imports a version-1 definition. This one runs a program and treats it as ready once its
 loopback health URL answers 200:
@@ -6667,8 +6669,10 @@ prepares no trust, generates no configuration and starts no other service. Legac
 known shared registrations, maintenance and mismatched transport refuse. Its creation-pinned
 direct child writes a native ports report in a fresh private launch directory, and the readiness
 check sets that report to `0600` before it reads it. Its listener must
-match the declared IP, port and transport. DNS, wildcard and mapped-IPv6 target declarations refuse
-before launch. This reports the child's client listener, not JetStream readiness, endpoint serving
+match the declared IP, port and transport. `add` refuses a `server` that is not one `nats://` or
+`tls://` URL naming an IP literal, and DNS, wildcard and mapped-IPv6 targets, so none is saved. A
+definition saved before that check refuses on start, before launch, naming its `server` option and
+how to add it again. This reports the child's client listener, not JetStream readiness, endpoint serving
 or a fresh trust check.
 
 Broker stop has a separate kernel-exit policy, with no invented endpoint principal or epoch.

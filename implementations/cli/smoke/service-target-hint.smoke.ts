@@ -7,13 +7,16 @@
  * has, is refused for naming the other space. It used to be refused as "already exists", with a next
  * step that removed the selected space's service.
  *
+ * `service add --file` of a broker definition whose server is no broker address is refused, quoting
+ * it, before anything is saved. It used to be saved, and only its start refused.
+ *
  * Driven through the built binary in a sandboxed COTAL_HOME, from a folder that is not a project and
  * from two prepared projects. No broker is started.
  *
  * Run: pnpm smoke:service-target-hint
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -76,6 +79,18 @@ check("control: service does refuse --server as an unknown option", refused.stat
   const again = run(["service", "add", "tick", "--file", forA, "--json"], a);
   check("control: a file for sa under its existing name is still refused as already existing",
     again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists"), shown(again));
+
+  const config = join(a, ".cotal", "broker.conf");
+  writeFileSync(config, "", { mode: 0o600 });
+  const broker = join(home, "broker.json");
+  writeFileSync(broker, JSON.stringify({ schemaVersion: 1, space: "sa", launch: { type: "adapter", adapter: "nats-broker", options: { root: a, config, binary: realpathSync("/bin/sleep"), server: "hallo welt" } }, readiness: { type: "adapter", timeoutMs: 30_000 } }));
+  const word = run(["service", "add", "word", "--file", broker, "--json"], a);
+  let wordRefusal: { error?: { code?: string; message?: string; remedy?: string } } | undefined;
+  try { wordRefusal = JSON.parse(word.stdout) as typeof wordRefusal; } catch { wordRefusal = undefined; }
+  check('add --file of a broker definition whose server is "hallo welt" is SCHEMA_INVALID, exit 1, quoting it',
+    word.status === 1 && wordRefusal?.error?.code === "SCHEMA_INVALID" && wordRefusal.error.message === `the definition's launch.options.server "hallo welt": the broker address must be one nats:// or tls:// URL; nothing was saved`, shown(word));
+  const kept = run(["service", "--space", "sa", "--json"], a);
+  check("...and saves nothing", kept.status === 0 && !kept.stdout.includes('"name":"word"'), shown(kept));
 }
 
 finish();
