@@ -239,6 +239,11 @@ export type RunJournalRow =
       /** When the step began and, once settled, ended (epoch ms). */
       readonly startedAt: number;
       readonly endedAt?: number;
+      /** On a settled `race` that took a branch's value, that branch. */
+      readonly winner?: string;
+      /** On a step in a branch that lost a `race`, that race's step key. The program never read
+       *  what the step settled with, so an answer it holds was not acted on. */
+      readonly lostRace?: string;
       /** What an open pause asks, present only while it is open. */
       readonly asks?: string;
       readonly addressee?: string;
@@ -249,7 +254,8 @@ export type RunJournalRow =
       readonly onExpiry?: string;
       /** The accepted answer of a settled pause: named by a checkpoint's settled result, and for an
        * `ask`, whose result is the value alone, read from the answer record its last attempt's settle
-       * named. Absent for open and expired pauses and ordinary steps. */
+       * named. A pause cancelled after it accepted an answer carries that answer too, read the same
+       * way. Absent for open and expired pauses and ordinary steps. */
       readonly answer?: {
         readonly answerId: string;
         readonly value?: unknown;
@@ -280,6 +286,19 @@ export interface RunStatusView {
   /** A failed marker read is unknown, not an absent marker or a resumable run. */
   readonly revocationUnreadable?: string;
   readonly journal: RunJournalRow[];
+  /** On a paged read, the journal's row count; `journal` then holds the rows from the requested
+   *  offset that fit in one reply. */
+  readonly journalTotal?: number;
+}
+
+/** A paged journal read: the rows from `offset` that fit in one reply. */
+export interface RunJournalPageRequest {
+  readonly offset: number;
+}
+
+/** What a paged journal read measures its reply against. */
+export interface RunJournalPageContext {
+  readonly replyFits: (data: unknown, ceiling: number) => boolean;
 }
 
 export type RunValidation =
@@ -312,8 +331,9 @@ export interface RunHost extends Extension {
    *  answering one for `req.accepted.token`; nothing is presented and the pause stays settled. */
   amend(planes: RunHostPlanes, req: RunHostAmendRequest): Promise<unknown>;
   /** The run's record plus its journal view, or undefined when no run record exists. The replay
-   *  rides a durable named by `takeoverId`, the one the caller's credential row pins. */
-  status(planes: RunHostPlanes, req: { readonly endpoint: string; readonly runId: string; readonly takeoverId: string }): Promise<RunStatusView | undefined>;
+   *  rides a durable named by `takeoverId`, the one the caller's credential row pins. With
+   *  `journal`, the view holds one page of the journal, measured by `context`. */
+  status(planes: RunHostPlanes, req: { readonly endpoint: string; readonly runId: string; readonly takeoverId: string; readonly journal?: RunJournalPageRequest }, context?: RunJournalPageContext): Promise<RunStatusView | undefined>;
   /** Every run recorded on `endpoint`, or on every endpoint when none is named. */
   list(planes: RunHostPlanes, req: { readonly endpoint?: string }): Promise<RunListRow[]>;
   /** Bounded diagnostic pages, when supported. Never emulate with a full list followed by slicing. */

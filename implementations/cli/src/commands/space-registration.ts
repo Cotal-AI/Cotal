@@ -27,6 +27,8 @@ import {
   removeMesh,
   removePreparedSpace,
   removeSpacePreferences,
+  SPACE_NAME_MAX,
+  spaceNameTooLong,
   stackHomeRemedy,
   stackRunsUnderOtherHome,
   writeResult,
@@ -40,6 +42,7 @@ import {
   type UserBundle,
 } from "@cotal-ai/workspace";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions } from "../lib/stack-journal.js";
 import {
@@ -414,9 +417,12 @@ export type LocalSpaceState = "created" | "prepared" | "started";
  */
 export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean, adopting = false): LocalSpaceState {
   const target = { space: name };
-  // `cotal up` starts a space only under a name that is one native routing token.
-  if (name.length > 200 || token(name) !== name)
-    throw refuse("USAGE_INVALID", "a space name is 1 to 200 letters, digits, underscores or hyphens, which `cotal up` needs to start it", target);
+  // `cotal up` starts a space only under a name that is one native routing token, short enough for
+  // the file names that carry it.
+  const tooLong = spaceNameTooLong(name);
+  if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, target, `choose a name of at most ${SPACE_NAME_MAX} characters`);
+  if (token(name) !== name)
+    throw refuse("USAGE_INVALID", `a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, target);
   take(checkSpaceName(name), target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
@@ -440,7 +446,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   // A stack this home cannot see runs here under another Cotal home; a space prepared over it could
   // not start, and the root's status would stop naming that home.
   let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
-  try { journal = readStackJournal(root)?.journal; } catch { journal = undefined; }
+  // A journal that is not JSON or has an unsupported shape is named with its way out. The trust it
+  // leaves would otherwise read as a space that already holds this root.
+  try { journal = readStackJournal(root)?.journal; } catch (error) { if (error instanceof CommandFailure && error.code === "SCHEMA_INVALID") throw error; journal = undefined; }
   if (journal && stackRunsUnderOtherHome(root, journal))
     throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} runs under another Cotal home; ${homeCotalDir()} holds no record of its members`, target, stackHomeRemedy());
   // A stack journal another folder recorded, as a copy or a moved folder keeps it, is taken over only
@@ -449,7 +457,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   try { elsewhere = journalRecordedElsewhere(root); } catch { elsewhere = undefined; }
   if (elsewhere && !adopting && cotalDirLink(root) === undefined) {
     const blocked = adoptionRefusal(root, elsewhere);
-    throw refuse("CONFLICT", `${root} holds the stack journal of "${elsewhere.journal.space}" that ${elsewhere.recordedRoot} recorded, as a copy or a moved folder keeps it${blocked ? `, and ${blocked.message}` : ""}; nothing was written`, target, blocked?.remedy ?? `adopt it with cotal space create ${elsewhere.journal.space} --adopt --root ${canonicalRoot(root)}`);
+    throw refuse("CONFLICT", `${root} holds the stack journal of "${elsewhere.journal.space}" that ${elsewhere.recordedRoot} recorded, as a copy or a moved folder keeps it${blocked ? `, and ${blocked.message}` : ""}; nothing was written`, target, blocked?.remedy ?? `adopt it with cotal space create ${elsewhere.journal.space} --adopt --root ${shellWord(canonicalRoot(root))}`);
   }
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.
@@ -473,9 +481,11 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       throw refuse("CONFLICT", link !== undefined ? `${join(root, ".cotal")} is a link to ${link}, which holds the records of "${held[0]}" at ${origin}` : `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
     }
     const stopped = held.length === 1 && journaled === undefined && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
+    // The next step names the space already here, so whoever meant it can start, select or forget it.
+    const which = held.length === 1 ? held[0]! : "<space>";
     throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`
-      : `create the space in another folder, or pass ${flag} <dir>`);
+      : `create "${name}" in another folder with ${flag} <dir>; for "${held.join('", "')}", which ${held.length === 1 ? "uses" : "use"} this folder, start it with \`cotal up\` from ${root}, select it with \`cotal use ${which}\`, or forget it with \`cotal space forget ${which}\``);
   }
   return "created";
 }

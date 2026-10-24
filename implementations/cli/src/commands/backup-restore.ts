@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
-import { heldRestoreAttempt, registryRestoreNotes, retainedPreviousStore } from "../lib/restore.js";
+import { heldRestoreAttempt, leftOutNotes, restoreComposition, restoreOnlyCopy } from "../lib/restore.js";
 import { assertStoreDirArgument } from "../lib/store-dir.js";
 import { startRestore, type RestoreStartupResult } from "./up.js";
 
@@ -35,11 +35,14 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
       remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with cotal status before another restore",
     });
   }
-  // A registry restore leaves chat and DM history empty; its warning says so and names the store
-  // that holds the only copy of that history.
+  // A registry restore leaves chat and DM history and workflow runs empty, and a full restore of an
+  // artifact with no runs leaves the runs empty; the warning says so and names the store that holds
+  // their only copy.
   const registryOnly = result.selection === "registry";
-  const previousStore = registryOnly ? retainedPreviousStore(result.root, result.attemptId) : undefined;
-  const historyNotes = registryRestoreNotes(result.attemptId, previousStore);
+  const onlyCopy = restoreOnlyCopy(result.root, result.attemptId);
+  const previousStore = onlyCopy?.previousStore;
+  const leftOutLines = leftOutNotes(result.attemptId, result.selection, onlyCopy);
+  const composition = restoreComposition(result.space, result.restoredStreams, result.mode);
   // The native activation throws on a degraded control plane or auth service before this point, so
   // a returned result is a healthy one. A static or open mesh has no auth service to report.
   const data = {
@@ -50,6 +53,8 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     server: brokerAddressForDisplay(result.server) ?? "not displayable",
     mode: result.mode,
     selection: result.selection,
+    restored: composition.restored,
+    recreatedEmpty: composition.recreatedEmpty,
     store: result.targetPath,
     runtime: result.runtime,
     brokerPid: result.brokerPid,
@@ -71,16 +76,19 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     // The restore itself succeeded (outcome ok); what it does not observe is completeness, as for
     // `team boot`. `partial` here would make a successful restore exit 4.
     completeness: data.seatResume === "requested" ? "partial" : "complete",
-    warnings: data.seatResume === "requested" ? [{ code: "AGENT_READINESS_NOT_CHECKED", target: { space: result.space }, message: "Retained seats were offered to the manager's resume; whether each one joined is not checked." }]
-      : registryOnly ? [{ code: "HISTORY_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}) }, message: historyNotes.join(" ") }] : [],
+    warnings: [
+      ...(data.seatResume === "requested" ? [{ code: "AGENT_READINESS_NOT_CHECKED", target: { space: result.space }, message: "Retained seats were offered to the manager's resume; whether each one joined is not checked." }] : []),
+      ...(leftOutLines.length ? [{ code: registryOnly ? "HISTORY_NOT_RESTORED" : "RUNS_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}) }, message: leftOutLines.join(" ") }] : []),
+    ],
   }, (row): Report => ({ sections: [
     { title: "Backup restored", blocks: [
-      { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Restore attempt", row.attemptId], ["Selection", row.selection], ["Store", row.store], ["Broker", row.server], ["Broker PID", String(row.brokerPid)], ["Manager", row.manager ? "started" : "not started"], ["Delivery", row.delivery ? "started" : "not started"], ["Seat resume", row.seatResume], ["Journal", "active"]] },
+      { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Restore attempt", row.attemptId], ["Selection", row.selection], ["Restored", composition.restoredWords], ["Recreated empty", composition.emptyWords], ["Store", row.store], ["Broker", row.server], ["Broker PID", String(row.brokerPid)], ["Manager", row.manager ? "started" : "not started"], ["Delivery", row.delivery ? "started" : "not started"], ["Seat resume", row.seatResume], ["Journal", "active"]] },
       ...(row.seatResume === "requested" ? [] : [{ kind: "lines" as const, lines: ["A registry-only restore resumes no seat."] }]),
+      ...(composition.note ? [{ kind: "lines" as const, lines: [composition.note] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: `cotal status --space ${row.space}`, description: "Check the restored stack" },
-      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: row.previousStore && registryOnly ? "Retire the restore journal; the previous store holds the only copy of the history this restore left out, so deleting it needs --discard-history" : "Retire the restore journal and any unchanged retained old store, after review" },
+      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: row.previousStore && onlyCopy ? `Retire the restore journal; the previous store holds the only copy of the ${onlyCopy.leftOut} this restore left out, so deleting it needs --discard-history` : "Retire the restore journal and any unchanged retained old store, after review" },
     ] }] },
   ] }));
 }

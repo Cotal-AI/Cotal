@@ -7,13 +7,16 @@
  * later failure whose target has no `space` field.
  *
  * The kernel cells run the src kernel over a fixture command in a child, because a classified failure
- * ends the process. The persona cell runs the built binary: `persona create` over an existing file
- * refuses with a target-less CONFLICT on a prepared space, and no broker is started.
+ * ends the process. The persona cells run the built binary: `persona create` over an existing file
+ * refuses with a target-less CONFLICT on a prepared space, and a `--file` the agent-file rules refuse
+ * names the field and the reason, as does a role token `send -r` would refuse. An edit that is not
+ * saved keeps its draft and names it, a malformed `--on` names the command to rerun, and no create
+ * takes the seeded default's launch name. Removing the seeded default says so. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
@@ -94,6 +97,78 @@ writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\
 const mismatch = cotal("persona", "create", "ex11", "--file", otherFile, "--json");
 check("a --file naming another persona is SCHEMA_INVALID, naming the file's name and its own create",
   mismatch.status === 1 && mismatch.envelope?.error?.code === "SCHEMA_INVALID" && (mismatch.envelope.error.message ?? "").includes(`${otherFile} names 'bernie'`) && (mismatch.envelope.error.remedy ?? "").includes(`cotal persona create bernie --file ${otherFile}`), shown(mismatch));
+// A file the agent-file rules refuse: the refusal names the field and the reason. A YAML error keeps
+// only its position, since the parser's text can quote the document.
+for (const [label, text, reason] of [
+  ["no frontmatter", "no frontmatter\n", 'missing "---" frontmatter block'],
+  ["the legacy channels key", "---\nname: bad\nchannels: [general]\n---\n", '"channels" was renamed'],
+  ["a read channel outside allowSubscribe", "---\nname: bad\nsubscribe: [ops]\nallowSubscribe: [general]\n---\n", 'subscribe "ops" is not within allowSubscribe [general]'],
+  ["a YAML error", "---\nname: bad\nrole: [secret-value\n---\n", "the frontmatter is not valid YAML at line 3"],
+] as const) {
+  const badFile = join(root, "bad.md");
+  writeFileSync(badFile, text);
+  const refused = cotal("persona", "create", "bad", "--file", badFile, "--json");
+  const message = refused.envelope?.error?.message ?? "";
+  check(`a --file with ${label} is SCHEMA_INVALID naming the file and the reason`,
+    refused.status === 1 && refused.envelope?.error?.code === "SCHEMA_INVALID" && message.includes(`invalid persona definition ${badFile}: ${reason}`) && !message.includes("secret-value"), shown(refused));
+}
+// A role is an address `send -r` reaches, so create refuses a role token it would refuse.
+const roleFlag = cotal("persona", "create", "badrole", "--prompt", "x", "--role", "bad role!", "--subscribe", "", "--json");
+check("persona create --role with a role send -r refuses is USAGE_INVALID naming --role",
+  roleFlag.status === 1 && roleFlag.envelope?.error?.code === "USAGE_INVALID" && (roleFlag.envelope.error.message ?? "").startsWith('--role: invalid role "bad role!"') && !existsSync(agentFilePath(root, "badrole")), shown(roleFlag));
+const roleFile = join(root, "badrole.md");
+writeFileSync(roleFile, "---\nname: badrole\nrole: bad role!\nsubscribe: []\n---\n");
+const roleInFile = cotal("persona", "create", "badrole", "--file", roleFile, "--json");
+check("persona create --file whose role send -r refuses is SCHEMA_INVALID naming the file and the role",
+  roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: invalid role "bad role!"`) && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
+const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
+check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
+
+// A malformed --on names the command to rerun, with --on written once.
+for (const [argv, rerun] of [
+  [["persona", "--on", "bad"], "cotal persona --on <instance>"],
+  [["persona", "create", "h1", "--prompt", "x", "--on", "bad"], "cotal persona create h1 --on <instance>"],
+] as const) {
+  const pinned = cotal(...argv, "--json");
+  const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
+  check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
+    pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as ${rerun}`) && !said.includes("--on --on"), shown(pinned));
+}
+
+// The seeded default's agents launch as default_agent, so no create takes that name.
+for (const argv of [
+  ["persona", "create", "default_agent", "--prompt", "x", "--subscribe", ""],
+  ["personas", "new", "default_agent", "--prompt", "x", "--subscribe", ""],
+  ["persona", "create", "default_agent", "--prompt", "x", "--on", "a".repeat(26)],
+]) {
+  const reserved = cotal(...argv);
+  check(`${argv.slice(0, 3).join(" ")}${argv.includes("--on") ? " --on" : ""} refuses the reserved default_agent and writes nothing`,
+    reserved.status === 1 && reserved.stderr.includes("'default_agent' is reserved") && !existsSync(agentFilePath(root, "default_agent")), shown(reserved));
+}
+
+// An edit that is not saved keeps its draft and names it: a draft the agent-file rules refuse says
+// why, and an editor that exits non-zero keeps what it wrote. The catalog file is unchanged.
+const drafts = join(home, "drafts");
+mkdirSync(drafts);
+const editorScript = (file: string, body: string) => { const path = join(home, file); writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 }); return path; };
+const saved = readFileSync(persona, "utf8");
+for (const [label, editor, status, says] of [
+  ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
+  ["an editor that exits 3", editorScript("ed-exit", 'printf -- "---\\nname: rev\\nrole: changed\\n---\\nx\\n" > "$1"; exit 3'), 5, "editor exited with status 3 - not saved"],
+] as const) {
+  const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
+  const kept = readdirSync(drafts).map((dir) => join(drafts, dir, "rev.md")).filter((path) => existsSync(path));
+  check(`persona edit with ${label} keeps the draft, names it and leaves the catalog file unchanged`,
+    edit.status === status && edit.stderr.includes(says) && kept.length === 1 && edit.stderr.includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
+  for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
+}
+
+// Removing the seeded default says what it was and how it comes back; another removal does not.
+const removedOther = cotal("persona", "remove", "goodrole", "--yes", "--json");
+check("removing another persona does not call it the seeded default", removedOther.status === 0 && !removedOther.stdout.includes("seededDefault"), shown(removedOther));
+const removedDefault = cotal("persona", "remove", "default", "--yes", "--plain");
+check("removing the seeded default says so and names what writes a fresh copy",
+  removedDefault.status === 0 && removedDefault.stdout.includes("This was the seeded default persona, which a bare cotal spawn launches") && !existsSync(agentFilePath(root, "default")), shown(removedDefault));
 
 finish();
 process.exit(process.exitCode ?? 0);

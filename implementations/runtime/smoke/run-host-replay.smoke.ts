@@ -15,6 +15,9 @@
  * Then the retry's bound (3): a step read replays at most three times, still fails with the race
  * when every round is lost, and raises any other failure on its first read. And the one driver-side read before activation that is not
  * `activateRun` (4): the diagnostic for a journal with no run record replays again the same way.
+ * Last (5), a paged `RunHost.status` under a reply bound far below the journal's size returns every
+ * row in order across several pages, each within the bound, and refuses `resource-exhausted` when
+ * even the record does not fit.
  *
  * The other reader in 2-4 is a second connection that pulls one record off the drive's durable
  * right after the drive creates it, which is the state `consumers.add` hands a replay when someone
@@ -529,6 +532,35 @@ try {
   c("and it still releases the run naming a journal that was activated and never pinned",
     out?.status === "released" && out.reason.message.includes("has a journal but no record"), out);
 }
+
+// ── 5) a journal read in pages, each within a reply bound ──────────────────────────────────────
+{
+  console.log("• 5: a paged status read under a reply bound far below the journal's size");
+  const runId = "paged-journal";
+  const drive = await host(runId, "new", 'const tasks = [];\nfor (let k = 0; k < 40; k++) { tasks.push(() => sleep("1ms")); }\nawait parallel(tasks);\n');
+  const out = await withDeadline(drive.outcome, 30_000, "the paged-journal run");
+  const takeoverId = newTakeoverId();
+  const whole = await cotalLangRunHost.status(driver, { endpoint: EP, runId, takeoverId });
+  // The bound stands in for a broker payload limit far below the journal's size.
+  const BOUND = 2048;
+  const measure = { replyFits: (data: unknown, ceiling: number) => JSON.stringify(data).length <= Math.min(ceiling, BOUND) };
+  const pages: RunStatusView[] = [];
+  for (let offset = 0; pages.length < 200;) {
+    const page = await cotalLangRunHost.status(driver, { endpoint: EP, runId, takeoverId, journal: { offset } }, measure);
+    if (page === undefined) break;
+    pages.push(page);
+    offset += page.journal.length;
+    if (page.journal.length === 0 || offset >= (page.journalTotal ?? 0)) break;
+  }
+  const rows = pages.flatMap((page) => page.journal);
+  c("a journal larger than the reply bound is read in several pages, every row in order, each page within the bound",
+    out?.status === "completed" && whole !== undefined && pages.length > 1 && JSON.stringify(rows) === JSON.stringify(whole.journal)
+      && pages.every((page) => page.journalTotal === whole.journal.length && JSON.stringify(page).length <= BOUND),
+    { outcome: out, pages: pages.length, rows: rows.length, total: whole?.journal.length });
+  const refused = await cotalLangRunHost.status(driver, { endpoint: EP, runId, takeoverId, journal: { offset: 0 } }, { replyFits: () => false })
+    .then(() => undefined, (e: unknown) => e as { code?: unknown });
+  c("a bound the record itself does not fit refuses resource-exhausted", refused?.code === "resource-exhausted", refused);
+}
 } finally {
   await Promise.allSettled(terminals);
   await serve.stop().catch(() => { /* teardown */ });
@@ -536,7 +568,7 @@ try {
   await nc.close();
 }
 
-const EXPECTED_CELLS = 12;
+const EXPECTED_CELLS = 14;
 const ran = ok + fail;
 console.log(`run-host-replay.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -4,11 +4,14 @@
  * and for one space, the refusals (a read, set or unset for a space this machine does not know among
  * them), a value left for a removed space, the named environment tiers, the selected space, an invalid
  * file stopping every command but help and completion without being reset, a linked file stopping
- * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a folder
- * other accounts can write refusing a write and warning on a read, a stale write refused, a persona
- * the space's catalog does not hold saved with a warning that names the catalog, two concurrent
- * writers both landing, and the consumers outside `spawn`: color, the `personas edit` editor and the
- * detach key.
+ * them the same way, a FIFO stopping them without being opened, a `COTAL_HOME` that is not a directory
+ * stopping them the same way, a config folder that is a file stopping every command but help, version,
+ * docs and completion, a folder other accounts can write refusing a write and warning on a read, a
+ * relative `COTAL_HOME` refused, a home other accounts can write taking no write and one they can only
+ * read made private on the write, a stale write refused, a persona the space's catalog does not hold
+ * saved with a warning that names the catalog, two concurrent writers both landing, and the consumers
+ * outside `spawn`: color, the `personas edit` editor and the detach key. A file that begins with a UTF-8 byte-order mark reads, and the next write leaves the
+ * mark out; one saved as UTF-16 is refused by its encoding.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -421,6 +424,23 @@ if (process.platform !== "win32") {
   chmodSync(open, 0o700);
 }
 
+// ── a file a Windows editor saved with a UTF-8 byte-order mark reads, and the next write drops it ──
+{
+  run(["config", "set", "editor", "vi"]);
+  writeFileSync(file, `\uFEFF${fileText()!}`, { mode: 0o600 });
+  const get = run(["config", "get", "editor", "--json"]);
+  check("a preferences file that begins with a UTF-8 byte-order mark reads as the JSON after it",
+    get.status === 0 && (get.envelope?.result as { setting?: Setting } | null)?.setting?.value === "vi", shown(get));
+  const write = run(["config", "set", "editor", "ed"]);
+  check("the next write leaves the byte-order mark out", write.status === 0 && !fileText()!.startsWith("\uFEFF") && fileText()!.includes('"ed"'), shown(write));
+  const utf8 = fileText()!;
+  writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(utf8, "utf16le")]), { mode: 0o600 });
+  const utf16 = run(["config", "get", "editor", "--json"]);
+  check("a preferences file saved as UTF-16 is refused by its encoding, saying to save it as UTF-8",
+    utf16.status === 1 && utf16.envelope?.error?.code === "SCHEMA_INVALID" && (utf16.envelope.error.message ?? "").endsWith("is invalid: it is saved as UTF-16, and Cotal reads only UTF-8; save it as UTF-8"), shown(utf16));
+  writeFileSync(file, utf8, { mode: 0o600 });
+}
+
 // ── a linked preferences file is refused as a private record's link is, and never replaced ──────────
 if (process.platform !== "win32") {
   run(["config", "set", "editor", "vi"]);
@@ -504,6 +524,89 @@ if (process.platform !== "win32") {
   const help = run(["help"], { COTAL_HOME: notHome });
   check("help still works", help.status === 0 && help.stdout !== "", shown(help));
   check("and the file is left as it was", readFileSync(notHome, "utf8") === "a file\n");
+}
+
+// ── a preferences.json that is a FIFO stops them by its file type, without waiting on it ─────────
+if (process.platform !== "win32") {
+  rmSync(file, { force: true });
+  spawnSync("mkfifo", ["-m", "0600", file]);
+  for (const args of [["config", "get", "harness", "--json"], ["config", "set", "harness", "claude", "--json"]]) {
+    const r = run(args);
+    check(`\`${args.join(" ")}\` refuses a FIFO preferences.json with PERMISSION_DENIED, naming it, without waiting on it`,
+      r.status === 2 && r.envelope?.error?.code === "PERMISSION_DENIED" &&
+        r.envelope.error.message === `the preferences file ${file} is not a regular file, such as a FIFO or a device; preferences are kept only in a regular file, so nothing was read or changed` &&
+        r.envelope.error.remedy === `remove ${file}, or replace it with a regular file`, shown(r));
+  }
+  const status = run(["status"]);
+  check("status reports the FIFO as a part it could not read, exit 4", status.status === 4 && status.stderr.includes(`the preferences file ${file} is not a regular file`), shown(status));
+  check("and the FIFO is left as it was", lstatSync(file).isFIFO());
+  rmSync(file);
+}
+
+// ── a config folder that is a file stops every command but help, version, docs and completion ────
+{
+  const fileXdg = join(home, "xdg-file");
+  const folder = join(fileXdg, "cotal");
+  mkdirSync(fileXdg);
+  writeFileSync(folder, "a file\n");
+  const env = { XDG_CONFIG_HOME: fileXdg };
+  for (const args of [["config", "--json"], ["status", "--json"], ["ext", "list", "--json"], ["config", "set", "harness", "claude", "--json"]]) {
+    const r = run(args, env);
+    check(`\`${args.join(" ")}\` is refused with SCHEMA_INVALID naming the folder that is a file, with moving it as Next`,
+      r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "SCHEMA_INVALID" &&
+        r.envelope.error.message.startsWith(`the Cotal config folder ${folder} is a file, not a folder;`) &&
+        r.envelope.error.remedy?.startsWith(`move ${folder} aside, for example \`mv ${folder} ${folder}.old\``) === true, shown(r));
+  }
+  const status = run(["status"], env);
+  check("the text refusal names the folder, not a corrupt extensions manifest or ENOTDIR",
+    status.status === 1 && status.stderr.includes(`the Cotal config folder ${folder} is a file`) && !/ENOTDIR|corrupt extensions manifest/.test(status.stdout + status.stderr), shown(status));
+  const seed = run(["ext", "seed"], env);
+  check("`ext seed` is refused the same way before it reads the seed state",
+    seed.status === 1 && seed.stderr.includes(`the Cotal config folder ${folder} is a file`) && !/ENOTDIR/.test(seed.stderr), shown(seed));
+  for (const args of [["help"], [], ["config", "--help"], ["version"], ["docs"]]) {
+    const r = run(args, env);
+    check(`\`cotal ${args.join(" ")}\` still runs`, r.status === 0 && r.stdout !== "" && !/ENOTDIR|corrupt extensions manifest/.test(r.stderr), shown(r));
+  }
+  const version = run(["version", "--json"], env);
+  check("`version --json` is complete with no installed extensions, since that folder can hold none",
+    version.status === 0 && version.envelope?.outcome === "ok" && version.envelope.completeness === "complete" && JSON.stringify(version.envelope.result?.extensions) === "[]", shown(version));
+  check("and the file is left as it was", readFileSync(folder, "utf8") === "a file\n");
+  const r = run(["config", "--json"], { XDG_CONFIG_HOME: folder });
+  check("a config home that is itself a file names that file",
+    r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && r.envelope.error.message.startsWith(`the Cotal config folder ${join(folder, "cotal")} cannot be made: ${folder} is a file, not a folder;`), shown(r));
+}
+
+// ── a relative COTAL_HOME stops them too, and a home other accounts can write takes no write ─────
+{
+  for (const value of ["rel-home", "./rel-home"]) {
+    const r = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: value });
+    check(`a relative COTAL_HOME ${value} is refused with USAGE_INVALID, naming it, and nothing is made`,
+      r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID" && r.envelope.error.message.startsWith(`COTAL_HOME ${JSON.stringify(value)} is a relative path`) &&
+        /^set COTAL_HOME to an absolute path/.test(r.envelope.error.remedy ?? "") && !existsSync(join(home, "rel-home")), shown(r));
+  }
+  check("help still works with a relative COTAL_HOME", run(["help"], { COTAL_HOME: "rel-home" }).status === 0);
+  const open = join(home, "open-home");
+  mkdirSync(open);
+  chmodSync(open, 0o757);
+  const refused = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: open });
+  check("a COTAL_HOME every account can write takes no write: space create is refused naming it, with chmod o-w as Next",
+    refused.status === 2 && refused.envelope?.error?.code === "PERMISSION_DENIED" && refused.envelope.error.message.includes(`${open} is writable by every local account; nothing was written`) &&
+      refused.envelope.error.remedy === `chmod o-w ${open}` && readdirSync(open).length === 0 && (statSync(open).mode & 0o777) === 0o757, shown(refused));
+  const linked = join(home, "linked-home");
+  symlinkSync(open, linked);
+  const viaLink = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: linked });
+  check("a COTAL_HOME that is a symbolic link is refused the same way",
+    viaLink.status === 2 && viaLink.envelope?.error?.message.includes(`${linked} is a symbolic link`) === true && readdirSync(open).length === 0, shown(viaLink));
+  chmodSync(open, 0o755);
+  const made = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: open });
+  check("a COTAL_HOME others can only read is written, and made private as the record store requires",
+    made.status === 0 && existsSync(join(open, "prepared")) && (statSync(open).mode & 0o777) === 0o700, shown(made));
+  chmodSync(open, 0o755);
+  const records = run(["service", "--space", "x", "--json"], { COTAL_HOME: open });
+  check("reading service records from a home others can read names it, with chmod go-rwx as Next",
+    records.status === 2 && records.envelope?.error?.code === "PERMISSION_DENIED" && records.envelope.error.message.includes(`${open} is not private to you (mode 0755)`) &&
+      records.envelope.error.remedy === `chmod go-rwx ${open}`, shown(records));
+  chmodSync(open, 0o700);
 }
 
 finish();

@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { mkSecretDir } from "@cotal-ai/core";
 import { homeCotalDir } from "@cotal-ai/workspace";
 
 /**
@@ -123,7 +124,7 @@ function readManifest(): Manifest {
 /** Write the manifest atomically (temp + rename) so a crash can't leave a half-written ledger. */
 function writeManifest(m: Manifest): void {
   const path = manifestPath();
-  mkdirSync(dirname(path), { recursive: true });
+  mkSecretDir(dirname(path)); // the Cotal home holds secrets, so it is made, or kept, private to you
   writeOwnedFile(path, Buffer.from(JSON.stringify(m, null, 2) + "\n")); // stage-and-rename: its temp is unlinked + `wx`-created, so it can't be a symlink/hard-link clobber vector
 }
 

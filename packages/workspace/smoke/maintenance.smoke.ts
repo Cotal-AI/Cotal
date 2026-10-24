@@ -60,7 +60,9 @@ import {
   type ProcessOwner,
   type RestoreListenerProof,
   type RestoreReadyRecord,
+  restoreLeftOut,
 } from "../src/maintenance.js";
+import { wfjStreamName } from "@cotal-ai/core";
 
 let passed = 0;
 function check(name: string, condition: unknown): void {
@@ -1151,7 +1153,7 @@ if (process.platform !== "win32") {
   mkdirSync(p.store);
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(p.store);
-  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup")] });
   const proof: RestoreListenerProof = {
     attemptId: "restore-clean", serverName: "restore-clean-listener", serverNonce: "restore-clean-nonce",
     processOwner: owner("restore-clean-owner", process.pid), serverEndpoint: normalEndpoint, target,
@@ -1191,6 +1193,34 @@ if (process.platform !== "win32") {
   releaseMaintenanceLock(p.lock);
 }
 
+// A full restore that brought back no workflow journal, of a user-mode or older artifact, left the
+// runs only in its old source, so deleting it needs the same consent.
+{
+  const p = ready("cleanup-runs");
+  const fallback = join(p.root, "store.fallback");
+  prepareSamePathRestore(p.lock, { attemptId: "restore-runs", targetPath: p.store, fallbackPath: fallback, claim: restoreClaim(), selection: "full" });
+  moveSamePathRestoreSource(p.lock);
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: ["KV_cotal_channels_space-cleanup-runs"] });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-runs", serverName: "restore-runs-listener", serverNonce: "restore-runs-nonce",
+    processOwner: owner("restore-runs-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  const active = readMaintenanceJournal(p.root) as Parameters<typeof restoreLeftOut>[0];
+  check("a full restore with no workflow journal left out the workflow runs", restoreLeftOut(active) === "workflow runs");
+  check("a full restore with its workflow journal left out nothing", restoreLeftOut({ ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")] } }) === undefined);
+  check("a registry restore left out the history and the runs", restoreLeftOut({ ...active, restore: { selection: "registry" } }) === "chat and DM history and workflow runs");
+  expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-runs"));
+  check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
+  cleanupRestoreFallback(p.lock, "restore-runs", { discardHistory: true });
+  check("discardHistory deletes it and retires the journal", !exists(fallback) && sameStoreIdentity(target, readStoreIdentity(p.store)) && readMaintenanceJournal(p.root) === undefined);
+  releaseMaintenanceLock(p.lock);
+}
+
 // A disaster restore retains no old source, so its explicit cleanup only retires the journal.
 {
   const p = ready("cleanup-disaster");
@@ -1221,7 +1251,7 @@ if (process.platform !== "win32") {
   mkdirSync(targetPath);
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(targetPath);
-  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-mismatch")] });
   const proof: RestoreListenerProof = {
     attemptId: "restore-mismatch", serverName: "restore-mismatch-listener", serverNonce: "restore-mismatch-nonce",
     processOwner: owner("restore-mismatch-owner", process.pid), serverEndpoint: normalEndpoint, target,

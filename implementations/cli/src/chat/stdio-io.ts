@@ -85,6 +85,8 @@ export async function runStdio(opts: {
   session: AdmittedChatSession;
   stdin: Readable;
   stdout: Writable;
+  /** The signal that ended input, as the end record's reason; undefined when stdin ended. */
+  endedBy?: () => string | undefined;
   diagnostic: (line: string) => void;
 }): Promise<CloseReport | undefined> {
   const { session, stdin, stdout, diagnostic } = opts;
@@ -155,7 +157,7 @@ export async function runStdio(opts: {
         done = true;
         detach();
         framer.end();
-        participant.endOfInput().then(resolve, (e) => {
+        participant.endOfInput(opts.endedBy?.()).then(resolve, (e) => {
           diagnostic(`session close failed: ${(e as Error).message}`);
           resolve(undefined);
         });

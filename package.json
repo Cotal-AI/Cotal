@@ -422,6 +422,8 @@
     "smoke:status-persona-root": "tsx implementations/cli/smoke/status-persona-root.smoke.ts",
     "smoke:spawn-from-anywhere:live": "tsx implementations/cli/smoke/spawn-from-anywhere-live.smoke.ts",
     "smoke:up-manifest:live": "tsx implementations/cli/smoke/up-manifest-live.smoke.ts",
+    "smoke:team-views:live": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/team-views-live.smoke.ts",
+    "smoke:signal-exits:live": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/signal-exits-live.smoke.ts",
     "smoke:ledger": "tsx implementations/cli/smoke/ledger.smoke.ts",
     "smoke:manager-singleton:live": "tsx implementations/cli/smoke/manager-singleton-live.smoke.ts",
     "smoke:component-health": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/component-health.smoke.ts",

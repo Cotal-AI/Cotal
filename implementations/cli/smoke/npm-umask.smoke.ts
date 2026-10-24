@@ -2,20 +2,21 @@
  * npm children start under a umask with 022 added. Under a umask of 0002, npm makes group-writable
  * directories, files and bin targets, and its own `--umask` setting leaves package directories and
  * bin targets group-writable, so the CLI sets the process umask around each npm spawn and restores
- * it when the spawn call returns. A stub npm records the umask it starts with. Broker-free; the
+ * it when the spawn call returns. A stub npm records the umask it starts with. An install an earlier
+ * installer left group-writable is repaired without following links. Broker-free; the
  * extension prefix is private to this run.
  *
  * Run: pnpm smoke:npm-umask
  */
 import { strict as nodeAssert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 import { claimExtensionUpdatePass, extensionsDir } from "@cotal-ai/workspace";
 import { EXT_UPDATE_PARENT_ENV } from "../src/commands/ext.js";
-import { withInstallUmask } from "../src/lib/install-umask.js";
+import { repairInstallModes, withInstallUmask } from "../src/lib/install-umask.js";
 
 if (process.platform === "win32") skipSuite("umask is POSIX-only");
 const counted = countedAssert(nodeAssert);
@@ -88,5 +89,28 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log("npm-umask smoke: OK - npm children start under 022 from a parent umask of 0002, a stricter umask keeps its bits, the parent's umask is restored, and ext add's npm children, prefix and prefix package.json are not group-writable");
+// An install an earlier installer left group-writable is repaired: group and other write are removed
+// from its own folders and files, other bits stay, and a link is not followed.
+{
+  const install = mkdtempSync(join(tmpdir(), "cotal-install-modes-"));
+  const outside = mkdtempSync(join(tmpdir(), "cotal-install-outside-"));
+  try {
+    const runtime = join(install, "runtime", "node-v0-linux-x64");
+    mkdirSync(join(runtime, "bin"), { recursive: true });
+    writeFileSync(join(runtime, "bin", "node"), "");
+    writeFileSync(join(outside, "target"), "");
+    symlinkSync(join(outside, "target"), join(install, "link"));
+    for (const [path, mode] of [[install, 0o775], [join(install, "runtime"), 0o757], [runtime, 0o775], [join(runtime, "bin"), 0o755], [join(runtime, "bin", "node"), 0o775], [join(outside, "target"), 0o666]] as const) chmodSync(path, mode);
+    assert.equal(repairInstallModes(install), 4, "the four group- or world-writable entries are repaired");
+    for (const [path, mode] of [[install, 0o755], [join(install, "runtime"), 0o755], [runtime, 0o755], [join(runtime, "bin"), 0o755], [join(runtime, "bin", "node"), 0o755]] as const)
+      assert.equal(statSync(path).mode & 0o777, mode, `${path.slice(install.length) || "the install root"} is 0${mode.toString(8)} after the repair`);
+    assert.equal(statSync(join(outside, "target")).mode & 0o777, 0o666, "a link in the install is not followed");
+    assert.equal(repairInstallModes(install), 0, "a repaired install has nothing left to change");
+  } finally {
+    rmSync(install, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+}
+
+console.log("npm-umask smoke: OK - npm children start under 022 from a parent umask of 0002, a stricter umask keeps its bits, the parent's umask is restored, ext add's npm children, prefix and prefix package.json are not group-writable, and a group-writable install is repaired without following links");
 emitSentinel({ passed: cells(), failed: 0 });

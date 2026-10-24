@@ -600,6 +600,26 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(attachName.trimEnd().endsWith(":nofiles"), "attach --name suppresses filename fallback");
 }
 
+// --- values the CLI knows offline complete in place of option names ------------------------------
+{
+  for (const sub of ["get", "set", "unset"]) {
+    const keys = await completionOut(["config", sub, ""]);
+    assert.ok(["harness", "persona", "detach-key", "color", "editor"].every((key) => new RegExp(`^${key}\t`, "mu").test(keys)) && !/^--/mu.test(keys), `config ${sub} offers the preference keys`);
+  }
+  const colors = await completionOut(["config", "set", "color", ""]);
+  assert.ok(["auto", "always", "never"].every((value) => new RegExp(`^${value}$`, "mu").test(colors)) && colors.trimEnd().endsWith(":nofiles"), "config set color offers its values");
+  assert.match(await completionOut(["config", "set", "harness", ""]), /^claude$/mu, "config set harness offers the known harnesses");
+  const views = await completionOut(["watch", "--view", ""]);
+  assert.ok(["feed", "events", "messages", "roster", "channels", "waiting", "dms", "topology"].every((view) => new RegExp(`^${view}$`, "mu").test(views)) && !/^activity$/mu.test(views), "watch --view offers the views help names");
+  assert.equal((await completionOut(["watch", "--server", ""])).trimEnd(), ":nofiles", "watch --server offers no option names as its value");
+}
+
+// --- a value that is not a path offers no file names --------------------------------------------
+{
+  for (const flag of ["--window", "--desc", "--instructions"]) assert.equal((await completionOut(["channel", "set", "ops", flag, ""])).trimEnd(), ":nofiles", `channel set ${flag} offers no file names`);
+  assert.equal((await completionOut(["channel", "set", "ops", "--creds", ""])).trimEnd(), ":default", "channel --creds completes from the shell's file names");
+}
+
 // --- endpoint describe has no contract cache, so --refresh refuses before any request ------------
 {
   const endpoint = registry.all<Command>("command").find((cmd) => cmd.name === "endpoint")!;

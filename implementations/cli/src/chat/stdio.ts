@@ -390,11 +390,12 @@ export class StdioParticipant {
     this.queueRefusal(null, error);
   }
 
-  /** stdin closed: finish already accepted requests in order, close the session, then write the end record. */
-  async endOfInput(): Promise<CloseReport | undefined> {
+  /** stdin closed: finish already accepted requests in order, close the session, then write the end
+   *  record. Its reason is the signal that ended input, or `input closed`. */
+  async endOfInput(reason = "input closed"): Promise<CloseReport | undefined> {
     this.closing = true;
     await this.drain();
-    return this.finish("input closed");
+    return this.finish(reason);
   }
 
   /** Wait until every queued record is written, including refusals queued while waiting. */

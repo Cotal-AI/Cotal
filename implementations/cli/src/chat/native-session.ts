@@ -80,12 +80,13 @@ const refusedUsage = (message: string) => ({ outcome: "refused" as const, code: 
 /**
  * Refuse a channel outside the session's read or post grant before any effect, so the broker's
  * refusal and its subject never reach the caller. A session opened on no channel holds no grant,
- * and the refusal says how to open one that does. The broker remains the enforcement point.
+ * and the refusal names `reopen`'s command, which opens one that does. The broker remains the
+ * enforcement point.
  */
-export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post"): Refused | undefined {
+export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", reopen: (channel: string) => string): Refused | undefined {
   if (channelInAllow([...grant], channel)) return undefined;
   const message = grant.length === 0
-    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run cotal chat ${channel} to open a session on it`
+    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run ${reopen(channel)} to open a session on it`
     : `#${channel} is outside this session's ${use} grant`;
   return { outcome: "refused", code: "PERMISSION_DENIED", message };
 }
@@ -147,6 +148,8 @@ export interface NativeSessionInputs {
   readonly identity: SessionIdentity;
   /** The admission adapter's own retirement call. This module only invokes it. */
   readonly retire: () => Promise<CloseReport>;
+  /** The command that opens a session on a channel with the flags this one was started with. */
+  readonly reopen: (channel: string) => string;
 }
 
 export class NativeChatSession implements AdmittedChatSession {
@@ -164,8 +167,17 @@ export class NativeChatSession implements AdmittedChatSession {
     if (s.connected) this.setState("connected");
     else if (this.state !== "reconnecting") this.setState("disconnected");
   };
-  private readonly onPresence = (ev: { type: "join" | "update" | "offline"; presence: Presence }) =>
-    this.emit({ type: "presence", row: rowOf(ev.presence), change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
+  /** The last row each roster member's presence event carried, as JSON. */
+  private readonly rows = new Map<string, string>();
+  /** A presence update the row cannot show, such as a change of attention or a channel mode, leaves the
+   *  row as it was, so it is not reported as an update. */
+  private readonly onPresence = (ev: { type: "join" | "update" | "offline"; presence: Presence }) => {
+    const row = rowOf(ev.presence), shown = JSON.stringify(row);
+    if (ev.type === "update" && this.rows.get(row.id) === shown) return;
+    if (ev.type === "offline") this.rows.delete(row.id);
+    else this.rows.set(row.id, shown);
+    this.emit({ type: "presence", row, change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
+  };
   private readonly onError = () => { /* surfaced through call results; never thrown at the UI */ };
   /** A reconnect that finds this session's own DM durable gone cannot succeed by retrying: the
    *  session was retired while the broker was away, as a stack restart retires the sessions its old
@@ -217,7 +229,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post");
+    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.reopen);
     if (outside) return outside;
     let registered: boolean;
     try {
@@ -269,10 +281,7 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   setStatus(status: "idle" | "working" | "waiting", activity?: string): Promise<Result<void>> {
-    return this.call(async () => {
-      if (activity !== undefined) await this.inputs.endpoint.setActivity(activity);
-      await this.inputs.endpoint.setStatus(status);
-    });
+    return this.call(() => this.inputs.endpoint.setStatus(status, activity));
   }
 
   setAttention(mode: "open" | "dnd" | "focus"): Promise<Result<void>> {
@@ -285,7 +294,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async setChannelMode(channel: string, mode: "quiet" | "muted" | "normal"): Promise<Result<void>> {
     if (!isConcreteChannel(channel)) return refusedUsage("a channel mode needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read");
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.reopen);
     if (outside) return outside;
     // Local first, as for attention; the presence mirror is advisory (endpoint.ts:2874-2877).
     this.engine.setChannelMode(channel, mode);
@@ -293,7 +302,7 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read");
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.reopen);
     if (outside) return outside;
     return this.call(() => this.inputs.endpoint.joinChannel(channel));
   }
