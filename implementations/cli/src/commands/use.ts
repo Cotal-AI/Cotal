@@ -1,8 +1,11 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, findMesh, findPreparedSpace, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, setCurrent, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { clearCurrent, CommandFailure, findMesh, findPreparedSpace, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, readCurrent, setCurrent, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
 
-export const useFlags = [jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+export const useFlags = [
+  { name: "clear", type: "boolean", description: "clear the selection, so a command targets its folder's space again" },
+  jsonFlag, plainFlag,
+] as const satisfies readonly FlagSpec[];
 
 interface Selection {
   readonly kind: "selection";
@@ -21,11 +24,13 @@ interface Selection {
  * `cotal use <space>` selects the space commands target when none is named, from any directory. It
  * changes the selection only: it starts nothing, and it does not check whether the space's broker
  * is up, so a stopped or prepared space can be selected and the command that targets it says so. Bare
- * `cotal use` reports the selection.
+ * `cotal use` reports the selection, and `--clear` removes it.
  */
 export async function use(args: ParsedArgs): Promise<void> {
-  const presentation = presentationOf(args.values as FlagValues<typeof useFlags>);
-  if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "usage: cotal use [<space>]");
+  const values = args.values as FlagValues<typeof useFlags>;
+  const presentation = presentationOf(values);
+  if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "usage: cotal use [<space> | --clear]");
+  if (values.clear) return clearSelection(args.positionals.length > 0, presentation);
   const previous = getCurrent() ?? null;
   const name = args.positionals[0];
   if (name === undefined) {
@@ -40,11 +45,25 @@ export async function use(args: ParsedArgs): Promise<void> {
   }
   const m = findMesh(name);
   const p = m ? undefined : findPreparedSpace(name);
-  if (!m && !p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { remedy: "see the registered spaces with `cotal space`" });
+  if (!m && !p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { space: name }, remedy: "see the registered spaces with `cotal space`, or clear the selection with `cotal use --clear`" });
   const changed = previous !== name;
   if (changed) setCurrent(name);
   const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null };
   writeResult(presentation, { command: "use", target: { space: name }, result, noOp: !changed }, selectionView);
+}
+
+/** `use --clear`: remove the selection, so a command runs on its folder's space again. A pointer that
+ *  cannot be read is removed as well, since it selects nothing usable. Nothing selected is a no-op. */
+function clearSelection(named: boolean, presentation: ReturnType<typeof presentationOf>): void {
+  if (named) throw new CommandFailure("refused", "USAGE_INVALID", "--clear removes the selection, so it takes no space name", { remedy: "run `cotal use --clear`, or `cotal use <space>` to select another" });
+  let previous: string | null, damaged = false;
+  try { previous = readCurrent() ?? null; } catch { previous = null; damaged = true; }
+  if (previous !== null || damaged) clearCurrent();
+  const result: Selection = { kind: "selection", current: null, previous, currentRecorded: true, server: null, preparedRoot: null };
+  writeResult(presentation, { command: "use", target: null, result, noOp: previous === null && !damaged }, (s) => ({ sections: [{ blocks: [{ kind: "lines", lines: [
+    s.previous === null ? { text: damaged ? "cleared the selection" : "no space was selected; nothing changed", tone: damaged ? "ok" : "hint", ...(damaged ? { mark: "✓" } : {}) } : { text: `cleared the selection (was ${s.previous})`, tone: "ok", mark: "✓" },
+    { text: "  a command now targets the space in its folder, or the one named with --space", tone: "hint" },
+  ] }] }] }));
 }
 
 function selectionView(s: Selection): Report {

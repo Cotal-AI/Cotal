@@ -132,12 +132,25 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("use reports the selection it replaced", swap.status === 0 && swap.env?.result.current === "alpha" && swap.env.result.previous === "beta" && swap.env.target?.space === "alpha", shown(swap));
   const unknown = json(["use", "nope"]);
   check("use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection", unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && getCurrent() === "alpha", shown(unknown));
+  const unknownHuman = run(["use", "nope"]);
+  check("the refusal of an unregistered name is headed with that name, as space forget's is", unknown.env?.target?.space === "nope" && unknownHuman.stderr.startsWith("Mesh: nope\n"), shown(unknownHuman));
   const two = json(["use", "alpha", "beta"]);
   check("use with two names is a usage error", two.status === 1 && two.env?.error?.code === "USAGE_INVALID", shown(two));
   const listed = json(["space"]);
   check("the listing marks the selected space", itemOf(listed.env, "alpha")?.current === true && itemOf(listed.env, "beta")?.current === false && listed.env?.result.current === "alpha", listed.env?.result);
   const human = run(["use", "beta"], { FORCE_COLOR: "1" });
   check("use names the space it selected and the one it replaced", human.status === 0 && /selected beta \(was alpha\)/.test(human.stdout.replace(/\x1b\[[0-9;]*m/g, "")), shown(human));
+  // --clear removes the selection; nothing else could, so a folder's space could not apply again.
+  const cleared = json(["use", "--clear"]);
+  check("use --clear removes the selection and names the one it removed", cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "beta" && cleared.env.target === null && getCurrent() === undefined, shown(cleared));
+  const clearedAgain = json(["use", "--clear"]);
+  check("use --clear with nothing selected is a no-op", clearedAgain.status === 0 && clearedAgain.env?.outcome === "no-op" && clearedAgain.env.result.previous === null, shown(clearedAgain));
+  const named = json(["use", "alpha", "--clear"]);
+  check("use --clear with a name is a usage error and selects nothing", named.status === 1 && named.env?.error?.code === "USAGE_INVALID" && getCurrent() === undefined, shown(named));
+  const clearText = run(["use", "beta"]) && run(["use", "--clear"]);
+  check("its receipt says what was cleared", clearText.status === 0 && /cleared the selection \(was beta\)/.test(clearText.stdout), shown(clearText));
+  const none = json(["use", "none"]);
+  check("an unknown name's refusal names --clear", none.status === 2 && /cotal use --clear/.test(none.env?.error?.remedy ?? ""), shown(none));
   run(["use", "alpha"]);
 }
 
@@ -154,6 +167,8 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("show leaves the credential path out", !gamma.stdout.includes("sentinel") && !gamma.stdout.includes("auth.test"), shown(gamma));
   const unknown = json(["space", "show", "nope"]);
   check("show refuses an unregistered name with TARGET_NOT_FOUND", unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
+  const unknownHuman = run(["space", "show", "nope"]);
+  check("the show refusal is headed with the name it looked for", unknown.env?.target?.space === "nope" && unknownHuman.stderr.startsWith("Mesh: nope\n"), shown(unknownHuman));
   const human = run(["space", "show", "beta"]);
   check("the show report offers the command that selects it", human.status === 0 && /tls:\s+required/.test(human.stdout) && /cotal use beta/.test(human.stdout), shown(human));
   clearCurrent();
@@ -197,7 +212,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const help = run(["help", "space"]);
   check("help space lists show and its structured output", help.status === 0 && /^\s+show\s/m.test(help.stdout) && /Structured output: json, plain/.test(help.stdout), shown(help));
   const useHelp = run(["help", "use"]);
-  check("help use gives the optional space", useHelp.status === 0 && /cotal use \[<space>\]/.test(useHelp.stdout), shown(useHelp));
+  check("help use gives the optional space and --clear", useHelp.status === 0 && /cotal use \[<space> \| --clear\]/.test(useHelp.stdout), shown(useHelp));
   const subs = run(["__complete", "space", ""]);
   check("completion offers show after space", /^show(\t|$)/m.test(subs.stdout), shown(subs));
   const names = run(["__complete", "space", "show", ""]);

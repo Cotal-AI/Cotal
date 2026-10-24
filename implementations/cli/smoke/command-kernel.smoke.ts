@@ -489,18 +489,19 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
-// --- up refuses a --server with no port, an IPv6 address, a --host that is no bind host or names
+// --- up refuses a --server with no port, an IPv6 address or a host name, a --host that is no bind host or names
 // another address than --server, and a --server that the default bind host does not serve, before
 // project lookup ---
 {
   const cmd = registry.resolve<Command>("command", "up")!;
   const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
   const refused: [string[], RegExp, string?][] = [
-    [["--server", "nats://127.0.0.1"], /^--server names no port/, "pass the address the local broker listens on, for example --server nats://127.0.0.1:4222"],
+    [["--server", "nats://127.0.0.1"], /^--server names no port/],
     // The example keeps the scheme and port the person chose, and never the host or a credential.
-    [["--server", "nats://[::1]:29888"], /^--server names an IPv6 address/, "pass the address the local broker listens on, for example --server nats://127.0.0.1:29888"],
-    [["--server", "tls://[::1]:29888"], /^--server names an IPv6 address/, "pass the address the local broker listens on, for example --server tls://127.0.0.1:29888"],
-    [["--server", "nats://u:p@127.0.0.1:29888"], /^--server must not embed credentials/, "pass the address the local broker listens on, for example --server nats://127.0.0.1:29888"],
+    [["--server", "nats://[::1]:29888"], /^--server names an IPv6 address/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:29888"],
+    [["--server", "tls://[::1]:29888"], /^--server names an IPv6 address/, "pass the IP address the local broker listens on, for example --server tls://127.0.0.1:29888"],
+    [["--server", "nats://u:p@127.0.0.1:29888"], /^--server must not embed credentials/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:29888"],
+    [["--server", "nats://localhost:4222"], /^--server names the host localhost/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:4222"],
     [["--host", "::1"], /^--host names an IPv6 address/],
     [["--host", "[::1]"], /^--host names an IPv6 address/],
     [["--host", "nats://127.0.0.1"], /^--host nats:\/\/127\.0\.0\.1 looks like a URL/],

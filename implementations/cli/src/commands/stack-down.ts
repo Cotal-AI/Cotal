@@ -11,13 +11,10 @@ import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, readBrokerPolicy, recordMesh,
-  releaseMaintenanceLock, removeMesh, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, readBrokerPolicy, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
-  recordOperationSpace, stackHomeRemedy, stackRunsUnderOtherHome,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
-import { ConfirmationRequired } from "../lib/confirmation-required.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
@@ -72,7 +69,7 @@ export function validateStackDownArguments(root: string, values: ParsedArgs["val
   if (values["abandon-stop"] !== undefined) {
     if (values["dry-run"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop removes a retained stop request, so a read-only preview cannot take it");
     if (values["with-agents"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop cannot be combined with --with-agents: the abandoned stop's manager has exited, so no manager can stop the agents");
-    if (values.yes !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop needs --yes, because it gives up the only record of what that stop did");
+    if (values.yes !== true) throw new ConfirmationRequired("--abandon-stop needs --yes, because it gives up the only record of what that stop did", { remedy: `run cotal down --abandon-stop ${values["abandon-stop"]} --yes to give it up` });
   }
   if (preserve) refuseControllerCut(root, "down --preserve-state");
 }
@@ -230,6 +227,9 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   // The preview reads without the lock and writes nothing. The real stop holds the root's
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
   if (values["dry-run"] === true) return previewStackStop(root, values, presentation, withAgents);
+  // A busy root's refusal names the recorded space, as every refusal after the lock does.
+  const recorded = readStackJournal(root)?.journal.space;
+  if (recorded !== undefined) recordOperationSpace(recorded);
   const lock = acquireStackOperationLock(root);
   try { await applyStackStop(root, values, presentation, interactive, withAgents, lock); }
   finally { releaseMaintenanceLock(lock); }

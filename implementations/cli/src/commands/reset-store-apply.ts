@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
 import {
+  ConfirmationRequired,
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
   canonicalRoot, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
   presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Block, type Report,
@@ -202,7 +203,7 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
   const presentation = presentationOf(args.values);
   const yes = args.values.yes === true;
   if (!yes && (!canPrompt() || presentation === "json"))
-    throw new CommandFailure("refused", "USAGE_INVALID", "reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect reset store ${space} --dry-run first` });
+    throw new ConfirmationRequired("reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect cotal reset store ${space} --dry-run first, then run cotal reset store ${space} --yes` });
   const selected = selectResetTarget(space, "reset store");
   if (selected.tlsRequired || /^(?:tls|wss):\/\//i.test(selected.server))
     throw new CommandFailure("refused", "UNSUPPORTED", "a credless broker probe cannot establish that a TLS-first listener is stopped; no store reset was attempted", { target: { space }, remedy: "use a trusted TLS-aware stopped-broker check before a guarded reset can be offered" });

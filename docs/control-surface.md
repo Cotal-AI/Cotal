@@ -422,6 +422,8 @@ still lists the commands: the instance rail serves them, and `describe` itself s
 class rail (SPEC 13.7). An unpinned `spawn` can therefore bind-fence: `describe` may land on
 the skip member while `spawn` lands on a sibling, the command was not run, and the caller
 re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
+When no manager takes the class queue, the broker answers an unpinned `spawn` with no
+responders, and the caller classifies that `not-executed` (SPEC 13.3).
 A manager that can launch some connectors keeps the class rail. If the queue hands it a
 harness its inventory marked unavailable, the refusal names `--on` because the standing serve
 credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`

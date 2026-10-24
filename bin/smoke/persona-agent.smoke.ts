@@ -358,8 +358,8 @@ try {
     // loaded any persona, naming `other`: the confusing wrong-harness refusal of the block.
     registry.unregister("connector", "pin");
     registry.unregister("connector", "other");
-    // The refusal path calls process.exit(1); intercept it so the SUITE survives to grade the
-    // cell (the real binary exits here, which is the correct operator-visible behavior).
+    // The refusal path exits; intercept it so the SUITE survives to grade the cell (the real
+    // binary exits here, which is the correct operator-visible behavior).
     const realExit = process.exit.bind(process);
     (process as unknown as { exit: (c?: number) => never }).exit = ((code?: number) => {
       throw new Error(`process.exit(${code ?? 0})`);
@@ -371,8 +371,11 @@ try {
     {
       const realLog = console.log;
       const realErr = console.error;
+      const realWrite = process.stderr.write;
       console.log = (...a: unknown[]) => void (eOut += a.join(" ") + "\n");
       console.error = (...a: unknown[]) => void (eOut += a.join(" ") + "\n");
+      // The kernel writes a typed refusal's block to stderr directly.
+      process.stderr.write = ((chunk: string | Uint8Array) => { eOut += String(chunk); return true; }) as typeof process.stderr.write;
       try {
         // Drive the REAL DISPATCHER (runCli), not cmd.run: the pre-parse hook
         // (spawnRequiredExtensions -> materializeExtension) only executes inside runCli, and the
@@ -383,6 +386,7 @@ try {
       } finally {
         console.log = realLog;
         console.error = realErr;
+        process.stderr.write = realWrite;
       }
     }
     // Restore the recorders for later cells/teardown parity.
