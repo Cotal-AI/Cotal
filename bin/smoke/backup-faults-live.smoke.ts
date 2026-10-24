@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -143,6 +143,28 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.equal(restored.target?.missing, missing, `it says the ${missing} is missing`);
       assert.equal(restored.target?.directory, path, "it names the path");
     }
+    // A file, an empty folder, a folder no create wrote and a folder that holds the preserved store are
+    // refused before any lock, naming the path and what it is.
+    const notArtifacts = join(root, "not-artifacts");
+    mkdirSync(join(notArtifacts, "empty"), { recursive: true });
+    mkdirSync(join(notArtifacts, "notes"));
+    writeFileSync(join(notArtifacts, "notes", "notes.txt"), "x");
+    writeFileSync(join(notArtifacts, "file.txt"), "x");
+    const journalBytes = readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8");
+    for (const [path, status, code, text] of [
+      [join(notArtifacts, "file.txt"), 2, "TARGET_NOT_FOUND", `${realpathSync(join(notArtifacts, "file.txt"))} is not a backup artifact: it is a file; nothing was restored`],
+      [join(notArtifacts, "empty"), 2, "TARGET_NOT_FOUND", `${realpathSync(join(notArtifacts, "empty"))} is not a backup artifact: it is an empty folder; nothing was restored`],
+      [join(notArtifacts, "notes"), 2, "TARGET_NOT_FOUND", `${realpathSync(join(notArtifacts, "notes"))} is not a backup artifact: it holds no manifest.json and no file a backup create writes; nothing was restored`],
+      [".", 1, "USAGE_INVALID", `the restore artifact ${realpathSync(root)} holds the preserved store ${realpathSync(sourcePath)} it would replace; nothing was restored`],
+      [join(sourcePath, "jetstream"), 1, "USAGE_INVALID", `the restore artifact ${realpathSync(join(sourcePath, "jetstream"))} is inside the preserved store ${realpathSync(sourcePath)} it would replace; nothing was restored`],
+    ] as const) {
+      const restore = run("backup", "restore", path, "--json");
+      const envelope = JSON.parse(restore.stdout) as { outcome?: string; error?: { code?: string; message?: string } };
+      assert.ok(restore.status === status && envelope.outcome === "refused" && envelope.error?.code === code && envelope.error.message === text, `a restore of ${path} is refused ${code}, exit ${status}, saying what it is\n${restore.stdout}${restore.stderr}`);
+      const plain = run("up", "--restore", path, "--detach");
+      assert.ok(plain.status === status && plain.stderr.includes(text) && !plain.stderr.includes("Outcome unconfirmed") && !plain.stderr.includes("Usage"), `up --restore ${path} is refused the same way, with no command help\n${plain.stderr}`);
+    }
+    assert.equal(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8"), journalBytes, "those refusals leave the journal as it was");
     // A destination inside the preserved store, or in a folder this account cannot write, is refused
     // before any lock with its cause in the message.
     const inside = run("backup", "create", join(sourcePath, "bk1"), "--json");

@@ -86,7 +86,7 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, missingBackupPath, missingBackupPathText, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { readPreviousRunJournals, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
@@ -858,11 +858,25 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   const deadline = new Date(Date.now() + RESTORE_TIMEOUT_MS);
   // With no journal there is no cut to restore into. Refuse before the lock creates the maintenance
   // directory, so a refused restore leaves the folder as it found it and `up` there sees no state.
-  if (!readMaintenanceJournal(root)) throw notRestorable(root, undefined);
+  const recorded = readMaintenanceJournal(root);
+  if (!recorded) throw notRestorable(root, undefined);
   // A path that names nothing is refused here too, saying whether its folder or the artifact is missing.
   const named = resolve(flags.restore);
   const missing = missingBackupPath(named);
   if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; cotal backup verify <dir> checks one before a restore" });
+  // So is a path that cannot be an artifact, saying what it is: one that is, holds or sits inside
+  // the store the restore replaces or the folder it stages in, a file, or a folder no create wrote.
+  const namedPath = realpathSync.native(named);
+  for (const [path, what, why] of [
+    [recorded.source.path, "the preserved store", " it would replace"],
+    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
+  ] as const) {
+    if (!contains(path, namedPath) && !contains(namedPath, path)) continue;
+    const relation = namedPath === path ? "is" : contains(path, namedPath) ? "is inside" : "holds";
+    throw new CommandFailure("refused", "USAGE_INVALID", `the restore artifact ${namedPath} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}${why}; nothing was restored`, { target: { root, directory: namedPath, overlaps: path }, remedy: `name a backup artifact folder outside ${path}`, selfContained: true });
+  }
+  const notArtifact = notAnArtifactRefusal(root, namedPath, "nothing was restored", { root });
+  if (notArtifact) throw notArtifact;
   let lock = acquireStackOperationLock(root, "restore");
   let staged: StagedArtifact | undefined;
   let transitioned = false;

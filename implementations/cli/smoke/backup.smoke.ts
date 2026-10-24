@@ -100,11 +100,15 @@ try {
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(partial)], values: {}, raw: [] }), (error: unknown) =>
     isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`
       && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").includes("cotal backup recover <attempt> --yes"));
-  // A folder that holds nothing a create writes, or a file, is not an artifact, not an interrupted one.
+  // A folder that holds nothing a create writes, or a file, is not an artifact, not an interrupted one,
+  // and the refusal says which it is.
   const plain = join(root, "not-a-backup");
   mkdirSync(plain);
+  writeFileSync(join(plain, "notes.txt"), "x");
+  const empty = join(root, "empty-folder");
+  mkdirSync(empty);
   writeFileSync(join(root, "a-file"), "x");
-  for (const [mode, path, text] of [["inspect", plain, "holds no manifest.json and no file a backup create writes"], ["verify", plain, "holds no manifest.json and no file a backup create writes"], ["inspect", join(root, "a-file"), "is not a folder"]] as const)
+  for (const [mode, path, text] of [["inspect", plain, "holds no manifest.json and no file a backup create writes"], ["verify", plain, "holds no manifest.json and no file a backup create writes"], ["verify", empty, "is an empty folder"], ["inspect", join(root, "a-file"), "is a file"]] as const)
     assert.throws(() => backupRead({ positionals: [mode, realpathSync(path)], values: {}, raw: [] }), (error: unknown) =>
       isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.message === `${realpathSync(path)} is not a backup artifact: it ${text}; nothing in it was checked` && !(error.remedy ?? "").includes("recover"));
   // A path that names nothing says whether its folder or the artifact is missing, as restore does.

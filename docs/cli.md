@@ -1829,7 +1829,8 @@ the same file and fault, before they stage or change anything.
 A directory with no `manifest.json` that holds files a `backup create` writes is refused as an
 incomplete artifact, the kind an interrupted create leaves, with the fault `manifest-missing`. A
 file, or a directory that holds neither a manifest nor such a file, is not a backup artifact and
-refuses `TARGET_NOT_FOUND` (exit 2), naming it. The folder of a create in this root that was
+refuses `TARGET_NOT_FOUND` (exit 2), naming it and saying whether it is a file, an empty folder or
+a folder with other files. The folder of a create in this root that was
 interrupted before it wrote a file is still an incomplete artifact. A path that names nothing refuses
 `TARGET_NOT_FOUND` (exit 2) and says in `missing` whether its folder or the artifact is missing, as
 `backup restore` does. A full artifact of an authenticated space
@@ -1910,7 +1911,10 @@ maintenance journal refuses before the restore takes its maintenance lock, so th
 state from the attempt, and `up --restore` refuses the same way. An artifact path that names
 nothing refuses `TARGET_NOT_FOUND` (exit 2) at the same point. It names the path, and its JSON
 target says in `missing` whether the folder that should hold the artifact (`folder`) or only the
-artifact (`artifact`) is missing. A restore that fails after it
+artifact (`artifact`) is missing. A path that is not an artifact, or is an incomplete one, refuses
+there too, as `backup verify` refuses it. A path that is, holds or sits inside the preserved store
+or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (exit 1) there, naming
+that store or folder. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and

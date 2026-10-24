@@ -263,8 +263,8 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const attemptArtifact = join(root, ".cotal", "maintenance", "attempts", "nested-artifact");
     cpSync(artifact, attemptArtifact, { recursive: true });
     const nestedArtifact = run("up", "--restore", attemptArtifact, "--detach", "--server", server, "--space", space);
-    assert.notEqual(nestedArtifact.status, 0);
-    assert.match(nestedArtifact.stderr, /artifact must not overlap the maintenance attempt directory/);
+    assert.equal(nestedArtifact.status, 1, `an artifact in the maintenance folder is a usage refusal\n${nestedArtifact.stderr}`);
+    assert.ok(nestedArtifact.stderr.includes(`the restore artifact ${realpathSync(attemptArtifact)} is inside this root's maintenance folder ${realpathSync(join(root, ".cotal", "maintenance"))}, where it stages its attempt; nothing was restored`), `it names the artifact and the folder\n${nestedArtifact.stderr}`);
     rmSync(attemptArtifact, { recursive: true });
     const nestedTarget = run(
       "up", "--restore", artifact, "--store-dir", join(artifact, "target"), "--detach",
