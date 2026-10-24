@@ -18,7 +18,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth, inspectCredHealth, mintCreds, newIdentity } from "@cotal-ai/core";
+import { createSpaceAuth, inspectCredHealth, mintCreds, newIdentity, mintConnectionEvictorCreds, mintMembershipObserverCreds } from "@cotal-ai/core";
 import {
   authDir,
   readRenewalRecord,
@@ -53,6 +53,11 @@ saveSpaceAuth(authDir(root), auth);
 const spaceDir = spaceMaterialDir(root, auth.space);
 mkdirSync(spaceDir, { recursive: true, mode: 0o700 });
 const staged = (kind: string) => join(spaceDir, kind);
+// A started root holds the $SYS pair its first `up` minted with the trust; doctor reports either one missing.
+const sysDir = spaceMaterialDir(root, auth.space);
+mkdirSync(sysDir, { recursive: true, mode: 0o700 });
+writeFileSync(join(sysDir, "membership-observer.creds"), await mintMembershipObserverCreds(auth, newIdentity()), { mode: 0o600 });
+writeFileSync(join(sysDir, "connection-evictor.creds"), await mintConnectionEvictorCreds(auth, newIdentity()), { mode: 0o600 });
 
 // The redesigned report's healthy title, and its exit codes: 0 ok, 4 partial, 5 failed.
 const HEALTHY = "No local credential findings";

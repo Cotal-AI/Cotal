@@ -196,6 +196,10 @@ rmSync(linked, { recursive: true, force: true });
   check("down --dry-run there refuses the same way", nowhereRefused(danglingDown, "stopped", "remove the link, then run cotal down again"), shown(danglingDown));
   check("status there warns COTAL_DIR_DANGLING with the next step and exits 4",
     danglingStatus.status === 4 && (danglingStatus.envelope?.warnings ?? []).some((w) => w.code === "COTAL_DIR_DANGLING" && w.message === `this folder's .cotal links to ${nowhere}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with cotal space create <space> --root ${dangling}`), shown(danglingStatus));
+  const emptyStatus = run(["status", "--json"], toEmpty), emptyHints = emptyStatus.envelope?.result?.hints ?? [];
+  check("status there names the same refusal and next step, and not cotal up",
+    emptyStatus.status === 4 && (emptyStatus.envelope?.result?.selected?.message ?? "").startsWith(`${join(toEmpty, ".cotal")} is a link to ${empty}, and a stack runs only from a folder whose .cotal is its own directory, so `)
+      && emptyHints.includes(`remove the link and prepare this folder with cotal space create <space> --root ${toEmpty}`) && !emptyHints.some((hint) => hint.includes("to start one")), shown(emptyStatus));
   check("nothing was written through either link", readdirSync(empty).length === 0 && !existsSync(`${root}-nowhere`));
   for (const dir of [empty, toEmpty, dangling]) rmSync(dir, { recursive: true, force: true });
 }
