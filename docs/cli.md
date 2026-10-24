@@ -1723,6 +1723,12 @@ and their dry runs refuse `CONFLICT` (exit 2), name that space, its root and its
 nothing. Keep the folder while either space needs its history; once neither does, stop both and
 remove it by hand.
 
+In a folder whose `.cotal` is a link, every target but `history`, and both dry runs, refuse before
+anything reads through it: `CONFLICT`, exit 2, naming the link and where it leads, or
+`TARGET_NOT_FOUND` for a link that leads nowhere, which is not passed over to the records of a
+folder above it. When the link leads to this folder's own records, moved away and linked back, the
+Next names moving them back, as [up](#up) does.
+
 `--dry-run` runs the same checks as `store` or `all` and prints `would remove <path>` for each
 store, credential, record and registration the command would remove, then removes nothing and takes
 no maintenance lock. A check that would refuse the command refuses its dry run the same way.
@@ -1807,7 +1813,10 @@ exclude aliases, remote tenants or live attachments. A negative credless probe
 cannot prove absence for TLS-first listeners. A custom store path must be
 absolute and one real directory. A recorded store path that is a link refuses `CONFLICT` in the
 preview and the apply of both resets, naming the path and the directory it points to, and nothing
-is removed. Replace the link with that directory to reset it. A store in the project folder itself
+is removed. Replace the link with that directory to reset it. A selected root whose `.cotal` is a
+link refuses both resets and their previews `CONFLICT`, exit 2, before anything reads through it,
+naming the link, and nothing is removed; when the records were moved away and linked back, the Next
+names moving them back. A store in the project folder itself
 refuses both resets `CONFLICT` as it refuses `clean store`, naming the store's own entries to remove
 by hand. The preview takes no maintenance lock and cannot establish exclusive
 custody or a complete identity deletion set.

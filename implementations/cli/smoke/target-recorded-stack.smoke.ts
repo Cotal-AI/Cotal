@@ -8,7 +8,8 @@
  * to any other folder, or leads nowhere, `up` and `down` refuse before anything reads through it,
  * naming the link, where it leads and the next step, and status warns once with the same step. When
  * the project's own `.cotal` was moved to another folder and linked back, the project and that folder
- * both name moving it back. A
+ * both name moving it back, and `clean` and `reset`, their dry runs included, refuse through the link.
+ * `clean` in a subfolder whose `.cotal` leads nowhere refuses rather than reach the project above. A
  * journal cut short or emptied, as an interrupted write leaves it, is named with its path and the way
  * out by `up`, `down`, `clean` and `space create`, and status warns about it. A moved folder whose
  * space this machine does not record is told only to adopt the journal, since moving it back would
@@ -65,6 +66,11 @@ const run = (args: string[], cwd = root) => {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
+/** Whether `r` is a refusal, exit 2, with this code, message and Next: from its envelope, or from the
+ *  report on stderr for a command that writes none. */
+const refusedWith = (r: ReturnType<typeof run>, code: string, message: string, remedy: string) => r.status === 2 && (r.envelope
+  ? r.envelope.error?.code === code && r.envelope.error.message === message && r.envelope.error.remedy === remedy
+  : new RegExp(`Code:\\s+${code}\\n`).test(r.stderr) && r.stderr.includes(`  ${message}\n`) && r.stderr.includes(`Next\n  ${remedy}\n`));
 const noDefault = (r: ReturnType<typeof run>) => !`${r.stdout}${r.stderr}`.includes(":4222");
 
 const before = run(["whoami", "--json"]);
@@ -206,6 +212,42 @@ rmSync(linked, { recursive: true, force: true });
   check("space create --adopt where the records were moved refuses and names the same step",
     adopt.status === 2 && adopt.envelope?.error?.remedy === back, shown(adopt));
   check("nothing was written through the link or in the folder the records were moved to", after === before);
+}
+// clean and reset read and remove nothing through a .cotal link, dry runs included. In a subfolder of
+// the project whose .cotal leads nowhere, clean is not passed over to the project's records above it.
+{
+  check("rig: prepare la07 at its root again", run(["space", "create", "la07", "--json"]).status === 0);
+  const holder = `${root}-holder`, link = join(root, ".cotal"), moved = join(holder, ".cotal");
+  mkdirSync(holder);
+  renameSync(link, moved);
+  symlinkSync(moved, link);
+  const listing = (dir: string) => JSON.stringify([readdirSync(dir).sort(), readFileSync(join(dir, "stack-controller.json"), "utf8")]);
+  const before = listing(moved);
+  const back = `move the records back to the folder the stack started in: rm ${link}, which removes only the link, then mv ${moved} ${link}, which keeps the history; then run it again`;
+  const verbs = [["clean", "all", "--dry-run"], ["clean", "store", "--force"], ["reset", "store", "la07", "--dry-run"], ["reset", "space", "la07", "--yes"]];
+  // clean writes no envelope, so its refusal is read from stderr.
+  const refused = verbs.map((words) => ({ words, r: run(words[0] === "reset" ? [...words, "--json"] : words, root) }));
+  const after = listing(moved);
+  rmSync(link);
+  renameSync(moved, link);
+  rmSync(holder, { recursive: true, force: true });
+  for (const { words, r } of refused) {
+    const verb = words[0] === "reset" ? `reset ${words[1]}` : "clean";
+    check(`${words.join(" ")} through the moved and linked .cotal refuses CONFLICT, exit 2, names moving the records back and removes nothing`,
+      refusedWith(r, "CONFLICT", `${link} is a link to ${moved}, and ${verb} reads and removes nothing through a link; nothing was removed`, back), shown(r));
+  }
+  check("nothing was removed through the link", after === before);
+  const sub = join(root, "sub"), nowhere = join(root, "nowhere", ".cotal");
+  mkdirSync(sub);
+  symlinkSync(nowhere, join(sub, ".cotal"));
+  const project = listing(link);
+  const cleans = [run(["clean", "store", "--dry-run"], sub), run(["clean", "all", "--force"], sub)];
+  const kept = listing(link);
+  rmSync(sub, { recursive: true, force: true });
+  check("clean in a subfolder whose .cotal leads nowhere refuses TARGET_NOT_FOUND, exit 2, naming the link, dry run and apply",
+    cleans.every((r) => refusedWith(r, "TARGET_NOT_FOUND", `${join(sub, ".cotal")} links to ${nowhere}, which does not exist, and clean reads and removes nothing through a link; nothing was removed`, "remove the link, then run it again where the records it should remove are")), cleans.map(shown));
+  check("...and the project's records above it are untouched", kept === project);
+  check("rig: forget la07", run(["space", "forget", "la07", "--json"]).status === 0);
 }
 // A link to a folder that is no project's .cotal, and a link that leads nowhere, which the walk to a
 // root passes over.

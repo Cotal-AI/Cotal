@@ -38,7 +38,7 @@ import {
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { c, stderrLine } from "../ui.js";
-import { cotalRoot } from "../lib/paths.js";
+import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
@@ -109,6 +109,10 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // scoped by a space name, so refuse on a multi-space root HERE - before any branch takes a
   // maintenance lock or touches the preserved source. Guarding only the `store`/`all` path (below)
   // left `restore-attempt`/`restore-fallback` a broker-wide bypass.
+  // Nothing is read or removed through a `.cotal` link, and one that leads nowhere is not passed
+  // over to the records of a folder above it.
+  const linked = linkedCotalRefusal("clean");
+  if (linked) throw linked;
   const root = cotalRoot();
   assertSingleSpaceBroker(authDir(root), `cotal clean ${target}`);
 
