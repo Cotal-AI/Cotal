@@ -501,6 +501,8 @@ function readTeamFile(file: string, values: TeamValues): { path: string; prepare
   try { prepared = loadManifest(path); }
   catch (e) {
     if (e instanceof ManifestError) throw manifestRefusal(e, path);
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && (e as NodeJS.ErrnoException).path === path)
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} was not found; no broker was contacted`, { target: { path }, remedy: "check the file path and run the command again" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
   }
   if (values.space !== undefined && values.space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");

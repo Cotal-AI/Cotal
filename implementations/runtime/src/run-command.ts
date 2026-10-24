@@ -65,7 +65,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { LangErrors, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import { CommandFailure, commandFailureReport, failureEnvelope, presentationOf, recordOperationSpace, renderReport, terminalWidth, writeEnvelope, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
@@ -79,7 +79,7 @@ import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, RunAnswerBlocked } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--limit <n>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -109,6 +109,7 @@ interface RunValues {
   /** `ps` and `journal` only: one JSON object per row per line on stdout. */
   json?: boolean;
   page?: boolean;
+  /** `ps --page`: the page's row limit. `journal`: how many of the last journal rows the text view prints. */
   limit?: string;
   cursor?: string;
   plain?: boolean;
@@ -553,17 +554,26 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   }
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
-  const report = await migrateRun({
-    endpoint,
-    runId,
-    source,
-    file: values.file,
-    entries: replay.records.flatMap((r) => (r.record.kind === "step" ? [r.record.entry as JournalEntry] : [])),
-    pins: record.spec.value.pins as RunPins,
-    kv: planes.kv,
-    actor: "cotal run migrate",
-    now: () => Date.now(),
-  });
+  let report: MigrateReport;
+  try {
+    report = await migrateRun({
+      endpoint,
+      runId,
+      source,
+      file: values.file,
+      entries: replay.records.flatMap((r) => (r.record.kind === "step" ? [r.record.entry as JournalEntry] : [])),
+      pins: record.spec.value.pins as RunPins,
+      kv: planes.kv,
+      actor: "cotal run migrate",
+      now: () => Date.now(),
+    });
+  } catch (e) {
+    if (!(e instanceof LangErrors)) throw e;
+    // Every problem with its position, cause and fix, as `run validate` lists them.
+    console.error(`run migrate: ${values.file} is not valid cotal-lang (${e.errors.length} problem${e.errors.length === 1 ? "" : "s"}), so it was not checked against the journal`);
+    for (const item of e.errors) console.error(`  ${item.code} ${item.title} (${item.span.file}:${item.span.line}:${item.span.column})\n    ${item.cause}\n    fix: ${item.fix}`);
+    process.exit(1);
+  }
   printMigrateReport(report);
   if (!report.admissible) process.exitCode = 1;
 }
@@ -622,6 +632,9 @@ const REFUSED_BEFORE_EFFECT: Readonly<Record<string, RefusalCode>> = {
   "bad-request": "USAGE_INVALID", "unimplemented": "UNSUPPORTED", "conflict": "CONFLICT",
 };
 
+/** The local journal read a refused hosted read names. */
+const localJournal = (args: Record<string, unknown> | undefined): string => `cotal run journal ${typeof args?.runId === "string" ? args.runId : "<run-id>"} --local`;
+
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
  *  recorded it. */
@@ -635,6 +648,9 @@ function managerRefusal(command: string, space: string, args: Record<string, unk
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run ps lists a run once it has` }
     : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
+  // A reply too large for the broker changed nothing; the local read takes no reply.
+  if (command === "run-status" && err?.code === "resource-exhausted")
+    return new CommandFailure("refused", "UNSUPPORTED", message, { ...options, remedy: `read the run from its project folder with ${localJournal(args)}` });
   if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
 }
@@ -722,6 +738,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     }
     return r.reply.data;
   } catch (e) {
+    // The contract of a manager from release 0.99.3 or earlier takes no journal page, so the request
+    // is refused here, against that contract, before it is sent.
+    if (e instanceof EpEnvelopeError && command === "run-status" && e.code === "bad-request" && /additional properties: "journal"/.test(e.message))
+      throw new CommandFailure("refused", "UNSUPPORTED", "this manager is from release 0.99.3 or earlier and reads no journal page, so this command cannot read the run through it", { target: { space: t.space }, remedy: `upgrade that manager, or read the run from its project folder with ${localJournal(args)}` });
     // No answer is an unavailable target, not a usage error. Only this machine's records can name a
     // manager that runs and does not answer, and `cotal status` reads them.
     if (e instanceof EpEnvelopeError && unansweredRequest(e))
@@ -838,9 +858,19 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   }
   if (verb === "journal") {
     if (a === undefined) { console.error(USAGE); process.exit(1); }
-    const view = await ask("run-status", { runId: a, ...endpoint }) as RunStatusView;
+    // The journal is read in pages, each one reply, so one larger than the broker's payload limit
+    // stays readable.
+    const rows: RunJournalRow[] = [];
+    let view: RunStatusView;
+    do {
+      view = await ask("run-status", { runId: a, ...endpoint, journal: { offset: rows.length } }) as RunStatusView;
+      if (view.journalTotal === undefined) throw new CommandFailure("failed", "OPERATION_FAILED", "the manager answered the journal read without a page; the journal was not read", { target: { space: space ?? null, run: a } });
+      if (view.journal.length === 0 && rows.length < view.journalTotal) throw new CommandFailure("failed", "OPERATION_FAILED", `the manager returned no journal rows at row ${rows.length} of ${view.journalTotal}; the journal was not read completely`, { target: { space: space ?? null, run: a } });
+      rows.push(...view.journal);
+    } while (rows.length < view.journalTotal);
     if (space === undefined) throw new Error("the native run target was not reported");
-    printRunDetail(space, view, values);
+    const { journalTotal: _total, ...record } = view;
+    printRunDetail(space, { ...record, journal: rows }, values);
     return;
   }
   // answer and amend: the manager records the caller as the answerer (SPEC 14.5), so no `--by`
@@ -965,7 +995,10 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],
   };
   for (const [flag, modes] of Object.entries(scopes)) if (args.values[flag] !== undefined && !modes.includes(verb)) usage(`--${flag} is not taken by this run command`);
-  if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
+  if (verb === "journal" && values.limit !== undefined) {
+    if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
+    if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
+  } else if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
     if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
       usage("diagnostic paging requires run --page --on <instance> without --local");
     if (values.limit !== undefined && (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 16))

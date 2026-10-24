@@ -10,7 +10,7 @@ import {
   type ParsedArgs,
   type Subcommand,
 } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
 import { fileCompletion, spaceCompletion } from "../lib/completion.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
@@ -115,7 +115,7 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     const cursor = context?.positionals.find((item) => item.index === argv.length - 1);
     const children = parent?.subcommands?.filter((item) => !item.hidden);
     if (cursor && children?.length) emit(children.map((item) => ({ value: item.name, description: item.summary })), "nofiles");
-    else if (context?.optionsEnded || context?.valueFlag) emit([], "nofiles");
+    else if (context?.optionsEnded || context?.valueFlag) emit([], context?.valueFlag?.completion === "files" && !word.startsWith("-") ? "default" : "nofiles");
     else emit(flags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), flags.length ? "nofiles" : "default");
     return;
   }

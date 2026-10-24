@@ -369,6 +369,27 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion script offers the shells", ["bash", "zsh", "fish", "powershell"].every((shell) => new RegExp(`^${shell}$`, "m").test(shells.stdout)), shown(shells));
 }
 
+// A file value completes from the shell's file names on a command with no completer of its own, a
+// value that is not a file offers none, and spawn offers a prepared space's personas as persona show
+// does.
+{
+  const s = sandbox();
+  for (const words of [["run", "start", "--file", ""], ["run", "simulate", "p.cotal.js", "--handler", ""], ["auth", "mint", "x", "--out", ""], ["watch", "--creds", ""]]) {
+    const r = s.run(["__complete", ...words]);
+    check(`${words.join(" ")} completes from the shell's file names`, r.status === 0 && r.stdout.trimEnd() === ":default", shown(r));
+  }
+  const on = s.run(["__complete", "run", "show", "x", "--on", ""]);
+  check("run show --on offers no file names", on.status === 0 && on.stdout.trimEnd() === ":nofiles", shown(on));
+  const root = join(s.home, "proj");
+  mkdirSync(root, { mode: 0o755 });
+  const created = s.run(["space", "create", "prep", "--root", root, "--plain"]);
+  const persona = s.run(["persona", "create", "alpha", "--prompt", "A", "--subscribe", "general", "--space", "prep", "--plain"]);
+  const shown2 = s.run(["__complete", "persona", "show", "--space", "prep", ""]);
+  const personas = s.run(["__complete", "spawn", "--space", "prep", ""]);
+  check("spawn offers a prepared space's personas, as persona show does", created.status === 0 && persona.status === 0 && /^alpha$/m.test(shown2.stdout) && /^alpha$/m.test(personas.stdout),
+    { created: shown(created), persona: shown(persona), show: shown(shown2), spawn: shown(personas) });
+}
+
 // ── A modified owned integration names its way out ──────────────────────────────────────────────────
 {
   const s = sandbox();
