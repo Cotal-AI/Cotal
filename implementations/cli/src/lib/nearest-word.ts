@@ -48,12 +48,19 @@ function commandWords(commands: readonly Command[], word: string): string[] {
   return commands.filter((cmd) => !cmd.hidden && !cmd.name.startsWith("__")).flatMap((cmd) => [cmd.name, ...(cmd.aliases ?? [])]);
 }
 
+/** Words Cotal's own text uses for a command named otherwise. The MCP tool, the capacity refusal and
+ *  the docs call a stop a despawn, which is nearer to `spawn`, its opposite. */
+const COMMAND_SYNONYMS: Readonly<Record<string, string>> = { despawn: "stop" };
+
 /** The usage line for a word that names no command: the package to add when an official extension
- *  provides it, else the nearest command or leading flag. */
+ *  provides it, else the command it is Cotal's own word for, else the nearest command or leading flag. */
 export function unknownCommandMessage(commands: readonly Command[], word: string): string {
   const pkg = Object.hasOwn(OFFICIAL_COMMANDS, word) ? OFFICIAL_COMMANDS[word] : undefined;
   if (pkg) return `no installed extension provides command "${word}" - install it with \`cotal ext add ${pkg}\``;
-  return `unknown command: ${oneLine(word)} - ${suggestThen(word, commandWords(commands, word), "run `cotal help` to list commands")}`;
+  const words = commandWords(commands, word);
+  const synonym = Object.hasOwn(COMMAND_SYNONYMS, word) ? COMMAND_SYNONYMS[word] : undefined;
+  if (synonym !== undefined && words.includes(synonym)) return `unknown command: ${oneLine(word)} - did you mean ${synonym}? Or run \`cotal help\` to list commands`;
+  return `unknown command: ${oneLine(word)} - ${suggestThen(word, words, "run `cotal help` to list commands")}`;
 }
 
 /** The usage line for a first word that names none of `surface`'s subcommands: the nearest, or the
