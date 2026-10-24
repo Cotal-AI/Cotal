@@ -242,6 +242,23 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
+  // A scripted turn result goes to the program as written, so a status no live turn yields is
+  // refused like a malformed checkpoint, in any entry of a list, and a documented one still runs.
+  const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
+  c("a scripted turn status other than done, blocked or handoff is refused SCHEMA_INVALID, exit 1",
+    scriptRefusal(fertig, `invalid scripted turn 'build': status must be "done", "blocked" or "handoff"`), fertig);
+  const turnAt = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: [{ status: "done" }, { status: "done", at: 5 }] } });
+  c("a scripted turn at, in any entry of a list, is refused, since the simulator stamps it from virtual time",
+    scriptRefusal(turnAt, "invalid scripted turn 'build': at is stamped from virtual time"), turnAt);
+  {
+    const shown: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    let handoff: unknown;
+    try { handoff = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "handoff", to: "ana", note: "yours" } } }, { json: true }); }
+    finally { process.stdout.write = write; }
+    c("a documented turn result, a handoff with to and note, is accepted", handoff === undefined && shown.join("").includes('"outcome":"completed"'), { handoff, out: shown.join("").slice(0, 300) });
+  }
   // A simulation that stops says why and where: a missing entry is the script's gap, named with the
   // entry to add. An expired gate under the default onExpiry is a completed simulation whose program
   // failed with L4007 at that gate.
