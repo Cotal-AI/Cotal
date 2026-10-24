@@ -107,7 +107,9 @@ const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) 
     child.on("close", (status) => done({ status, stdout, stderr }));
   });
 const json = async (args: string[], cwd = home) => {
-  const r = await run([...args, "--json"], {}, cwd);
+  // After a `--` every argument is a name, so --json goes before it.
+  const end = args.indexOf("--");
+  const r = await run(end < 0 ? [...args, "--json"] : [...args.slice(0, end), "--json", ...args.slice(end)], {}, cwd);
   let env: Record<string, any> | undefined;
   try {
     env = JSON.parse(r.stdout);
@@ -170,6 +172,11 @@ setCurrent("keep");
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
   check("--from without a terminal is USAGE_INVALID and names --file", refused(fromScript, 1, "USAGE_INVALID") && /--file/.test(fromScript.env?.error?.remedy ?? ""), shown(fromScript));
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
+  // A name that starts with - reads as an option, so use, --space and the stack's own children could not take it.
+  const dashed = await json(["space", "add", "--server", LIVE, "--root", root, "--force", "--", "-x"]);
+  check("add of a name that starts with - is USAGE_INVALID, saying it cannot be passed as a flag value, even with --force",
+    refused(dashed, 1, "USAGE_INVALID") && (dashed.env?.error?.message ?? "").includes('the space name "-x" starts with "-", so it cannot be passed as a flag value') &&
+      dashed.env?.error?.remedy === "choose a name that starts with a letter, digit or underscore", shown(dashed));
   check("no usage refusal wrote anything", JSON.stringify(registryFiles()) === JSON.stringify(before));
 }
 
@@ -278,6 +285,10 @@ setCurrent("keep");
   writeFileSync(join(home, "broken.json"), "{ not json");
   check("a bundle that is not JSON is SCHEMA_INVALID, exit 1", refused(await json(["space", "add", "--file", join(home, "broken.json"), "--root", userRoot]), 1, "SCHEMA_INVALID"));
   check("a missing bundle file is USAGE_INVALID", refused(await json(["space", "add", "--file", join(home, "absent.json"), "--root", userRoot]), 1, "USAGE_INVALID"));
+  writeFileSync(join(home, "dashed.json"), JSON.stringify(bundle({ space: "-hosted" })));
+  const dashedBundle = await json(["space", "add", "--file", join(home, "dashed.json"), "--root", userRoot]);
+  check("a bundle for a space whose name starts with - is USAGE_INVALID, and nothing is written",
+    refused(dashedBundle, 1, "USAGE_INVALID") && /cannot be passed as a flag value/.test(dashedBundle.env?.error?.message ?? "") && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(dashedBundle));
   exchangeIssuer = "https://someone-else.test/";
   const foreign = await json(["space", "add", "--file", file, "--root", userRoot]);
   check("an exchange that answers as another issuer is CONFLICT", refused(foreign, 2, "CONFLICT"), shown(foreign));
@@ -696,7 +707,10 @@ if (process.platform === "linux") {
     const bad = await json(["space", "create", name], spare);
     check(`a name cotal up cannot start (${name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
   }
-  check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
+  const dashed = await json(["space", "create", "--", "-x"], spare);
+  check("a name that starts with - is USAGE_INVALID, saying it cannot be passed as a flag value",
+    refused(dashed, 1, "USAGE_INVALID") && /cannot be passed as a flag value/.test(dashed.env?.error?.message ?? "") && dashed.env?.error?.remedy === "choose a name that starts with a letter, digit or underscore", shown(dashed));
+  check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é", "-x"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
   check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
 

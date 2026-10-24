@@ -79,6 +79,14 @@ export function isDir(path: string): boolean {
   }
 }
 
+/** A space name that starts with `-` reads as an option, so `--space <name>`, `use <name>` and the
+ *  child processes a stack starts cannot pass it. */
+export function checkSpaceName(space: string): Check<string> {
+  return space.startsWith("-")
+    ? { ok: false, message: `✗ the space name "${space}" starts with "-", so it cannot be passed as a flag value`, code: "USAGE_INVALID", remedy: "choose a name that starts with a letter, digit or underscore" }
+    : good(space);
+}
+
 /**
  * The broker URL, checked before it is probed, printed or persisted.
  *

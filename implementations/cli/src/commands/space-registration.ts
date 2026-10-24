@@ -49,6 +49,7 @@ import {
   checkMode,
   checkRoot,
   checkServer,
+  checkSpaceName,
   checkTrust,
   checkUserBundle,
   probeEnforcement,
@@ -179,6 +180,7 @@ async function review(prompt: boolean, skip: boolean, rows: readonly (readonly [
 export async function spaceAdd(rest: readonly string[], v: AddValues, presentation: Presentation): Promise<void> {
   if (rest.length > 1) throw usage("usage: cotal space add [<name>] --server <url> | --file <bundle.json> | --from <https url>");
   const name = rest[0];
+  if (name !== undefined) take(checkSpaceName(name), { space: name });
   if (v.file !== undefined && v.from !== undefined) throw usage("pass --file or --from, not both: they are two sources for the same pinned trust");
   const bundled = v.file !== undefined || v.from !== undefined;
   if (bundled && v.mode !== undefined && v.mode !== "user") throw usage(`--file and --from add a user-auth space, so they do not take --mode ${v.mode}`);
@@ -285,6 +287,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   const space = name ?? bundle.space;
   const spaceTarget = { space };
   if (name !== undefined && bundle.space !== name) throw refuse("CONFLICT", `the bundle is for "${bundle.space}", not "${name}": a bundle adds the space it was exported for`, spaceTarget);
+  take(checkSpaceName(space), spaceTarget);
   const server = take(v.server === undefined ? checkServer(bundle.server, "the bundle's server") : checkServer(v.server, "--server"), spaceTarget);
   const tlsRequired = bundle.tlsRequired || tlsIntent(server, v.tls === true);
   const dial = take(checkDialPolicy(server, { tlsRequired, allowUnencryptedOverlay: v["allow-unencrypted-overlay"] === true }), spaceTarget);
@@ -413,6 +416,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   // `cotal up` starts a space only under a name that is one native routing token.
   if (name.length > 200 || token(name) !== name)
     throw refuse("USAGE_INVALID", "a space name is 1 to 200 letters, digits, underscores or hyphens, which `cotal up` needs to start it", target);
+  take(checkSpaceName(name), target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
   // Such a space could be prepared but never started: its first `up` would refuse to record the root.

@@ -2006,7 +2006,9 @@ so is a bare `space show` with nothing selected. Each entry under `prepared` has
 `preparedAt` and `current`, and `space show` of a prepared space gives those with the kind
 `prepared-space` and `rootMissing`, which is true when its project folder no longer exists.
 
-`space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. With
+`space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
+that starts with `-`, given or named by a bundle, refuses with `USAGE_INVALID`, exit 1, before
+anything is written, as it does for `space create`. With
 `--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
 holds the space's trust, `open` otherwise. `--root` defaults to this project. Outside one it is
 required, and leaving it out is a one-line `USAGE_INVALID` refusal whose remedy says what to pass:
@@ -2060,12 +2062,14 @@ in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that
 When a symlink is the gap, the remedy names the physical path the folder resolves to.
 It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
 it starts in, before it writes anything, so it never starts a stack that `down` would refuse to
-stop from that root. `cotal up` starts a space only under a name of 1 to 200 letters, digits,
-underscores or hyphens, so any other name refuses with `USAGE_INVALID`, exit 1, before anything is
-written. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
-account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
-does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
+stop from that root. A space name is 1 to 200 ASCII letters, digits, underscores or hyphens, which
+`cotal up` needs to start it, and starts with a letter, digit or underscore, because a name that
+starts with `-` cannot be passed as a flag value. `space create` refuses any other name, such as
+`café` or `-x`, with `USAGE_INVALID`, exit 1, before anything is written. It refuses with
+`CONFLICT` a name that is registered or prepared, a folder that is already a space's root, and the
+home folder, whose `.cotal` holds this machine's own records. A folder this account cannot write,
+such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so does a Cotal home
+(`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
 path contains a control character, such as a tab, a newline or an escape character, or a bidirectional
 formatting mark, which can show one path as another, refuses `USAGE_INVALID`, exit 1, with nothing
@@ -2400,7 +2404,8 @@ a terminal - a script, an agent, CI - nothing prompts and the flag form's errors
 (`COTAL_NO_PROMPT=1` forces that too).
 
 `cotal up` and `cotal down` maintain their own records. `meshes add` registers a mesh they cannot
-speak for: one running on another machine, a shared broker, a hosted space. `--root` is the folder
+speak for: one running on another machine, a shared broker, a hosted space. Like `space add`, it
+refuses a space name that starts with `-`, exit 1, with nothing written. `--root` is the folder
 whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas.
 The default is the project you run it in. The registry stores that path, never a secret. `--mode`
 defaults to `auth` when the root holds the space's account record and to `open` otherwise. The
