@@ -32,8 +32,9 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 the selected space, or with none selected the space prepared in the current folder, and lists common
 commands. It points a prepared space to the `cotal up` that starts it, and a machine with no space
 to `cotal setup`. Every command generates its own help, usage, and shell completion from its declared
-flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. `-v` is not a
-version flag.
+flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
+command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
+itself do (exit 1), rather than print the command's help. `-v` is not a version flag.
 
 Some commands have short aliases, listed in `cotal help --all` and under Shorthands in each
 command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), `h` (history),

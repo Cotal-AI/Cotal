@@ -357,6 +357,9 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
   const path: string[] = [];
   for (const word of words) {
     const sub: Subcommand | undefined = findSubcommand(surface, word);
+    // A word where a subcommand belongs that names none refuses as `cotal help` does, so a mistyped
+    // subcommand never gets its group's help. History's own first word may be a channel.
+    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return printHelpPath(cmd, [...path, word]);
     if (!sub || sub.hidden) break;
     path.push(sub.name); surface = sub;
     if (!sub.subcommands?.length) break;

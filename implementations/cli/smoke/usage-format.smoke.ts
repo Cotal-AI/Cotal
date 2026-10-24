@@ -61,6 +61,19 @@ check("help with an unknown subcommand names it and lists the command's subcomma
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
 
+// --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
+// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
+}
+const nearHelp = run(["space", "creat", "--help"]);
+check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
+for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+  const r = run([...args]);
+  check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
+}
+
 // A missing --yes outside a terminal is not a grammar mistake: the refusal and a remedy that names
 // --yes are the whole fix, so the command's help is left out, as `down` already did.
 const project = join(home, "proj");
