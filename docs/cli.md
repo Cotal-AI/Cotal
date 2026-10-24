@@ -1787,8 +1787,8 @@ reason; for a group- or world-writable path it names `chmod go-w <path>`. Values
 fingerprints are not printed. No maintenance lock is taken by the preview. Like the store dry-run, it
 has a Store contents section when a store is present, naming what removing it removes and the runs
 the last down recorded, and `--json` carries them as `storeContents`. The apply's confirmation shows
-the same section. A preview that passes every check says the apply is offered and names
-`cotal reset space <space> --yes` as Next.
+the same section. A preview that passes every check opens with a verdict, as the store dry-run
+does: the apply is offered, with `cotal reset space <space> --yes` as Next.
 
 Apply shows the path inventory and defaults to cancellation, or requires
 `--yes` in a script. Under the maintenance lock it repeats the eligibility
@@ -2454,7 +2454,9 @@ the running services and `cotal down`, then `cotal reset store <space> --yes` on
 one of the stack's members runs, such as one added with `cotal service add`, `cotal down` refuses
 too, so the refusal first names `cotal service stop <name> --instance <id> --space <space> --yes`
 for each one. With only the broker left after that, it names the delete again in place of
-`cotal down`. The dry-run shows the same refusal as a warning.
+`cotal down`. The dry-run opens with a verdict, as `reset store`'s does: the apply would refuse,
+with that refusal's reason and remedy, or it is offered, with `cotal space delete <space> --yes` as
+Next. `--json` carries the refusal as `applyBlockedBy` and as a `LIFECYCLE_BLOCKED` warning.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. A script supplies the exact positional name with `--yes`;
@@ -2590,9 +2592,11 @@ space, this folder's space or the default space, and a space other than the defa
 The file is read and checked with the NATS client's own parser before anything is dialed, and the
 refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A directory, an empty file and
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
-no seed block, an invalid seed, or Windows (CRLF) line endings. A file that other accounts can read
-is still used, with a warning on stderr that gives the `chmod 600` command. `join --creds` reads its
-file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
+no seed block, an invalid seed, or Windows (CRLF) line endings. A file in a folder that another
+account can write, or below one, is refused `PERMISSION_DENIED`, exit 2, as `auth mint` refuses to
+write one there: the refusal names the folder, and its Next is the `chmod`, such as `chmod o-w <dir>`.
+A file that other accounts can read is still used, with a warning on stderr that gives the
+`chmod 600` command. `join --creds` reads its file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
 credential's own permissions name one other space, the refusal names that space, such as
 `credentials rejected at <server>: <file> is a credential for space "<owner>", not "<space>"`, and
 its Next is `--space <owner>`. When `--server` named another broker than the one that space is
@@ -5793,6 +5797,9 @@ expired names `cotal auth mint <label> --identity <file> --out <file>`, which si
 again with the same grants. One whose key was revoked, or that an earlier space identity issued,
 names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`
 refuses a revoked one.
+A run with no findings says so in its heading only when nothing else is printed. While an exported
+file needs attention, or a credential is unbounded by request, the heading starts `No findings;` and
+names each, such as `2 exported credential files need attention`. The exit code stays 0.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.

@@ -176,7 +176,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   // A recorded refusal names the renewal owner to repair, so the finding keeps its next step.
   const failure = incomplete ? new CommandFailure("partial", "OPERATION_PARTIAL", "credential observations were collected but the renewal record is unreadable; a complete healthy verdict was not inferred", { target }) : findings || refused ? new CommandFailure(repair.results.some((row) => row.ok) || repair.migrations.length ? "partial" : "failed", repair.results.some((row) => row.ok) || repair.migrations.length ? "OPERATION_PARTIAL" : "OPERATION_FAILED", refused ? "the recorded renewal was not broker-accepted; local re-signing alone cannot clear that finding" : "local credential findings remain; per-file native repair guidance is retained", { target, ...(refused ? { remedy: "start or repair this space's manager, the renewal owner, so it re-signs the daemon credentials and the broker accepts them; do not respawn agents for this finding" } : {}) }) : undefined;
   writeResult(presentationOf(values), { command: "doctor auth", target, result, completeness: incomplete ? "partial" : "complete", warnings, failure, noOp: failure === undefined && values.fix === true && !repair.attempted && !repair.migrations.length }, (data): Report => ({ sections: [
-    { title: data.findings || refused || incomplete ? "Credential findings" : "No local credential findings", blocks: [
+    { title: data.findings || refused || incomplete ? "Credential findings" : noFindingsTitle(data.items, data.exported), blocks: [
       { kind: "fields", rows: [["Root", data.root], ["Space", data.space], ["Mode", data.mode], ["Scope", data.scope], ["Current broker authorization", { text: "not checked", tone: "waiting" }], ["Live agent health", { text: "not checked", tone: "waiting" }], ["Repair requested", data.repair.requested ? "yes" : "no"], ["Acknowledged local migrations", String(data.repair.migrations.length)], ["Repair coordination", data.repair.authority ?? "not used"]] },
       { kind: "lines", lines: [{ text: "Credential expiry/claim inspection is not live broker acceptance, daemon adoption, process health or task progress. Locally ordered superseded files are not proof that their successor is connected. No agent was respawned and no system account was rotated.", tone: "hint" }] },
       ...(data.repair.results.some((row) => row.reminted || (!row.ok && !row.skipped)) ? [{ kind: "lines" as const, lines: data.repair.results.filter((row) => row.reminted || (!row.ok && !row.skipped)).map((row) => row.reminted ? `${row.file}: minted again under a new identity, because ${row.reason}` : `${row.file}: not repaired, because ${row.reason}`) }] : []),
@@ -308,6 +308,19 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     rows.push(row);
   }
   return rows.sort((x, y) => x.label.localeCompare(y.label) || x.path.localeCompare(y.path));
+}
+
+/** The heading of a run with no findings. It names what the run still asks of the operator, so it
+ *  never reads as nothing to do while a warning or an exported file's repair is printed. */
+function noFindingsTitle(items: readonly { warning: string | null }[], exported: readonly ExportedRow[] | null): string {
+  const attention = exported?.filter((row) => row.state !== "healthy" && row.state !== "unbounded").length ?? 0;
+  const unbounded = items.filter((row) => row.warning !== null).length;
+  const parts = [
+    ...(attention ? [`${attention} exported credential ${attention === 1 ? "file needs" : "files need"} attention`] : []),
+    ...(unbounded ? [`${unbounded} ${unbounded === 1 ? "credential has" : "credentials have"} no expiry by request`] : []),
+    ...(exported === null ? ["the records of exported credential files could not be read"] : []),
+  ];
+  return parts.length ? `No findings; ${parts.join("; ")}` : "No local credential findings";
 }
 
 function isRemintable(kind: CredentialKind): boolean {

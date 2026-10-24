@@ -7,13 +7,14 @@
  *     them writes a stack journal or a registration, and the prepared folder then starts on a
  *     valid address.
  *  2. Space delete on a live stack. `space delete --yes` refuses LIFECYCLE_BLOCKED (exit 2) before
- *     any broker connection and names `cotal down` and `cotal reset store`; the dry run warns. The
- *     stack still stops cleanly.
+ *     any broker connection and names `cotal down` and `cotal reset store`; the dry run warns in
+ *     JSON and opens with that refusal as its verdict in text. The stack still stops cleanly.
  *  3. Reset verdicts. On the live stack `reset store --dry-run` exits 0 with a refused verdict and
  *     a remedy naming `cotal down`, and `reset space --dry-run` refuses with that remedy.
  *  4. Reset after a normal down. `reset store` is offered and removes the store, naming the
  *     workflow runs that go with it in its preview and receipt and saying why the down listed
- *     none, and `up` starts again. `reset space` is offered, its preview names the store contents
+ *     none, and `up` starts again. `reset space` is offered, its preview opens with the offered verdict and
+ *     names the store contents
  *     that go with the identity as `reset store`'s does, and it removes the identity, keeping the
  *     prepared record and the stack journal, and `up` starts again with a new account. It clears
  *     the credentialRef of a saved service whose credential the removed account issued, names it,
@@ -152,6 +153,12 @@ try {
     const preview = cli(home, "space", "delete", space, "--dry-run", "--json");
     check("space delete --dry-run warns that the apply would refuse", Boolean(preview.env?.warnings?.some((row) => row.code === "LIFECYCLE_BLOCKED")) && preview.env?.result?.applyBlockedBy !== null, shown(preview));
     check("the preview read the broker, so its warning does not say no broker was contacted", !preview.env?.warnings?.some((row) => row.message.includes("no broker was contacted")), preview.env?.warnings);
+    // The decision leads every destructive preview, as it does in reset store's.
+    const previewText = cli(home, "space", "delete", space, "--dry-run");
+    const refusedAt = previewText.stdout.search(/^Verdict$/m);
+    check("the text preview opens with the refused verdict, before the impact, and does not repeat it as a warning",
+      previewText.status === 0 && refusedAt >= 0 && refusedAt < previewText.stdout.search(/^Live space impact$/m) && previewText.stdout.includes(`space delete ${space} would refuse (LIFECYCLE_BLOCKED)`) && !previewText.stderr.includes("the apply would refuse"),
+      { status: previewText.status, out: previewText.stdout.slice(0, 600), err: previewText.stderr });
     const deleted = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete --yes refuses LIFECYCLE_BLOCKED, exit 2", deleted.status === 2 && deleted.env?.error?.code === "LIFECYCLE_BLOCKED", shown(deleted));
     check("its remedy names cotal down and cotal reset store", Boolean(deleted.env?.error?.remedy?.includes("cotal down")) && Boolean(deleted.env?.error?.remedy?.includes(`cotal reset store ${space}`)), deleted.env?.error);
@@ -206,6 +213,10 @@ try {
     check("the reset space preview names the store's workflow runs and channel history in JSON and in its Store contents section",
       Boolean(spaceContents?.removed?.includes("workflow runs and their journals") && spaceContents.removed.includes("channel history")) && spacePreviewText.status === 0 && /^Store contents$/m.test(spacePreviewText.stdout) && spacePreviewText.stdout.includes("Removing the store removes workflow runs and their journals, channel history"),
       { json: spaceContents, text: shown(spacePreviewText) });
+    const offeredAt = spacePreviewText.stdout.search(/^Verdict$/m);
+    check("the reset space preview opens with the offered verdict and its --yes command, as reset store's does",
+      offeredAt >= 0 && offeredAt < spacePreviewText.stdout.search(/^Reset space impact$/m) && spacePreviewText.stdout.includes(`reset space ${space} is offered`) && spacePreviewText.stdout.includes(`cotal reset space ${space} --yes`) && !/^Next$/m.test(spacePreviewText.stdout),
+      spacePreviewText.stdout.slice(0, 600));
     const issuedRefs = JSON.stringify([{ definition: "minted", path: minted }]);
     check("the preview names the one credentialRef this identity issued", JSON.stringify(spacePreview.env?.result?.clearsCredentialRefs) === issuedRefs, spacePreview.env?.result?.clearsCredentialRefs);
     const spaceApplied = cli(root, "reset", "space", space, "--yes", "--json");
@@ -276,6 +287,10 @@ try {
     const runPreview = cli(home, "space", "delete", space, "--dry-run");
     check("the delete preview lists the waiting run and says it goes with the streams",
       runPreview.status === 0 && /Workflow runs that have not finished/.test(runPreview.stdout) && runPreview.stdout.includes(runId ?? "-") && runPreview.stdout.includes("cotal run show <run>"), shown(runPreview));
+    const deleteOfferedAt = runPreview.stdout.search(/^Verdict$/m);
+    check("with only the broker running, the delete preview opens with the offered verdict and its --yes command",
+      deleteOfferedAt >= 0 && deleteOfferedAt < runPreview.stdout.search(/^Live space impact$/m) && runPreview.stdout.includes(`space delete ${space} is offered`) && runPreview.stdout.includes(`cotal space delete ${space} --yes`),
+      runPreview.stdout.slice(0, 600));
     // A service the user added still uses the streams, and `down` refuses beside it, so the refusal
     // names that service's own stop and then the delete again.
     writeFileSync(join(root, "idle.json"), JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", "setTimeout(() => {}, 600000)"], cwd: root }, readiness: { type: "process", timeoutMs: 10000 } }));
