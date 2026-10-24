@@ -4,9 +4,9 @@
  * its own one-shot credential. Covers the default, `--waiting` and `--all` filters, the rich and
  * plain reports, the managed column with no manager present and with a manager that does not answer
  * (a partial read, exit 4), a credential that may not read the roster, and `whoami` for a signer, an
- * open mesh, an unregistered `--server` (unknown, partial, also from the space's own folder) and each
- * user-auth grant state (the last
- * through a stub provider, in process).
+ * open mesh, an unregistered `--server` (unknown, partial, also from the space's own folder), a
+ * `--creds` file of each fixed profile, and each user-auth grant state (the last through a stub
+ * provider, in process).
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
  * inherited COTAL_* is stripped.
@@ -53,7 +53,7 @@ type Envelope = {
   completeness: string;
   command: string;
   target: { space: string; scope?: string };
-  result: { kind: string; server?: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | null; capabilities?: unknown } | null;
+  result: { kind: string; server?: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | string | null; capabilities?: unknown; space?: string | null; profile?: string | null; principal?: string | null; lifecycleUid?: string | null; expired?: boolean } | null;
   warnings: { code: string; message: string }[];
   error?: { code: string; message: string; remedy?: string };
 };
@@ -377,8 +377,28 @@ try {
   check("control: --server at the space's registered address from its folder is complete", atRegistered.status === 0 && atRegistered.envelope?.completeness === "complete" && atRegistered.envelope.result?.identity?.kind === "space-signer", shown(atRegistered));
   const openByServer = await run(["whoami", "--server", openServer, "--json"]);
   check("whoami --server at the open mesh's registered address still reports it open", openByServer.status === 0 && openByServer.envelope?.result?.identity?.kind === "open" && openByServer.envelope.completeness === "complete", shown(openByServer));
-  const noCreds = await run(["whoami", "--creds", probe, "--json"]);
-  check("whoami takes no --creds: it is a usage error", noCreds.status === 1 && noCreds.envelope?.error?.code === "USAGE_INVALID", shown(noCreds));
+  // ── whoami --creds: what a credential file's own claims permit, with no broker contacted ─────────
+  const agentId = newIdentity(), agentUid = mintLifecycleUid();
+  const agentFile = join(home, "whoami-agent.creds");
+  writeFileSync(agentFile, await mintCreds(auth, agentId, "agent", { lifecycleUid: agentUid, allowSubscribe: ["general", "team.>"], allowPublish: ["general"] }), { mode: 0o600 });
+  const asAgent = await run(["whoami", "--creds", agentFile, "--json"]);
+  const agentResult = asAgent.envelope?.result;
+  check("whoami --creds reports an agent credential's space, profile, principal, lifecycle and channel grants",
+    asAgent.status === 0 && asAgent.envelope?.completeness === "complete" && agentResult?.kind === "credential" && agentResult.space === space && agentResult.profile === "agent" &&
+      agentResult.principal === `local.${agentId.id}` && agentResult.lifecycleUid === agentUid && JSON.stringify(agentResult.read) === JSON.stringify(["general", "team.>"]) &&
+      JSON.stringify(agentResult.post) === JSON.stringify(["general"]) && agentResult.dms === "own" && agentResult.expired === false, shown(asAgent));
+  for (const [profile, dms] of [["observer", "none"], ["admin", "all"]] as const) {
+    const file = join(home, `whoami-${profile}.creds`);
+    writeFileSync(file, await mintCreds(auth, newIdentity(), profile), { mode: 0o600 });
+    const r = await run(["whoami", "--creds", file, "--json"]);
+    const result = r.envelope?.result;
+    check(`whoami --creds on an ${profile} credential reads every channel, posts to none, has no lifecycle and DM history ${dms}`,
+      r.status === 0 && result?.profile === profile && result.read === "all" && JSON.stringify(result.post) === "[]" && result.lifecycleUid === null && result.dms === dms, shown(r));
+  }
+  const agentPlain = await run(["whoami", "--creds", agentFile, "--plain"]);
+  check("the plain report names the lifecycle and says the claims are not verified", agentPlain.status === 0 && agentPlain.stdout.includes(agentUid) && agentPlain.stdout.includes("its signature is not checked and no broker is contacted"), shown(agentPlain));
+  const withSpace = await run(["whoami", "--creds", agentFile, "--space", space, "--json"]);
+  check("whoami --creds takes no --space: it is a usage error", withSpace.status === 1 && withSpace.envelope?.error?.code === "USAGE_INVALID", shown(withSpace));
   const both = await run(["who", "--json", "--plain"]);
   check("who --json --plain is one USAGE_INVALID envelope", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
 } finally {

@@ -5,9 +5,9 @@
  * ACL flags refuses once with USAGE_INVALID (exit 1) and names every missing input, never exit 5,
  * and that holds with no space to resolve. With complete flags on a space whose root holds no
  * user-auth ledger, the capability refusal (UNSUPPORTED, exit 2) comes only after usage passed.
- * `auth handle inspect` on a NATS credential file says it is not a handle and echoes none of it, and
- * `auth retire` names the lifecycle UID format and where to find one. Broker-free; the mesh
- * registry and the prepared spaces are private to this run.
+ * `auth handle inspect` on a NATS credential file says it is not a handle, names `whoami --creds`
+ * and echoes none of it, and `auth retire` names the lifecycle UID format and where to find one.
+ * Broker-free; the mesh registry and the prepared spaces are private to this run.
  *
  * Run: pnpm smoke:grant-usage
  */
@@ -121,7 +121,7 @@ try {
     const handle = await failureOf("run", authCommand, bare, {}, ["handle", "inspect", creds]);
     assert.equal(handle.code, "SCHEMA_INVALID", `auth handle inspect on a credential file: code (${handle.message})`);
     assert.match(handle.message, /^this is a NATS credential file, not a capability handle, which is a signed JSON grant/, "auth handle inspect: says what the file is");
-    assert.match(handle.remedy ?? "", /passed with --creds/, "auth handle inspect: says where a credential file goes");
+    assert.match(handle.remedy ?? "", /cotal whoami --creds <file>/, "auth handle inspect: says which command reads a credential file");
     assert.doesNotMatch(`${handle.message} ${handle.remedy}`, /eyJhbGci/, "auth handle inspect: the credential is not echoed");
     const text = join(bare, "notes.txt");
     writeFileSync(text, "not json\n", { mode: 0o600 });

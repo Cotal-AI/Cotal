@@ -825,7 +825,7 @@ export function readCredsFile(path: string): string {
 /** The one space a credential's own permissions name: the `<space>` of every `cotal.<space>.…`
  *  subject its user JWT allows or denies. Undefined when they name none, more than one or a
  *  wildcard, or the JWT does not decode. This is what the file says, not which broker accepts it. */
-function spaceInCreds(creds: string): string | undefined {
+export function spaceInCreds(creds: string): string | undefined {
   try {
     const claims = JSON.parse(Buffer.from(jwtFromCreds(creds)?.split(".")[1] ?? "", "base64url").toString("utf8")) as { nats?: Record<string, { allow?: unknown; deny?: unknown } | undefined> };
     const subjects = ["pub", "sub"].flatMap((kind) => [claims.nats?.[kind]?.allow, claims.nats?.[kind]?.deny].flatMap((list) => Array.isArray(list) ? list : []));

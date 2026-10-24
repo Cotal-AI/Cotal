@@ -2829,6 +2829,7 @@ tight loop there can reach the broker's limit of 1000 consumers per stream.
 
 ```bash
 cotal whoami [--json | --plain] [--space <s>] [--server <url>]
+cotal whoami --creds <file> [--json | --plain]
 ```
 
 Reports the identity this CLI acts under in the selected space and what it may read, post and do.
@@ -2860,6 +2861,14 @@ say whether a broker at another address serves the space, and the remedy names `
 In a folder whose `.cotal/` names no space, as after `space forget`, the held default `main` is
 assumed. The report keeps `Mesh: main` and says under it that the default was assumed, and the JSON
 `target` is `{"root": <folder>, "assumed": "main"}`.
+`--creds <file>` reports what a credential file may do instead, with `kind: "credential"`: the space
+its permissions name, the profile it was minted with, its principal, the agent lifecycle its
+delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was
+issued and when it expires, the channels it may read and post to, and whether it may read every DM
+in the space, only its own, or none. It reads the file as every `--creds` file is read and decodes
+the claims without checking the signature or contacting the broker, which enforces them. When the
+permissions name no single space, `space`, `read`, `post` and `dms` are `null`, and the run is
+`partial` (exit 4) with `CREDENTIAL_SPACE_UNKNOWN`. `--creds` takes no `--space` or `--server`.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments, and escape terminal
 controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
@@ -2922,7 +2931,8 @@ This reads one protected native handle artifact or a bounded array of artifacts 
 issuer authority, parent links, holder currency and revocation remain not checked. No broker
 is contacted or credential issued. Signature bytes and original signed artifacts are never printed.
 A handle is a signed JSON grant, so a file that is not JSON, such as a NATS credential file, refuses
-`SCHEMA_INVALID` and says what it is.
+`SCHEMA_INVALID` and says what it is. For a credential file, the Next names
+[`cotal whoami --creds <file>`](#whoami), which reports what it may do.
 The human report shows at most 50 scope rows and names omissions; JSON retains public metadata.
 
 An explicit `--space` selects online inspection on a registered static-auth space whose root
