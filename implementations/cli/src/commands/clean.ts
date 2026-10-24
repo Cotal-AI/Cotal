@@ -17,6 +17,7 @@ import {
   cleanupRestoreFallback,
   deleteSpaceAuth,
   localProcessPath,
+  foreignStoreEntries,
   localMeshesForRoot,
   presentationOf,
   readMaintenanceJournal,
@@ -25,6 +26,7 @@ import {
   removeMeshesByRoot,
   resolveRuntimeSpace,
   resolveSpace,
+  STORE_ENTRY_NAMES,
   SYSTEM_CREDS_FILES,
   workspaceSecretStore,
   type LocalProcess,
@@ -46,7 +48,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { foreignStoreEntries, lastServedStore, listEntries, refuseSharedStoreRemoval, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
+import { foreignEntriesRefusal, lastServedStore, listEntries, oldStoreForeignEntries, refuseSharedStoreRemoval } from "../lib/store-dir.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
@@ -153,6 +155,9 @@ export async function clean(args: ParsedArgs): Promise<void> {
       const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
       const leftOut = active ? restoreLeftOut(active) : undefined;
       const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
+      const oldStore = active?.restore.previousSource?.identity.path;
+      const foreign = oldStoreForeignEntries(oldStore);
+      if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", "nothing was deleted", `cotal clean restore-fallback --attempt ${values.attempt} --force${values["discard-history"] ? " --discard-history" : ""}`, { root, attemptId: values.attempt });
       if (onlyCopy && !values["discard-history"])
         throw new MissingFlags(`${values.attempt}: ${restoreLeftOutReason(active!)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history`);
       const record = cleanupRestoreFallback(lock, values.attempt, { discardHistory: values["discard-history"] === true });

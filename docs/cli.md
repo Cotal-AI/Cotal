@@ -729,7 +729,8 @@ account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. 
 non-empty directory is accepted, since it may hold an existing store. When it holds anything besides a
 store's `jetstream` directory, its `.cotal-store-id` marker and the `ocsp` folder nats-server makes
 there when it reloads its configuration, `up` warns and names those entries,
-because `clean store` and `reset store` refuse such a directory. A restore creates its store
+because `clean store`, `reset store`, `backup cleanup-fallback` and a restore into that directory
+refuse it while they are there. A restore creates its store
 directory itself, so `up --restore` and `backup restore` refuse a path that already exists, empty or
 not, other than the preserved store, with `USAGE_INVALID` (exit 1) and restore nothing. A control
 directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
@@ -1974,6 +1975,11 @@ receipt names `cotal up`, which resumes the space from its preserved state, and
 `cotal backup restore <directory>`, which tries the restore again, as its next steps.
 `backup cleanup-fallback <full-attempt-id>` requires the matching healthy active restore and
 removes only its unchanged retained old-store identity; it never removes the restored target.
+It removes that store by its store entries, as `clean store` does. When the old store also holds
+anything else, such as a file you put in a custom store directory or in the fallback folder, its
+`--dry-run` names those entries, and the cleanup refuses `CONFLICT` (exit 2), names them and deletes
+nothing; move them out and run it again. A restore into the preserved store's own path moves that
+store aside whole, so it refuses `CONFLICT` (exit 2) the same way before anything moves.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
 starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history

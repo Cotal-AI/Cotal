@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
@@ -306,6 +306,19 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "ordinary resume retires and consumes maintenance state");
     must("preserve again for restore", run("down", "--preserve-state"));
 
+    // A restore into the preserved store's own path moves it aside whole, so a file in it that no
+    // Cotal store writes is refused before anything moves.
+    {
+      const store = realpathSync(join(root, ".cotal", "nats"));
+      writeFileSync(join(store, "notes.txt"), "kept");
+      const refused = run("backup", "restore", artifact, "--json");
+      assert.equal(refused.status, 2, `${mode} a restore over a foreign file is refused\n${refused.stdout}${refused.stderr}`);
+      const envelope = JSON.parse(refused.stdout) as { error?: { code?: string; message?: string } };
+      assert.equal(envelope.error?.code, "CONFLICT");
+      assert.ok(envelope.error?.message?.includes(`the preserved store ${store} also holds notes.txt, which no Cotal store writes; a restore into it moves that store aside whole, so nothing was restored`), envelope.error?.message);
+      assert.ok(readFileSync(join(store, "notes.txt"), "utf8") === "kept" && readMaintenanceJournal(root)?.state === "ready", `${mode} the refused restore keeps the file and the cut`);
+      rmSync(join(store, "notes.txt"));
+    }
     const restoreArtifact = mode === "open" ? registryArtifact : artifact;
     const restored = run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space);
     must("restore", restored);
@@ -396,8 +409,20 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const keptByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
       assert.ok(keptByClean.status === 1 && keptByClean.stderr.includes(`holds the only copy of the ${leftOut} it left out; nothing was deleted`) && keptByClean.stderr.includes(`cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history`) && !keptByClean.stderr.includes("Usage"), `${mode} clean restore-fallback without --discard-history refuses, naming the flag without the command help\n${keptByClean.stdout}\n${keptByClean.stderr}`);
       assert.ok(existsSync(previous), `${mode} clean restore-fallback without --discard-history keeps the previous store`);
+      // A file put into the previous store after the restore is no store's, so neither cleanup deletes
+      // that store until it is moved out.
+      writeFileSync(join(previous, "notes.txt"), "kept");
+      const foreign = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes", "--discard-history", "--json");
+      assert.ok(foreign.status === 2 && (JSON.parse(foreign.stdout) as { error?: { code?: string } }).error?.code === "CONFLICT", `${mode} cleanup-fallback over a foreign file is refused\n${foreign.stdout}${foreign.stderr}`);
+      const foreignByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history");
+      assert.ok(foreignByClean.status === 2 && foreignByClean.stderr.includes(`the previous store ${previous} also holds notes.txt, which no Cotal store writes; nothing was deleted`)
+        && foreignByClean.stderr.includes(`move it out of ${previous}, then run cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history again`), `${mode} clean restore-fallback names the file and the way out\n${foreignByClean.stderr}`);
+      assert.equal(readFileSync(join(previous, "notes.txt"), "utf8"), "kept", `${mode} the refused cleanups keep the file`);
+      renameSync(join(previous, "notes.txt"), join(root, "notes.txt"));
       must("cleanup fallback", run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history"));
       assert.equal(existsSync(previous), false, `${mode} --discard-history deletes the previous store`);
+      assert.equal(readFileSync(join(root, "notes.txt"), "utf8"), "kept", `${mode} the moved file survives the cleanup`);
+      rmSync(join(root, "notes.txt"));
     }
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "fallback cleanup retires the restore journal");
     // A repeat finds no record of the attempt, because the cleanup retired it, and says so by name.

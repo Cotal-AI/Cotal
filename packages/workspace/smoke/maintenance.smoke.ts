@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1171,6 +1171,45 @@ if (process.platform !== "win32") {
   check("explicit cleanup deletes fallback only", !exists(fallback) && sameStoreIdentity(target, readStoreIdentity(p.store)));
   check("healthy cleanup retires the restore journal for a later preserve cycle", readMaintenanceJournal(p.root) === undefined);
   expectCode("retired cleanup is not repeatable as arbitrary deletion", "journal-missing", () => cleanupRestoreFallback(p.lock, "restore-clean"));
+  releaseMaintenanceLock(p.lock);
+}
+
+// An old source that also holds a file no Cotal store writes is not deleted, even when the file
+// arrived after the restore or after an interrupted cleanup set the source aside.
+{
+  const p = ready("cleanup-foreign");
+  const fallback = join(p.root, "store.fallback");
+  prepareSamePathRestore(p.lock, { attemptId: "restore-foreign", targetPath: p.store, fallbackPath: fallback, claim: restoreClaim() });
+  moveSamePathRestoreSource(p.lock);
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-foreign")] });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-foreign", serverName: "restore-foreign-listener", serverNonce: "restore-foreign-nonce",
+    processOwner: owner("restore-foreign-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  mkdirSync(join(fallback, "jetstream"));
+  writeFileSync(join(fallback, "notes.txt"), "keep me");
+  expectCode("an old source with a foreign file is not deleted", "store-holds-foreign-entries", () => cleanupRestoreFallback(p.lock, "restore-foreign"));
+  check("the refused cleanup keeps the file, the old source and the active journal", readFileSync(join(fallback, "notes.txt"), "utf8") === "keep me"
+    && existsSync(join(fallback, "jetstream")) && readMaintenanceJournal(p.root)?.state === "active");
+  // An interrupted cleanup recorded its tomb, and a file put back meanwhile is still kept.
+  rmSync(join(fallback, "notes.txt"));
+  chmodSync(p.root, 0o500);
+  try { assert.throws(() => cleanupRestoreFallback(p.lock, "restore-foreign")); }
+  finally { chmodSync(p.root, 0o700); }
+  check("the interrupted cleanup recorded its tomb and left the old source in place", (readMaintenanceJournal(p.root) as { restore?: { cleanup?: { status?: string } } }).restore?.cleanup?.status === "pending" && exists(fallback));
+  writeFileSync(join(fallback, "notes.txt"), "keep me too");
+  expectCode("a foreign file found in the tomb refuses the resumed cleanup", "store-holds-foreign-entries", () => cleanupRestoreFallback(p.lock, "restore-foreign"));
+  check("the tomb goes back to the old source with the file", readFileSync(join(fallback, "notes.txt"), "utf8") === "keep me too"
+    && readdirSync(p.root).every((entry) => !entry.startsWith(".cotal-clean-")));
+  renameSync(join(fallback, "notes.txt"), join(p.root, "notes.txt"));
+  cleanupRestoreFallback(p.lock, "restore-foreign");
+  check("once the file is moved out the cleanup deletes the old source and keeps the file", !exists(fallback) && readFileSync(join(p.root, "notes.txt"), "utf8") === "keep me too"
+    && sameStoreIdentity(target, readStoreIdentity(p.store)) && readMaintenanceJournal(p.root) === undefined);
   releaseMaintenanceLock(p.lock);
 }
 

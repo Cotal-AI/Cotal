@@ -95,6 +95,7 @@ import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
+import { foreignEntriesRefusal, oldStoreForeignEntries } from "./store-dir.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
 import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
@@ -956,6 +957,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     targetPath = resolve(flags["store-dir"] ?? (controller || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
     if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
     assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
+    // A restore into the preserved store's own path moves that store aside whole, so a file in it that
+    // no Cotal store writes would move with it; it is refused before anything moves. A store restored
+    // elsewhere stays where it is, and its cleanup refuses instead.
+    if (targetPath === journal.source.path) {
+      const foreign = oldStoreForeignEntries(journal.source.path);
+      if (foreign.length) throw foreignEntriesRefusal(journal.source.path, foreign, "the preserved store", "a restore into it moves that store aside whole, so nothing was restored", "the restore", { root, space: journal.space });
+    }
     // The journal is ready with no live claim, and the artifact/target are proven disjoint from
     // the attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
