@@ -4194,7 +4194,7 @@ loopback health URL answers 200:
 |---|---|
 | `schemaVersion` | `1` |
 | `space` | The selected space's name. Another name is refused |
-| `launch` | `{type: "process", executable, args, cwd}`: an executable on `PATH` or by path, its arguments, and an absolute working directory. Or `{type: "adapter", adapter, options}` for an installed adapter, which a preset writes for you |
+| `launch` | `{type: "process", executable, args, cwd}`: an executable by absolute path, by a path relative to `cwd`, or by a bare name that `add` finds on `PATH`, its arguments, and an absolute working directory. Or `{type: "adapter", adapter, options}` for an installed adapter, which a preset writes for you |
 | `readiness` | `{type: "process", timeoutMs}`: ready once the process runs. `{type: "http", url, expectedStatus, timeoutMs}`: ready when a loopback `http://127.0.0.1` or `http://[::1]` URL answers that status. An adapter definition uses `{type: "adapter", timeoutMs}`. `timeoutMs` is 1 to 120000 |
 | `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
@@ -4211,6 +4211,14 @@ points, every folder above that, and the folder a link is in must be writable on
 `add` checks this before it saves, and `start`, `restart` and an installed unit check it again
 before anything launches or stops. An unsafe path refuses `PERMISSION_DENIED` (exit 2), and the
 refusal names each unsafe path and one remedy such as `chmod g-w <paths>`.
+
+`add` looks a bare executable name up on its own `PATH` once and saves the absolute path it finds,
+which its receipt shows as `Executable` and `--json` as `result.executable`. Every later `start`
+runs that file, whatever its own `PATH` is. A `PATH` with a relative or empty entry refuses that
+lookup `UNSUPPORTED` (exit 2), as a unit install does, because the entry would resolve against
+whichever folder `add` runs in. A name not on `PATH` refuses `DEPENDENCY_UNAVAILABLE` (exit 2). A
+definition an earlier release saved with a bare name refuses to start `SCHEMA_INVALID` (exit 1);
+remove it and add it again.
 
 ### Running a service
 
