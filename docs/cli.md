@@ -1824,7 +1824,9 @@ no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. So doe
 no stack has run for, which also names `cotal space forget`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
-`cotal down` from its root. A member that exited without a recorded stop, as after a crash, is
+`cotal down` from its root, and lists each process that may run once. A stack member whose
+process also holds its component's record, such as the manager's pidfile, is listed as that member
+with the record's pid. A member that exited without a recorded stop, as after a crash, is
 settled by `cotal down --yes`: it finds the member gone and records it as already stopped, and the
 reset then accepts it. Only a member that no completed `down` recorded that way needs `cotal up` and
 then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
