@@ -1098,6 +1098,13 @@ try {
   check("list shows the offline registered mesh", listed.out.includes("remote-dead") && listed.out.includes("offline"), listed.out);
   check("list tags it as registered", listed.out.includes("registered"), listed.out);
   check("`meshes list` is the same as bare `meshes`", (await run(["list"])).out === listed.out);
+  // The table ran past a narrow terminal; it now gets one labeled record per mesh, as other tables do.
+  setCurrent("remote-dead");
+  const { isTTY, columns } = process.stdout;
+  Object.assign(process.stdout, { isTTY: true, columns: 60 });
+  const narrow = (await run([]).finally(() => Object.assign(process.stdout, { isTTY, columns }))).out.replace(/\x1b\[[0-9;]*m/g, "");
+  check("a narrow terminal lists each mesh as a labeled record, the default marked after its name",
+    /^space: +remote-dead \(default\)$/m.test(narrow) && /^notes: +registered (·|-) offline$/m.test(narrow) && !/^SPACE /m.test(narrow), narrow);
 
   // ── rm ────────────────────────────────────────────────────────────────────────────────────────
   setCurrent("remote-dead");
