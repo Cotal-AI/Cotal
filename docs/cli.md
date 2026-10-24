@@ -4516,7 +4516,11 @@ reader; no command deletes another reader. Each channel has a ten-second read bu
 thirty-second budget for the whole channel walk. A busy or cut-short read fails with `OPERATION_FAILED` (exit 5) rather than showing
 an empty conversation. Reading every channel leaves out channels the grant does not cover and names
 them in a `CHANNELS_DENIED` warning. DM history and `--since` by sequence are not available to a
-user-auth identity. A part that could not be read is a warning and a `partial` run (exit 4): the
+user-auth identity. An agent's `--creds` credential reads the same way, one channel at a time under
+the lifecycle its own history grant names, with the same limits. A channel that grant leaves out is
+refused with `PERMISSION_DENIED`, quoting the channels the grant does name, and its
+`CHANNELS_DENIED` warning names them too. An observer or admin credential reads across channels.
+A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.
 
 `--follow` prints the window and then each new message until interrupted. A lost connection is
