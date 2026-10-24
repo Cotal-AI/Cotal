@@ -2553,7 +2553,7 @@ export class CotalEndpoint extends EventEmitter {
     handler: (req: ControlRequest) => Promise<ControlReply> | ControlReply,
     opts: { boundReply?: boolean } = {},
   ): import("@nats-io/transport-node").Subscription {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     const sub = this.nc.subscribe(controlServiceSubject(this.space, service, "*", "*"), {
       queue: service,
     });
@@ -3323,7 +3323,7 @@ export class CotalEndpoint extends EventEmitter {
    *  {@link membersRegistry} (`cotal_members_<space>`, the Plane-3 durable-membership source of truth): the
    *  two names look alike, so this one is explicitly "feed". Read-only here; agents hold no grant. */
   private async membershipFeedRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     this.membershipFeedKv ??= await new Kvm(this.nc).open(membershipBucket(this.space));
     return this.membershipFeedKv;
   }
@@ -3585,7 +3585,7 @@ export class CotalEndpoint extends EventEmitter {
     const limit = opts?.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
       throw new Error("channelHistoryPage limit must be a whole number from 1 to 1000");
-    if (!this.nc || !this.js) throw new Error("endpoint not started");
+    if (!this.nc || !this.js) throw new Error(this.notLiveMsg());
     const jsm = this.jsm ??= await jetstreamManager(this.nc);
     const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
     signal.throwIfAborted();
@@ -3847,7 +3847,7 @@ export class CotalEndpoint extends EventEmitter {
     before?: number,
     signal?: AbortSignal,
   ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     signal?.throwIfAborted();
     // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
     // Every comparison against NaN is false, so `limit <= 0` does not fire for one, and neither of
@@ -4374,7 +4374,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Create the three backing streams for this space (idempotent). Open-mode lazy create;
    *  the same definitions are used by `cotal up` at privileged setup. */
   private async ensureStreams(): Promise<void> {
-    if (!this.jsm) throw new Error("endpoint not started");
+    if (!this.jsm) throw new Error(this.notLiveMsg());
     await createSpaceStreams(this.jsm, this.space);
   }
 
@@ -4477,7 +4477,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Lazily open the privileged members registry KV (delivery daemon / open-mode self). */
   private async membersRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     this.membersKv ??= await openMembersRegistry(this.nc, this.space);
     return this.membersKv;
   }
@@ -4485,7 +4485,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Lazily open the durable read-ACL registry KV. Privileged write (the manager records an agent's
    *  ACL at mint); the delivery daemon reads it fresh per durable entry to re-authorize. */
   private async aclRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     this.aclKv ??= await openAclRegistry(this.nc, this.space);
     return this.aclKv;
   }
@@ -4536,7 +4536,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Lazily open the delivery lease/readiness KV (pre-created at `cotal up`; bind, never create). */
   private async deliveryRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     this.deliveryKv ??= await openDeliveryRegistry(this.nc, this.space);
     return this.deliveryKv;
   }
@@ -4776,7 +4776,7 @@ export class CotalEndpoint extends EventEmitter {
    *  way the per-KEY CAS create stays the only single-flight gate, so a lost bucket-create race never reads
    *  as "lease held". */
   private async managerLeaseRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     if (this.managerLeaseKv) return this.managerLeaseKv;
     // A JetStream client of its own, so every operation on this bucket carries the lease budget's
     // attempt deadline rather than the library default. The default is TTL/2, which would let one
@@ -5044,7 +5044,7 @@ export class CotalEndpoint extends EventEmitter {
     channel: string,
     lifecycleUid: string,
   ): Promise<{ durable: boolean; reason?: string; generation?: number }> {
-    if (!this.js) throw new Error("endpoint not started");
+    if (!this.js) throw new Error(this.notLiveMsg());
     await this.manager(); // ensure jsm — a non-consuming provisioner inits it lazily; catch-up + fence need it
     const kv = await this.membersRegistry();
     const existing = await readMember(kv, channel, owner, lifecycleUid);
@@ -5168,7 +5168,7 @@ export class CotalEndpoint extends EventEmitter {
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
     opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
   ): Promise<void> {
-    if (!this.js) throw new Error("endpoint not started");
+    if (!this.js) throw new Error(this.notLiveMsg());
     this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, evictPrincipals: opts.evictPrincipals, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted, startupComplete: opts.startupComplete };
     await this.armPlane3();
   }
@@ -5525,7 +5525,7 @@ export class CotalEndpoint extends EventEmitter {
    *  the plane answered by the broker's no-responders status while this endpoint is serving. A second
    *  call for the same plane replaces the first. */
   serveLiveness(plane: LivenessPlane, readState: () => Promise<ResponderState> | ResponderState): void {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     const held = this.livenessResponders.get(plane);
     if (held) held.readState = readState;
     else this.livenessResponders.set(plane, { readState });
@@ -6247,14 +6247,14 @@ export class CotalEndpoint extends EventEmitter {
   /** Lazily obtain a JetStream manager — so a non-consuming endpoint (e.g. the supervisor,
    *  consume:false) can still pre-create others' durables. */
   private async manager(): Promise<JetStreamManager> {
-    if (!this.nc) throw new Error("endpoint not started");
+    if (!this.nc) throw new Error(this.notLiveMsg());
     this.jsm ??= await jetstreamManager(this.nc);
     return this.jsm;
   }
 
   /** Bind this endpoint's durable consumers: DM inbox, chat, and (if a role) the task queue. */
   private async startConsumers(): Promise<void> {
-    if (!this.jsm) throw new Error("endpoint not started");
+    if (!this.jsm) throw new Error(this.notLiveMsg());
 
     // Unicast: this instance's private DM inbox, keyed on this endpoint's owner+actor principal. Open
     // mode self-creates; auth mode BINDS a durable the provisioner pre-created (agents are denied
@@ -6318,7 +6318,7 @@ export class CotalEndpoint extends EventEmitter {
    *  delivered too: on the DM inbox and the role queue they were addressed to us, so none is an echo,
    *  and acking one unseen on the work queue would delete the only copy of the request. */
   private async pump(stream: string, durable: string): Promise<void> {
-    if (!this.js) throw new Error("endpoint not started");
+    if (!this.js) throw new Error(this.notLiveMsg());
     const consumer = await this.js.consumers.get(stream, durable);
     const ackWaitMs = await ackWaitOf(consumer);
     const msgs = await consumer.consume();
@@ -6393,7 +6393,7 @@ export class CotalEndpoint extends EventEmitter {
    *  The bind is one CONSUMER.INFO on `dm_<owner>-<actor>-<uid>`; reading is MSG.NEXT with a batch
    *  of one, and the next copy reaches the handler only after the previous handler settles. */
   private async bindDmOnly(mode: DmOnlyOptions): Promise<void> {
-    if (!this.js) throw new Error("endpoint not started");
+    if (!this.js) throw new Error(this.notLiveMsg());
     const stream = dmStream(this.space);
     const durable = dmDurable(this.owner, this.actor, this.requireLifecycleUid("consuming the DM inbox"));
     let consumer: Consumer;
@@ -6549,7 +6549,7 @@ export class CotalEndpoint extends EventEmitter {
   /** The durable's info (rebind) or null (fresh — 404). Gates create/backfill to the join event
    *  and exposes the current `filter_subjects` for restart reconciliation. */
   private async consumerInfo(stream: string, durable: string): Promise<ConsumerInfo | null> {
-    if (!this.jsm) throw new Error("endpoint not started");
+    if (!this.jsm) throw new Error(this.notLiveMsg());
     try {
       return await this.jsm.consumers.info(stream, durable);
     } catch (e) {
@@ -6561,7 +6561,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Delete one named consumer, swallowing ONLY structured consumer/stream absence. */
   private async deleteConsumerIfPresent(stream: string, durable: string): Promise<void> {
-    if (!this.jsm) throw new Error("endpoint not started");
+    if (!this.jsm) throw new Error(this.notLiveMsg());
     try {
       await this.jsm.consumers.delete(stream, durable);
     } catch (e) {
@@ -6660,7 +6660,7 @@ export class CotalEndpoint extends EventEmitter {
     start: { seq: number } | { time: Date },
     opts: { untilSeq?: number; limit?: number } = {},
   ): Promise<JsMsg[]> {
-    if (!this.jsm || !this.js) throw new Error("endpoint not started");
+    if (!this.jsm || !this.js) throw new Error(this.notLiveMsg());
     const stream = chatStream(this.space);
     const name = chatHistDurable(this.owner, this.actor, this.requireLifecycleUid("chat history reads"));
     const out: JsMsg[] = [];

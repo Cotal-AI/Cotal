@@ -1,0 +1,2 @@
+# A started endpoint that is reconnecting says so from every guard that finds it unbound.
+smoke:endpoint-unbound-message
