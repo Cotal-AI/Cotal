@@ -8,6 +8,7 @@ import {
   inspectCredHealth,
   instancePinnedInstrumentCapabilities,
   isReachable,
+  isStreamNotFound,
   jwtFromCreds,
   managerCallerBinding,
   mintCreds,
@@ -38,6 +39,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from 
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type RefusalCode } from "./output.js";
 import { credentialFileExposure } from "./protected-records.js";
+import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
 import { stoppedLoopbackListener } from "./pid.js";
 import type { MeshTargetErrorCode } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
@@ -678,6 +680,8 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
         // stale entry as before), not as the raw transport error the dial throws. Anything the
         // preflight does not explain is the issuer's own fault and surfaces as such.
         await preflightOrThrow(target, undefined, opts.readOnly === true);
+        // The issuer reads the space's issuance buckets, which a space delete removes.
+        if (isStreamNotFound(e) && spaceStreamsExpected(target.space, target.mode)) throw spaceStreamsAbsent(target.space, localStackRoot(target.space));
         throw e;
       }
     } else {

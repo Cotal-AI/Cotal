@@ -2305,14 +2305,19 @@ files. Open-mode impact and receipt label that any broker client can delete the 
 `space forget` is not a substitute for live deletion.
 
 The receipt's Next names the route back. On a space this machine started, the broker keeps running
-without the streams. Until they are created again, `cotal history` and `cotal send` on a recorded
-auth or user space refuse `TARGET_UNAVAILABLE`, exit 2: the streams are not on the broker, and the
-remedy names `cotal up` in the space's root. On a controller stack, a bare `cotal up` in its root creates them again, empty,
-on that broker, the way a broker start does, and starts the other members. Its receipt says
+without the streams. Until they are created again, `cotal history`, `cotal send` and `cotal run ps`
+refuse `TARGET_UNAVAILABLE`, exit 2, on an auth or user space and on an open space this machine
+started: the streams are not on the broker, and the remedy names `cotal up` in the space's root.
+`cotal status` shows `Space streams: not on the broker` and puts the same step first in its Next.
+On a controller stack whose other members are stopped, a bare `cotal up` in its root creates them
+again, empty, on that broker, the way a broker start does, and starts the other members. Its receipt says
 `Space streams: created again, empty, on the running broker`, and `--json` sets
 `result.streamsRecreated`. It does so only when every one of the space's streams is gone. A broker
 that lost only some of them keeps them as they are, and `up` refuses `TARGET_NOT_FOUND`, exit 2,
-naming `cotal down --yes`, then `cotal up`, whose broker start creates the missing ones. To drop
+naming `cotal down --yes`, then `cotal up`, whose broker start creates the missing ones. While the
+other members run, as when another machine deleted an open space under the stack, a bare `cotal up`
+finds the stack running and changes nothing. The refusals and `status` then say the space was
+deleted under its running stack and name `cotal down --yes`, then `cotal up`. To drop
 the space instead, run `cotal down --yes` in its root, then `space forget`. On a legacy root, run
 `cotal down`, then `cotal up` to start it again with empty streams.
 
@@ -2467,7 +2472,15 @@ saw that process exit, `up` and `down` refuse until that stop is abandoned. `sta
 under the selected space, names the member, and offers `cotal down --abandon-stop <request-id> --yes`
 with the request ID their refusal names, and the member's `service status`, in place of `up --root`.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
-receipts, which only `up` and `down` read, so `status` does not name it.
+receipts, which only `up` and `down` read, so `status` does not name it. An `up` or `down` that was
+interrupted before it recorded an outcome, and left some members running and others stopped, is
+named under the selected space as `Half started` or `Half stopped`, with the members on each side.
+Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, or
+`cotal down --yes` for a `down`, followed by `cotal up --root <root>` to restart instead. `--json`
+carries it as `folder.stackUnfinished`, with `kind`, `id`, `running` and `stopped`. The next bare
+`up` or `down` settles the interrupted operation with an `OPERATION_SETTLED` warning. When the
+stack reached that operation's end anyway, every member running after an `up` or stopped after a
+`down`, the warning says it was interrupted and where the stack stands, without calling it failed.
 A running `stack-manager` gets one
 probe of its manager endpoint, and the selected space's `Manager` row reads `answering`,
 `not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be
@@ -2660,7 +2673,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `extensions` | `root` and `items`, each `{package, label, version}` |
 | `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`), `storedState` and `noManager` (whether this root's controller stack was started with `--no-manager`) |
 | `meshes` | `current`, `unreadable` (the registry directory, a record, the current-mesh pointer, or the prepared spaces folder or a record in it, that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
-| `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels` and `membershipFeed` |
+| `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
 | `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause` and `path`; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
