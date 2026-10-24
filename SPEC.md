@@ -948,6 +948,18 @@ every manager request to one exact live registered instance and is valid with no
 exchange selects from read-only observations of manager issuance gates and service registrations.
 It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
 rather than falling through to a co-located manager. An explicit selector must name a live candidate.
+On the public exchange face, once the caller's credential and ledger actor grant have verified
+(for a human exchange, the IdP JWT and the interactive actor grant; for an agent exchange, the
+managed actor secret and its ledger row), a `manager-caller` request that fails only manager
+selection MUST return its selection refusal reason on 401 without spending the per-peer probing
+budget. The public face tracks those authenticated selection refusals in two rolling windows per
+principal (derived owner for human exchanges, `owner.actor` for agent exchanges) keyed by
+principal and request class (`pinned` when the request names `managerInstanceId`, `unpinned` when
+it does not, never by the requested instance id): each class counts only its own selection
+refusals and, once its window is full, refuses requests of that class (including ones that would
+have succeeded) with 429 and that class's remedy before running manager selection, while leaving
+the other class open. On the loopback face, an authenticated unpinned refusal caused by no live
+manager or ambiguous candidates returns its own reason without spending the shared probing budget.
 A trusted host composition MAY instead select its genuine local Manager up front for an unpinned
 interactive human exchange. It MUST apply the same native local identity, open gate, serve principal,
 registration revision and epoch checks, and MUST refuse an absent, unreadable or noncandidate local
