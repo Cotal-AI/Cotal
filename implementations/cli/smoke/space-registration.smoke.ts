@@ -1121,6 +1121,14 @@ if (process.platform === "linux") {
       refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
   }
   check("...and none of them wrote: the folder is still the file, and the project has only its .cotal", readFileSync(dir, "utf8") === "not a folder" && readdirSync(folder).join() === ".cotal");
+  // status names the folder and reports the rest, exit 4, with a space selected that is not registered.
+  const selection = getCurrent();
+  setCurrent("pf");
+  const report = await json(["status"], folder);
+  if (selection === undefined) clearCurrent(); else setCurrent(selection);
+  const hints: string[] = report.env?.result?.hints ?? [];
+  check("status with that space selected is partial, exit 4, naming the folder under meshes.unreadable, with each hint once",
+    report.status === 4 && report.env?.outcome === "partial" && Boolean(report.env.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === dir)) && new Set(hints).size === hints.length, shown(report));
   rmSync(dir);
   if (held) renameSync(aside, dir);
   // A record in it that does not parse, or is not a prepared space record, is refused by its file.
