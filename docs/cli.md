@@ -6039,8 +6039,9 @@ is neither read nor created, so a level argument saves nothing and is a `no-op` 
 `ENVIRONMENT_OPT_OUT` warning. `cotal telemetry` itself sends nothing.
 
 The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEMETRY` set to
-anything but a level refuses `USAGE_INVALID`, and a settings file that does not validate refuses
-`SCHEMA_INVALID` on every command until it is fixed or moved away.
+anything but a level refuses `USAGE_INVALID`. A settings file that does not validate refuses
+`SCHEMA_INVALID` on `cotal telemetry` and on every command that reports usage, until it is fixed or
+moved away. Under the environment opt-outs above nothing reads it, so it stops no command.
 
 ## run
 
