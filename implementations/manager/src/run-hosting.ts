@@ -812,12 +812,14 @@ export class RunHosting {
       }));
   }
 
-  /** `run-status`: the record plus the journal view. */
-  async status(args: { runId: string; endpoint?: string }): Promise<RunStatusView> {
+  /** `run-status`: the record plus the journal view, or one page of it with `journal`. */
+  async status(args: { runId: string; endpoint?: string; journal?: { offset: number } }, ctx?: EpServeContext): Promise<RunStatusView> {
     const host = this.host();
     const endpoint = args.endpoint ?? this.ctx.endpoint;
+    if (args.journal !== undefined && ctx?.replyFits === undefined) throw new EpEnvelopeError("failed-precondition", "this serving path cannot measure a journal page");
+    const context = ctx?.replyFits === undefined ? undefined : { replyFits: ctx.replyFits };
     const view = await this.withOperator({ endpoint, runId: args.runId }, (planes, _kv, takeoverId) =>
-      host.status(planes, { endpoint, runId: args.runId, takeoverId }));
+      host.status(planes, { endpoint, runId: args.runId, takeoverId, ...(args.journal !== undefined ? { journal: args.journal } : {}) }, context));
     if (view === undefined) throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${endpoint}`);
     return view;
   }

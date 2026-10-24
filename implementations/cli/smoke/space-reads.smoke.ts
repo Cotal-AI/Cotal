@@ -4,7 +4,8 @@
  * binary reads the records a real `up`, `meshes add` or catalog sync leaves. A real broker answers
  * for one space; another points at a port nothing listens on; a discovered one points at a listener
  * that counts connections, so the suite can show a read never dials it.
- * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID.
+ * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID, and so does
+ * every other command that reads the registry, changing nothing.
  *
  * Needs `nats-server` on PATH.
  *
@@ -219,17 +220,32 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("completion offers the registered names after space show", ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(names.stdout)), shown(names));
   const useNames = run(["__complete", "use", ""]);
   check("completion offers the registered names after use", ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(useNames.stdout)), shown(useNames));
+  // A --space value is a space on every command, so each completes the names use does.
+  // `down` is a template literal, which the sandbox guard reads as text: this completes it and never runs it.
+  for (const words of [["status"], ["watch"], [`down`], ["team", "boot"], ["config", "set"]]) {
+    const spaces = run(["__complete", ...words, "--space", ""]);
+    check(`completion offers the registered names for ${words.join(" ")} --space`, ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(spaces.stdout)) && !/^--/m.test(spaces.stdout) && spaces.stdout.trimEnd().endsWith(":nofiles"), shown(spaces));
+  }
+  const modes = run(["__complete", "space", "add", "x", "--mode", ""]);
+  check("completion offers auth, open and user after space add --mode", ["auth", "open", "user"].every((n) => new RegExp(`^${n}$`, "m").test(modes.stdout)), shown(modes));
+  for (const flag of ["--root", "--file"]) {
+    const files = run(["__complete", "space", "add", "x", flag, ""]);
+    check(`space add ${flag} completes from the shell's file names`, files.stdout.trimEnd() === ":default", shown(files));
+  }
 }
 
 // ── A record that does not parse ─────────────────────────────────────────────────────────────────────
 {
   const file = join(meshesDir(), "space.6f6d656761.json");
   writeFileSync(file, '{"space":"omega"');
-  for (const args of [["space"], ["space", "show", "alpha"]]) {
+  const selected = getCurrent();
+  const elsewhere = mkdtempSync(join(home, "create-root-"));
+  for (const args of [["space"], ["space", "show", "alpha"], ["use"], ["use", "alpha"], ["space", "forget", "alpha"], ["space", "create", "zeta", "--root", elsewhere], ["send", "-c", "general", "hi"], ["persona"]]) {
     const r = json(args);
     check(`cotal ${args.join(" ")} refuses a record that does not parse with SCHEMA_INVALID, exit 1, naming the file`, r.status === 1 && r.env?.outcome === "refused" && r.env.error?.code === "SCHEMA_INVALID" && String(r.env.error.message).includes(file), shown(r));
   }
   rmSync(file);
+  check("those refusals changed nothing: alpha is registered, the selection is kept and zeta was not prepared", findMesh("alpha") !== undefined && getCurrent() === selected && !existsSync(join(elsewhere, ".cotal")), { selected, now: getCurrent() });
 }
 
 // The broker and the listener would keep the process alive past the last cell.

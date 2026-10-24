@@ -24,7 +24,7 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, removeMesh, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
@@ -164,6 +164,28 @@ const QUESTION = "Which one?";
     envelope(inShared)?.target?.space === "alpha" && warned?.message === NOTE && warned.target?.space === "alpha" && warned.target.folderSpaces?.slice().sort().join() === "beta,gamma" &&
       inShared.stderr.includes(`! ${NOTE}`), shown(inShared));
   removeMesh("gamma");
+  // A space prepared in a folder is that folder's space before its first `up` too, so a command there
+  // targets it, with the note, and nothing lands in the selection unannounced.
+  const delta = join(home, "delta");
+  mkdirSync(join(delta, ".cotal"), { recursive: true });
+  recordPreparedSpace({ space: "delta", root: delta, ts: new Date(0).toISOString() });
+  const inDelta = run(["who", "--json"], delta), inDeltaText = run(["who"], delta);
+  // The refusal is the prepared space's own: it is not started yet, and its next step is there.
+  check("in a prepared space's folder, before its first up, that space is the target and the refusal is its own",
+    envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
+      envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
+      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout + inDeltaText.stderr), { json: shown(inDelta), text: shown(inDeltaText) });
+  // The listing, `space show` and `use` there name it as the target too.
+  const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
+  check("in that folder space marks it as this folder's, and space show and use name it as the target there",
+    envelope(listed)?.result?.folder === "delta" && /^ {2}delta \(this folder's\) /m.test(listedText.stdout) &&
+      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
+      envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === "delta" && usedText.stdout.includes(`commands in this folder target its space "delta"; the selection applies outside it`),
+    { listed: shown(listed), listedText: shown(listedText), shownSpace: shown(shownSpace), used: shown(used), usedText: shown(usedText) });
+  const listedAway = run(["space", "--json"]), usedAway = run(["use", "--json"]);
+  check("control: from a folder with no project space and use name no folder space",
+    envelope(listedAway)?.result?.folder === null && envelope(usedAway)?.result?.folder === null, { listed: shown(listedAway), used: shown(usedAway) });
+  removePreparedSpace("delta");
   clearCurrent();
 }
 
@@ -193,7 +215,7 @@ const QUESTION = "Which one?";
     writeFileSync(join(fresh, "list.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: ["${A}"] }\nchannels: {}\n`);
     const invalid = run(["up", "-f", "list.yaml"], fresh);
     check("up -f with a manifest that does not validate refuses, exit 1, and leaves the folder as it found it",
-      invalid.status === 1 && /expected string, received array \(at broker\.servers\)/.test(invalid.stderr) && entries() === "list.yaml", { ...shown(invalid), entries: entries() });
+      invalid.status === 1 && /expected a string, not a list \(at broker\.servers\)/.test(invalid.stderr) && entries() === "list.yaml", { ...shown(invalid), entries: entries() });
     writeFileSync(join(fresh, "user.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "${A}", auth: user }\nchannels: {}\n`);
     const contradicted = run(["up", "-f", "user.yaml", "--open"], fresh);
     check("up -f refused after its lock, for a flag the manifest contradicts, leaves the folder as it found it",

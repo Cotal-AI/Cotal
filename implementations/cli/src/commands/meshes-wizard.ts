@@ -11,6 +11,7 @@ import {
   checkMode,
   checkRoot,
   checkServer,
+  checkSpaceName,
   checkTrust,
   checkUserBundle,
   isDir,
@@ -288,6 +289,8 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
       const parsed = checkUserBundle(rawBundle);
       if (!parsed.ok) { io.log.error(parsed.message); return cancelled(io, "Nothing was registered."); }
       const b = parsed.value;
+      const named = checkSpaceName(b.space);
+      if (!named.ok) { io.log.error(named.message); return cancelled(io, "Nothing was registered."); }
       const userTls = b.tlsRequired || tlsIntent(server as string, false);
       const userDial = checkDialPolicy(server as string, { tlsRequired: userTls, allowUnencryptedOverlay: ackedFor === server });
       if (!userDial.ok) { io.log.error(userDial.message); return cancelled(io, "Nothing was registered."); }
@@ -346,7 +349,11 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
         space = await io.text({
             message: "Space name on that broker",
             placeholder: "the name the mesh was started with",
-            validate: (v) => (v ? undefined : "Required - it must match the space name where the mesh runs."),
+            validate: (v) => {
+              if (!v) return "Required - it must match the space name where the mesh runs.";
+              const named = checkSpaceName(v);
+              return named.ok ? undefined : `${named.message.replace(/^✗ /, "")}; ${named.remedy}`;
+            },
           });
       }
     }

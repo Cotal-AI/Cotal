@@ -27,8 +27,8 @@
  *
  * The same resume carries the broker's JetStream store cap (`--max-file-store`, #1888): the fresh
  * boot renders it and nats-server applies it, the cut journals it, a resume asking for a different
- * cap is refused before anything starts, the bare resume re-renders it, and the adopted mesh record
- * keeps it.
+ * cap is refused CONFLICT before anything starts, naming both caps and the way to change it, the bare
+ * resume re-renders it, and the adopted mesh record keeps it.
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
@@ -157,8 +157,9 @@ try {
 
   const mismatched = runSync(["up", "--detach", "--server", server, "--space", space, "--max-file-store", String(CAP * 2)]);
   const mismatchLog = `${mismatched.stdout ?? ""}${mismatched.stderr ?? ""}`;
-  ok("a resume asking for a different --max-file-store is refused",
-    mismatched.status !== 0 && mismatchLog.includes(`--max-file-store ${CAP * 2} is not the preserved launch cap (${CAP})`),
+  ok("a resume asking for a different --max-file-store is refused CONFLICT, exit 2, naming both caps and the way to change it",
+    mismatched.status === 2 && mismatchLog.includes(`--max-file-store ${CAP * 2} is not the file store cap that down --preserve-state recorded here (${CAP})`)
+      && mismatchLog.includes("Code:    CONFLICT") && mismatchLog.includes(`resume with cotal up without --max-file-store; to use ${CAP * 2}, stop the resumed mesh with cotal down, then run cotal up --max-file-store ${CAP * 2}`),
     { status: mismatched.status, log: mismatchLog.slice(-1200) });
   ok("…and leaves the preserved state ready", journal().state === "ready", journal().state);
 

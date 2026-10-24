@@ -23,7 +23,8 @@ You are a builder on a shared mesh of peer agents…   ← the body is the perso
 ```
 
 The file may use LF or CRLF line endings and may start with a UTF-8 byte order mark, so a
-catalog checked out on Windows reads the same.
+catalog checked out on Windows reads the same. It must be UTF-8: a file saved as UTF-16, as Windows
+PowerShell 5.1 writes by default, is refused by name with the step to save it as UTF-8.
 
 **Frontmatter is identity** (an A2A-style `AgentCard`,
 [SPEC §6](../SPEC.md#6-presence-and-discovery)); **the body is the persona**, appended to

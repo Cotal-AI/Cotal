@@ -1,8 +1,8 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { acquireLock, globalConfigDir, token, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
-import { localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
+import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 
 /**
@@ -172,9 +172,13 @@ function checkScope(where: string, value: unknown, perSpaceOnly: boolean): Parti
 
 /** Validate a parsed preferences document. Anything unexpected refuses; nothing is dropped. */
 function parsePreferences(text: string): Preferences {
+  const encoding = utf16Problem(text);
+  if (encoding) throw invalid(`${encoding}; save it as UTF-8`);
   let doc: unknown;
   try {
-    doc = JSON.parse(text);
+    // A hand edit on Windows can begin the file with a UTF-8 byte-order mark, which RFC 8259 lets a
+    // reader ignore; the next write leaves it out.
+    doc = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch (e) {
     throw invalid(`not JSON (${(e as Error).message})`);
   }
@@ -236,13 +240,26 @@ export function preferencesFolderWarning(): { warning: OutputWarning; remedy: st
   }
 }
 
+/** Refuse a preferences path that is a FIFO, a device or a folder: opening one would block or fail,
+ *  and preferences are kept only in a regular file. */
+function assertPreferencesRegular(path: string): void {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat && !stat.isFile())
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences file ${path} is not a regular file, such as a FIFO or a device; preferences are kept only in a regular file, so nothing was read or changed`, {
+      target: { path },
+      remedy: `remove ${path}, or replace it with a regular file`,
+    });
+}
+
 /** The saved preferences. A missing file is no preferences at revision 0; a file that does not
  *  validate refuses with `SCHEMA_INVALID`, and is never reset. A linked file refuses with
- *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}). */
+ *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}), and so does a FIFO or another file
+ *  that is not regular (see {@link assertPreferencesRegular}). */
 export function readPreferences(): Preferences {
   let text: string;
   try {
     assertPreferencesNotLinked(preferencesPath());
+    assertPreferencesRegular(preferencesPath());
     text = readFileSync(preferencesPath(), "utf8");
   } catch (e) {
     if (isCommandFailure(e)) throw e;
@@ -297,7 +314,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     if (code === "EACCES" || code === "EPERM" || code === "EROFS")
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences folder ${dir} cannot be ${existsSync(dir) ? "written" : "created"} (${code}); nothing was changed`, {
         target: { path: dir },
-        remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${dir}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
+        remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${shellPath(dir)}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
       });
     throw e;
   }

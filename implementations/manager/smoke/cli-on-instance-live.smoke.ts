@@ -414,8 +414,8 @@ try {
 
   // A persona created on m2 lands in root2's catalog, the root the space is registered at, so the
   // receipt names the file it wrote. Each static call mints its own caller, so the manager records
-  // no owner and the file is operator-owned: the receipt's Next reads it locally, and a later
-  // show --on names that command.
+  // no owner and the file is operator-owned: the receipt's Next reads it locally, a later
+  // show --on names that command, and the --on listing's Next offers the local show.
   console.log("\n7. a persona created on the exact manager names the file it wrote and a Next that works");
   const createdJson = await cotal(["persona", "create", "remote-rev", "--prompt", "review", "--subscribe", "", "--on", IID2, "--space", space, "--json"], root2);
   mustHaveRun(createdJson, "`persona create --on --json`");
@@ -437,6 +437,12 @@ try {
   check("a later show --on is refused not-found and names the local show for the file in this root",
     shownRemote.status === 2 && /TARGET_NOT_FOUND/.test(strip(shownRemote.out)) && strip(shownRemote.out).includes("read it here with cotal p show remote-rev"),
     { status: shownRemote.status, out: strip(shownRemote.out).slice(-600) });
+  const remoteListed = await cotal(["persona", "--on", IID2, "--space", space], root2);
+  mustHaveRun(remoteListed, "`persona --on`");
+  const remoteListing = strip(remoteListed.out);
+  check("the --on listing's Next offers the local show, not a show --on that would refuse",
+    remoteListed.status === 0 && /cotal p show <name>\s/.test(remoteListing) && !remoteListing.includes("cotal p show <name> --on"),
+    { status: remoteListed.status, out: remoteListing.slice(-600) });
 
   // One compiled manager build serves a different ps output contract. Copying the compiled build
   // into the disposable root keeps this variant isolated from the normal manager and CLI imports.

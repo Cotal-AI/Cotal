@@ -48,6 +48,13 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
   herdr: { names: ["herdr"] },
 };
 
+/** The commands official first-party extensions add that the binary does not seed, command name →
+ *  npm package, so running one before its extension is added names the package. Not authority, as
+ *  for {@link OFFICIAL_RUNTIMES}: the command exists only once `cotal ext add` installs it. */
+export const OFFICIAL_COMMANDS: Readonly<Record<string, string>> = {
+  linear: "@cotal-ai/linear",
+};
+
 /** Every runtime name the CLI knows about without importing anything: `pty` (built in) + the officials. */
 export function knownRuntimeNames(): string[] {
   return ["pty", ...Object.keys(OFFICIAL_RUNTIMES)];

@@ -410,7 +410,7 @@ How a spawn resolves:
   [Hermes](connect-hermes.md) · [pi](connect-pi.md).
 - **Model.** `--model` overrides the persona file's `model:` (Claude: `opus` / `sonnet` or
   a full id; OpenCode: `provider/model`). Connectors that expose a catalog report it via
-  `cotal models --agent opencode`: model ids plus available variants; pick one with
+  `cotal models --harness opencode`: model ids plus available variants; pick one with
   `--model provider/model --variant high`.
 - **Tools.** A spawned Claude Code agent gets the cotal tools plus the MCP servers the cotal
   config shares, which first-run `cotal setup` fills with your own; narrow them per spawn with
@@ -477,7 +477,7 @@ running mesh with the right credentials instead of mistaking the cwd for a space
   Neither reaches another mesh.
 - With nothing selected, a project with its own `.cotal/` resolves to that project's mesh;
   otherwise one running mesh is used automatically and several are an error.
-- `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry. A
+- `cotal meshes` lists them (`(default)` marks the default); `cotal down` removes the entry. A
   controller stack's space stays prepared at its root, and a selection that names it stays.
 - `cotal space create <name> [--root <dir>]` names a space before it runs. It records the name
   and root apart from the registry and makes `<root>/.cotal/`, and `cotal up` in that root starts
@@ -656,8 +656,9 @@ only partial selection (`backup create ... --only registry`; `up --restore ... -
 registry`). Backup never stops or restarts a mesh implicitly, never opens the original store, and
 does not contain credentials or trust secrets. Backup/restore in every auth mode, open included,
 uses isolated, operation-specific maintenance logins; normal agent credentials cannot enter that
-listener. Full
-restore requires the same space and exact current local trust continuity, recreates conservative
+listener. A full
+backup of a static-auth or open mesh also holds the workflow runs, so a run waiting at a checkpoint
+or a timer is back after a full restore. Full restore requires the same space and exact current local trust continuity, recreates conservative
 consumer checkpoints bound to their snapshot stream sequence state, and resumes retained agents under
 their original principals. The trust commitment includes the cryptographically validated full
 operator/system/data-account root chain as well as static/user authority state. A registry-only

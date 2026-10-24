@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { clearCurrent, CommandFailure, findMesh, findPreparedSpace, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, readCurrent, setCurrent, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { clearCurrent, CommandFailure, findMesh, findPreparedSpace, folderSpaceOverSelection, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, readCurrent, setCurrent, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
 
 export const useFlags = [
   { name: "clear", type: "boolean", description: "clear the selection, so a command targets its folder's space again" },
@@ -18,6 +18,8 @@ interface Selection {
   readonly server: string | null;
   /** The root `cotal up` starts `current` in, when it names a space `cotal space create` prepared. */
   readonly preparedRoot: string | null;
+  /** This folder's space when a command without `--space` targets it here instead of `current`, or null. */
+  readonly folder: string | null;
 }
 
 /**
@@ -36,7 +38,7 @@ export async function use(args: ParsedArgs): Promise<void> {
   if (name === undefined) {
     const m = previous === null ? undefined : findMesh(previous);
     const p = previous === null || m ? undefined : findPreparedSpace(previous);
-    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null };
+    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null, folder: folderSpaceOverSelection(process.cwd(), previous) ?? null };
     const warnings: OutputWarning[] = previous !== null && !m && !p
       ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: previous }, message: `the selected space "${previous}" is not registered here - select another with \`cotal use <name>\`` }]
       : [];
@@ -48,7 +50,7 @@ export async function use(args: ParsedArgs): Promise<void> {
   if (!m && !p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { space: name }, remedy: "see the registered spaces with `cotal space`, or clear the selection with `cotal use --clear`" });
   const changed = previous !== name;
   if (changed) setCurrent(name);
-  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null };
+  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null, folder: folderSpaceOverSelection(process.cwd(), name) ?? null };
   writeResult(presentation, { command: "use", target: { space: name }, result, noOp: !changed }, selectionView);
 }
 
@@ -59,7 +61,7 @@ function clearSelection(named: boolean, presentation: ReturnType<typeof presenta
   let previous: string | null, damaged = false;
   try { previous = readCurrent() ?? null; } catch { previous = null; damaged = true; }
   if (previous !== null || damaged) clearCurrent();
-  const result: Selection = { kind: "selection", current: null, previous, currentRecorded: true, server: null, preparedRoot: null };
+  const result: Selection = { kind: "selection", current: null, previous, currentRecorded: true, server: null, preparedRoot: null, folder: null };
   writeResult(presentation, { command: "use", target: null, result, noOp: previous === null && !damaged }, (s) => ({ sections: [{ blocks: [{ kind: "lines", lines: [
     s.previous === null ? { text: damaged ? "cleared the selection" : "no space was selected; nothing changed", tone: damaged ? "ok" : "hint", ...(damaged ? { mark: "✓" } : {}) } : { text: `cleared the selection (was ${s.previous})`, tone: "ok", mark: "✓" },
     { text: "  a command now targets the space in its folder, or the one named with --space", tone: "hint" },
@@ -76,6 +78,7 @@ function selectionView(s: Selection): Report {
   if (s.preparedRoot) lines.push(existsSync(s.preparedRoot)
     ? { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" }
     : { text: `  prepared in ${s.preparedRoot}, which no longer exists - forget it with \`cotal space forget ${s.current}\``, tone: "waiting" });
+  if (s.folder) lines.push({ text: `  commands in this folder target its space "${s.folder}"; the selection applies outside it`, tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }
 
