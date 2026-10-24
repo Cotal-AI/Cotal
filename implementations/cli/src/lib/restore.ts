@@ -59,7 +59,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
-  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut,
+  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut, restoreReplacedNewerCut,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
   recordRestoreManagerCommit,
@@ -786,26 +786,28 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: ${kind} attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
-/** What a restore attempt left only in the store it set aside ({@link restoreLeftOut}), and that
- *  store, as the root's journal records them. Undefined when it left nothing out or the journal no
- *  longer names the attempt. */
-export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; previousStore?: string } | undefined {
+/** What a restore attempt left only in the store it set aside ({@link restoreLeftOut}), whether that
+ *  includes what was written after its artifact ({@link restoreReplacedNewerCut}), and that store, as
+ *  the root's journal records them. Undefined when it left nothing out or the journal no longer names
+ *  the attempt. */
+export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; previousStore?: string } | undefined {
   try {
     const journal = readMaintenanceJournal(root);
     if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return undefined;
     const leftOut = restoreLeftOut(journal);
-    return leftOut ? { leftOut, ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
+    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
   } catch { return undefined; }
 }
 
 /** What a restore's receipt says about what it left out. A registry-only restore brings back channel
  *  settings only, and every other stream starts empty; a full restore of an artifact with no runs has
- *  a composition note that says why. The store it set aside holds the only copy, which
- *  cleanup-fallback deletes only with `--discard-history`. */
+ *  a composition note that says why, and one of an artifact older than the state it replaced says
+ *  that what was written after the artifact is not restored. The store it set aside holds the only
+ *  copy, which cleanup-fallback deletes only with `--discard-history`. */
 export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>): string[] {
   if (!onlyCopy) return [];
-  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" ? "them" : "the workflow runs"}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
-  if (selection !== "registry") return kept ? [kept] : [];
+  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" ? "them" : `the ${onlyCopy.leftOut}`}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
+  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored."] : []), ...(kept ? [kept] : [])];
   return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", kept ?? "No previous store was retained."];
 }
 
@@ -1111,6 +1113,9 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       restoreOnly: flags["restore-only"] ?? artifact.manifest.selection,
       restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
+      // A cut preserved after this artifact was made holds history the artifact lacks, and the store
+      // this restore sets aside keeps its only copy.
+      ...(sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt) ? { previousCutNewer: true } : {}),
       serverName,
       serverNonce,
       // Durable evidence of consent, as the ordinary resume journals it: an operator asking later

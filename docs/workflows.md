@@ -202,6 +202,8 @@ a restart. What the run did after the backup is not in its record. A user-mode b
 before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)). After a
 restore from one of them, or a registry-only restore, the store the restore set aside holds the only
 copy of the runs, and `cotal backup cleanup-fallback` deletes it only with `--discard-history`.
+After a full restore of a backup made before the space last ran, that store holds the only copy of
+what the runs did after the backup, under the same rule.
 
 ## From an agent session
 

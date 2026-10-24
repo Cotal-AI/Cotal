@@ -6,7 +6,7 @@ import {
   CommandFailure, acquireMaintenanceLock, assertSingleSpaceBroker, assessMaintenanceClaim, assessRestoreClaim, authDir,
   cleanupRestoreFallback, isCommandFailure, isMaintenanceError, oneLine, presentationOf,
   readMaintenanceJournal, recoverStaleMaintenanceClaim, releaseMaintenanceLock, writeResult, type Report,
-  restoreLeftOut,
+  restoreLeftOut, restoreLeftOutReason,
 } from "@cotal-ai/workspace";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { heldClaim, restoreNextStep } from "../lib/restore.js";
@@ -32,12 +32,13 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   const snapshot = recorded as RecoveryRecord;
   const target = { root, space: snapshot.space, attemptId, revision: snapshot.revision };
   const restore = snapshot.restore;
-  // A registry-only restore left every other stream out, and a full restore of an artifact with no
-  // runs left the runs out, so its previous store holds their only copy: the preview warns, and the
-  // delete needs --discard-history.
+  // A registry-only restore left every other stream out, a full restore of an artifact with no runs
+  // left the runs out, and one of an artifact older than the cut it replaced left out what was written
+  // since, so its previous store holds their only copy: the preview warns, and the delete needs
+  // --discard-history.
   const leftOut = mode === "cleanup-fallback" ? restoreLeftOut(snapshot) : undefined;
   const onlyCopy = leftOut ? restore.previousSource?.identity.path : undefined;
-  const onlyCopyText = `${restore.selection === "registry" ? "this restore was registry-only" : "this restore's artifact held no workflow runs"}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out`;
+  const onlyCopyText = `${restoreLeftOutReason(snapshot)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out`;
   const historyWarnings = onlyCopy ? [{ code: "HISTORY_ONLY_IN_PREVIOUS_STORE", target: { space: snapshot.space, previousStore: onlyCopy }, message: `${onlyCopyText[0]!.toUpperCase()}${onlyCopyText.slice(1)}. Cleanup deletes it only with --discard-history.` }] : [];
   const assessment = snapshot.state === "restore-ready" ? assessRestoreClaim(snapshot, { unrecordedOwnersDead: attemptProcessesGone(root) }) : null;
   const claim = snapshot.state === "restore-ready" ? snapshot.claim : undefined;

@@ -61,6 +61,7 @@ import {
   type RestoreListenerProof,
   type RestoreReadyRecord,
   restoreLeftOut,
+  restoreLeftOutReason,
 } from "../src/maintenance.js";
 import { wfjStreamName } from "@cotal-ai/core";
 
@@ -1214,6 +1215,13 @@ if (process.platform !== "win32") {
   check("a full restore with no workflow journal left out the workflow runs", restoreLeftOut(active) === "workflow runs");
   check("a full restore with its workflow journal left out nothing", restoreLeftOut({ ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")] } }) === undefined);
   check("a registry restore left out the history and the runs", restoreLeftOut({ ...active, restore: { selection: "registry" } }) === "chat and DM history and workflow runs");
+  // A full restore that replaced a cut preserved after its artifact was made left out what was
+  // written since.
+  const newer = { ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")], previousCutNewer: true } };
+  check("a full restore that replaced a newer cut left out the newer history and runs", restoreLeftOut(newer) === "newer chat and DM history and workflow runs");
+  check("its reason names the older artifact", restoreLeftOutReason(newer) === "this restore's artifact was made before the state it replaced was preserved");
+  check("with no workflow journal it also left out every run", restoreLeftOut({ ...active, launch: { previousCutNewer: true } }) === "workflow runs and newer chat and DM history"
+    && restoreLeftOutReason({ ...active, launch: { previousCutNewer: true } }) === "this restore's artifact was made before the state it replaced was preserved and held no workflow runs");
   expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-runs"));
   check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
   cleanupRestoreFallback(p.lock, "restore-runs", { discardHistory: true });
