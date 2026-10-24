@@ -3297,7 +3297,8 @@ issuer authority, parent links, holder currency and revocation remain not checke
 is contacted or credential issued. Signature bytes and original signed artifacts are never printed.
 A handle is a signed JSON grant, so a file that is not JSON, such as a NATS credential file, refuses
 `SCHEMA_INVALID` and says what it is. For a credential file, the Next names
-[`cotal whoami --creds <file>`](#whoami), which reports what it may do.
+[`cotal whoami --creds <file>`](#whoami), which reports what it may do. A path that names nothing
+refuses `TARGET_NOT_FOUND` (exit 2) and names the path.
 The human report shows at most 50 scope rows and names omissions; JSON retains public metadata.
 
 An explicit `--space` selects online inspection on a registered static-auth space whose root
