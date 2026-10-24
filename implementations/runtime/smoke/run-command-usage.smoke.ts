@@ -284,6 +284,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("the text view prints the last 20 rows by default and the last n under --limit n",
     bare.includes("last 20 of 30") && rows(bare) === 20 && limited.includes("last 25 of 30") && rows(limited) === 25 && limited.includes("epoch 29") && !limited.split("\n").some((line) => line.trimEnd().endsWith("epoch 4")),
     { bare: rows(bare), limited: rows(limited) });
+}
+
 // A source file that cannot be read is refused with the path to check.
 {
   const missing = join(tmpdir(), `run-source-missing-${process.pid}.cotal.js`);
