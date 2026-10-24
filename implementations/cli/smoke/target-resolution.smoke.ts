@@ -147,14 +147,14 @@ const QUESTION = "Which one?";
   check("control: the selection is the target in its own root and from a folder with no project, with no note",
     [inAlpha, away].every((r) => /\bin alpha\b/.test(r.stdout + r.stderr) && !/this folder's space/.test(r.stdout + r.stderr)), [inAlpha, away].map(shown));
   // A folder prepared for its own space and not started yet refuses there, under the same note.
-  const delta = join(home, "delta");
-  mkdirSync(delta);
-  const prepared = run(["space", "create", "delta"], delta);
-  const unstarted = run(["who"], delta);
+  const deltaPrepared = join(home, "delta");
+  mkdirSync(deltaPrepared);
+  const prepared = run(["space", "create", "delta"], deltaPrepared);
+  const unstarted = run(["who"], deltaPrepared);
   check("a refusal in a folder prepared for another space keeps the note under its heading",
     prepared.status === 0 && unstarted.status === 2 && /TARGET_UNAVAILABLE/.test(unstarted.stderr) &&
-      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
-  run(["space", "forget", "delta"], delta);
+      /^Mesh: deltaPrepared\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
+  run(["space", "forget", "delta"], deltaPrepared);
   // A root with several spaces, none of them selected, keeps the selection and warns first.
   recordMesh({ space: "gamma", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const NOTE = `this targets the selected space "alpha", not this folder's spaces "beta", "gamma"; pass --space <space> to target one of them`;
