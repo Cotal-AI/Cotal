@@ -2574,7 +2574,12 @@ that lost only some of them keeps them as they are, and `up` refuses `TARGET_NOT
 naming `cotal down --yes`, then `cotal up`, whose broker start creates the missing ones. While the
 other members run, as when another machine deleted an open space under the stack, a bare `cotal up`
 finds the stack running and changes nothing. The refusals and `status` then say the space was
-deleted under its running stack and name `cotal down --yes`, then `cotal up`. To drop
+deleted under its running stack and name `cotal down --yes`, then `cotal up`. They say so only when
+the broker answers that the chat stream is not found. A broker that answers no JetStream request
+has not lost its streams: nats-server stops JetStream after a store write it could not make and
+keeps the streams in its store. `send` and the other commands that read the space first then refuse
+`DEPENDENCY_UNAVAILABLE`, naming the write failure the broker's log records and its repair, and a
+broker restart brings the history back. To drop
 the space instead, run `cotal down --yes` in its root, then `space forget`. On a legacy root, run
 `cotal down`, then `cotal up` to start it again with empty streams.
 
@@ -2981,7 +2986,9 @@ system-account user, so `status` reads a bounded tail of that log instead and ke
 with the running broker's process ID since its last start. When the broker logged a store write
 failure, such as a full disk, the selected space shows a `Store` row with its time, cause and file.
 The broker keeps that error until it restarts, so messages sent meanwhile are not stored. The first
-Next is `cotal down`, to run once space is freed, after which `cotal up` starts the broker again.
+Next is `cotal down`, after the repair the cause calls for: free space on the disk for a full disk,
+or make the store writable by this account again for a permission denied. `cotal up` then starts the
+broker again with the history it kept.
 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
@@ -4915,8 +4922,8 @@ a larger cap applies after that through `cotal down` and `cotal up --max-file-st
 unknown and never retried automatically. A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
-says the message was probably not stored. Its Next frees space and restarts the broker before the
-message is sent again.
+says the message was probably not stored. Its Next repairs that cause, by freeing disk space or by
+making the store writable again, and restarts the broker before the message is sent again.
 The command sends once and exits. It does not wait for an answer, retain an inbox
 or transfer replies to a later chat session.
 

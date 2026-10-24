@@ -28,7 +28,7 @@ import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
-import { brokerStoreWrite, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, recordedStore, storeRefusedWrite, storeWriteRepair } from "../lib/broker-store-health.js";
 import { chatStreamGone, streamsAbsent } from "../lib/space-streams.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
@@ -461,7 +461,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       // A broker sends nothing back for a stream it cannot write, so its own log here may name why.
       const store = connection.root ? brokerStoreWrite(connection.root, space) : undefined;
       if (store?.state === "write-failed")
-        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `Free space on the disk that holds ${store.path ?? "the broker's store"}, then restart the broker with cotal down and cotal up before sending again.` });
+        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `${storeWriteRepair(store, connection.root, space)}, then restart the broker with cotal down and cotal up before sending again` });
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "No storage acknowledgement was established. The message may have been stored; it was not retried.", { target, remedy: "Inspect the destination before sending again. The native publisher did not return a message identifier." });
     }
     receipt = { kind: "send", messageId, sequence, destination: peer?.card.id ?? input.target, sender: { principal: ep.card.id, kind: ep.card.kind }, stored: true, delivery: null, acceptance: null, completion: null, replyListener: false, replyTo: values["reply-to"] ?? null, bodySource: input.source, mentions: [...new Set(mentions)], channelPolicy: policy };

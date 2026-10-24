@@ -104,7 +104,7 @@ import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_STALE_TEXT, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
-import { brokerStoreWrite, storeFull, type StoreWriteObservation } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -1728,7 +1728,7 @@ function nextActions(r: StatusResult): Section {
     items.unshift({ command: `kill -KILL ${r.stackManager.pid}`, description: `The stack manager does not answer, so ${cmd} down cannot stop it. If it stays that way, end its process; ${cmd} down --yes then records it stopped` });
   // The broker keeps a store write error until it restarts, so messages sent meanwhile may be lost.
   if (r.store?.state === "write-failed")
-    items.unshift({ command: `${cmd} down`, description: `Free space on the disk that holds ${r.store.path ?? "the broker's store"} first; then ${cmd} up starts the broker again` });
+    items.unshift({ command: `${cmd} down`, description: `First ${storeWriteRepair(r.store, r.selected.resolved ? r.selected.root : undefined, r.selected.space ?? "")}; then ${cmd} up starts the broker again with the history it kept` });
   // The broker refuses every write while the store is over its cap, so sends store nothing.
   if (r.store?.state === "full" && r.selected.resolved)
     items.unshift({ command: `${cmd} history clear --space ${r.selected.space} --yes`, description: `Make room in the full store: this purges the space's channel history; --dms also purges its direct messages` });
