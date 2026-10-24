@@ -22,7 +22,7 @@ import {
 import { CommandFailure, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
-import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
+import { activityAge, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: an unprovisioned / auth-rejected join is ONE classified
 // refusal instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs

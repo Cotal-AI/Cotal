@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
+import { basename, isAbsolute, join, resolve } from "node:path";
+import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -353,6 +353,36 @@ async function readinessAddressAnswers(url: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** A warning for each saved service of `space`, or of those of `names`, whose HTTP readiness address
+ *  still answers while none of its instances runs, as a descendant that outlived a stop, or left the
+ *  service's process group, can. It names the address and the processes of this account that listen
+ *  there. Saved services that cannot be read give one warning saying no address was checked. */
+export async function readinessAddressSurvivors(space: string, names?: readonly string[]): Promise<OutputWarning[]> {
+  const idle: { name: string; url: string }[] = [];
+  try {
+    for (const row of serviceDefinitionStore(space).list()) {
+      const { readiness } = row.record.value;
+      if (readiness.type !== "http" || (names && !names.includes(row.name))) continue;
+      if (!serviceInstances(space, row.name).some((instance) => observeServiceProcess(instance.record.value) === "running")) idle.push({ name: row.name, url: readiness.url });
+    }
+  } catch (error) {
+    // The command this reports for has already done its work, so an unreadable record is named here.
+    if (!(error instanceof CommandFailure)) throw error;
+    return [{ code: "SERVICE_ADDRESS_NOT_CHECKED", target: { space }, message: `the saved services could not be read (${error.message}), so no address a stopped one may still hold was checked` }];
+  }
+  const warnings: OutputWarning[] = [];
+  for (const { name, url } of idle) {
+    if (!await readinessAddressAnswers(url)) continue;
+    const address = new URL(url).host;
+    const holders = loopbackListeners(url).map((pid) => {
+      const command = readProcessCommand(pid);
+      return command.kind === "command" ? `${pid} (${basename(command.command.split(" ")[0]!)})` : String(pid);
+    });
+    warnings.push({ code: "SERVICE_ADDRESS_HELD", target: { space, definition: name, address }, message: `something still answers ${address}, where ${name}'s HTTP readiness is checked, and no instance of ${name} runs${holders.length ? `; process ${holders.join(", ")} of this account listens there` : ""}` });
+  }
+  return warnings;
 }
 
 export async function serviceReadiness(row: ServiceInstanceSnapshot, definition: ServiceDefinitionInput, adapter?: { provider: LoadedServiceAdapter; context: ServiceAdapterContext }): Promise<ServiceInstanceSnapshot> {
@@ -723,15 +753,28 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
     // The receipt names the last signal this call itself delivered to the pinned process. A process
     // that was already gone before any delivery gets no receipt: absence is not a stop.
     let delivered: "SIGTERM" | "SIGKILL" | undefined;
+    // A background start leads its own process group, so the stop signals that group and waits for
+    // it to empty: a descendant such as a backgrounded server goes with the process. A foreground
+    // start shares the command's group and is signalled alone. A group ID is not reused while a
+    // member lives, so after its leader exits the group is signalled only while members remain.
+    const pid = row.record.value.process!.pid;
+    let group = false;
+    const members = () => (group ? processGroupMembers(pid) : []);
     const signal = (name: "SIGTERM" | "SIGKILL") => {
       const state = observeServiceProcess(row.record.value);
-      if (gone(state)) return;
+      if (gone(state)) {
+        if (!members().length) return;
+        try { process.kill(-pid, name); delivered = name; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the signal to the service's remaining process group was not confirmed; its record was retained", { target: instanceProjection(row) }); }
+        return;
+      }
       if (state !== "running") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "service ownership became uncertain before signalling; its record was retained", { target: instanceProjection(row) });
       const role = readProcessCommand(row.record.value.process!.pid);
       if (role.kind !== "command" || commandIsCotalSupervisor(role.command)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the process role changed or became unreadable before signalling; manager impact guards were not bypassed", { target: instanceProjection(row) });
       const identity = assertRecordIdentity(row.record.value.process!);
       if (identity.kind !== "match") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the exact process incarnation changed before a signal; no successor was signalled", { target: instanceProjection(row) });
-      try { process.kill(row.record.value.process!.pid, name); delivered = name; }
+      group ||= processGroupOf(pid) === pid;
+      try { process.kill(group ? -pid : pid, name); delivered = name; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the exact process signal was not confirmed; its record was retained", { target: instanceProjection(row) }); }
     };
     signal("SIGTERM");
@@ -739,13 +782,13 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
       const deadline = Date.now() + timeout;
       while (Date.now() < deadline) {
         const state = observeServiceProcess(row.record.value);
-        if (gone(state)) return { instance: transition(row, { state: "stopped", readiness: "not-checked", ...(delivered ? { processStop: { kind: "process-exit" as const, requestId: row.record.value.requestId, process: { ...row.record.value.process! }, signal: delivered, observedAt: new Date().toISOString() } } : {}) }), noOp: false };
-        if (state !== "running") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service exit could not be established; its identity and stop receipt were retained", { target: instanceProjection(row) });
+        if (gone(state) && !members().length) return { instance: transition(row, { state: "stopped", readiness: "not-checked", ...(delivered ? { processStop: { kind: "process-exit" as const, requestId: row.record.value.requestId, process: { ...row.record.value.process! }, signal: delivered, observedAt: new Date().toISOString() } } : {}) }), noOp: false };
+        if (!gone(state) && state !== "running") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service exit could not be established; its identity and stop receipt were retained", { target: instanceProjection(row) });
         await delay(100);
       }
       if (escalation) signal(escalation);
     }
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the selected service process did not confirm exit; its record was retained and no restart was attempted", { target: instanceProjection(row) });
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the selected service process${members().length ? ` group, with process ${members().join(", ")},` : ""} did not confirm exit; its record was retained and no restart was attempted`, { target: instanceProjection(row) });
   } finally { if (!held) hold.release(); }
 }
 

@@ -13,6 +13,7 @@ import {
 import { CommandFailure, isCommandFailure, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
 import { fileCompletion, spaceCompletion } from "../lib/completion.js";
+import { debugFlag } from "../lib/debug-flag.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
 import { commandSurface } from "../ext-loader.js";
 import { changeCompletion, completionOwnership, completionPaths as stubPaths, completionSourceLine, completionUnsafeFolders, readCompletionText } from "../lib/completion-install.js";
@@ -37,7 +38,7 @@ import { SCRIPTS, LOAD_NOW } from "../lib/completion-scripts.js";
  * files (your personas and their declared channels/roles), never the mesh — so a keystroke never
  * blocks on the network. And there is no fallback: a completer that can't produce its authoritative
  * answer (e.g. a malformed agent file) fails the process — nothing on stdout, non-zero exit — so a
- * partial set is never mistaken for a complete one. Set COTAL_COMPLETE_DEBUG to see why on stderr.
+ * partial set is never mistaken for a complete one. Set COTAL_COMPLETE_DEBUG=1 to see why on stderr.
  */
 
 /** Wire format: one `value\tdescription` (or bare `value`) per line, then a `:directive`
@@ -89,7 +90,7 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
   const original = cmd ? metadataPositionals(cmd, argv, { completing: true }) : undefined;
   if (cmd?.name === "service" && original?.valueFlag?.name !== "preset" && !word.startsWith("--preset=")) {
     try { cmd = servicePresetCommand(cmd, argv); }
-    catch { if (process.env.COTAL_COMPLETE_DEBUG) process.stderr.write("cotal __complete: service preset metadata is unavailable or changed\n"); process.exit(1); }
+    catch { if (debugFlag("COTAL_COMPLETE_DEBUG")) process.stderr.write("cotal __complete: service preset metadata is unavailable or changed\n"); process.exit(1); }
   }
   const context = cmd ? metadataPositionals(cmd, argv, { completing: true }) : undefined;
   let selected: Subcommand | undefined;
@@ -126,7 +127,7 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     // No fallback: a completer that can't produce its authoritative set (e.g. a malformed agent
     // file) fails the process — nothing on stdout, non-zero exit — so the shell offers nothing and
     // never mistakes a failure for a successful empty result. Silent unless explicitly debugging.
-    if (process.env.COTAL_COMPLETE_DEBUG)
+    if (debugFlag("COTAL_COMPLETE_DEBUG"))
       process.stderr.write(`cotal __complete: ${(e as Error).message}\n`);
     process.exit(1);
   }

@@ -30,6 +30,11 @@
  * readiness that exits at once fails its start, exit 5, recording its exit code, and its restart is
  * partial, exit 4, naming that exit code and its log.
  *
+ * On Linux, a stop ends the server a service's shell backgrounded, so its address is free and the
+ * next start is reachable on its own. A server that left the service's process group with `setsid`
+ * outlives the stop, and the stop, `service status`, `cotal service` and `cotal status` each warn
+ * SERVICE_ADDRESS_HELD naming its address and its PID. The suite then stops that server by PID.
+ *
  * A process executable that every other local account can write, or one in a folder they can
  * write, is refused at `add` naming that path with its `chmod o-w`, and so is a link in such a
  * folder, by the link's folder. A saved one that later becomes writable is refused at `start` and
@@ -57,7 +62,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSpaceAuth } from "@cotal-ai/core";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth, spaceKey } from "@cotal-ai/workspace";
+import { authDir, loopbackListeners, recordMesh, saveSpaceAuth, spaceKey } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
@@ -71,6 +76,7 @@ interface Envelope {
   target: Record<string, unknown> | null;
   result: Record<string, unknown> | null;
   error?: { code: string; message: string; remedy?: string };
+  warnings?: { code: string; target?: Record<string, unknown>; message: string }[];
 }
 
 const { check, finish } = createSuite();
@@ -306,6 +312,55 @@ const answering = (port: number, status: number) => ({ type: "process", executab
   check("no instance was recorded for it", (listed.envelope?.result?.instances as { definition?: string }[] | undefined)?.filter((row) => row.definition === "web").length === 1, listed.envelope?.result);
   check("rig: the first instance stops", run(["service", "stop", "web", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
   check("rig: the definition is forgotten", run(["service", "remove", "web", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A shell that backgrounds the server answering its readiness, and one whose server leaves the
+// service's process group.
+if (process.platform === "linux") {
+  const answers = async (port: number) => {
+    try { await (await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) })).body?.cancel(); return true; } catch { return false; }
+  };
+  const shell = (port: number, prefix: string) => ({ type: "process", executable: "/bin/sh", args: ["-c", `${prefix}${node} -e 'require("node:http").createServer((_, res) => res.end()).listen(${port}, "127.0.0.1")' & wait`], cwd: root });
+  const held = (r: ReturnType<typeof run>, port: number) => r.envelope?.warnings?.find((w) => w.code === "SERVICE_ADDRESS_HELD" && w.target?.address === `127.0.0.1:${port}`);
+  {
+    const port = await freePort(), file = join(home, "grouped.json");
+    writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: shell(port, ""), readiness: { type: "http", url: `http://127.0.0.1:${port}/`, expectedStatus: 200, timeoutMs: 5000 } }));
+    check("rig: a definition whose shell backgrounds its server is saved", run(["service", "add", "grouped", "--file", file, "--space", "b1"]).status === 0);
+    check("rig: it starts reachable", run(["service", "start", "grouped", "--space", "b1"]).envelope?.result?.readinessObservation === "http-reachable");
+    const stop = run(["service", "stop", "grouped", "--space", "b1", "--yes"]);
+    check("its stop ends the backgrounded server, so nothing answers its address and no warning names it", stop.status === 0 && !await answers(port) && !held(stop, port), shown(stop));
+    const again = run(["service", "start", "grouped", "--space", "b1"]);
+    check("the next start is reachable, exit 0", again.status === 0 && again.envelope?.result?.readinessObservation === "http-reachable", shown(again));
+    check("rig: it stops", run(["service", "stop", "grouped", "--space", "b1", "--yes"]).status === 0 && !await answers(port));
+    check("rig: the definition is forgotten", run(["service", "remove", "grouped", "--space", "b1", "--yes"]).status === 0);
+  }
+  {
+    // `cotal status` reads the services of a registered space, so this one is registered, at an
+    // address where no broker listens.
+    const heldRoot = mkdtempSync(join(home, "held-"));
+    process.env.COTAL_HOME = env.COTAL_HOME;
+    recordMesh({ space: "held", server: `nats://127.0.0.1:${await freePort()}`, root: heldRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    delete process.env.COTAL_HOME;
+    const port = await freePort(), file = join(home, "escaped.json");
+    writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "held", launch: shell(port, "setsid "), readiness: { type: "http", url: `http://127.0.0.1:${port}/`, expectedStatus: 200, timeoutMs: 5000 } }));
+    check("rig: a definition whose server leaves the process group is saved", run(["service", "add", "escaped", "--file", file, "--space", "held"]).status === 0);
+    check("rig: it starts reachable", run(["service", "start", "escaped", "--space", "held"]).envelope?.result?.readinessObservation === "http-reachable");
+    const stop = run(["service", "stop", "escaped", "--space", "held", "--yes"]);
+    const warning = held(stop, port), pid = Number(/; process (\d+) \(node\) of this account listens there$/.exec(warning?.message ?? "")?.[1]);
+    const listening = loopbackListeners(`http://127.0.0.1:${port}/`);
+    check("its stop warns SERVICE_ADDRESS_HELD, naming the address and the server's PID", stop.status === 0 && warning?.target?.definition === "escaped" && (warning.message ?? "").startsWith(`something still answers 127.0.0.1:${port}, where escaped's HTTP readiness is checked, and no instance of escaped runs`) && listening.length === 1 && listening[0] === pid, { stop: shown(stop), listening });
+    const status = run(["service", "status", "escaped", "--space", "held"]);
+    check("service status names it", status.status === 0 && held(status, port) !== undefined, shown(status));
+    const listed = run(["service", "--space", "held"]);
+    check("cotal service names it", held(listed, port) !== undefined, shown(listed));
+    const report = run(["status", "--space", "held"]);
+    check("cotal status names it", held(report, port) !== undefined, shown(report));
+    for (const listener of listening) process.kill(listener);
+    for (let i = 0; i < 40 && await answers(port); i++) await new Promise((done) => setTimeout(done, 100));
+    const after = run(["service", "status", "escaped", "--space", "held"]);
+    check("once that server is gone no warning names the address", !await answers(port) && after.status === 0 && !held(after, port), shown(after));
+    check("rig: the definition is forgotten", run(["service", "remove", "escaped", "--space", "held", "--yes"]).status === 0);
+  }
 }
 
 // A process executable another local account could write, by its own mode, its folder's, or the

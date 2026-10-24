@@ -80,7 +80,7 @@ import {
   type Presence,
 } from "@cotal-ai/core";
 import { localProcessSurface } from "../ext-loader.js";
-import { c } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
@@ -493,7 +493,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   for (const component of selected) {
     any = processRecorded(component, folderCtx()) || any;
     if (component.stopLast && !allStopped) {
-      console.error(c.red(`✗ not stopping ${component.label} because an earlier component did not stop`));
+      stderrLine("✗ ", `not stopping ${component.label} because an earlier component did not stop`, c.red);
       continue;
     }
     try {
@@ -503,11 +503,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       else await stopLocalProcess(component, context);
     } catch (e) {
       allStopped = false;
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
     }
   }
   if (!allStopped) {
-    console.error(c.red("✗ not cleanly stopped - keeping artifacts and the registry entry"));
+    stderrLine("✗ ", "not cleanly stopped - keeping artifacts and the registry entry", c.red);
     process.exitCode = 1;
     return;
   }

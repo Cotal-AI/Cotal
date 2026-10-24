@@ -6,13 +6,15 @@
  * (help, refusal and parse), and a word that only prefixes a command selects nothing. A short flag
  * parses as its long form, and a wrong-case short flag or a missing value is refused. So is a flag typed
  * with a typographic dash, naming the dash and the flag; after `--`, or naming no flag, such a word is
- * an argument. A usage refusal escapes the control bytes of each word it quotes. `version --json`
+ * an argument. A refusal on a
+ * `✗` line escapes the control bytes of each word it quotes. `version --json`
  * writes one envelope, and a usage error under `--json` is one refusal envelope. A `--server` with a
  * user and password is refused by every command that takes one, and a `COTAL_SERVER` with one by the
  * manager, without repeating it. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`, once each. A command an
  * official extension adds, run or asked for help before that extension is added, names the package
- * to add. FORCE_COLOR with NO_COLOR prints no Node warning about the pair.
+ * to add. FORCE_COLOR with NO_COLOR prints no Node warning about the pair. A failing command prints
+ * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -212,6 +214,22 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
   check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",
     both.status === 0 && !both.stderr.includes("'NO_COLOR' env is ignored") && both.stderr.includes("Warning: probe-warning"), shown(both));
+}
+
+// ── COTAL_DEBUG: a failing command's stack, off for empty, 0, false and off in any case ────────────
+{
+  const stack = (r: Run) => /^\s+at /m.test(r.stderr);
+  const failing = (value?: string) => cotal(["team", "check", "nosuch.yaml"], undefined, { ...noSeed, ...(value === undefined ? {} : { COTAL_DEBUG: value }) });
+  const unset = failing();
+  check("rig: a failing command prints no stack with COTAL_DEBUG unset", unset.status === 2 && unset.stderr.includes("TARGET_NOT_FOUND") && !stack(unset), shown(unset));
+  for (const value of ["", "0", "false", "off", "FALSE", "Off"]) {
+    const r = failing(value);
+    check(`COTAL_DEBUG=${value} prints no stack`, r.status === 2 && r.stderr.includes("TARGET_NOT_FOUND") && !stack(r), shown(r));
+  }
+  for (const value of ["1", "yes"]) {
+    const r = failing(value);
+    check(`COTAL_DEBUG=${value} prints the stack under the error`, r.status === 2 && r.stderr.includes("TARGET_NOT_FOUND") && stack(r), shown(r));
+  }
 }
 
 // ── Structured output: one envelope on stdout, the usage refusal included ────────────────────────
@@ -720,7 +738,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 // ── A `✗` line shows the control characters of an argument it repeats as escapes ─────────────────
 {
   const utf8 = { ...noSeed, LC_ALL: "C.UTF-8" };
-  for (const [what, args] of [["an unknown command", ["c\u001b[2J"]], ["an unknown docs page", ["docs", "d\u001b[2J"]], ["an unknown preference", ["config", "get", "k\u001b[2J"]], ["an invalid channel", ["send", "-c", "c\u001b[2J", "x"]]] as const) {
+  for (const [what, args] of [["an unknown command", ["c\u001b[2J"]], ["an unknown docs page", ["docs", "d\u001b[2J"]], ["an unknown preference", ["config", "get", "k\u001b[2J"]], ["an invalid channel", ["send", "-c", "c\u001b[2J", "x"]],
+    ["an unknown topology subcommand", ["topology", "z\u001b[2J"]], ["a missing topology manifest", ["topology", "view", "-f", "m\u001b[2J.yaml"]], ["an unknown meshes subcommand", ["meshes", "z\u001b[2J"]],
+    ["an unregistered mesh to remove", ["meshes", "rm", "a\u001b[2J"]], ["a missing teardown manifest", ["down", "-f", "d\u001b[2J.yaml", "--yes"]]] as const) {
     const r = cotal([...args], undefined, utf8);
     check(`${what} is refused on a ✗ line that shows its escape sequence escaped`,
       r.status === 1 && r.stderr.startsWith("✗ ") && r.stderr.includes("\\u001b[2J") && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(r.stdout + r.stderr), shown(r));

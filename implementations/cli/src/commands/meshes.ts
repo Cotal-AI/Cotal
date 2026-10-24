@@ -14,7 +14,7 @@ import {
   terminalWidth,
   type MeshEntry,
 } from "@cotal-ai/workspace";
-import { c } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { liveMeshOwner } from "./clean.js";
@@ -77,13 +77,13 @@ export async function meshes(args: ParsedArgs): Promise<void> {
   const sub = args.positionals[0];
   const v = args.values as Values;
   if (v.json && (sub === "add" || sub === "rm" || sub === "remove")) {
-    console.error(c.red(`✗ meshes ${sub}: --json is taken by the list only`));
+    stderrLine("✗ ", `meshes ${sub}: --json is taken by the list only`, c.red);
     process.exit(1);
   }
   if (sub === "add") return addMesh(args.positionals.slice(1), v);
   if (sub === "rm" || sub === "remove") return removeMeshes(args.positionals.slice(1), v);
   if (sub !== undefined && sub !== "list") {
-    console.error(c.red(`✗ unknown subcommand "${sub}" - usage: cotal meshes [list | add <space> --server <url> | rm <space> …]`));
+    stderrLine("✗ ", `unknown subcommand "${sub}" - usage: cotal meshes [list | add <space> --server <url> | rm <space> …]`, c.red);
     process.exit(1);
   }
   return listMeshes(v.json === true);
@@ -198,7 +198,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     process.exit(1);
   }
   if (!v.server) {
-    console.error(c.red("✗ --server <url> is required - a mesh you did not start here has no address to infer (e.g. --server nats://100.90.12.34:4222, its address on your private overlay)"));
+    stderrLine("✗ ", "--server <url> is required - a mesh you did not start here has no address to infer (e.g. --server nats://100.90.12.34:4222, its address on your private overlay)", c.red);
     process.exit(1);
   }
   const server = take(checkServer(v.server, "--server"));
@@ -224,7 +224,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   // refuses it: replacing that registration leaves its running stack with nothing to stop it by.
   const existing = handAddedRegistration(space, Boolean(v.force), { space });
   if (existing && !v.force) {
-    console.error(c.red(`✗ "${space}" is already registered at ${existing.server} (${existing.root}) - \`cotal meshes rm ${space}\` first, or --force to replace it`));
+    stderrLine("✗ ", `"${space}" is already registered at ${existing.server} (${existing.root}) - \`cotal meshes rm ${space}\` first, or --force to replace it`, c.red);
     process.exit(1);
   }
 
@@ -268,11 +268,11 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
  *  it — with the bundle's recorded strictness as the policy input. */
 async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<void> {
   if (v.mode !== undefined && v.mode !== "user") {
-    console.error(c.red(`✗ --user-auth-file/--from register a user-auth mesh - they cannot be combined with --mode ${v.mode}`));
+    stderrLine("✗ ", `--user-auth-file/--from register a user-auth mesh - they cannot be combined with --mode ${v.mode}`, c.red);
     process.exit(1);
   }
   if (v["user-auth-file"] && v.from) {
-    console.error(c.red("✗ pass either --user-auth-file or --from, not both - they are two sources for the same pinned trust"));
+    stderrLine("✗ ", "pass either --user-auth-file or --from, not both - they are two sources for the same pinned trust", c.red);
     process.exit(1);
   }
   // No source supplied at all: this is the old blanket refusal's successor, and it must carry the
@@ -290,7 +290,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
     try {
       raw = readFileSync(v["user-auth-file"], "utf8");
     } catch (e) {
-      console.error(c.red(`✗ cannot read --user-auth-file ${v["user-auth-file"]} (${(e as Error).message})`));
+      stderrLine("✗ ", `cannot read --user-auth-file ${v["user-auth-file"]} (${(e as Error).message})`, c.red);
       process.exit(1);
     }
     bundle = take(checkUserBundle(raw));
@@ -303,11 +303,11 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
       // `--from` also takes the document URL itself, the form the `--mode user` refusal names.
       disco = from.pathname.endsWith("/.well-known/cotal-mesh") ? from : discoveryDocumentUrl(from);
     } catch {
-      console.error(c.red(`✗ --from is not a URL`));
+      stderrLine("✗ ", `--from is not a URL`, c.red);
       process.exit(1);
     }
     if (disco.protocol !== "https:") {
-      console.error(c.red(`✗ --from must be an https:// URL - the discovery document carries the trust pins this registration adopts, and a plaintext fetch lets the network choose them`));
+      stderrLine("✗ ", `--from must be an https:// URL - the discovery document carries the trust pins this registration adopts, and a plaintext fetch lets the network choose them`, c.red);
       process.exit(1);
     }
     // CONSENT BEFORE THE NETWORK. Fetching first meant a bare `--from <url>` reached out to a
@@ -315,7 +315,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
     // agree at all. Ask for the address itself first; the pins fetched from it are confirmed
     // separately below.
     if (!canPrompt()) {
-      console.error(c.red("✗ --from needs a terminal to display and confirm the fetched pins - in a script, export the bundle where the mesh runs and pass it with --user-auth-file"));
+      stderrLine("✗ ", "--from needs a terminal to display and confirm the fetched pins - in a script, export the bundle where the mesh runs and pass it with --user-auth-file", c.red);
       process.exit(1);
     }
     const goFetch = await clackIO().confirm({ message: `Fetch trust pins from ${disco}?`, initialValue: false });
@@ -328,7 +328,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
       // judge it by the same redirect and timeout rule.
       const res = await pinnedFetch(disco.toString(), `--from ${disco}`);
       if (!res.ok) {
-        console.error(c.red(`✗ ${disco} answered ${res.status} - no discovery document there`));
+        stderrLine("✗ ", `${disco} answered ${res.status} - no discovery document there`, c.red);
         process.exit(1);
       }
       bundle = take(await checkDiscoveryDocument(res));
@@ -340,7 +340,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   }
   const space = spaceArg ?? bundle.space;
   if (spaceArg && bundle.space !== spaceArg) {
-    console.error(c.red(`✗ the bundle is for space "${bundle.space}" but the command names "${spaceArg}" - a bundle registers the space it was exported for`));
+    stderrLine("✗ ", `the bundle is for space "${bundle.space}" but the command names "${spaceArg}" - a bundle registers the space it was exported for`, c.red);
     process.exit(1);
   }
   take(checkSpaceName(space));
@@ -380,7 +380,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
 
   const existing = handAddedRegistration(space, Boolean(v.force), { space });
   if (existing && !v.force) {
-    console.error(c.red(`✗ "${space}" is already registered at ${existing.server} (${existing.root}) - \`cotal meshes rm ${space}\` first, or --force to replace it`));
+    stderrLine("✗ ", `"${space}" is already registered at ${existing.server} (${existing.root}) - \`cotal meshes rm ${space}\` first, or --force to replace it`, c.red);
     process.exit(1);
   }
 
@@ -423,7 +423,7 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
   for (const space of names) {
     const m = findMesh(space);
     if (!m) {
-      console.error(c.red(`✗ no mesh named "${space}" is registered - see \`cotal meshes\``));
+      stderrLine("✗ ", `no mesh named "${space}" is registered - see \`cotal meshes\``, c.red);
       failed = true;
       continue;
     }
@@ -454,7 +454,7 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
       }
     }
     if (running) {
-      console.error(c.red(`✗ "${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record${v.force ? "; --force does not drop it while the mesh runs, because `cotal down` finds the mesh by it" : ""}`));
+      stderrLine("✗ ", `"${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record${v.force ? "; --force does not drop it while the mesh runs, because `cotal down` finds the mesh by it" : ""}`, c.red);
       failed = true;
       continue;
     }

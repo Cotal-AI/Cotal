@@ -94,7 +94,7 @@ import {
   type SpaceMaterialComposition,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
-import { c } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
@@ -488,7 +488,7 @@ const splitFlag = (v?: string) => (v === undefined ? undefined : v.split(",").ma
 function refuseUnmintableNameOrExit(name: string, userMode: boolean): void {
   const refusal = spawnNameError(name, { userMode });
   if (refusal) {
-    console.error(c.red(`✗ ${refusal}`));
+    stderrLine("✗ ", `${refusal}`, c.red);
     process.exit(1);
   }
 }
@@ -730,12 +730,12 @@ async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined
     await materializeExtension({ kind: "connector", name: agent });
     found = registry.resolve<Connector>("connector", agent).resumeTranscript?.find(id, process.env);
   } catch (e) {
-    console.error(c.red(`✗ resume: ${(e as Error).message}`));
+    stderrLine("✗ ", `resume: ${(e as Error).message}`, c.red);
     process.exit(1);
   }
   if (found === undefined) return undefined;
   if (on === undefined) {
-    console.error(c.red(`✗ resume: session ${id} is held on this host, and carrying it needs one manager instance; pass --on <instance>`));
+    stderrLine("✗ ", `resume: session ${id} is held on this host, and carrying it needs one manager instance; pass --on <instance>`, c.red);
     process.exit(1);
   }
   const bytes = readFileSync(found.path);
@@ -774,12 +774,12 @@ async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, insta
       const view = await userViewAuth(conn, "transfer-writer", { transferWriter: { instanceId, hex } });
       return { bearer: view.bearer, sentinelCreds: view.sentinelCreds, tls: conn.tls };
     } catch (e) {
-      console.error(c.red(`✗ resume: ${(e as Error).message}`));
+      stderrLine("✗ ", `resume: ${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
   if (t.mode !== "auth" || !t.spaceAuth) {
-    console.error(c.red("✗ resume: carrying a session mints a transfer writer from this mesh's signing seed, and this host holds none for it (an off-registry connection)"));
+    stderrLine("✗ ", "resume: carrying a session mints a transfer writer from this mesh's signing seed, and this host holds none for it (an off-registry connection)", c.red);
     process.exit(1);
   }
   return { creds: await mintCreds(t.spaceAuth, newIdentity(), "transfer-writer", { transferWriter: { instanceId, hex } }), tls: t.auth.tls };
@@ -838,13 +838,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       : !values.config ? `${MANAGED_HANDOFF_FILE_ENV} requires --config <persona-file>`
       : undefined;
     if (refusal) {
-      console.error(c.red(`✗ ${refusal}`));
+      stderrLine("✗ ", `${refusal}`, c.red);
       process.exit(1);
     }
     try {
       loadLaunchPersonaFile(resolvePath(values.config!));
     } catch (e) {
-      console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+      stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
       process.exit(1);
     }
     try {
@@ -866,29 +866,29 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       }
       if (!registered) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), HANDOFF_REFUSALS);
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
   if (enrollmentUrl && values.detach) {
-    console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`));
+    stderrLine("✗ ", `${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`, c.red);
     process.exit(1);
   }
   if (enrollmentUrl && !values.space) {
-    console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`));
+    stderrLine("✗ ", `${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`, c.red);
     process.exit(1);
   }
   const direct = values.foreground === true || handoffText !== undefined || enrollmentUrl !== undefined || !spawnUsesManager(values);
   const enrollmentBootstrap = Boolean(enrollmentUrl && values.space && !findMesh(values.space));
   if (enrollmentBootstrap) {
     if (!values.config || (!values.config.includes("/") && !values.config.includes("\\") && !values.config.endsWith(".md"))) {
-      console.error(c.red("✗ enrollment bootstrap needs --config <persona-file>; no remote persona catalog exists on this machine yet"));
+      stderrLine("✗ ", "enrollment bootstrap needs --config <persona-file>; no remote persona catalog exists on this machine yet", c.red);
       process.exit(1);
     }
     try {
       loadLaunchPersonaFile(resolvePath(values.config));
     } catch (e) {
-      console.error(c.red(`✗ cannot load the enrollment bootstrap persona: ${(e as Error).message}`));
+      stderrLine("✗ ", `cannot load the enrollment bootstrap persona: ${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
@@ -896,7 +896,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Explicit files retain the execution host's path semantics. A manager pin is meaningful for
   // either managed persona spelling; direct execution has no manager placement to select.
   if (values.on !== undefined && direct) {
-    console.error(c.red("✗ --on pins a managed imperative launch; a spawn in this terminal does not take that manager selector"));
+    stderrLine("✗ ", "--on pins a managed imperative launch; a spawn in this terminal does not take that manager selector", c.red);
     process.exit(1);
   }
   // `--resume ""` / `--resume=` means the operator asked to resume but named no session — fail loud
@@ -927,7 +927,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // grants publish on the channel the connector names. Both are required, which is what stops a
   // hand-written grant from turning events on by itself.
   if (values.events && values["no-events"]) {
-    console.error(c.red("✗ --events and --no-events are mutually exclusive"));
+    stderrLine("✗ ", "--events and --no-events are mutually exclusive", c.red);
     process.exit(1);
   }
   // #373: the detached path sends the bit ONLY when the operator chose it. `--events` gives
@@ -942,7 +942,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
   if (values.creds) {
-    console.error(c.red("✗ --creds is only valid with --detach (it authenticates the manager control call)"));
+    stderrLine("✗ ", "--creds is only valid with --detach (it authenticates the manager control call)", c.red);
     process.exit(1);
   }
 
@@ -965,7 +965,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         throw new Error("space is not registered and the enrollment bundle carries no stock { server, tlsRequired, userAuth } mesh material");
       await registerEnrollmentMesh(redeemedEnrollment.stock, resolvePath(values.config!, ".."));
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
@@ -977,25 +977,25 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const target = handoffText === undefined
     ? await resolveTargetOrExit({ server: values.server, space: values.space })
     : await resolveTargetOrThrow({ server: values.server, space: values.space }).catch(() => {
-      console.error(c.red(`✗ ${HANDOFF_REFUSALS.target}`));
+      stderrLine("✗ ", `${HANDOFF_REFUSALS.target}`, c.red);
       process.exit(1);
     });
   if (handoffText !== undefined && !(target.mode === "user" && target.userAuth?.remote)) {
-    console.error(c.red("✗ the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff"));
+    stderrLine("✗ ", "the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff", c.red);
     process.exit(1);
   }
   let policy: typeof target.policy;
   try {
     policy = await refreshRegistrationPolicy(target);
   } catch (e) {
-    console.error(c.red(`✗ ${handoffText === undefined ? (e as Error).message : HANDOFF_REFUSALS.policy}`));
+    stderrLine("✗ ", `${handoffText === undefined ? (e as Error).message : HANDOFF_REFUSALS.policy}`, c.red);
     process.exit(1);
   }
   const eventsRequired = policy?.events === "required";
   // A handoff's space is a value from the document, so its policy refusals name the field instead.
   const policySpace = handoffText === undefined ? `space "${target.space}"` : "the managed handoff's space";
   if (eventsRequired && values["no-events"]) {
-    console.error(c.red(`✗ ${policySpace} requires the event plane by registration policy; --no-events is not allowed`));
+    stderrLine("✗ ", `${policySpace} requires the event plane by registration policy; --no-events is not allowed`, c.red);
     process.exit(1);
   }
   // Foreground is the operator's own in-process launch (no typed door, no epAdminReach) and is
@@ -1018,12 +1018,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     const code = (e as NodeJS.ErrnoException).code;
     // The not-found text names the mesh's space and server, which for a handoff are its values.
     if (handoffText !== undefined) {
-      console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+      stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
     } else if (code === "ENOENT") {
       const missing = missingPersona(target, ref, personaFrom, path);
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
     } else {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
     }
     process.exit(1);
   }
@@ -1043,7 +1043,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
   const launchOptions = mergeLaunchOptions(def.launchOptions, cliLaunchOptions);
   if (redeemedEnrollment && redeemedEnrollment.bundle.actor !== requested) {
-    console.error(c.red(`✗ the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`));
+    stderrLine("✗ ", `the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`, c.red);
     process.exit(1);
   }
   // #867: same door as the detached path — the effective identity (flag or file) must be mintable
@@ -1062,11 +1062,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       launchOptions,
     });
     if (refusal) {
-      console.error(c.red(`✗ ${refusal}`));
+      stderrLine("✗ ", `${refusal}`, c.red);
       process.exit(1);
     }
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
 
@@ -1075,7 +1075,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (handoffText === undefined) await preflightOrExit(target);
   else
     await preflightOrThrow(target).catch(() => {
-      console.error(c.red(`✗ ${HANDOFF_REFUSALS.preflight}`));
+      stderrLine("✗ ", `${HANDOFF_REFUSALS.preflight}`, c.red);
       process.exit(1);
     });
 
@@ -1095,22 +1095,22 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     await materializeExtension({ kind: "connector", name: agentType });
   } catch (e) {
     if (!connectorListed(agentType)) throw missingConnector(agentType, { space, path });
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
   let connector: Connector;
   try {
     connector = registry.resolve<Connector>("connector", agentType);
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
   if (variant && !connector.supportsModelVariant) {
-    console.error(c.red(`✗ ${agentType} connector does not support model variants (variant)`));
+    stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
     process.exit(1);
   }
   if (values.prompt !== undefined && !connector.supportsPrompt) {
-    console.error(c.red(`✗ ${agentType} connector does not support an initial prompt (prompt)`));
+    stderrLine("✗ ", `${agentType} connector does not support an initial prompt (prompt)`, c.red);
     process.exit(1);
   }
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
@@ -1153,7 +1153,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   try {
     allowSubscribe = resolveReadAcl(subscribe ?? [], splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe);
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
   let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
@@ -1176,7 +1176,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     ? target.userAuth.endpoints?.agentProvisioningUrl
     : undefined;
   if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl && !redeemedEnrollment) {
-    console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
+    stderrLine("✗ ", `mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`, c.red);
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), run the agent there, or add -d to launch it through one of your managers`));
     process.exit(1);
   }
@@ -1205,14 +1205,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     await attemptCleanup(failed, "broker teardown", () =>
       mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid } })
         .then((dc) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid, creds: dc })));
-    if (failed.length) console.error(c.red(`✗ cleaning up after ${name}: ${describeCleanupFailures(failed)}`));
+    if (failed.length) stderrLine("✗ ", `cleaning up after ${name}: ${describeCleanupFailures(failed)}`, c.red);
     else console.error(`  ↩ retired creds for ${name} (${why})`);
   };
   if (target.mode === "user" && target.userAuth?.remote && (enrollmentUrl || redeemedEnrollment)) {
     if (!redeemedEnrollment) {
       // The record alone decides this refusal, and the redemption below spends the enrollment.
       if (!target.userAuth.endpoints?.url) {
-        console.error(c.red(`✗ ${noExchangeEndpoint(space)}`));
+        stderrLine("✗ ", `${noExchangeEndpoint(space)}`, c.red);
         process.exit(1);
       }
       try {
@@ -1222,21 +1222,21 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         const body = await provider.postAgentEnrollment({ url: enrollmentUrl!, idpUrl: target.userAuth.idp.url });
         redeemedEnrollment = checkEnrollmentBundle(body, name);
       } catch (e) {
-        console.error(c.red(`✗ ${(e as Error).message}`));
+        stderrLine("✗ ", `${(e as Error).message}`, c.red);
         process.exit(1);
       }
     }
     const enrolled = redeemedEnrollment.bundle;
     if (enrolled.space !== space) {
-      console.error(c.red(`✗ the enrollment is for space "${enrolled.space}" but this spawn targets "${space}"`));
+      stderrLine("✗ ", `the enrollment is for space "${enrolled.space}" but this spawn targets "${space}"`, c.red);
       process.exit(1);
     }
     if (enrolled.idp.url !== target.userAuth.idp.url || enrolled.idp.issuer !== target.userAuth.idp.issuer || enrolled.idp.audience !== target.userAuth.idp.audience) {
-      console.error(c.red("✗ the enrollment's IdP pins do not match the registered mesh"));
+      stderrLine("✗ ", "the enrollment's IdP pins do not match the registered mesh", c.red);
       process.exit(1);
     }
     if (target.userAuth.endpoints?.url !== enrolled.authServiceUrl) {
-      console.error(c.red("✗ the enrollment's authServiceUrl does not match the registered mesh exchange"));
+      stderrLine("✗ ", "the enrollment's authServiceUrl does not match the registered mesh exchange", c.red);
       process.exit(1);
     }
     const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl },
@@ -1427,7 +1427,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // Launch construction / spawn threw AFTER provisioning — undo BOTH planes (each a no-op in the
     // other's mode): revoke the user-mode actor grant AND roll back the static-auth creds + footprint,
     // before rethrowing, so no standing grant survives a spawn that never started.
-    if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ cleaning up after ${name}: ${(err as Error).message}`)));
+    if (userCleanup) await userCleanup().catch((err) => stderrLine("✗ ", `cleaning up after ${name}: ${(err as Error).message}`, c.red));
     await retireProvision("launch build failed");
     // The launch's private files (core launch-artifacts) go too: no child will read them.
     discardLaunchArtifacts(artifacts);
@@ -1437,7 +1437,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     child.on("error", (e) => {
       // The exec never started, so the just-provisioned static-auth identity is orphaned — roll it
       // back. (User-mode revoke runs unconditionally once this promise settles, below.)
-      console.error(`✗ failed to launch ${spec.command}: ${e.message}`);
+      stderrLine("✗ ", `failed to launch ${spec.command}: ${e.message}`, (line) => line);
       void retireProvision("exec failed").finally(() => {
         process.exitCode = 1;
         resolve();
@@ -1457,7 +1457,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
   // (a SIGKILLed CLI can't run this; its retained grant needs operator recovery), loud
   // on failure, never blocking the exit code already set above.
-  if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ cleaning up after ${name}: ${(e as Error).message}`)));
+  if (userCleanup) await userCleanup().catch((e) => stderrLine("✗ ", `cleaning up after ${name}: ${(e as Error).message}`, c.red));
   // The child has exited or never started, so nothing reads the launch's private files any more
   // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
   discardLaunchArtifacts(spec.artifacts);
@@ -1578,7 +1578,7 @@ async function provisionRemoteUserForeground(
   const store = workspaceSecretStore(target.root);
   const composition = { injected: false as const, root: target.root };
   const fail = (msg: string): never => {
-    console.error(c.red(`✗ ${msg}`));
+    stderrLine("✗ ", `${msg}`, c.red);
     process.exit(1);
   };
   // Resolved first, as by every consumer of the space's local state: each resolution migrates a
@@ -1710,7 +1710,7 @@ async function provisionUserForeground(
   const store = workspaceSecretStore(target.root);
   const composition = { injected: false as const, root: target.root };
   const fail = (msg: string): never => {
-    console.error(c.red(`✗ ${msg}`));
+    stderrLine("✗ ", `${msg}`, c.red);
     process.exit(1);
   };
   let provider: ReturnType<typeof resolveAuthProvider>;

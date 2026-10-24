@@ -28,7 +28,7 @@ import {
 import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { c, presenceFacts } from "../ui.js";
+import { c, presenceFacts, stderrLine } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
@@ -328,7 +328,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
     recordOperationSpace(loc.space);
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to reach agent "${oneLine(String(v.name))}"`, { target: { space: loc.space, managerInstanceId: null, agent: String(v.name) }, native: loc.native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
   }
-  console.error(c.red(`✗ ${seatMissRefusal(String(v.name), verb, loc)}`));
+  stderrLine("✗ ", `${seatMissRefusal(String(v.name), verb, loc)}`, c.red);
   process.exit(1);
 }
 

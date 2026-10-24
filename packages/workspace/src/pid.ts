@@ -95,17 +95,15 @@ export function processStopped(pid: number): boolean {
   } catch { return false; }
 }
 
-/** The stopped process of this account that holds the listening socket a loopback `server` dials,
- *  or `undefined`. A stopped broker still takes connections, because the kernel completes them, and
- *  never greets, so a dial waits out its whole budget. Linux reads `/proc/net/tcp{,6}` and the
- *  stopped processes' descriptors; elsewhere this is `undefined`. */
-export function stoppedLoopbackListener(server: string): number | undefined {
-  if (process.platform !== "linux") return undefined;
+/** The listening sockets a loopback `server` dials, as the `socket:[inode]` links a holder's
+ *  descriptors show, or `undefined` for a host that is not loopback. An `http:` address without a
+ *  port is on 80, and any other on 4222. Linux reads `/proc/net/tcp{,6}`. */
+function loopbackListenSockets(server: string): Set<string> | undefined {
   let host: string, port: number;
   try {
     const url = new URL(server.includes("://") ? server : `nats://${server}`);
     host = url.hostname.replace(/^\[|\]$/g, "");
-    port = url.port ? Number(url.port) : 4222;
+    port = url.port ? Number(url.port) : url.protocol === "http:" ? 80 : 4222;
   } catch { return undefined; }
   if (!(host === "localhost" || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host))) return undefined;
   const sockets = new Set<string>();
@@ -118,17 +116,70 @@ export function stoppedLoopbackListener(server: string): number | undefined {
       if (field[3] === "0A" && parseInt(field[1]?.split(":").pop() ?? "", 16) === port && field[9]) sockets.add(`socket:[${field[9]}]`);
     }
   }
-  if (sockets.size === 0) return undefined;
+  return sockets;
+}
+
+/** Whether `pid` has a descriptor on one of `sockets`. A process this account cannot read has none. */
+function holdsSocket(pid: number, sockets: ReadonlySet<string>): boolean {
+  let fds: string[];
+  try { fds = readdirSync(`/proc/${pid}/fd`); } catch { return false; }
+  for (const fd of fds) {
+    try { if (sockets.has(readlinkSync(`/proc/${pid}/fd/${fd}`))) return true; } catch { /* the descriptor closed */ }
+  }
+  return false;
+}
+
+/** The stopped process of this account that holds the listening socket a loopback `server` dials,
+ *  or `undefined`. A stopped broker still takes connections, because the kernel completes them, and
+ *  never greets, so a dial waits out its whole budget. Linux reads `/proc/net/tcp{,6}` and the
+ *  stopped processes' descriptors; elsewhere this is `undefined`. */
+export function stoppedLoopbackListener(server: string): number | undefined {
+  if (process.platform !== "linux") return undefined;
+  const sockets = loopbackListenSockets(server);
+  if (!sockets?.size) return undefined;
   for (const entry of readdirSync("/proc")) {
     const pid = parsePid(entry);
-    if (pid === undefined || !processStopped(pid)) continue;
-    let fds: string[];
-    try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
-    for (const fd of fds) {
-      try { if (sockets.has(readlinkSync(`/proc/${pid}/fd/${fd}`))) return pid; } catch { /* the descriptor closed */ }
-    }
+    if (pid !== undefined && processStopped(pid) && holdsSocket(pid, sockets)) return pid;
   }
   return undefined;
+}
+
+/** Every process of this account that listens where a loopback `server` dials, so a report can name
+ *  what holds an address. Linux only; elsewhere, and for a host that is not loopback, none. */
+export function loopbackListeners(server: string): number[] {
+  if (process.platform !== "linux") return [];
+  const sockets = loopbackListenSockets(server);
+  if (!sockets?.size) return [];
+  return readdirSync("/proc").flatMap((entry) => {
+    const pid = parsePid(entry);
+    return pid !== undefined && holdsSocket(pid, sockets) ? [pid] : [];
+  });
+}
+
+/** The state, ppid and pgrp fields of `/proc/<pid>/stat`, which follow the parenthesised name, or
+ *  `undefined` when the process is gone. */
+function statFields(pid: number): string[] | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ", 3);
+  } catch { return undefined; }
+}
+
+/** The process group `pid` belongs to, or `undefined` when it is gone or this is not Linux. */
+export function processGroupOf(pid: number): number | undefined {
+  if (process.platform !== "linux") return undefined;
+  return parsePid(statFields(pid)?.[2] ?? "");
+}
+
+/** The live processes in process group `pgid`. A zombie has exited and holds nothing, so it is not
+ *  one. Linux only; elsewhere none. */
+export function processGroupMembers(pgid: number): number[] {
+  if (process.platform !== "linux") return [];
+  return readdirSync("/proc").flatMap((entry) => {
+    const pid = parsePid(entry);
+    const fields = pid === undefined ? undefined : statFields(pid);
+    return fields && fields[0] !== "Z" && fields[0] !== "X" && parsePid(fields[2] ?? "") === pgid ? [pid!] : [];
+  });
 }
 
 // ---- the manager's own record ------------------------------------------------------------------

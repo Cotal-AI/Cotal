@@ -116,6 +116,7 @@ import { invalidEnvironmentValues } from "./config.js";
 import { onInstance } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
+import { readinessAddressSurvivors } from "../lib/service-process.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { maintenanceNextStep, preservedSourceState, restoreNextStep, rolledBackNotes } from "../lib/restore.js";
@@ -410,6 +411,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   try { preferences = cachedPreferences(); } catch { preferences = { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} }; }
   const context = { preferences, space: selected.ok ? selected.target.space : undefined };
   const invalidValues = invalidEnvironmentValues(PREFERENCE_KEYS.map((key) => resolvePreference(key, context)));
+  // An address a saved service's readiness checks that still answers with none of its instances
+  // running is named, but it is not a part status failed to read, so the run stays complete.
+  const survivors = selected.ok && services.state === "read" ? await readinessAddressSurvivors(selected.target.space) : [];
   writeResult(
     presentation,
     {
@@ -417,7 +421,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       target: { space: selected.ok ? selected.target.space : null, scope: values.all ? "all" : "selected" },
       result,
       completeness: parts ? "partial" : "complete",
-      warnings: [...gaps.warnings, ...invalidValues],
+      warnings: [...gaps.warnings, ...invalidValues, ...survivors],
       ...(parts ? { partial: { message: `status could not read ${parts === 1 ? "one part" : `${parts} parts`} of what it reports; the warnings name ${parts === 1 ? "it" : "each"}` } } : {}),
     },
     (result) => statusView(result, Boolean(values.verbose)),

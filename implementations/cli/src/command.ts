@@ -44,6 +44,7 @@ import {
   type OutputWarning,
 } from "@cotal-ai/workspace";
 import { c, staleStoreHint, stderrLine } from "./ui.js";
+import { debugFlag } from "./lib/debug-flag.js";
 import {
   isExtensionStub,
   materializeExtension,
@@ -141,7 +142,7 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
 
 /** Under COTAL_DEBUG, print the failure's stack and the stack of each error that caused it. */
 function debugStacks(failure: Error): void {
-  if (!process.env.COTAL_DEBUG) return;
+  if (!debugFlag("COTAL_DEBUG")) return;
   let error: unknown = failure;
   for (let depth = 0; error instanceof Error && depth < 8; error = error.cause, depth++) if (error.stack) console.error(c.dim(error.stack));
 }
@@ -712,7 +713,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // `…OrExit` helper.
     if (isWorkspaceTargetError(e)) {
       console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
-      if (process.env.COTAL_DEBUG && e instanceof Error && e.stack) console.error(c.dim(e.stack));
+      if (debugFlag("COTAL_DEBUG") && e instanceof Error && e.stack) console.error(c.dim(e.stack));
       process.exit(1);
     }
     // A command without structured output shows the same choice and keeps its exit 1.
@@ -731,7 +732,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // collision names the `cotal clean` reset) - the error itself stays verbatim.
     const hint = staleStoreHint(msg);
     if (hint) stderrLine("  ↳ ", hint, c.dim);
-    if (process.env.COTAL_DEBUG && e instanceof Error && e.stack) console.error(c.dim(e.stack));
+    if (debugFlag("COTAL_DEBUG") && e instanceof Error && e.stack) console.error(c.dim(e.stack));
     process.exit(1);
   }
 }

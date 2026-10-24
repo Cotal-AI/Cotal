@@ -5,7 +5,8 @@
  * and `completion install` writes only there. A symlinked startup file is refused by name with the
  * line to add where it points, and a group-writable one with the chmod that fixes it. An edited owned
  * stub or block is refused with `--force` as its way out, which keeps startup content outside the
- * markers.
+ * markers. A completer that fails writes its reason to stderr only under COTAL_COMPLETE_DEBUG, which
+ * an empty value, `0`, `false` or `off`, in any case, leaves off.
  *
  * Run: pnpm smoke:completion-status
  */
@@ -394,6 +395,26 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("send -c and history offer the channels a prepared space's personas declare", /^general$/m.test(channels.stdout) && /^general$/m.test(history.stdout), { send: shown(channels), history: shown(history) });
   const deletable = s.run(["__complete", "space", "delete", ""]);
   check("space delete offers a prepared space, as space show does", /^prep$/m.test(deletable.stdout), shown(deletable));
+}
+
+// A completer that fails prints nothing on stdout and exits 1. COTAL_COMPLETE_DEBUG prints why on
+// stderr, and an empty value, 0, false or off, in any case, leaves it off.
+{
+  const s = sandbox();
+  const meshes = join(s.home, ".cotal", "meshes");
+  mkdirSync(meshes, { recursive: true, mode: 0o700 });
+  writeFileSync(join(meshes, "broken.json"), "not json", { mode: 0o600 });
+  const complete = (value?: string) => s.run(["__complete", "status", "--space", ""], value === undefined ? {} : { COTAL_COMPLETE_DEBUG: value });
+  const unset = complete();
+  check("rig: a space completion over a malformed mesh record fails silently with COTAL_COMPLETE_DEBUG unset", unset.status === 1 && unset.stdout === "" && unset.stderr === "", shown(unset));
+  for (const value of ["", "0", "false", "off", "FALSE", "Off"]) {
+    const r = complete(value);
+    check(`COTAL_COMPLETE_DEBUG=${value} prints nothing`, r.status === 1 && r.stdout === "" && r.stderr === "", shown(r));
+  }
+  for (const value of ["1", "yes"]) {
+    const r = complete(value);
+    check(`COTAL_COMPLETE_DEBUG=${value} names the malformed record on stderr`, r.status === 1 && r.stdout === "" && r.stderr.startsWith("cotal __complete: ") && r.stderr.includes("broken.json does not parse as a mesh record"), shown(r));
+  }
 }
 
 // ── A modified owned integration names its way out ──────────────────────────────────────────────────
