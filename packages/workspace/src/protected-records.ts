@@ -252,7 +252,9 @@ const systemPolicy = (): ProtectedPathPolicy => processPolicy ??= protectedPathP
 
 type EntryStat = Pick<Stats, "uid" | "gid" | "mode" | "isDirectory" | "isSymbolicLink">;
 
-const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
+/** `path` as one POSIX shell word, quoted when a shell would split or expand it, so a remedy that
+ *  names it can be pasted. */
+export const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
 
 /** One entry another local account could replace or write, and the kind of change that fixes it. */
 type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "g-w-or-acl" };
