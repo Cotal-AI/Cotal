@@ -289,7 +289,8 @@ try {
   }
 
   // A catalog travels with a cloned repo, so on a terminal `personas show` escapes its control characters.
-  const catalog = join(home, "catalog");
+  // A project catalog must be outside the Cotal control home.
+  const catalog = mkdtempSync(join(tmpdir(), "cotal-cli-pty-catalog-"));
   mkdirSync(join(catalog, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(catalog, ".cotal", "agents", "evb.md"), "---\nname: evb\nsubscribe: []\n---\nbody \x1b]0;PWN\x07\x1b[2JB\n");
   const showPty = cotalPty(["personas", "show", "evb"], { cwd: catalog, env });
