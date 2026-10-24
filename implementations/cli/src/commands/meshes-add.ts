@@ -22,6 +22,7 @@ import {
   PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
   setCurrent,
+  spaceNameTooLong,
   userAuthStateDir,
   type Check,
   type DialPolicy,
@@ -193,8 +194,11 @@ const isSpaceMode = (value: string): value is (typeof SPACE_MODES)[number] => (S
  *  space's account record means auth; anything else is an open broker. `--mode user` is permitted
  *  IFF the pinned trust was SUPPLIED (`userTrustSupplied`) — the old blanket refusal reasoned
  *  that IdP pins must be established, never guessed, and supplying them (a bundle exported where
- *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. */
+ *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. Every
+ *  add path asks it first, so a space name too long for the local files that carry it is refused here. */
 export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined, userTrustSupplied = false): Check<MeshEntry["mode"]> {
+  const tooLong = spaceNameTooLong(space);
+  if (tooLong) return bad(`✗ ${tooLong}; nothing was written`, "USAGE_INVALID");
   if (flag !== undefined && !isSpaceMode(flag))
     return bad(`✗ --mode must be auth, open or user (got "${flag}")`, "USAGE_INVALID");
   if (flag === "user" && !userTrustSupplied)
