@@ -5,7 +5,8 @@
  * assumed `main`, and bare `cotal auth` points to `cotal space` instead of printing an unfilled
  * `--space`. On a space whose root holds no user-auth ledger, both refuse UNSUPPORTED instead of
  * listing no rows. On a registered static or open space, list, grant and revoke refuse UNSUPPORTED
- * under both spellings and say that actor grants need a user-auth space; nothing is written. A
+ * under both spellings and say that actor grants need a user-auth space, grant and revoke before
+ * they ask for a subject or the ACL flags; nothing is written. A
  * user-auth space lists its row under both spellings, and bare `cotal auth` fills its Next lines
  * with the named or resolved space. `auth retire` refuses UNSUPPORTED there too, and its help and
  * refusal name the lever that works, rotating the space identity. Broker-free; the mesh registry and
@@ -147,6 +148,14 @@ try {
       assert.equal(actor.failure?.remedy, "actor grants apply only to a space started with `cotal up --user-auth`", `actor ${c.verb} on a static space: remedy`);
       assert.deepEqual(refusal(actor.failure), refusal(auth.failure), `actor ${c.verb} and auth ${c.auth} refuse alike on a static space`);
     }
+    // Grant and revoke refuse there before they ask for a subject or the ACL flags, which could not
+    // make them apply.
+    for (const verb of ["grant", "revoke"] as const) {
+      const actor = await run(actorCommand, root, { space }, [verb, "alice"]);
+      const auth = await run(authCommand, root, { space }, [verb, "alice"]);
+      assert.equal(actor.failure?.code, "UNSUPPORTED", `actor ${verb} with no --sub on a static space refuses UNSUPPORTED before asking for one: ${actor.failure?.message ?? actor.out}`);
+      assert.deepEqual(refusal(actor.failure), refusal(auth.failure), `actor ${verb} and auth ${verb} with no --sub refuse alike on a static space`);
+    }
     assert.equal(hasUserAuthState(root, space, { readOnly: true }), false, "no user-auth state was written on the static space");
     const named = flat((await run(authCommand, base, { space, plain: true }, [])).out);
     assert.ok(named.includes(`cotal whoami --space ${space}`) && named.includes(`cotal auth grants --space ${space}`), `bare auth --space fills its Next lines: ${named}`);
@@ -174,6 +183,8 @@ try {
     assert.equal(actor.failure?.code, "UNSUPPORTED", `actor grant on an open space refuses: ${actor.failure?.message ?? actor.out}`);
     assert.equal(actor.failure?.message, `space "${space}" is an open space and has no user-auth ledger; no inert grant was written`, "actor grant on an open space says why");
     assert.equal(actor.failure?.remedy, "actor grants apply only to a space started with `cotal up --user-auth`", "actor grant on an open space: remedy");
+    const bare = await run(actorCommand, root, { space }, ["grant", "alice"]);
+    assert.equal(bare.failure?.message, `space "${space}" is an open space and has no user-auth ledger; no inert grant was written`, `actor grant with no --sub or ACL flags on an open space refuses the same way: ${bare.failure?.message ?? bare.out}`);
   }
 } finally {
   process.chdir(startCwd);

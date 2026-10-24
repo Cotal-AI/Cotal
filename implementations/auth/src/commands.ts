@@ -722,8 +722,10 @@ function validateActorArguments(args: ParsedArgs): void {
 const GRANT_COMMON_FLAGS: readonly string[] = ["space", "json", "plain", "no-color", "no-input"];
 
 /** The usage of a grant read or change, `auth grants|grant|revoke` or the same verbs spelled
- *  `actor list|grant|revoke`. It runs before any target or authority is read, so a usage error is
- *  never reported as a capability refusal or a failure, and one refusal names every missing input.
+ *  `actor list|grant|revoke`. It runs before any authority is read, so a usage error is never
+ *  reported as a capability refusal or a failure, and one refusal names every missing input. A grant
+ *  or revoke on a space recorded as static or open refuses `UNSUPPORTED` before its inputs are
+ *  checked, since no subject or ACL could make it apply.
  *  A grant is an upsert of the WHOLE row, so every field must be chosen: either all three ACL flags
  *  are named, or `--full` opts in to the wide default for the ones left off. Omission alone never
  *  means "everything": a dropped flag on a narrow reader grant would otherwise mint a space-wide row
@@ -736,6 +738,10 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   const allowed = [...GRANT_COMMON_FLAGS, ...(mode === list ? [] : ["sub", "owner"]), ...(mode === "grant" ? ["scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full"] : [])];
   if (Object.keys(flags).some((key) => !allowed.includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", `a flag does not belong to this ${command} action`);
   if (mode === list) return;
+  // A static or open space has no ledger on any machine, so it refuses before this asks for a subject
+  // or ACL it could never use.
+  const ledgerless = ledgerlessTarget(flags as { space?: string });
+  if (ledgerless) throw noLedger(ledgerless, mode === "grant" ? "no inert grant was written" : "nothing was revoked");
   const values = flags as { owner?: string; sub?: string; role?: string; parent?: string; scope?: string; full?: boolean; "allow-subscribe"?: string; "allow-publish"?: string };
   const problems: string[] = [];
   const omitted = mode === "grant" && !values.full ? (["scope", "allow-subscribe", "allow-publish"] as const).filter((flag) => values[flag] === undefined) : [];
@@ -759,6 +765,14 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
     for (const channel of [...csv(values["allow-subscribe"], []), ...csv(values["allow-publish"], [])]) assertValidChannel(channel);
     if (csv(values.scope, []).some((scope) => !/^[A-Za-z0-9_:-]+$/.test(scope))) throw new Error();
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid actor, owner, parent, role, scope or channel-pattern input; no grant was changed"); }
+}
+
+/** The target when it resolves to a static or open space, which holds no actor ledger. A target that
+ *  does not resolve is left to the run, which resolves it again and names its next step. */
+function ledgerlessTarget(values: { space?: string }): AuthTarget | undefined {
+  let target: AuthTarget;
+  try { target = localAuthTarget(values); } catch { return undefined; }
+  return target.mode === "auth" || target.mode === "open" ? target : undefined;
 }
 
 /** The root and space a local auth command reads, and the space's auth mode when it is recorded or
