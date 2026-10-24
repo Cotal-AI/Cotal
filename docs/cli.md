@@ -3942,7 +3942,9 @@ draft validation and commit fence. Its `list` escapes control characters in the 
 bodies it prints, as `persona show` does, and shows each persona's description or first prompt line
 whole, wrapped to the terminal's width. Its `show` does the same on a terminal, under the file's
 path, and writes only the file, byte for byte, when its output is piped or redirected, so
-`personas show <name> > <file>` copies it. Only its explicit `--running` overlay connects to the mesh.
+`personas show <name> > <file>` copies it. It refuses a missing persona, an invalid definition and a
+name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
+connects to the mesh.
 That overlay heads the list with the mesh it read and marks each persona `running` or `not running`.
 
 ## supervise

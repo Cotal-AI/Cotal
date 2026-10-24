@@ -280,8 +280,9 @@ try {
   try { await captureCmd(["show", "mesh-lead"], {}); } finally { process.stdout.write = realWrite; }
   check("show: opens the card under the MESH root", shown.join("") === readFileSync(join(MESH, ".cotal", "agents", "mesh-lead.md"), "utf8"), shown.join("").slice(0, 160));
   // …and refuses a name that exists ONLY in the cwd, rather than silently opening the cwd's copy.
-  const shownCwdOnly = await captureCmd(["show", "cwd-one"], {});
-  check("show: a cwd-only persona is NOT found (it is not in the mesh's catalog)", /no persona "cwd-one"/.test(shownCwdOnly), shownCwdOnly.slice(0, 120));
+  // The refusal is the one `persona show` gives, and it names the path it looked for under MESH.
+  const shownCwdOnly = await captureCmd(["show", "cwd-one"], {}).then(() => undefined, (error: Error) => error);
+  check("show: a cwd-only persona is NOT found (it is not in the mesh's catalog)", shownCwdOnly?.message === `no persona at ${join(MESH, ".cotal", "agents", "cwd-one.md")}`, shownCwdOnly?.message);
 
   // new — the file must appear under the MESH root and NOT under the cwd.
   await captureCmd(["new", "fresh-one"], { prompt: "made by the smoke", subscribe: "mesh-alpha" });

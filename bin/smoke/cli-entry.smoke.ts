@@ -484,6 +484,18 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
   const piped = cotal(["personas", "show", "h"], hostile, noSeed);
   check("personas show piped writes the file byte for byte and nothing else", piped.status === 0 && piped.stdout === card, shown(piped));
+  // Legacy `personas show` refuses as `persona show` does: a missing persona, an invalid definition and
+  // a name no persona can have.
+  const malformed = (home: string) => {
+    persona(home);
+    writeFileSync(join(home, "..", ".cotal", "agents", "bad.md"), "---\nname: bad\nsubscribe: [\n---\nbody\n");
+  };
+  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a.b", 1, "persona names use letters"]] as const) {
+    const legacy = cotal(["personas", "show", name], malformed, noSeed);
+    const current = cotal(["persona", "show", name], malformed, noSeed);
+    check(`personas show refuses a ${what} persona as persona show does`,
+      legacy.status === status && current.status === status && legacy.stderr.includes(reason) && current.stderr.includes(reason) && legacy.stdout === "", { legacy: shown(legacy), current: shown(current) });
+  }
   for (const argv of [["persona", "create", "q", "--role"], ["persona", "create", "q", "--model"], ["personas", "new", "q", "--role"]]) {
     const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
     check(`cotal ${argv.join(" ")} refuses control characters`,

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   agentFilePath,
   assertValidName,
@@ -9,7 +9,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
-import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona } from "../lib/persona-files.js";
+import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -181,12 +181,13 @@ async function presentNames(values: ConnectValues): Promise<{ space: string; nam
 
 function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
-  if (!existsSync(path)) return notFound(name, path);
+  // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
+  const path = personaPath(targetRoot(values), name);
+  const bytes = requirePersonaSource(path).bytes;
+  validatePersona(bytes, path);
   // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
   // byte and nothing else, so `show p > p.md` copies it. A catalog travels with a cloned repo, so on
   // a terminal its control characters are escaped, as `persona show` shows them, under its path.
-  const bytes = readFileSync(path);
   if (!process.stdout.isTTY) {
     process.stdout.write(bytes);
     return;
@@ -272,12 +273,6 @@ function remove(name: string | undefined, force: boolean, values: { space?: stri
 
 function firstLine(s?: string): string | undefined {
   return s?.split("\n").find((l) => l.trim())?.trim();
-}
-
-function notFound(name: string, path: string): never {
-  console.error(c.red(`no persona "${name}"`));
-  console.error(c.dim(path));
-  process.exit(1);
 }
 
 function usage(): never {
