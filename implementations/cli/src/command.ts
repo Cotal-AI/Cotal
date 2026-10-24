@@ -323,7 +323,7 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
  *  carries is given as the remedy in this CLI's words: a word that starts with `-` goes after `--`,
  *  and an option value that starts with `-` is written `--name=value`. */
 function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
-  const message = error.message.split(".")[0]!;
+  const message = parseErrorMessage(cmd, error);
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)
     return { message, remedy: "to pass a word that starts with \"-\", put -- before it" };
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
