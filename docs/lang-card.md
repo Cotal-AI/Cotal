@@ -50,7 +50,8 @@ revision. A `checkpoint` is a durable pause raced against a durable timer:
 
 - resolved: `{ status: "resolved", value?, by?, at, artifact? }`
 - expired with `onExpiry: "proceed"`, or after an `"escalate"` hop expires too: `{ status: "expired", at }`
-- expired with the default `onExpiry: "fail"`: throws L4007
+- expired with the default `onExpiry: "fail"`: throws L4007, which says whether the deadline came
+  from the checkpoint's own `timeout` or from the run's default
 
 ```js
 const gate = await checkpoint("ship-gate", "Ship 1.4.0 to npm?", { timeout: "4h", onExpiry: "proceed" })
