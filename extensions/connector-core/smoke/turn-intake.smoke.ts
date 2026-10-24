@@ -1103,7 +1103,7 @@ import { recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { takeManagedHandoffCustody } from ${JSON.stringify(cliManagedHandoffSrc)};
 import * as spawnMod from ${JSON.stringify(cliSpawnSrc)};
 
-takeManagedHandoffCustody(process.env);
+takeManagedHandoffCustody(process.env, true);
 
 const space = process.env.PROBE_SPACE!;
 const servers = process.env.PROBE_SERVERS!;
@@ -1210,7 +1210,8 @@ recordMesh({
 });
 await spawnMod.spawn(
   parseCommandArgs(cmd, [
-    "--config", process.env.PROBE_DIRECT_PERSONA!,
+    "--file", process.env.PROBE_DIRECT_PERSONA!,
+    "--foreground",
     "--space", space,
     "--name", "direct_spawn_seat",
     "--agent", "smoke-delegated",
@@ -1361,7 +1362,7 @@ import { parseCommandArgs } from ${JSON.stringify(coreSrc)};
 import { takeManagedHandoffCustody } from ${JSON.stringify(cliManagedHandoffSrc)};
 import { spawn, spawnFlags } from ${JSON.stringify(cliSpawnSrc)};
 
-takeManagedHandoffCustody(process.env);
+takeManagedHandoffCustody(process.env, true);
 const cmd = { kind: "command", name: "spawn", summary: "spawn", flags: spawnFlags, run: spawn };
 await spawn(
   parseCommandArgs(cmd, [
