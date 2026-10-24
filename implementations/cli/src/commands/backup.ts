@@ -29,6 +29,7 @@ import {
   claimMaintenanceReady,
   cutController,
   getSpaceAuth,
+  protectedLocalDirectory,
   readMaintenanceJournal,
   readMaintenanceLockHolder,
   recordMaintenanceClaimResources,
@@ -559,6 +560,9 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   catch {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dirname(destinationPath)}, so the backup cannot be created in it; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, remedy: `make that folder writable with chmod u+w ${dirname(destinationPath)}, or name a destination in a folder this account can write` });
   }
+  // Verify and restore read the artifact at its real path and refuse one that another local account
+  // could change there, so create refuses a destination whose folders break that rule.
+  protectedLocalDirectory(realpathSync.native(dirname(destinationPath)), "the backup destination");
   if (values["store-dir"] !== undefined && journal.state === "ready") assertNamedStore(root, journal, resolve(values["store-dir"]));
   // Omitted, the store is the cut's own source, which a restore into --store-dir put outside
   // .cotal/nats. An interrupted create's claim keeps that source, and this create recovers the claim

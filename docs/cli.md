@@ -2180,8 +2180,9 @@ directory is trusted operator input: hashes detect corruption, not malicious rew
 [`space create`](#selecting-a-space) rule for other local writers to the artifact directory, each
 file in it and each directory above it. An artifact another account could write refuses
 `PERMISSION_DENIED`, exit 2, before a restore stages or changes anything, and the refusal names each
-such path and one remedy such as `chmod g-w <paths>`. `backup inspect` does not check this, and a
-copy that other accounts can only read is accepted.
+such path and one remedy such as `chmod g-w <paths>`. `backup create` refuses the same way, before it
+writes anything, when a folder that would hold the artifact breaks the rule. `backup inspect` does
+not check this, and a copy that other accounts can only read is accepted.
 
 Restore validates and stages the exact allowlisted artifact bytes before moving or creating a store.
 It requires the same space. A full restore also requires the trust state the artifact was taken
