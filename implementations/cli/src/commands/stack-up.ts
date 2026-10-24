@@ -142,8 +142,25 @@ export interface StackUpResult {
 }
 
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. A
- *  recorded stack takes `rotate-sys` on a stopped start; a first start keeps the retained path. */
+ *  recorded stack takes `rotate-sys` on a stopped start; a first start refuses it, because it mints
+ *  the space's system account new. */
 const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "tls-cert", "tls-key"] as const;
+
+/** Of those, the ones `up -f <cotal.yaml>` takes on a prepared root. */
+const MANIFEST_ROUTE: readonly string[] = ["dry-run", "tls-cert", "tls-key"];
+
+/** The refusal of startup options the controller stack has no route for, before anything starts.
+ *  A prepared root that has not run a stack yet is also offered the manifest route. */
+function controllerUnsupported(root: string, options: readonly string[], prepared: boolean): CommandFailure {
+  const flags = options.map((name) => `--${name}`);
+  const named = flags.length === 1 ? flags[0]! : `${flags.slice(0, -1).join(", ")} and ${flags.at(-1)!}`;
+  const manifest = prepared && options.every((name) => MANIFEST_ROUTE.includes(name));
+  const rotation = prepared && options.includes("rotate-sys") ? "; a first start mints the space's $SYS creds, so there is nothing to rotate" : "";
+  return new CommandFailure("refused", "UNSUPPORTED", `${prepared ? "this root is prepared for a controller-owned stack" : "this root's stack is owned by the service controller"}, which has no route for ${named}; nothing was started through the legacy launcher`, {
+    target: { root, options },
+    remedy: manifest ? `run cotal up without ${named}, or start the space from a manifest with cotal up -f <cotal.yaml>, which takes ${flags.length === 1 ? "it" : "them"}` : `run cotal up without ${named}${rotation}`,
+  });
+}
 
 /** Any account record, readable or not, means the root carries static trust an open stack would bypass. */
 function holdsBrokerAccount(root: string): boolean {
@@ -157,8 +174,8 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
 }
 
 /** A root takes the controller route when it already has a stack journal, or when it is a fresh,
- *  prepared root with nothing legacy, maintenance or team-owned retained under it and the
- *  invocation names only controller-supported inputs. A static-auth request needs an `up`
+ *  prepared root with nothing legacy, maintenance or team-owned retained under it. On either, an
+ *  input the controller has no route for refuses `UNSUPPORTED`. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
  *  its native auth service. Anything else keeps the retained path. */
@@ -166,15 +183,14 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   const canonical = canonicalRoot(root);
   const recorded = readStackJournal(canonical);
   const requested = requestedStackMode(values);
-  const unsupportedNow = (name: string) => values[name] !== undefined && values[name] !== false && (CONTROLLER_UNSUPPORTED as readonly string[]).includes(name);
+  const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => values[name] !== undefined && values[name] !== false);
   if (recorded) {
-    const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => name !== "rotate-sys" && unsupportedNow(name));
-    if (unsupported.length) throw new CommandFailure("refused", "UNSUPPORTED", "this root's stack is owned by the service controller; the requested startup option has no controller-owned route and was not applied through the legacy launcher", { target: { root: canonical, options: unsupported } });
+    const refused = unsupported.filter((name) => name !== "rotate-sys");
+    if (refused.length) throw controllerUnsupported(canonical, refused, false);
     if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${recorded.journal.mode === "open" ? "open" : recorded.journal.mode === "user" ? "user auth" : "static auth"}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: "run bare cotal up to keep the recorded mode" });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
     return true;
   }
-  if (CONTROLLER_UNSUPPORTED.some(unsupportedNow)) return false;
   const wanted: StackMode = requested ?? "auth";
   if (canonical === canonicalRoot(homedir()) || wanted !== "user" && hasUserAuthState(canonical, space, { readOnly: true })) return false;
   if (wanted === "open" && holdsBrokerAccount(canonical)) return false;
@@ -186,6 +202,9 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   if (!registered && (!prepared || canonicalRoot(prepared.root) !== canonical)) return false;
   if (readMaintenanceJournal(canonical)) return false;
   if (existsSync(join(canonical, ".cotal", "nats.pid")) || liveMeshProcesses(canonical, space).length) return false;
+  // A prepared root never falls through to the legacy launcher, so an option the controller stack
+  // has no route for refuses here as it does on a root whose stack the controller owns.
+  if (unsupported.length) throw controllerUnsupported(canonical, unsupported, true);
   return true;
 }
 
