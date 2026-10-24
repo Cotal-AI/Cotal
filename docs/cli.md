@@ -1644,6 +1644,10 @@ completed restore journal so a later `down --preserve-state` can start a new bac
 restore that left history or workflow runs out it also requires `--discard-history`, as
 `backup cleanup-fallback` does, and its refusal names the flag without printing the command help.
 After an `--accept-missing-source` restore there is no old store, so it only retires the journal.
+An attempt the root's maintenance record does not name refuses with `TARGET_NOT_FOUND`, exit 2, and
+deletes nothing. A repeat after a completed cleanup is such an attempt, and its refusal says the
+restore has settled and names `cotal status`. Without `--force`, `restore-attempt` and
+`restore-fallback` name the command to run with its `--attempt`.
 
 ## reset
 
