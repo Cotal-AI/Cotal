@@ -1,9 +1,9 @@
 import { resolve } from "node:path";
 import { accountRevocations, credsClaims, isReachable, isUserNkey, revokeAccountUser, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, oneLine,
+  boundedValue, CommandFailure, ConfirmationRequired, getSpaceAuth, hasUserAuthState, isCommandFailure, isWorkspaceTargetError, oneLine,
   presentationOf, protectedCredentialReference, putSpaceAuth, readLocalRecordSource, readMaintenanceJournal, releaseMaintenanceLock,
-  resolveMeshTarget, targetErrorCode, workspaceErrorParts, workspaceSecretStore, writeResult, type Report,
+  resolveMeshTarget, SHOWN_VALUE_MAX, targetErrorCode, workspaceErrorParts, workspaceSecretStore, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { acquireStackOperationLock, readStackJournal } from "../lib/stack-journal.js";
@@ -37,17 +37,28 @@ async function assertStopped(target: RevokeTarget, subject: string): Promise<voi
 }
 
 /** The user key to revoke: a public key as given, or the subject of a creds file this space issued. */
-function revokedKey(subject: string, accountPub: string, space: string): { key: string; path?: string } {
+function revokedKey(subject: string, auth: { account: { pub: string }; sys: { pub: string } }, target: RevokeTarget): { key: string; path?: string } {
+  const { space, root } = target;
   if (isUserNkey(subject)) return { key: subject };
   const path = resolve(subject);
-  protectedCredentialReference(path);
+  try { protectedCredentialReference(path); }
+  catch (error) {
+    // A bare word that names no file here was most likely meant as a public key.
+    if (isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && !/[\\/]/.test(subject))
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `"${oneLine(boundedValue(subject, SHOWN_VALUE_MAX))}" is not a user public key, and no file is at ${path}; nothing was revoked`, { target: { path }, remedy: "name the credential's user public key, the U… key in its mint receipt's Principal, or its creds file" });
+    throw error;
+  }
   const bytes = readLocalRecordSource(path, 1024 * 1024, true);
   if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the creds file disappeared; nothing was revoked", { target: { path } });
   let claims: ReturnType<typeof credsClaims>;
   try { claims = credsClaims(bytes.toString("utf8")); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the file is not a native creds file; its contents were not printed and nothing was revoked", { target: { path } }); }
   if (!isUserNkey(claims.sub)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the creds file names no user public key; nothing was revoked", { target: { path } });
-  if ((claims.nats?.issuer_account ?? claims.iss) !== accountPub)
+  const issuer = claims.nats?.issuer_account ?? claims.iss;
+  // The stack's $SYS pair is renewed only by issuing a new system account, which retires this one's.
+  if (issuer === auth.sys.pub)
+    throw new CommandFailure("refused", "UNSUPPORTED", `the credential was issued by space ${oneLine(space)}'s system account, and auth revoke-credential revokes only credentials the space's own account issued; nothing was revoked`, { target: { space, path }, remedy: `cotal down --yes, then cotal up --rotate-sys, from ${root}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored` });
+  if (issuer !== auth.account.pub)
     throw new CommandFailure("refused", "CONFLICT", `the credential was issued by another account than space ${oneLine(space)}'s; nothing was revoked`, { target: { space, path }, remedy: "run it for the space that issued the credential, with --space or from its project folder" });
   return { key: claims.sub, path };
 }
@@ -64,7 +75,7 @@ export async function revokeCredential(args: ParsedArgs): Promise<void> {
   const store = workspaceSecretStore(root);
   const auth = await getSpaceAuth(store, space);
   if (!auth) throw new CommandFailure("refused", "AUTH_REQUIRED", "the selected root holds no static signing trust for this space, so it issued no credential to revoke; nothing was revoked", { target: where });
-  const { key, path } = revokedKey(subject, auth.account.pub, space);
+  const { key, path } = revokedKey(subject, auth, target);
   const named = { ...where, publicKey: key, ...(path ? { path } : {}) };
   const already = accountRevocations(auth.account.jwt)[key];
   if (already === undefined) {

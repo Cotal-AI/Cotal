@@ -572,8 +572,8 @@ try {
       r2.code === 1 && /no matching native JWT subject and user nkey seed/.test(r2.out) && !r2.out.includes("just some text"), r2.out);
     check("  and mints nothing", !existsSync(out));
     const r3 = await runMint(["x", "--profile", "observer", "--identity", join(root, "missing.creds"), "--out", out]);
-    check("--identity on a missing path is refused before anything is read",
-      r3.code === 2 && /credential reference is missing or unreadable/.test(r3.out), r3.out);
+    check("--identity on a missing path is refused before anything is read, naming it",
+      r3.code === 2 && r3.out.includes(`the referenced credential ${join(root, "missing.creds")} does not exist`), r3.out);
     check("  and mints nothing", !existsSync(out));
     // An --out folder that cannot hold the credential is named, with the cause and the step.
     const real = join(root, "out-real"), link = join(root, "out-link");

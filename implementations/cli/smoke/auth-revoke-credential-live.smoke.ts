@@ -8,7 +8,9 @@
  *     the same time and changes nothing. doctor auth lists the file as revoked, naming a mint with a
  *     new key and the file's read, post and role grants, and its heading says one exported file needs
  *     attention. A creds file another account
- *     issued refuses CONFLICT.
+ *     issued refuses CONFLICT. A word that is no public key and names no file, and a missing file,
+ *     refuse TARGET_NOT_FOUND naming the path; a 0644 file refuses with its chmod. The stack's own
+ *     system-account credentials refuse UNSUPPORTED, naming `cotal up --rotate-sys`.
  *  3. After `up`, the broker refuses the revoked credential, and the refusal names the revocation and
  *     a new key with the file's grants, for `who` and `send`; `whoami --creds` reports when the key
  *     was revoked. Another minted credential still reads, and the channel history is kept. `auth mint
@@ -19,7 +21,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { accountRevocations, createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
@@ -35,23 +37,23 @@ const configDir = join(home, "xdg");
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { getSpaceAuth, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { getSpaceAuth, shellPath, workspaceSecretStore } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 
 type Envelope = { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: Record<string, unknown> };
-type Run = { status: number | null; stdout: string; stderr: string; env?: Envelope };
+type Run = { status: number | null; signal: NodeJS.Signals | null; spawnError: string | null; stdout: string; stderr: string; env?: Envelope };
 const cli = (cwd: string, ...args: string[]): Run => {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
-  return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed };
+  return { status: run.status, signal: run.signal, spawnError: run.error?.message ?? null, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
-const shown = (run: Run) => ({ status: run.status, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
+const shown = (run: Run) => ({ status: run.status, signal: run.signal, spawnError: run.spawnError, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
 const accountDigest = (root: string) => {
   const dir = join(root, ".cotal", "auth");
   if (!existsSync(dir)) return "absent";
@@ -129,6 +131,29 @@ try {
     writeFileSync(foreign, await mintCreds(await createSpaceAuth("elsewhere"), newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
     const other = cli(root, "auth", "revoke-credential", foreign, "--yes", "--json");
     check("a creds file another account issued refuses CONFLICT, exit 2", other.status === 2 && other.env?.error?.code === "CONFLICT", shown(other));
+    const unchanged = accountDigest(root);
+    const word = cli(root, "auth", "revoke-credential", "UNOTAKEY", "--yes", "--json");
+    check("a word that is no public key and names no file refuses TARGET_NOT_FOUND, saying both",
+      word.status === 2 && word.env?.error?.code === "TARGET_NOT_FOUND" && word.env.error.message === `"UNOTAKEY" is not a user public key, and no file is at ${join(realpathSync.native(root), "UNOTAKEY")}; nothing was revoked`, shown(word));
+    const missing = join(creds, "missing.creds");
+    const absent = cli(root, "auth", "revoke-credential", missing, "--yes", "--json");
+    check("a creds file that does not exist refuses TARGET_NOT_FOUND, naming it",
+      absent.status === 2 && absent.env?.error?.code === "TARGET_NOT_FOUND" && absent.env.error.message === `the referenced credential ${missing} does not exist`, shown(absent));
+    const loose = join(creds, "loose.creds");
+    copyFileSync(kept, loose);
+    chmodSync(loose, 0o644);
+    const open = cli(root, "auth", "revoke-credential", loose, "--yes", "--json");
+    check("a creds file other accounts can read refuses PERMISSION_DENIED, with the chmod that fixes it",
+      open.status === 2 && open.env?.error?.code === "PERMISSION_DENIED" && open.env.error.remedy === `chmod 600 ${shellPath(loose)}`, shown(open));
+    const spaceDir = readdirSync(join(root, ".cotal")).find((name) => name.startsWith("space."));
+    for (const file of ["connection-evictor.creds", "membership-observer.creds"]) {
+      const sys = cli(root, "auth", "revoke-credential", join(root, ".cotal", spaceDir ?? "", file), "--yes", "--json");
+      check(`the stack's own ${file} refuses UNSUPPORTED as a system-account credential, with --rotate-sys as its Next`,
+        sys.status === 2 && sys.env?.error?.code === "UNSUPPORTED"
+          && sys.env.error.message === `the credential was issued by space ${space}'s system account, and auth revoke-credential revokes only credentials the space's own account issued; nothing was revoked`
+          && sys.env.error.remedy === `cotal down --yes, then cotal up --rotate-sys, from ${root}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
+    }
+    check("  and none of them changes the account record", accountDigest(root) === unchanged);
   }
 
   // 3. The next up loads it: the one credential is refused, the rest and the store stay.
