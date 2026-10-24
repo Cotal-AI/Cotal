@@ -28,7 +28,8 @@
  * The same resume carries the broker's JetStream store cap (`--max-file-store`, #1888): the fresh
  * boot renders it and nats-server applies it, the cut journals it, a resume asking for a different
  * cap is refused CONFLICT before anything starts, naming both caps and the way to change it, the bare
- * resume re-renders it, and the adopted mesh record keeps it.
+ * resume re-renders it, and the adopted mesh record keeps it. A resume asking for another `--server`
+ * is refused the same way.
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
@@ -162,6 +163,15 @@ try {
       && mismatchLog.includes("Code:    CONFLICT") && mismatchLog.includes(`resume with cotal up without --max-file-store; to use ${CAP * 2}, stop the resumed mesh with cotal down, then run cotal up --max-file-store ${CAP * 2}`),
     { status: mismatched.status, log: mismatchLog.slice(-1200) });
   ok("…and leaves the preserved state ready", journal().state === "ready", journal().state);
+  // Refused before anything binds, so the other address needs no free port.
+  const elsewhere = `nats://127.0.0.1:${port === 65535 ? port - 1 : port + 1}`;
+  const moved = runSync(["up", "--detach", "--server", elsewhere, "--space", space]);
+  const movedLog = `${moved.stdout ?? ""}${moved.stderr ?? ""}`;
+  ok("a resume asking for another --server is refused CONFLICT, exit 2, naming both addresses and the way to change it",
+    moved.status === 2 && movedLog.includes(`--server ${elsewhere} is not the broker address that down --preserve-state recorded here (${server})`)
+      && movedLog.includes("Code:    CONFLICT") && movedLog.includes(`resume with cotal up without --server; to use ${elsewhere}, stop the resumed mesh with cotal down, then run cotal up --server ${elsewhere}`),
+    { status: moved.status, log: movedLog.slice(-1200) });
+  ok("…and leaves the preserved state ready too", journal().state === "ready", journal().state);
 
   // Stop the resume right after the manager commit. The listener it spawned is detached, so it
   // outlives this interrupted driver - which is precisely what makes the next `up` ADOPT rather

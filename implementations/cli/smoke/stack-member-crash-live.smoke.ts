@@ -1,5 +1,5 @@
 /**
- * LIVE: a controller stack whose manager process died. The stack is a real `space create` and
+ * LIVE: a controller stack whose manager or delivery process died. The stack is a real `space create` and
  * `cotal up` on an isolated port, and the suite kills the manager it started, by PID, as a crash
  * would.
  *
@@ -20,16 +20,23 @@
  *     not answering by pid, `down --yes` and `ps` refuse it by pid, and `run ps` refuses
  *     TARGET_UNAVAILABLE pointing to `status`; once that process is killed, the final
  *     `down --yes` stops the stack.
+ *  6. The delivery member is killed, and its record and pin then name a process the suite started,
+ *     with the old start, as a reused pid does. The record fronts nothing: `down --dry-run` names it,
+ *     `down stack-broker` and bare `down` are not refused by it, and bare `down` removes it with its
+ *     pin and never signals that process. A record whose pin matches that live process refuses
+ *     `down stack-broker` and bare `down`, naming its path and pid in the message and the Next;
+ *     once the process ends, `down` removes it.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
- * only the manager its own `up` started. Needs `nats-server` on PATH.
+ * only the members its own `up` started and the process it started itself. Needs `nats-server` on PATH.
  * Run: pnpm smoke:stack-member-crash:live
  */
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, identityRecord } from "@cotal-ai/workspace";
 
 const PORT = await freePort();
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -71,6 +78,12 @@ const managerEndpoint = (): unknown => {
   catch { return undefined; }
 };
 let hung: number | undefined;
+/** A process the suite starts to hold a pid a crashed member's record names. */
+let other: ChildProcess | undefined;
+/** A command's JSON document, or undefined when its stdout is not one. */
+const doc = (r: { stdout: string }): { outcome?: string; warnings?: { code: string; message: string }[]; error?: { code: string; message: string; remedy?: string }; result?: { blockedBy?: unknown } } | undefined => {
+  try { return JSON.parse(r.stdout); } catch { return undefined; }
+};
 
 try {
   const created = cli("space", "create", "crash");
@@ -158,8 +171,48 @@ try {
   check("run ps refuses TARGET_UNAVAILABLE, exit 2, and points to status", silentRun.status === 2 && silentRun.out.includes("TARGET_UNAVAILABLE") && silentRun.out.includes("cotal status shows whether this space's manager answers"), silentRun.out);
   if (hung !== undefined) process.kill(hung, "SIGKILL");
   for (let i = 0; i < 50 && hung !== undefined && alive(hung); i++) await sleep(100);
+
+  // 6. A crashed delivery member whose pid another process holds.
+  const record = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: "crash" }), at = relative(root, record);
+  const crashDelivery = async () => {
+    const pid = Number(readFileSync(record, "utf8").trim());
+    process.kill(pid, "SIGKILL");
+    for (let i = 0; i < 50 && alive(pid); i++) await sleep(100);
+    return !alive(pid);
+  };
+  const pointAt = (pid: number, token: string) => { writeFileSync(record, String(pid)); writeFileSync(`${record}.identity`, `${pid} ${token}\n`); };
+  other = spawn("sleep", ["600"], { stdio: "ignore" });
+  const held = other.pid!;
+  check("the delivery member is killed", await crashDelivery());
+  pointAt(held, readFileSync(`${record}.identity`, "utf8").trim().split(" ")[1]!);
+  const stale = (verb: string, pid: number, why: string) => `${verb} the stale delivery record ${at}: ${why === "reused" ? `pid ${pid} was reused by another process` : `its process, pid ${pid}, is gone`}`;
+  const preview = cli("down", "--dry-run", "--json");
+  check("down --dry-run names the stale record the stop removes, and no refusal", preview.status === 0 && doc(preview)?.result?.blockedBy === null && doc(preview)?.warnings?.some((w) => w.code === "STALE_PROCESS_RECORD" && w.message === stale("the stop removes", held, "reused")) === true, preview.out);
+  const brokerStop = cli("down", "stack-broker", "--yes");
+  check("down stack-broker stops the broker past the stale record", brokerStop.status === 0, brokerStop.out);
+  const cleared = cli("down", "--yes", "--json");
+  check("bare down completes and says it removed the stale record", cleared.status === 0 && doc(cleared)?.warnings?.some((w) => w.code === "STALE_PROCESS_RECORD" && w.message === stale("removed", held, "reused")) === true, cleared.out);
+  check("...the record and its pin are gone", !existsSync(record) && !existsSync(`${record}.identity`));
+  check("...and the process that holds the pid was never signalled", alive(held));
+
+  const restarted = cli("up");
+  check("up starts the stack again", restarted.status === 0, restarted.out);
+  check("the delivery member is killed again", await crashDelivery());
+  const live = identityRecord(held);
+  pointAt(held, "token" in live ? live.token : "");
+  const brokerBlocked = cli("down", "stack-broker", "--yes");
+  check("down stack-broker refuses that record by path and pid, and its Next says what to check", brokerBlocked.status === 2 && brokerBlocked.out.includes(`legacy local daemons on this root (delivery at ${at}, pid ${held})`) && brokerBlocked.out.includes(`check pid ${held} at ${at}; stop each process where it was started`), brokerBlocked.out);
+  const blocked = cli("down", "--yes", "--json");
+  check("a record whose pin matches a live process refuses LIFECYCLE_BLOCKED, naming its path and pid", blocked.status === 2 && doc(blocked)?.error?.code === "LIFECYCLE_BLOCKED" && doc(blocked)?.error?.message.includes(`(delivery at ${at}, pid ${held})`) === true, blocked.out);
+  check("...its Next names the pid and path to check", doc(blocked)?.error?.remedy?.startsWith(`check pid ${held} at ${at}; stop each process where it was started`) === true, blocked.out);
+  check("...and the record stays and the process was not signalled", existsSync(record) && alive(held));
+  other.kill("SIGKILL");
+  for (let i = 0; i < 50 && alive(held); i++) await sleep(100);
+  const after = cli("down", "--yes", "--json");
+  check("once that process ends, bare down completes and removes its record, saying its process is gone", after.status === 0 && doc(after)?.warnings?.some((w) => w.code === "STALE_PROCESS_RECORD" && w.message === stale("removed", held, "gone")) === true && !existsSync(record), after.out);
 } finally {
   if (hung !== undefined && alive(hung)) process.kill(hung, "SIGKILL");
+  if (other?.pid !== undefined && alive(other.pid)) other.kill("SIGKILL");
   const down = cli("down", "--yes");
   check("down stops the stack", down.status === 0, down.out);
   const forgot = cli("space", "forget", "crash");

@@ -91,10 +91,18 @@ function parseErrorMessage(cmd: Command, e: Error): string {
   return hint ? `${message} - ${hint}` : message;
 }
 
-/** `words` without the global flags before any `--`, each applied. */
-function stripGlobalFlags(words: readonly string[]): string[] {
+/** `words` without the global flags before any `--`, each applied. A global flag is given once, as
+ *  any flag is: one already in `words` or in `leading`, those taken before the command word, is the
+ *  usage error a repeated flag of `cmd` is. */
+function stripGlobalFlags(words: readonly string[], leading: ReadonlySet<string> = new Set(), cmd?: Command): string[] {
   const end = words.indexOf("--");
-  const head = (end === -1 ? words : words.slice(0, end)).filter((word) => !takeGlobalFlag(word));
+  const taken = new Set(leading);
+  const head = (end === -1 ? words : words.slice(0, end)).filter((word) => {
+    if (taken.has(word)) usageExit(`Option '${word}' cannot be repeated`, cmd, cmd !== undefined && asksForJson(cmd, words), words.includes("--plain"));
+    if (!takeGlobalFlag(word)) return true;
+    taken.add(word);
+    return false;
+  });
   return end === -1 ? head : [...head, ...words.slice(end)];
 }
 
@@ -106,8 +114,8 @@ function takesWordsRaw(cmd: Command | undefined): boolean {
 
 /** The words `cmd` parses: the global flags are the kernel's, except for a command that takes its
  *  words raw. */
-function ownWords(cmd: Command | undefined, words: readonly string[]): string[] {
-  return takesWordsRaw(cmd) ? [...words] : stripGlobalFlags(words);
+function ownWords(cmd: Command | undefined, words: readonly string[], leading: ReadonlySet<string>): string[] {
+  return takesWordsRaw(cmd) ? [...words] : stripGlobalFlags(words, leading, cmd);
 }
 
 /** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
@@ -174,7 +182,7 @@ function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
  * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
  * which resolves its alias too.
  */
-async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined): Promise<boolean> {
+async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined, leading: ReadonlySet<string>): Promise<boolean> {
   const [word, sub] = argv;
   const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
   if (extCmd?.name !== "ext" || sub !== "seed") return false;
@@ -185,7 +193,7 @@ async function extSeedGate(registry: Registry, argv: string[], configFolder: Con
     return true;
   }
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
-  await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1))));
+  await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1), leading, extCmd)));
   return true;
 }
 
@@ -485,11 +493,14 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // the leading flags. A command that takes its words raw has no flags to read them as, so it
   // refuses them there. The built-in surface decides that before any extension overlay is read.
   const output: string[] = [];
+  const leadingGlobals = new Set<string>();
   let lead = 0;
   for (; lead < argv.length; lead++) {
     const word = argv[lead]!;
     if (word === "--json" || word === "-j" || word === "--plain") output.push(word);
-    else if (!takeGlobalFlag(word)) break;
+    else if (leadingGlobals.has(word)) usageExit(`Option '${word}' cannot be repeated`);
+    else if (takeGlobalFlag(word)) leadingGlobals.add(word);
+    else break;
   }
   if (argv[lead] === "--") lead++;
   if (output.length && lead >= argv.length) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
@@ -521,7 +532,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const configFolder = globalConfigDirProblem();
   if (opts.extensions) {
     try {
-      if (await extSeedGate(registry, argv, configFolder)) return;
+      if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
     } catch (e) {
       stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
@@ -553,7 +564,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const [word, ...words] = argv;
   if (word === undefined) return printEntry(commands);
   let cmd = findCommand(commands, word);
-  let rest = ownWords(cmd, words);
+  let rest = ownWords(cmd, words, leadingGlobals);
   const wantsHelp = asksForHelp(rest);
   if (cmd?.name === "service") {
     try { cmd = servicePresetCommand(cmd, rest); }
@@ -604,7 +615,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     commands = surface();
     cmd = findCommand(commands, word);
     if (!cmd) usageExit(unknownCommandMessage(commands, word));
-    rest = ownWords(cmd, words);
+    rest = ownWords(cmd, words, leadingGlobals);
     arm();
   }
   // An extension stub materializes before parsing: verify the version pin, import the package

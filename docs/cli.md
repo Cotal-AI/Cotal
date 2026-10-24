@@ -116,7 +116,8 @@ prompt behaves as it does without a terminal, `web` prints its link without open
 `personas edit` is refused. A refusal for a missing `--yes` names what kept the command from asking:
 `--json`, `--no-input`, `COTAL_NO_PROMPT=1` or no interactive terminal. `--json` implies `--no-input`. `--no-color` and `--no-input` work before
 the command word on every command, and after it on every command except one that takes its words
-raw. After `--` they are ordinary words. No command may declare a flag with either name. The output
+raw. After `--` they are ordinary words. Each is given once, as any flag is, before or after the
+command word. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. A command that takes its words raw, such as the
@@ -817,6 +818,10 @@ unregistered. Plain `cotal up` there starts it again on its retained launcher, w
 store and history. Its `down` drops the registration that kept the broker address, so with no
 `--server` or `--host` it starts at the address in the broker configuration its last start rendered
 there, and in open mode when that start was open and no mode is asked for, and says so in one line.
+An open root holds no account to name its space, so the broker configuration its last start rendered
+names it, and plain `cotal up` starts that space again. A configuration an earlier release rendered
+names none, and a root it deployed with `up -f` starts again as the space its newest open fresh team
+summary names, while that configuration still serves its address.
 After `clean all` that configuration is gone. A root deployed with `up -f` then keeps only its fresh
 team summary, and plain `cotal up` refuses `CONFLICT` and names `cotal up -f <manifest>` when the
 summary names another address, mode or space. `space create` in such a folder refuses `CONFLICT`
@@ -1173,7 +1178,13 @@ scripts and prints no plan. The receipt names the mesh once, lists each member w
 stop order, and names `cotal up` as the next step. `--with-agents`
 requests the manager's native retirement policy. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
-`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. The broker scope
+`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. So does a
+process record under the root that may front a process, such as a daemon an earlier release
+started; the message and the Next name each record's path and pid. A record whose process is gone,
+or whose pid now runs another start than its identity pin records because the pid was reused, fronts
+nothing. It refuses neither bare `down` nor a stop of `stack-broker`, `down --dry-run` names it, and
+a complete bare `down` removes it with its pin and names it in a `STALE_PROCESS_RECORD` warning. The
+process that holds a reused pid is never signalled. The broker scope
 is checked again after its dependants stop. A failure stops the sequence and preserves completed and
 unattempted members.
 Only a complete confirmed stop removes the delivery credential and local registration. When the
@@ -1419,7 +1430,8 @@ so a recorded pid alone is not a durable target identity. `up` and the dashboard
 process's creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the
 process start reported by the OS. Every stop path, including `down` for the broker, web and
 extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
-that names a different start means the pid was reused, so teardown refuses and preserves it. A torn
+that names a different start means the pid was reused, so teardown refuses and preserves it. A
+controller stack's bare `down` signals no such record, so it removes it, as described above. A torn
 or unreadable pin also refuses. macOS start tokens keep their spaces, including the padded day,
 in both the identity pin and the one-shot shutdown intent. A single record cannot span lines.
 On Windows, the reader calls `GetProcessTimes` through a bundled Node-API binding for x64 or
@@ -1997,9 +2009,9 @@ A restore interrupted by SIGINT, SIGTERM or SIGHUP before it commits exits 130, 
 prints its attempt id and that recovery command. A registry-only artifact restores as registry-only whether or not
 `--restore-only registry` is passed; omitted infrastructure is always created and the exact
 post-restore stream inventory is asserted before commit intent. Ordinary `up` from a preserved cut
-resumes only the exact recorded source store, file store cap and runtime. A different `--store-dir`,
-`--max-file-store` or `--runtime` refuses `CONFLICT`, exit 2, before anything starts, naming the value
-given and the recorded one. The Next resumes with `cotal up` without that flag, then `cotal down` and
+resumes only the exact recorded source store, file store cap, runtime and broker address. A different
+`--store-dir`, `--max-file-store`, `--runtime` or `--server` refuses `CONFLICT`, exit 2, before
+anything starts, naming the value given and the recorded one. The Next resumes with `cotal up` without that flag, then `cotal down` and
 `cotal up` with it.
 
 **Admitting a seat checkpoint.** An ordinary `up` from a preserved cut admits that cut's seat
