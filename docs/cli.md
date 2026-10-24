@@ -29,10 +29,11 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the selected space, or with none selected the space prepared in the current folder, and lists common
-commands. It points a prepared space to the `cotal up` that starts it, with `--root <dir>` when the
-space is prepared in another folder and `<dir>` quoted when a shell would split it, and a machine
-with no space to `cotal setup`. Every command generates its own help, usage, and shell completion from its declared
+the selected space, or with none selected the space registered or prepared in the current folder,
+and lists common commands. It points a prepared space to the `cotal up` that starts it, with
+`--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
+split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
+or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
 command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
 itself do (exit 1), rather than print the command's help. A subcommand's help gives its whole
@@ -2656,7 +2657,7 @@ error. Only an absent directory is an empty registry. The folder of prepared spa
 reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its place is named as
 `<path> is a file, not a folder`, with the step that moves it aside. A record in it that does not parse
 or is not a prepared space record refuses only a command about the space its file is named for, such
-as `use <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
+as `use <space>`, and names `cotal space forget <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
 file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
 `meshes.unreadable` and exits 4. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;

@@ -447,12 +447,16 @@ export class MeshRegistryError extends Error {
   /** Brand for cross-package-safe detection, as {@link isMeshRegistryError} reads it. */
   readonly brand = MESH_REGISTRY_ERROR;
   readonly file: string;
+  /** A one-line account for a refusal, repeating no stored value, when calling the file an unreadable
+ *  registry record would not fit. */
+  readonly summary?: string;
   /** The step that clears it, when it is not the restore or remove a damaged record takes. */
   readonly remedy?: string;
-  constructor(file: string, message: string, options?: { cause?: unknown; remedy?: string }) {
+  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string }) {
     super(message, options);
     this.name = "MeshRegistryError";
     this.file = file;
+    this.summary = options?.summary;
     this.remedy = options?.remedy;
   }
 }
