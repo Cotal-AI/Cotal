@@ -1,5 +1,5 @@
 import { basename, isAbsolute, join } from "node:path";
-import { readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, renameSync, rmSync, statSync, type Stats } from "node:fs";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { spaceFromSegment, spaceSegment } from "./auth-paths.js";
 import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError } from "./mesh-registry.js";
@@ -34,16 +34,23 @@ export function preparedRecordSpace(file: string): string | undefined {
 }
 
 /** Every prepared space, with each record that cannot be read returned beside them instead of thrown,
- *  so a report can name it. A folder that exists and cannot be read, such as a regular file in its
- *  place, throws a {@link MeshRegistryError} naming it. A record removed between listing and reading
- *  is absent. */
+ *  so a report can name it. A folder that exists and cannot be read throws a {@link MeshRegistryError}
+ *  naming it, and so does a file in its place, with the step that moves it aside. A record removed
+ *  between listing and reading is absent. */
 export function readPreparedSpaces(): { spaces: PreparedSpace[]; unusable: MeshRegistryError[] } {
   let files: string[];
   try {
     files = readdirSync(preparedSpacesDir()).filter((f) => f.endsWith(".json"));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { spaces: [], unusable: [] };
-    throw new MeshRegistryError(preparedSpacesDir(), `the prepared spaces folder ${preparedSpacesDir()} could not be read: ${(e as Error).message}`, { cause: e });
+    const dir = preparedSpacesDir(), code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { spaces: [], unusable: [] };
+    // Something other than a folder at its path holds no records: moving it aside loses none. A
+    // folder above it that is not one fails the stat too, and is the read failure below.
+    let stat: Stats | undefined;
+    try { stat = code === "ENOTDIR" ? statSync(dir) : undefined; } catch { stat = undefined; }
+    if (stat)
+      throw new MeshRegistryError(dir, stat.isFile() ? `${dir} is a file, not a folder` : `${dir} is not a folder`, { cause: e, remedy: `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space` });
+    throw new MeshRegistryError(dir, `the prepared spaces folder ${dir} could not be read: ${(e as Error).message}`, { cause: e });
   }
   const spaces: PreparedSpace[] = [], unusable: MeshRegistryError[] = [];
   for (const f of files.sort()) {

@@ -1267,8 +1267,9 @@ if (process.platform === "linux") {
   const folder = projectRoot("prepared-file");
   for (const args of [["space"], ["space", "create", "pf"], ["use", "pf"], ["space", "show", "pf"], ["up", "--server", DEAD, "--no-manager"]]) {
     const r = await json(args, folder);
-    check(`${args.slice(0, 2).join(" ")} with a file at the prepared spaces folder refuses SCHEMA_INVALID, exit 1, naming that folder`,
-      refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
+    check(`${args.slice(0, 2).join(" ")} with a file at the prepared spaces folder refuses SCHEMA_INVALID, exit 1, saying it is a file and how to move it aside`,
+      refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.message === `${dir} is a file, not a folder` &&
+        r.env.error?.remedy === `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space`, shown(r));
   }
   check("...and none of them wrote: the folder is still the file, and the project has only its .cotal", readFileSync(dir, "utf8") === "not a folder" && readdirSync(folder).join() === ".cotal");
   // status names the folder and reports the rest, exit 4, with a space selected that is not registered.

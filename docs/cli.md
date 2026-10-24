@@ -2572,7 +2572,8 @@ A registry directory that exists but cannot be read, such as one without read pe
 regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
 error. Only an absent directory is an empty registry. The folder of prepared spaces,
 `~/.cotal/prepared`, refuses the same way when it exists and cannot be read, on every command that
-reads it, such as `space`, `space create`, `use <name>` and `up`. A record in it that does not parse
+reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its place is named as
+`<path> is a file, not a folder`, with the step that moves it aside. A record in it that does not parse
 or is not a prepared space record refuses only a command about the space its file is named for, such
 as `use <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
 file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
