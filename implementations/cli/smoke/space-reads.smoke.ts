@@ -183,7 +183,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const unknown = json(["space", "show", "nope"]);
   check("show refuses an unregistered name with TARGET_NOT_FOUND", unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
   const unknownHuman = run(["space", "show", "nope"]);
-  check("the show refusal is headed with the name it looked for", unknown.env?.target?.space === "nope" && unknownHuman.stderr.startsWith("Mesh: nope\n"), shown(unknownHuman));
+  check("the show refusal names the requested value without claiming a resolved mesh", unknown.env?.target?.requested === "nope" && unknown.env?.target?.space === undefined && unknownHuman.stderr.startsWith("Request refused\n") && !unknownHuman.stderr.includes("Mesh: nope"), shown(unknownHuman));
   const human = run(["space", "show", "beta"]);
   check("the show report offers the command that selects it", human.status === 0 && /tls:\s+required/.test(human.stdout) && /cotal use beta/.test(human.stdout), shown(human));
   clearCurrent();
