@@ -995,6 +995,10 @@ To keep that history, it names `cotal down --yes` and `cotal up --max-file-store
 larger cap, after `kill -TERM <pid>` for a manager that still runs, as a full store refuses the
 manager's stop.
 
+When the stack's broker process is stopped by a signal, such as SIGSTOP, it accepts connections and
+never answers, so `up` refuses `TARGET_UNAVAILABLE` before it writes anything or records the broker's
+readiness again. It names that pid and gives `kill -CONT <pid>`, as `down` does.
+
 Before it launches a broker, the controller binds the broker address once, and so does the legacy
 launcher that an unprepared folder or `up -f` starts. When another process holds it, `up` refuses
 `CONFLICT`, names the address and the bind error, and launches nothing. A
