@@ -344,8 +344,10 @@ if (process.platform !== "win32") {
     const read = run(["config", "--json"]);
     check("a symlinked preferences file is refused with PERMISSION_DENIED, exit 2, naming the link and its target",
       read.status === 2 && read.envelope?.error?.code === "PERMISSION_DENIED" && (read.envelope.error.message ?? "").includes(`${file} is a symbolic link to ${target}`), shown(read));
-    const other = run(["version"]);
+    const other = run(["ext", "root"]);
     check("it stops other commands too, as an invalid file does", other.status === 2 && other.stderr.includes(target), shown(other));
+    const version = run(["version"]);
+    check("and, as with an invalid file, version still works", version.status === 0 && version.stdout !== "" && !version.stderr.includes(target), shown(version));
     const write = run(["config", "set", "editor", "ed"]);
     check("config set leaves the link and its target as they were",
       write.status === 2 && lstatSync(file).isSymbolicLink() && readFileSync(target, "utf8") === before, shown(write));
@@ -356,7 +358,7 @@ if (process.platform !== "win32") {
   run(["config", "unset", "editor"]);
 }
 
-// ── an invalid file stops every command but help and completion, and is never reset ──────────────
+// ── an invalid file stops every command that could act on a default, and is never reset ──────────
 {
   for (const [name, text, message] of [
     ["not JSON", "{ nope", /not JSON/],
@@ -380,6 +382,20 @@ if (process.platform !== "win32") {
     const r = run(args);
     check(`cotal ${args.join(" ")} still works`, r.status === 0 && r.stdout !== "" && !/is invalid/.test(r.stderr), shown(r));
   }
+  // version and docs use no preference. They used to refuse with SCHEMA_INVALID like every other command.
+  for (const args of [["version"], ["version", "--json"], ["docs"], ["docs", "cli"]]) {
+    const r = run(args);
+    check(`cotal ${args.join(" ")} uses no preference and still works`, r.status === 0 && r.stdout !== "" && !/is invalid/.test(r.stderr), shown(r));
+  }
+  // status reports the file as one part it could not read, names it, and gives the fix as the next step.
+  const report = run(["status", "--json"]);
+  const warning = report.envelope?.warnings.find((w) => w.code === "PREFERENCES_UNREADABLE");
+  check("status reports an invalid file as a warning naming it, partial, exit 4",
+    report.status === 4 && report.envelope?.outcome === "partial" && warning?.message.startsWith(`the saved agent defaults could not be read: the preferences file ${file} is invalid`) === true, shown(report));
+  const text = run(["status"]);
+  const next = text.stdout.slice(text.stdout.indexOf("Next"));
+  check("and its Next says to fix or remove the file", text.status === 4 && next.includes(`fix or remove ${file}; nothing resets it`) && text.stderr.includes(`the preferences file ${file} is invalid`), shown(text));
+  check("status leaves the file as it was", fileText()?.includes("spaces") === true);
   rmSync(file);
   check("removing the file restores the defaults", run(["config", "--json"]).status === 0);
 }

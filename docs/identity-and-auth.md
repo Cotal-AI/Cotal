@@ -52,10 +52,10 @@ its public user/account and serving server to the local pins without a system cr
 It is not an effective permission ceiling, issued generation, lifecycle or apply authorization.
 An unavailable or denied service does not trigger another credential or server fallback.
 `cotal auth mint <name> --profile <agent|observer|admin>` is the out-of-band path; spawn calls
-the same library ([CLI](cli.md)). The out-of-band profiles carry no default TTL: pass
-`--expires-in <seconds>` (or `--expires-at`) for a bounded credential, which a
-standing-renewal consumer requires. `cotal doctor auth` reports an unbounded credential as a
-finding. `--identity <creds>` reuses a file's nkey and principal,
+the same library ([CLI](cli.md)). The out-of-band profiles last 24 hours unless
+`--expires-in <seconds>` or `--expires-at` sets another lifetime, and a standing-renewal consumer
+requires a bounded credential. `--no-expiry` issues one with no expiry, which `cotal doctor auth`
+reports as a warning; it reports any other unbounded credential as a finding. `--identity <creds>` reuses a file's nkey and principal,
 but the out-of-band agent mint allocates a new lifecycle UID. It does not reuse the old
 bind-only inboxes; clients must use the UID in the receipt and explicitly provision it when
 needed. Minting static creds is a

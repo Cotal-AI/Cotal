@@ -25,10 +25,11 @@
  *      its OWN auth for a mesh of the same name that runs on another trust root → refused (exit 2)
  *      each, naming why, nothing minted
  *   7. --expires-in bounds the credential: the JWT's exp is iat + the flag, within a second; a
- *      bare mint carries no exp (the unbounded default, kept)
+ *      bare mint carries the 24-hour default; --no-expiry carries no exp and records the request
+ *      beside its file
  *   8. --identity <creds> re-mints for the SAME nkey: the new credential's principal equals the
  *      original's; the seed file is read by core's own loader
- *   9. the refusals: both lifetime flags at once; --expires-in the seam would refuse (0, negative,
+ *   9. the refusals: both lifetime flags at once, or --no-expiry with either; --expires-in the seam would refuse (0, negative,
  *      fractional) without echoing it; an expiry past the last representable date; --identity on a file with no seed; --identity with a missing
  *      path → refused each, one sentence, nothing written
  *
@@ -40,7 +41,8 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -427,12 +429,25 @@ try {
 
   // ── 7. --expires-in bounds the credential ─────────────────────────────────────────────────
   {
-    // THE UNBOUNDED DEFAULT, KEPT (the repro half 1): a plain observer mint carries no exp at all,
-    // so the bounded cell below cannot green vacuously against a matrix that bounds everything.
+    // THE DEFAULT LIFETIME: a plain observer mint lasts 24 hours. The bounded cell below asks for a
+    // different lifetime, so it cannot green against the default.
     const bareOut = join(root, "bare-obs.creds");
     const rb = await runMint(["bareobs", "--profile", "observer", "--out", bareOut]);
-    check("a bare mint stays unbounded (no exp in the JWT - the default, not the fix's business)",
-      rb.code === 0 && existsSync(bareOut) && credsClaims(readFileSync(bareOut, "utf8")).exp === undefined, rb.out);
+    const bare = existsSync(bareOut) ? credsClaims(readFileSync(bareOut, "utf8")) : undefined;
+    const bareGap = typeof bare?.exp === "number" && typeof bare.iat === "number" ? bare.exp - bare.iat : undefined;
+    check("a bare mint carries the 24-hour default lifetime",
+      rb.code === 0 && bareGap !== undefined && bareGap <= 86_400 && bareGap >= 86_399 && /\(the 24-hour default\)/.test(rb.out), { out: rb.out, bare });
+    check("  and writes no no-expiry record", !existsSync(`${bareOut}.no-expiry.json`));
+
+    // --no-expiry: no exp at all, and the request recorded beside the file for doctor auth.
+    const openOut = join(root, "open-obs.creds");
+    const ro = await runMint(["openobs", "--profile", "observer", "--no-expiry", "--out", openOut]);
+    const record = `${openOut}.no-expiry.json`;
+    const recorded = existsSync(record) ? JSON.parse(readFileSync(record, "utf8")) as { kind?: string; credsSha256?: string } : undefined;
+    check("mint --no-expiry carries no exp and says so",
+      ro.code === 0 && existsSync(openOut) && credsClaims(readFileSync(openOut, "utf8")).exp === undefined && ro.out.includes(`no expiry claim, as --no-expiry asked; recorded in ${record}`), ro.out);
+    check("  and records the request beside the file, naming its bytes",
+      recorded?.kind === "credential-no-expiry" && recorded.credsSha256 === createHash("sha256").update(readFileSync(openOut)).digest("hex") && (statSync(record).mode & 0o777) === 0o600, recorded);
 
     const out = join(root, "bounded-obs.creds");
     const before = Math.floor(Date.now() / 1000);
@@ -492,6 +507,10 @@ try {
     const r1 = await runMint(["x", "--profile", "observer", "--expires-in", "3600", "--expires-at", "2000000000", "--out", out]);
     check("--expires-in with --expires-at exits 1 with the reason", r1.code === 1 && /choose --expires-in or --expires-at, not both/.test(r1.out), r1.out);
     check("  and mints nothing", !existsSync(out));
+    for (const flag of [["--expires-in", "3600"], ["--expires-at", "2000000000"]]) {
+      const r = await runMint(["x", "--profile", "observer", "--no-expiry", ...flag, "--out", out]);
+      check(`--no-expiry with ${flag[0]} exits 1 with the reason and mints nothing`, r.code === 1 && /--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at/.test(r.out) && !existsSync(out) && !existsSync(`${out}.no-expiry.json`), r.out);
+    }
     // A past or present expiry used to write a credential the broker already refuses.
     for (const at of ["1", String(Math.floor(Date.now() / 1000))]) {
       const r = await runMint(["x", "--profile", "observer", "--expires-at", at, "--out", out]);
