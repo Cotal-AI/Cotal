@@ -379,7 +379,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       });
       const { exp } = decodeJwt(token);
       if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp - issuer contract violated");
-      return { token, owner, exp, ...(req.managerInstanceId ? { managerInstanceId: req.managerInstanceId } : {}) };
+      return { token, owner, exp };
     },
   };
 }

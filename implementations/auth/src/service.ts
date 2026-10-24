@@ -3514,7 +3514,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
         ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
       });
       const { exp } = decodeJwt(token);
-      return send(res, 200, { token, owner, exp, ...(selectedManagerInstanceId ? { managerInstanceId: selectedManagerInstanceId } : {}) });
+      return send(res, 200, { token, owner, exp });
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(`auth-service: refused an agent exchange: ${reason}`);
