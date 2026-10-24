@@ -22,7 +22,7 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, removeMesh, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
@@ -153,6 +153,18 @@ const QUESTION = "Which one?";
     envelope(inShared)?.target?.space === "alpha" && warned?.message === NOTE && warned.target?.space === "alpha" && warned.target.folderSpaces?.slice().sort().join() === "beta,gamma" &&
       inShared.stderr.includes(`! ${NOTE}`), shown(inShared));
   removeMesh("gamma");
+  // A space prepared in a folder is that folder's space before its first `up` too, so a command there
+  // targets it, with the note, and nothing lands in the selection unannounced.
+  const delta = join(home, "delta");
+  mkdirSync(join(delta, ".cotal"), { recursive: true });
+  recordPreparedSpace({ space: "delta", root: delta, ts: new Date(0).toISOString() });
+  const inDelta = run(["who", "--json"], delta), inDeltaText = run(["who"], delta);
+  // The refusal is the prepared space's own: it is not started yet, and its next step is there.
+  check("in a prepared space's folder, before its first up, that space is the target and the refusal is its own",
+    envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
+      envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
+      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout + inDeltaText.stderr), { json: shown(inDelta), text: shown(inDeltaText) });
+  removePreparedSpace("delta");
   clearCurrent();
 }
 

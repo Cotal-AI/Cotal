@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { Command, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock } from "./advisory-lock.js";
+import { globalConfigDirProblem } from "./cotal-config.js";
 import { canonicalLocalProcessPath, localProcessPath, type LocalProcess } from "./local-process.js";
 import type { ServicePreset } from "./service-preset.js";
 import { serviceAdapterDeclaration } from "./service-adapter.js";
@@ -110,8 +111,10 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
   return found.state === "active" ? { state: "active", owner: found.owner.pid } : { state: found.state };
 }
 
-/** Load the manifest. Missing file → no extensions. A CORRUPT or unreachable file is a loud error
- *  (never treat installed extensions as absent — commands would silently vanish from help). */
+/** Load the manifest. Missing file → no extensions, and so is a config folder that is a file, which
+ *  can hold none (every command that would use that folder is refused, naming it). A CORRUPT or
+ *  unreachable file is a loud error (never treat installed extensions as absent — commands would
+ *  silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
   const p = extensionsManifestPath();
   let parsed: unknown;
@@ -119,6 +122,7 @@ export function loadExtensionsManifest(): ExtensionsManifest {
     parsed = JSON.parse(readFileSync(p, "utf8"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { extensions: [] };
+    if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
     throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message} - fix or delete it, then \`cotal ext add\` again`);
   }
   const m = parsed as ExtensionsManifest;

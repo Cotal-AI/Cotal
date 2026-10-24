@@ -3,7 +3,9 @@
  *  publishes nothing, keeps nothing, and leaves the cut retryable at the SAME destination. A restore
  *  or create interrupted by Ctrl-C inside its claim names its recovery, which works once its
  *  processes are gone, before the claim deadline. A create into a missing folder and a restore of a
- *  missing path refuse TARGET_NOT_FOUND before any lock. */
+ *  missing path refuse TARGET_NOT_FOUND before any lock, and so are a destination inside the store
+ *  and one in a folder this account cannot write. A `--store-dir` that is not the cut's store
+ *  refuses CONFLICT naming both. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -141,6 +143,26 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.equal(restored.target?.missing, missing, `it says the ${missing} is missing`);
       assert.equal(restored.target?.directory, path, "it names the path");
     }
+    // A destination inside the preserved store, or in a folder this account cannot write, is refused
+    // before any lock with its cause in the message.
+    const inside = run("backup", "create", join(sourcePath, "bk1"), "--json");
+    const insideEnvelope = JSON.parse(inside.stdout) as { error?: { code?: string; message?: string } };
+    assert.ok(inside.status === 1 && insideEnvelope.error?.code === "USAGE_INVALID" && (insideEnvelope.error.message ?? "").includes(`is inside the preserved store ${sourcePath}`), `a destination inside the store is a usage refusal\n${inside.stdout}${inside.stderr}`);
+    const insidePlain = run("backup", "create", join(sourcePath, "bk1"));
+    assert.ok(insidePlain.status === 1 && !insidePlain.stderr.includes("Usage"), `that refusal prints no command help\n${insidePlain.stderr}`);
+    if (process.getuid?.() !== 0) {
+      const locked = join(root, "locked");
+      mkdirSync(locked, { mode: 0o500 });
+      const denied = run("backup", "create", join(locked, "bk"), "--json");
+      const deniedEnvelope = JSON.parse(denied.stdout) as { error?: { code?: string; message?: string; remedy?: string } };
+      assert.ok(denied.status === 2 && deniedEnvelope.error?.code === "PERMISSION_DENIED" && (deniedEnvelope.error.message ?? "").includes(`cannot write ${locked}`) && (deniedEnvelope.error.remedy ?? "").includes(`chmod u+w ${locked}`), `an unwritable folder is refused by name\n${denied.stdout}${denied.stderr}`);
+    }
+    // A --store-dir that is not the cut's store is a conflict naming both stores.
+    const emptyStore = join(root, "empty-store");
+    mkdirSync(emptyStore);
+    const mismatched = run("backup", "create", join(root, "bkw"), "--store-dir", emptyStore, "--json");
+    const mismatchedEnvelope = JSON.parse(mismatched.stdout) as { error?: { code?: string; message?: string } };
+    assert.ok(mismatched.status === 2 && mismatchedEnvelope.error?.code === "CONFLICT" && (mismatchedEnvelope.error.message ?? "").includes(`--store-dir ${emptyStore} is not this cut's preserved store ${sourcePath}`), `a mismatched --store-dir is a conflict naming both stores\n${mismatched.stdout}${mismatched.stderr}`);
     assert.equal(journalState(root), "ready", "the refused create and restores leave the cut ready");
     assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
 

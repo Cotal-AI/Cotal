@@ -395,19 +395,20 @@ export function isRestoredConsumer(space: string, stream: string, info: Consumer
   return true;
 }
 
-/** Validate the complete consumer inventory for all eight streams and extract conservative checkpoints. */
+/** Validate the complete consumer inventory for every stream an artifact holds, by default every
+ *  backed-up stream, and extract conservative checkpoints. */
 export function validatePersistentConsumerInventory(
   space: string,
   consumersByStream: Readonly<Record<string, readonly ConsumerInfo[]>>,
   statesByStream: Readonly<Record<string, BackupStreamState>>,
+  expectedStreams: readonly string[] = spaceBackupInventory(space).full,
 ): PersistentConsumerCheckpoint[] {
-  const expectedStreams = spaceBackupInventory(space).full;
   const supplied = Object.keys(consumersByStream).sort();
   if (JSON.stringify(supplied) !== JSON.stringify([...expectedStreams].sort()))
-    throw new Error("consumer inventory must contain exactly the eight backed-up streams");
+    throw new Error("consumer inventory must contain exactly the backed-up streams");
   const suppliedStates = Object.keys(statesByStream).sort();
   if (JSON.stringify(suppliedStates) !== JSON.stringify([...expectedStreams].sort()))
-    throw new Error("stream state inventory must contain exactly the eight backed-up streams");
+    throw new Error("stream state inventory must contain exactly the backed-up streams");
 
   const checkpoints: PersistentConsumerCheckpoint[] = [];
   for (const stream of expectedStreams) {
