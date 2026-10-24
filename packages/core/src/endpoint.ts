@@ -3062,8 +3062,9 @@ export class CotalEndpoint extends EventEmitter {
 
   /** A channel's effective replay policy read straight from the registry bucket, for a caller that
    *  reads it right after start, before any watch cache has caught up, or that watches nothing. A
-   *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy. */
-  async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null }> {
+   *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy.
+   *  `registered` says whether the channel has its own registry entry. */
+  async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null; registered: boolean }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.space, { create: false }));
     let cfg: ChannelConfig | undefined;
@@ -3077,7 +3078,7 @@ export class CotalEndpoint extends EventEmitter {
       // `open` binds lazily, so a space with no registry bucket surfaces on the first read.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
     }
-    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null };
+    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null, registered: cfg !== undefined };
   }
 
   /** Effective delivery class for a channel (per-channel override ?? space default ?? "durable"),

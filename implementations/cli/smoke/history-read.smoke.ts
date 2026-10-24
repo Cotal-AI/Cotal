@@ -218,6 +218,12 @@ try {
     dayJson.envelope?.result?.window.since === "2026-01-14T10:00:00.000Z" && dayPlain.stdout.includes("--since 2026-01-15 is ") && dayPlain.stdout.includes("local time (2026-01-14T10:00:00.000Z); only messages after it are shown"), { json: dayJson.envelope?.result?.window, plain: shown(dayPlain) });
   const narrow = await run(["history", "general", "--limit", "1", "--since", String(items[0]?.seq), "--json"]);
   check("a window that does not reach back to --since says so", narrow.envelope?.result?.window.reachesSince === false, narrow.envelope?.result?.window);
+  const hashed = await run(["history", "#general", "--json"]);
+  check("#general reads the same channel as general", JSON.stringify(texts(hashed)) === JSON.stringify(texts(general)) && hashed.envelope?.result?.channels[0] === "general", shown(hashed));
+  // A channel the space lacks used to report the space's replay default as if it existed.
+  const lacking = await run(["history", "nosuch", "--json"]);
+  check("a channel with no messages and no saved entry warns CHANNEL_NOT_FOUND, shows no replay policy, and is still complete",
+    lacking.status === 0 && lacking.envelope?.completeness === "complete" && lacking.envelope.warnings.some((w) => w.code === "CHANNEL_NOT_FOUND") && lacking.envelope.result?.replay.length === 0, shown(lacking));
   const fromBob = await run(["history", "--from", "bob", "--json"]);
   check("--from keeps one sender's messages", JSON.stringify(texts(fromBob)) === JSON.stringify(["looks good", "paging ops"]), texts(fromBob));
   const grep = await run(["history", "--grep", "DEPLOY", "--json"]);
@@ -247,6 +253,14 @@ try {
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
   check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
+  // A value that starts with a dash used to be refused by the parser as "ambiguous", and a channel
+  // with `*` or a leading `#` got the subject grammar's reason.
+  const [negLimit, negSince, starred] = await Promise.all([["--limit", "-1"], ["--since", "-5"], ["gen*"]].map((args) => run(["history", ...args, "--server", unavailable, "--json"])));
+  check("a negative --limit or --since gets the flag's own rule, before connecting",
+    negLimit.status === 1 && negLimit.envelope?.error?.message === '--limit takes a whole number from 1 to 1000, not "-1"'
+      && negSince.status === 1 && negSince.envelope?.error?.message === '--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "-5"', { negLimit: shown(negLimit), negSince: shown(negSince) });
+  check("a channel holding * is refused with the wildcard sentence, before connecting",
+    starred.status === 1 && starred.envelope?.error?.message === "name one concrete channel, without wildcards", shown(starred));
   const notADay = await run(["history", "--since", "2026-02-30", "--server", unavailable, "--json"]);
   check("a --since date that is not on the calendar is a usage error before connecting", notADay.status === 1 && notADay.envelope?.error?.message === "--since 2026-02-30 is not a calendar date", shown(notADay));
   const unsafeSequence = await run(["history", "--since", "9007199254740993", "--server", unavailable, "--json"]);
@@ -490,7 +504,11 @@ try {
   {
     const bare = await run(["history", "general", "--space", bareSpace, "--json"]);
     const r = bare.envelope?.result;
-    check("a space with no channel registry has the built-in replay policy, and the read is complete", bare.status === 0 && bare.envelope?.completeness === "complete" && JSON.stringify(r?.replay) === JSON.stringify([{ channel: "general", replay: true, window: null }]) && r?.items.length === 0, shown(bare));
+    // The missing registry bucket reads as the built-in policy with no REPLAY_UNREAD. With no messages
+    // and no saved entry, #general is a channel this space lacks, so no policy is shown for it.
+    check("a space with no channel registry reads cleanly, and its empty #general is CHANNEL_NOT_FOUND with no replay policy",
+      bare.status === 0 && bare.envelope?.completeness === "complete" && JSON.stringify(r?.replay) === "[]" && r?.items.length === 0
+        && JSON.stringify(bare.envelope.warnings.map((w) => w.code)) === JSON.stringify(["CHANNEL_NOT_FOUND"]), shown(bare));
   }
 
   // ── channel remove says whether it removed a saved entry, and refuses a name the space lacks ──

@@ -73,7 +73,9 @@ Manager control, then stops and restarts them. Every platform must pass before n
 publication can proceed.
 
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
-repeatable, as `--opt` and `down --session-store` are. So is an unknown command, and a first word
+repeatable, as `--opt` and `down --session-store` are. A word that starts with a dash and a digit,
+as `-1` does, after a flag that takes a value is that flag's value, so `--limit -1` gets the
+command's own check of `--limit`. So is an unknown command, and a first word
 that is not one of the command's subcommands when it declares them. So is input a command checks
 before it acts, such as a missing argument, an invalid flag value or two flags that conflict, and
 `cotal help` with a subcommand that does not exist. The command prints the error, then any remedy,
@@ -4493,7 +4495,7 @@ cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
 | `--dms` | off | Also read DM history, which needs a DM read grant. With `clear`, also clear DM history |
-| `--since <time\|seq>` | none | Only messages after an ISO 8601 time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
+| `--since <time\|seq>` | none | Only messages after an ISO 8601 date and time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
 | `--limit <n>` | 50 | How many of the newest retained messages to read, 1 to 1000 |
 | `--from <name>` | none | Keep messages from this sender name or id |
 | `--grep <text>` | none | Keep messages whose text contains this, ignoring case |
@@ -4504,7 +4506,10 @@ cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
 | `--dry-run` | off | `clear`: show the selected target and streams without connecting, and purge nothing |
 
 Reads the newest retained messages in the selected space, newest last: one channel, or every
-channel the identity may read. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
+channel the identity may read. The channel may be written as `#general`, and a name holding `*` or
+`>` is refused with `name one concrete channel, without wildcards` before connecting. A channel with
+no retained messages and no saved entry warns `CHANNEL_NOT_FOUND`, names the channels that hold
+messages, and reports no replay policy for it. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
 filter that window on this machine. They do not search the whole stream. `result.window` says how
 many messages were read, whether older retained messages exist that the window did not reach, and
 whether the window goes back to `--since`. The report names the local time and the ISO instant a
