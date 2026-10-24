@@ -141,7 +141,7 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 | `completeness` | How much of the read scope the result covers: `complete`, `partial` or `not-checked`. It says nothing about whether the work succeeded |
 | `result` | The command's result. A `partial` read keeps what it read; a refused, failed or unknown run has `null` |
 | `warnings` | One `{code, target, message}` for each thing it could not read or check |
-| `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`, where `cause` keeps an endpoint's own code, outcome and safe detail |
+| `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`. `remedy` is the step to take, present when the refusal names one, and the text report prints it under Next. `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
 
 Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope with code
@@ -154,14 +154,18 @@ document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ex
 failure.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
-report as plain lines: no color, no marks, ASCII labels. Plain writes these punctuation marks in
-ASCII wherever they appear: `·` and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§`
-as `section`. Other characters, such as the letters of a name or a message, are written as they are.
+report as plain lines: no color, ASCII labels, and no marks other than the `!` that begins a warning
+or failure line on stderr. Plain writes these punctuation marks in ASCII wherever they appear: `·`
+and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§` as `section`. Other characters,
+such as the letters of a name or a message, are written as they are.
 Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, then `LANG` decide,
 reports and error lines draw their marks and punctuation as plain does, and keep their color. With
 none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
+A usage refusal under `--plain` or such a locale prints the classified report that begins
+`Request refused`, then the command's help.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
-terminal is written as one labeled record per row, so no value is cut off.
+terminal is written as one labeled record per row, so no value is cut off. A warning on stderr wraps
+to the terminal at spaces, each continuation line under its text.
 
 Shared human reports for a resolved space begin with `Mesh: <space>`, including
 empty `ps` results, manager inventories, the impact a command shows before it
@@ -517,7 +521,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--service-endpoints` | off | With `--user-auth`: the auth service also hosts service endpoints: the public registration door and the authenticated host route that `cotal service-endpoint` drives |
 | `--detach` | on | Run in the background, which is also the no-flag default |
 | `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd/launchd unit supervises `up` itself. Cannot combine with `--detach` |
-| `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS. Cotal's own clients, `up` included, check the certificate against Node's trusted CAs and the address they dial. For a self-signed certificate or a local CA, set `NODE_EXTRA_CA_CERTS` to that certificate or CA file (PEM) for `cotal up` and every other `cotal` command of the space; the stack's delivery daemon and manager inherit it from `up`. A certificate for an IP address needs a `tls://` `--server`, because a `nats://` dial to an IP checks the certificate against `localhost`. When this client refuses the certificate in the handshake, `up` stops the broker, records nothing and fails `OPERATION_FAILED`, naming the native error and the step to take |
+| `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS. Cotal's own clients, `up` included, check the certificate against Node's trusted CAs and the address they dial. For a self-signed certificate or a local CA, set `NODE_EXTRA_CA_CERTS` to that certificate or CA file (PEM) for `cotal up` and every other `cotal` command of the space; the stack's delivery daemon and manager inherit it from `up`. The stack's address is `tls://`, so every dial checks the certificate against the address it names: an address `up` chooses, the default or the one a stopped folder last ran at, becomes `tls://`, and the `TLS: serving` line of the receipt names it. A `--server nats://` with `--tls-cert` refuses `USAGE_INVALID` before anything starts and names the `tls://` form, and so does `up -f` whose manifest `broker.servers` names a `nats://` address. When this client refuses the certificate in the handshake, `up` stops the broker, records nothing and fails `OPERATION_FAILED`, naming the native error and the step to take |
 | `--tls-key <path>` | none | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
 | `--file <cotal.yaml>`, `-f` | none | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing. Without `-f` it refuses `USAGE_INVALID` before anything starts or is written. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
@@ -525,7 +529,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh, and for a controller stack in its saved manager definition, and reused by every later manager launch, so a bare `up` after `down`, a repair or a resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
 | `--manager-name <name>` | none | Name this root's manager. `who --all` and the manager choice show the name, and on a user-auth mesh `--on` takes it. It is recorded in the root, so a restart or repair keeps it. A running manager keeps the name it started with, so a different name is refused until `cotal down`. The name is one line of at most 128 characters with no `/` or `\`, and it may not look like an instance id (26 to 32 lowercase letters and digits). Cannot be combined with `--no-manager`, `--file` or `--restore` |
 | `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
-| `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open`. A controller stack takes it once every member is stopped |
+| `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open`. A controller stack takes it once every member is stopped, and a first start on a prepared root refuses it |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
@@ -663,7 +667,12 @@ controller. It records its mode, definitions and full instance IDs in the privat
 the broker, initializes native streams, then starts delivery and the optional manager. Open startup
 prepares an unauthenticated broker and streams, then the optional manager; it creates no delivery
 service or credential. Each member reports its own readiness; the result does not prove agent or
-task readiness. `--json` returns one
+task readiness. A prepared root never starts the legacy launcher: an option the controller stack has
+no route for, such as `--tls-cert`, refuses `UNSUPPORTED`, exit 2, before anything starts, as it
+does on a root whose stack the controller already owns. `--rotate-sys` on a first start refuses the
+same way, because a first start mints the space's `$SYS` creds. The refusal names each option, and
+names `cotal up -f <cotal.yaml>` when the manifest route takes them all.
+`--json` returns one
 stack receipt and `--plain` returns a line-oriented report. Partial startup keeps confirmed members
 and reports them; unknown operations are retained and never retried automatically. A failure while
 initializing streams or recording the broker registration is attributed to the broker, not the next
@@ -792,8 +801,9 @@ another member, such as the manager, exits before readiness and the broker's log
 open files, `up` names that log and that cause. A running broker keeps the open-file limit it started
 with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`.
 
-Before it launches a broker, the controller binds the broker address once. When another process
-holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches nothing. A
+Before it launches a broker, the controller binds the broker address once, and so does the legacy
+launcher that an unprepared folder or `up -f` starts. When another process holds it, `up` refuses
+`CONFLICT`, names the address and the bind error, and launches nothing. A
 first start names another `--server` as its next step, and a stack that ran keeps its recorded
 address. When no member started, the refusal says the stack
 started no member. A text `up` prints one `Starting <definition>` line
@@ -5232,7 +5242,10 @@ cotal topology view -f cotal.yaml   # validate + view the access graph, change n
 running from the same folder, it exits 1 and names `cotal team deploy <file>`, which adds all-new
 channels and agents, and `cotal down` before another `up -f`. On a root that holds a stack preserved by
 `down --preserve-state`, it refuses `LIFECYCLE_BLOCKED` (exit 2) and starts nothing; bare
-`cotal up` resumes that stack. `team deploy` requires a registered,
+`cotal up` resumes that stack. On a root whose records hold a controller stack, running or stopped,
+`up -f` and its dry run refuse `CONFLICT` (exit 2) and start nothing. The refusal names
+`cotal team deploy <file>` for the running stack, and `cotal down --yes`, then
+`cotal team boot <file>`. `team deploy` requires a registered,
 running mesh and applies additively: all-new live channel-only manifests, or bounded all-new agent
 and mixed manifests on static-auth or open meshes through one native manager. It does not launch
 user-auth agents. `team remove` retires a returned deployment by its full ID within the limits in

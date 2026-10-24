@@ -125,7 +125,7 @@ const ansi = /\x1b\[/;
   ];
   for (const [name, args, message] of refusals) {
     const r = run([...args, "--json"]);
-    check(`refused: ${name}`, r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" && message.test(r.envelope.error.message) && fileText() === before, shown(r));
+    check(`refused: ${name}`, r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" && message.test(r.envelope.error.message) && Boolean(r.envelope.error.remedy) && fileText() === before, shown(r));
     // A refusal that wrote anyway is graded above. Put the file back so the later sections still run.
     if (fileText() !== before) before === null ? rmSync(file) : writeFileSync(file, before);
   }
