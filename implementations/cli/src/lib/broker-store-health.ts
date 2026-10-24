@@ -94,7 +94,7 @@ export function storeWriteRepair(failed: Extract<StoreWriteObservation, { state:
 /** The warnings nats-server logs for damage it finds in a stored file: a message block whose records
  *  do not parse, which it rebuilds without the messages from the damage on; a stream whose recovery
  *  rolled back past what a consumer had delivered; and a stream metafile that fails its checksum,
- *  which it does not load. `STREAM.INFO` reports no lost data for any of them. */
+ *  which it does not load. Recovery can leave `STREAM.INFO`'s lost-data field empty. */
 const STORE_DAMAGE = /^\[\d+\] (\S+ \S+) \[WRN\] +((?:Filestore \[[^\]]+\] indexCacheBuf corrupt |JetStream consumer '.+' delivered sequence \d+ past last stream sequence of |Stream metafile ".+": checksums do not match).*)$/;
 
 /** The newest `Critical write error` the running broker logged since it started, else the newest

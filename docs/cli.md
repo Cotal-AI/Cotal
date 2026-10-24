@@ -3097,12 +3097,13 @@ recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on 
 `cotal down --yes` and `cotal up`.
 
 When the broker logged damage in a stored file since it started, the `Store` row reads
-`damage logged` with its time and the broker's own words. nats-server logs three kinds: a message
-block whose records do not parse (`indexCacheBuf corrupt`), which it rebuilds without the messages
-from the damage on; a stream whose recovery rolled back past what a consumer had delivered; and a
-stream metafile that fails its checksum, which it does not load. It keeps serving what it can still
-read, so `history` holds only that, and `STREAM.INFO` reports no lost data for any of these. For a
-controller stack the Next is `cotal service logs stack-broker`. `status` repairs nothing.
+`damage logged` with its time and the broker's own words. The recognized warnings cover a message
+block whose records do not parse (`indexCacheBuf corrupt`), which the broker rebuilds without the
+messages from the damage on; a stream whose recovery rolled back past what a consumer had delivered;
+and a stream metafile that fails its checksum, which the broker does not load. It keeps serving what
+it can still read, so `history` holds only that. These warnings do not necessarily populate the
+`STREAM.INFO` lost-data field. For a controller stack the Next is `cotal service logs stack-broker`.
+`status` repairs nothing.
 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
