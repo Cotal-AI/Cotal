@@ -570,6 +570,8 @@ let P = "";
   const after = psRow(rid);
   c("ps prints revoked for it afterwards, whatever the record says",
     stateOf(after) === "admission revoked" && !after.includes("running"), after);
+  c("...and names who revoked it and why under the table, as the docs promise",
+    lines().some((l) => l.trim() === `${rid}: revoked by smoke-operator (broker outage)`), captured());
   // THE CONTROL for block 10's exit status: every marker on this table was read, so the listing is
   // complete and the command exits 0.
   c("a listing whose every marker was read exits 0", process.exitCode === 0, process.exitCode);
@@ -773,7 +775,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 83;
+const DECLARED = 84;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
