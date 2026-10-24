@@ -675,6 +675,24 @@ async function main(): Promise<void> {
     console.log("  ✓ post-start failure: listener torn down, no orphan holding the port");
   });
 
+  // ── I2: `up -f` UNDER A CERTIFICATE THIS CLIENT DOES NOT TRUST FAILS AS `up` DOES. ──────────────
+  //    The manifest route printed the failure alone and exited 1, with no code and no step.
+  await route("-f untrusted-cert", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    rememberSandbox(home, port, cwd);
+    writeFileSync(join(cwd, "cotal.yaml"),
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsuntrusted\nbroker:\n  servers: tls://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+    // NODE_EXTRA_CA_CERTS deliberately BLANK: this is the operator who forgot it.
+    const r = cotal(["up", "-f", "cotal.yaml", "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
+    assert.equal(r.status, 5, `-f under an untrusted certificate must fail OPERATION_FAILED, exit 5:\n${r.out}`);
+    assert.match(r.out, /refused its TLS certificate in the handshake/, `the failure must name the refused certificate:\n${r.out}`);
+    assert.match(r.out, /OPERATION_FAILED/, `the failure must carry its code:\n${r.out}`);
+    assert.match(r.out, /setting NODE_EXTRA_CA_CERTS to that PEM file/, `the failure must name NODE_EXTRA_CA_CERTS as the step:\n${r.out}`);
+    assert.equal(await serverInfo(port), undefined, "the failed start must leave no listener");
+    console.log("  ✓ -f untrusted-cert: fails OPERATION_FAILED, exit 5, naming NODE_EXTRA_CA_CERTS, and leaves no listener");
+  });
+
   // ── J: POLICY ROOT MUST BE THE FINAL MESH ROOT (S4). ───────────────────────────────────────────
   //    When the nearest ancestor root already owns a different auth space, `ensureRootForSpace`
   //    creates `cwd/.cotal` for the new space. That pin used to run AFTER `resolveTransport`, so
@@ -1091,11 +1109,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 18)
-    throw new Error(`HARNESS: expected 18 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 19)
+    throw new Error(`HARNESS: expected 19 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/18 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 18/18 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/19 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 19/19 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {

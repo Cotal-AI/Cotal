@@ -92,7 +92,10 @@
  *     with a warning, and
  *     `up` then `down` cycle the stack. Killed while the manager's record is `stopping` and before
  *     its request is published, the next bare `down` stops the stack and releases the reservation
- *     that killed `down` took.
+ *     that killed `down` took. Killed while delivery's record is `stopping`, with delivery's process
+ *     then ended as the down's signal ends it, it leaves delivery gone under an unconfirmed request:
+ *     `status` leads Next with `down --abandon-stop <request> --yes`, and its `Delivery responder`
+ *     row names the block instead of `up`.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
@@ -113,6 +116,12 @@
  *     `LIFECYCLE_BLOCKED` naming `down --abandon-launch <instance> --yes`, which refuses without
  *     `--yes` and for another instance, then records the broker failed with a warning. Each stack
  *     then starts and stops.
+ * 15. An `up` killed while its broker is frozen, before it registered the space. `status` says the
+ *     last up has no recorded outcome, names the half-started stack under the selected space and
+ *     leads Next with `down --yes`, then `up --root <root>`, since the next `up` reuses the broker and
+ *     cannot finish it; it offers no bare `up`, and `--json` names the space and root. `ps` refuses
+ *     `TARGET_UNAVAILABLE` and names `cotal status` in the root. `down` settles that up and stops the
+ *     broker, `up` then starts the stack and registers the space, and `down` stops it.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -1083,6 +1092,29 @@ try {
     const final = cli(root, "down", "--yes", "--json");
     check(`${space}: up then down cycle the stack`, restarted.status === 0 && final.status === 0 && gone(space, "stack-manager"), { up: shown(restarted), down: shown(final) });
   }
+  {
+    const space = "killeddelivery";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    check(`${space}: up starts the stack`, started.status === 0, shown(started));
+    const request = await killDownAt(root, space, "stack-delivery");
+    // The record reads `stopping` before the down signals delivery, so the killed down may not have
+    // signalled it yet. Its process ends here, as that signal would end it.
+    const delivery = pidOf(space, "stack-delivery");
+    if (delivery !== null && alive(delivery)) process.kill(delivery, "SIGTERM");
+    await until(() => gone(space, "stack-delivery"), 10_000);
+    const status = cli(root, "status");
+    const responder = status.stdout.split("\n").find((line) => line.includes("Delivery responder:")) ?? "";
+    const next = status.stdout.slice(status.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "";
+    check(`${space}: status leads Next with abandoning delivery's stop, and its delivery row names the block instead of up`,
+      request !== undefined && status.stdout.includes("Stack blocked · ") && next.includes(`down --abandon-stop ${request} --yes`) && responder.includes("NOT BOUND") && !responder.includes("start it with") && (responder.includes("refuses until the stack block is cleared") || responder.includes("DEAD daemon")),
+      { request, next, responder, stdout: status.stdout.slice(-3000) });
+    const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
+    const final = cli(root, "down", "--yes", "--json");
+    check(`${space}: abandoning that stop lets down stop the stack`, abandoned.status === 0 && final.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), { abandoned: shown(abandoned), final: shown(final) });
+  }
 
   // 10. A repeated down --with-agents.
   {
@@ -1222,6 +1254,42 @@ try {
     check(`${signal}: up then starts the stack`, started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
     const last = cli(root, "down", "--yes", "--json");
     check(`${signal}: and down --yes stops it`, last.status === 0, shown(last));
+  }
+
+  // 15. An up cut off before it registered the space.
+  {
+    const space = "cutup";
+    const root = prepare(space);
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
+    // Freeze the broker once its process is pinned, so the up cannot reach the space's registration.
+    const pinned = await until(() => pidOf(space, "stack-broker") !== null, 120_000);
+    const broker = pidOf(space, "stack-broker");
+    if (broker !== null) process.kill(broker, "SIGSTOP");
+    track(space);
+    child.kill("SIGKILL");
+    await exited(child);
+    if (broker !== null) process.kill(broker, "SIGCONT");
+    check(`${space}: the up killed while its broker is frozen left its operation applying and registered no space`, pinned && readStackJournal(root)?.journal.operation.phase === "applying" && findMesh(space) === undefined, { pinned, registered: findMesh(space) !== undefined });
+    const cut = `"${space}" is prepared, and the last up of its stack in ${root} has no recorded outcome`;
+    const status = cli(root, "status");
+    const [first, second] = status.stdout.slice(status.stdout.indexOf("\nNext\n") + 6).split("\n");
+    check(`${space}: status names the half-started stack under the selected space and leads Next with down, then the up that starts it again`,
+      status.stdout.includes(cut) && status.stdout.includes("Half started · the last up ended before delivery and manager started; broker runs") && Boolean(first?.includes("down --yes") && first.includes("it ended before it registered the space, so up cannot finish it")) && Boolean(second?.includes(`up --root ${root}`) && second.includes("Then start the stack again")) && !status.stdout.includes("start it with"),
+      { first, second, stdout: status.stdout.slice(-3000) });
+    const json = cli(root, "status", "--json");
+    const selected = json.env?.result?.selected as { resolved?: boolean; code?: string; space?: string; root?: string } | undefined;
+    const hints = (json.env?.result?.hints ?? []) as string[];
+    check(`${space}: status --json names that prepared space and its root, and no hint names up`, selected?.resolved === false && selected.code === "not-started" && selected.space === space && selected.root === root && !hints.some((hint) => hint.includes(" up")), { selected, hints });
+    const ps = cli(root, "ps", "--json");
+    check(`${space}: ps refuses TARGET_UNAVAILABLE, says the last up has no outcome and names status in the root`, ps.status === 2 && ps.env?.error?.code === "TARGET_UNAVAILABLE" && ps.env.error.message === cut && ps.env.error.remedy === `run \`cotal status\` in ${root}, which names the step that finishes or settles it`, shown(ps));
+    const settled = cli(root, "down", "--yes", "--json");
+    check(`${space}: down settles that up and stops its broker`, settled.status === 0 && gone(space, "stack-broker"), shown(settled));
+    const restarted = cli(root, "up", "--root", root, "--json");
+    track(space);
+    check(`${space}: up then starts the stack and registers the space`, restarted.status === 0 && findMesh(space) !== undefined && !gone(space, "stack-manager"), shown(restarted));
+    const stopped = cli(root, "down", "--yes", "--json");
+    check(`${space}: down stops it`, stopped.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), shown(stopped));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");

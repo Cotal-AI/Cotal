@@ -151,6 +151,9 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` on a prepared space whose controller stack launched a member and was
    *  stopped: its last recorded operation, and the file store cap it recorded, if any. */
   stopped?: { operation: string; outcome: string; storeCap?: number };
+  /** For `not-started` on a prepared space: the last whole-stack operation its root's stack journal
+   *  records for it with no outcome, which `cotal status` there names the way out of. */
+  unsettled?: "up" | "down";
 }
 
 /** The smallest JetStream file store cap a stack starts on: the bytes the space's membership bucket
@@ -353,6 +356,8 @@ function notStarted(space: string, cwd?: string): void {
     throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, ...(moved ? { stackRemedy: moved } : {}) });
   }
   const stopped = stoppedStack(prepared.root, space);
+  const unsettled = unsettledStackOperation(prepared.root, space);
+  if (unsettled) throw new MeshTargetError("not-started", `"${space}" is prepared, and the last ${unsettled} of its stack in ${prepared.root} has no recorded outcome`, { space, root: prepared.root, unsettled, ...(stopped ? { stopped } : {}) });
   if (stopped) throw new MeshTargetError("not-started", `"${space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space, root: prepared.root, stopped });
   throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
 }
@@ -374,6 +379,20 @@ export function stoppedStack(root: string, space: string): MeshTargetErrorDetail
     const cap = journal.broker?.maxFileStore;
     return { operation, outcome, ...(Number.isSafeInteger(cap) && Number(cap) > 0 ? { storeCap: Number(cap) } : {}) };
   } catch { return undefined; }
+}
+
+/** The last whole-stack `up` or `down` that `root`'s own stack journal records for `space` with no
+ *  outcome, as one cut off before it recorded one leaves it. */
+function unsettledStackOperation(root: string, space: string): "up" | "down" | undefined {
+  try {
+    const path = stackJournalPath(root), file = lstatSync(path);
+    if (!file.isFile() || file.size > 64 * 1024) return undefined;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; operation?: { kind?: unknown; phase?: unknown } } | null;
+    const kind = journal?.operation?.kind, phase = journal?.operation?.phase;
+    return journal?.space === space && journal.root === canonicalRoot(root) && (kind === "up" || kind === "down") && (phase === "planned" || phase === "applying" || phase === "unknown") ? kind : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Whether `root`'s stack journal names member instances of which this Cotal home holds no record,

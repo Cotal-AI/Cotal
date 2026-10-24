@@ -306,6 +306,8 @@ type SelectedResult =
       resolved: false;
       code: string;
       message: string;
+      space?: string;
+      root?: string;
       /** A stopped stack's recorded file store cap, when it is below {@link MIN_FILE_STORE}. */
       storeCap?: number;
     }
@@ -403,7 +405,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const responder = await readResponderAxis(selected);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(selected, Boolean(values.all), gaps);
-  const target = await readSelected(selected, responder, gaps, hints);
+  const target = await readSelected(selected, responder, folder, gaps, hints);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
   const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
@@ -1070,7 +1072,7 @@ function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
   try { return storeWriteProblem(recorded ?? join(root, ".cotal", "nats")); } catch { return undefined; }
 }
 
-async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, gaps: Gaps, hints: string[]): Promise<SelectedResult> {
+async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[]): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -1104,12 +1106,23 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // of the codes and point the others at a command that does not fix them. The section states the
     // selection, and Next gives its repair once.
     const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
+    const d = e.details;
+    const storeCap = e.code === "not-started" ? d.stopped?.storeCap : undefined;
+    const result: SelectedResult = {
+      resolved: false, code: e.code, message,
+      ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
+      ...(storeCap !== undefined && storeCap < MIN_FILE_STORE ? { storeCap } : {}),
+    };
     // A start in a root whose broker store this account cannot write fails there, so its next step is
     // the store's, as `up` names it.
-    const store = e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing ? rootStoreProblem(e.details.root) : undefined;
-    hints.push(store ? `${store.message}; ${store.remedy}` : remedy ?? message);
-    const storeCap = e.code === "not-started" ? e.details.stopped?.storeCap : undefined;
-    return { resolved: false, code: e.code, message, ...(storeCap !== undefined && storeCap < MIN_FILE_STORE ? { storeCap } : {}) };
+    const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
+    // This folder's stack cut off with no recorded outcome is named under the selected space, and
+    // Next names the step that finishes or settles it. One that neither blocks nor stays part way
+    // settles from its members' processes when it starts.
+    if (store) hints.push(`${store.message}; ${store.remedy}`);
+    else if (!d.unsettled || !servedStack(folder, result)) hints.push(remedy ?? message);
+    else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
+    return result;
   }
   const target = selected.target;
   const base = {
@@ -1416,10 +1429,11 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
  *  state it, so an operator on a manager host away from the broker's folder still sees it. An open
  *  mesh runs no delivery daemon, so with no lease recorded its row says the responder is not used
  *  rather than unbound. */
-function responderText(state: DeliveryResponderState | null, mode: MeshTarget["mode"]): { text: string; tone: Tone } | undefined {
+function responderText(state: DeliveryResponderState | null, mode: MeshTarget["mode"], stackBlocked = false): { text: string; tone: Tone } | undefined {
   if (state === null && mode === "open") return { text: "not used - an open mesh runs no delivery daemon", tone: "hint" };
+  // While this folder's stack is blocked, `up` refuses, so the row names the block Next clears.
   if (state === "unbound")
-    return { text: `NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · start it with \`${displayCmd()} up\``, tone: "failed" };
+    return { text: `NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · ${stackBlocked ? `\`${displayCmd()} up\` refuses until the stack block is cleared, as Next shows` : `start it with \`${displayCmd()} up\``}`, tone: "failed" };
   // A stale record is NOT BOUND with a different next move: the slot is occupied by a corpse, so
   // starting a daemon now loses the single-flight CAS. Say that, rather than sending the operator
   // into a refusal they will read as a second failure.
@@ -1429,7 +1443,7 @@ function responderText(state: DeliveryResponderState | null, mode: MeshTarget["m
   return undefined;
 }
 
-function selectedSection(s: SelectedResult): Section {
+function selectedSection(s: SelectedResult, folder: StatusResult["folder"]): Section {
   if (!s.resolved) return { title: "Selected Mesh", blocks: [{ kind: "fields", rows: [["target", cell(s.code, "failed")]] }] };
   const rows: [string, Cell][] = [
     ["space", s.space],
@@ -1457,7 +1471,7 @@ function selectedSection(s: SelectedResult): Section {
     }
   } else {
     rows.push(["connection", s.connection === "ok" ? cell("ok", "ok") : cell(`${s.connection}${s.staleRecord ? " (stale registry entry)" : ""}`, "failed")]);
-    const responder = responderText(s.deliveryResponder, s.mode);
+    const responder = responderText(s.deliveryResponder, s.mode, Boolean(servedStack(folder, s) && folder.stackBlock));
     if (responder) rows.push(["delivery responder", cell(responder.text, responder.tone)]);
   }
   if (s.snapshot.state === "unavailable" || (s.mode === "user" && s.snapshot.state === "skipped")) rows.push(["live snapshot", cell(`${s.snapshot.state === "unavailable" ? "unavailable" : "not read"} (${s.snapshot.reason})`, s.snapshot.state === "unavailable" ? "failed" : "hint")]);
@@ -1560,10 +1574,11 @@ function selectedOverview(r: StatusResult): Section | undefined {
   if (!s.resolved) return { title: "Selected space", blocks: [
     { kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] },
     ...(s.storeCap !== undefined ? [{ kind: "fields" as const, rows: [["Store cap", cell(`${s.storeCap} bytes recorded, below the ${MIN_FILE_STORE} the space's streams start on`, "failed")] as [string, Cell]] }] : []),
+    ...(servedStack(r.folder, s) ? stackLines(r.folder) : []),
   ] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
   if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
-  const responder = responderText(s.deliveryResponder, s.mode);
+  const responder = responderText(s.deliveryResponder, s.mode, Boolean(servedStack(r.folder, s) && r.folder.stackBlock));
   const rows: [string, Cell][] = [
     ["Broker", s.server ?? stateCell("address unavailable", "failed")],
     ["Connection", connectionCell(s)],
@@ -1592,12 +1607,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     rows.push(["Manager", stateCell("none · this stack was started with --no-manager; bare cotal up adds it", "hint")]);
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
-    blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] });
-    if (r.folder.stackBlock) blocks.push({ kind: "lines", lines: [stateCell(`Stack blocked · ${r.folder.stackBlock.reason}`, "waiting")] });
-    const part = r.folder.stackUnfinished;
-    if (part) blocks.push({ kind: "lines", lines: [stateCell(part.kind === "up"
-      ? part.running.length ? `Half started · the last up ended before ${roleList(part.stopped)} started; ${roleList(part.running)} ${part.running.length === 1 ? "runs" : "run"}` : "Start interrupted · the last up ended before any member started"
-      : part.stopped.length ? `Half stopped · the last down ended with ${roleList(part.running)} still running; ${roleList(part.stopped)} ${part.stopped.length === 1 ? "is" : "are"} stopped` : "Stop interrupted · the last down ended before any member stopped", "waiting")] });
+    blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] }, ...stackLines(r.folder));
   } else if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.processes) {
     blocks.push({ kind: "lines", lines: [cell("Legacy local process records", "label")] });
     blocks.push({
@@ -1611,6 +1621,25 @@ function selectedOverview(r: StatusResult): Section | undefined {
   } else blocks.push({ kind: "lines", lines: [cell("Legacy process records not checked here · the selected space has a different or unresolved local process scope", "hint")] });
   if (r.folder.launches === false) blocks.push({ kind: "lines", lines: [cell(`This folder's personas are not used by the selected space. Spawn uses ${s.personas.root}.`, "waiting")] });
   return { title: `Selected space  → ${s.space}`, blocks };
+}
+
+/** The selected space and its root when this folder's controller stack serves it: a resolved one, or
+ *  a prepared one that is not started, as an `up` cut off before it registered the space leaves it. */
+function servedStack(folder: StatusResult["folder"], s: SelectedResult): { space: string; root: string } | undefined {
+  if (s.space === undefined || s.root === undefined) return undefined;
+  return folder.controllerStack && folder.root === s.root && folder.processSpace === s.space ? { space: s.space, root: s.root } : undefined;
+}
+
+/** The lines that name this folder's stack operation cut off with no recorded outcome: one that keeps
+ *  `up` and `down` from settling it, or one that left the stack part way. */
+function stackLines(folder: StatusResult["folder"]): Section["blocks"][number][] {
+  const blocks: Section["blocks"][number][] = [];
+  if (folder.stackBlock) blocks.push({ kind: "lines", lines: [stateCell(`Stack blocked · ${folder.stackBlock.reason}`, "waiting")] });
+  const part = folder.stackUnfinished;
+  if (part) blocks.push({ kind: "lines", lines: [stateCell(part.kind === "up"
+    ? part.running.length ? `Half started · the last up ended before ${roleList(part.stopped)} started; ${roleList(part.running)} ${part.running.length === 1 ? "runs" : "run"}` : "Start interrupted · the last up ended before any member started"
+    : part.stopped.length ? `Half stopped · the last down ended with ${roleList(part.running)} still running; ${roleList(part.stopped)} ${part.stopped.length === 1 ? "is" : "are"} stopped` : "Stop interrupted · the last down ended before any member stopped", "waiting")] });
+  return blocks;
 }
 
 /** Stack members as a status line names them: `broker`, `delivery and manager`. */
@@ -1644,18 +1673,23 @@ function nextActions(r: StatusResult): Section {
   // own records. One whose last operation a member keeps unsettled is named the way out that
   // `up` and `down` name instead.
   const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && row.observedProcess === "gone") === true;
-  const own = r.selected.resolved && r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space;
+  const stack = servedStack(r.folder, r.selected), own = stack !== undefined;
   const block = own ? r.folder.stackBlock : undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
-  else if (block && r.selected.resolved) {
-    const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${r.selected.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
+  else if (block && stack) {
+    const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${stack.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
-  } else if (own && r.selected.resolved && r.folder.stackUnfinished) {
+  } else if (stack && r.folder.stackUnfinished) {
     const part = r.folder.stackUnfinished;
+    const restart = `${cmd} up --root ${stack.root}${part.noManager ? " --no-manager" : ""}`;
+    // An up that ended before it registered the space cannot be finished: the next up reuses the
+    // running broker, and delivery does not start for a space that is not registered.
     items.unshift(...(part.kind === "up"
-      ? [{ command: `${cmd} up --root ${r.selected.root}${part.noManager ? " --no-manager" : ""}`, description: `Finish starting the stack: the last up ended before ${roleList(part.stopped)} started` }]
+      ? r.selected.resolved || !part.running.length
+        ? [{ command: restart, description: `Finish starting the stack: the last up ended before ${roleList(part.stopped)} started` }]
+        : [{ command: `${cmd} down --yes`, description: `Stop what the last up started: it ended before it registered the space, so up cannot finish it` }, { command: restart, description: "Then start the stack again" }]
       : [{ command: `${cmd} down --yes`, description: `Finish stopping the stack: the last down ended with ${roleList(part.running)} still running` },
-        ...(part.stopped.length ? [{ command: `${cmd} up --root ${r.selected.root}`, description: "Or restart this stack's stopped members from its recorded inputs" }] : [])]));
+        ...(part.stopped.length ? [{ command: `${cmd} up --root ${stack.root}`, description: "Or restart this stack's stopped members from its recorded inputs" }] : [])]));
   } else if (r.selected.resolved && r.selected.spaceStreams.state === "absent") {
     // Up creates the streams again only while the stack's other members are stopped.
     const stack = r.selected.spaceStreams.stack;
@@ -1740,7 +1774,7 @@ export function statusView(r: StatusResult, verbose = false): Report {
   const attempts = bootAttemptOverview(r.bootAttempts);
   const maintenance = maintenanceOverview(r.maintenance);
   const sections = [machineOverview(r), brokerOverview(r), ...(selected ? [selected] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
-  if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected));
+  if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder));
   sections.push(nextActions(r));
   return { sections };
 }
