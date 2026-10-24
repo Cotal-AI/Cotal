@@ -204,7 +204,7 @@ const QUESTION = "Which one?";
     writeFileSync(join(fresh, "list.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: ["${A}"] }\nchannels: {}\n`);
     const invalid = run(["up", "-f", "list.yaml"], fresh);
     check("up -f with a manifest that does not validate refuses, exit 1, and leaves the folder as it found it",
-      invalid.status === 1 && /expected string, received array \(at broker\.servers\)/.test(invalid.stderr) && entries() === "list.yaml", { ...shown(invalid), entries: entries() });
+      invalid.status === 1 && /expected a string, not a list \(at broker\.servers\)/.test(invalid.stderr) && entries() === "list.yaml", { ...shown(invalid), entries: entries() });
     writeFileSync(join(fresh, "user.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "${A}", auth: user }\nchannels: {}\n`);
     const contradicted = run(["up", "-f", "user.yaml", "--open"], fresh);
     check("up -f refused after its lock, for a flag the manifest contradicts, leaves the folder as it found it",
