@@ -4023,6 +4023,13 @@ loopback health URL answers 200:
 
 No other field is accepted. The file is at most 256 KiB.
 
+A process launch runs its executable as you, so the executable follows the
+[`space create`](#selecting-a-space) rule for other local writers. The file it names, where a link
+points, every folder above that, and the folder a link is in must be writable only by you or root.
+`add` checks this before it saves, and `start`, `restart` and an installed unit check it again
+before anything launches or stops. An unsafe path refuses `PERMISSION_DENIED` (exit 2), and the
+refusal names each unsafe path and one remedy such as `chmod g-w <paths>`.
+
 ### Running a service
 
 `start` records the instance before it launches anything and prints its full ID. A start that fails

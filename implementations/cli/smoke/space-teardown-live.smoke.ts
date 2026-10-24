@@ -175,7 +175,7 @@ try {
     writeFileSync(foreign, "not a credential\n", { mode: 0o600 });
     const saveService = (name: string, creds: string) => {
       const file = join(keys, `${name}.json`);
-      writeFileSync(file, JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 }, credentialRef: { kind: "file", path: creds } }));
+      writeFileSync(file, JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: "/bin/sh", args: ["-c", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 }, credentialRef: { kind: "file", path: creds } }));
       return cli(root, "service", "add", name, "--file", file, "--space", space, "--json");
     };
     const saved = [saveService("minted", minted), saveService("foreign", foreign)];
