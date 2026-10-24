@@ -21,6 +21,7 @@ import {
   type OutputWarning,
   type Report,
   recordOperationSpace,
+  spaceStreamsExpected,
 } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
 import { shownTime } from "../lib/shown-time.js";
@@ -429,9 +430,8 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     warnings.push({ code: "RETENTION_UNREAD", target: req.target, message: `the chat stream's retention could not be read, so gaps it left are unknown: ${(e as Error).message}` });
   }
 
-  // `cotal up` creates the streams of a recorded auth or user space, so a missing chat stream there
-  // means they were removed. An open space creates them on first use.
-  if (chat === false && (conn.mode === "auth" || conn.mode === "user")) throw streamsAbsent(conn);
+  // A missing chat stream means they were removed from a space whose streams `cotal up` created.
+  if (chat === false && spaceStreamsExpected(conn.space, conn.mode)) throw streamsAbsent(conn);
   // A bare number past the newest sequence names no message; it is most often a year.
   if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq)
     throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${yearShaped(req.since.input) ? req.since.input : new Date().getFullYear()}-01-01` });

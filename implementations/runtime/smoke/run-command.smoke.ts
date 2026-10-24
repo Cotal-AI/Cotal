@@ -31,6 +31,7 @@ import {
 import { authDir, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
+import { printRunDetail } from "../src/workflow-views.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -147,6 +148,8 @@ const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');
 const CHECKPOINT = join(sd, "checkpoint.cotal.js");
 writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
+const RACE = join(sd, "race.cotal.js");
+writeFileSync(RACE, 'const r = await race({\n  eins: () => checkpoint("eins", "First?"),\n  zwei: () => checkpoint("zwei", "Second?"),\n}, { name: "doppel" });\nlog("won", r.index);\n');
 const ASKING = join(sd, "asking.cotal.js");
 writeFileSync(ASKING, 'const a = { agent: "dev#u", persona: "dev" };\nconst v = await ask(a, { name: "size", schema: { estimate: "number" } });\nlog("estimate", v.estimate);\n');
 
@@ -356,6 +359,65 @@ let P = "";
   const amendedRow = ((await envelopeOf(["journal", cid]))?.result as { view?: { journal?: Array<JournalRowJson & { amendments?: Array<{ value?: unknown }> }> } } | undefined)?.view?.journal
     ?.find((r) => r.step === "/checkpoint:approve#0" && r.amendments !== undefined);
   c("show --json still carries the long value whole", amendedRow?.amendments?.at(-1)?.value === long, amendedRow?.amendments?.length);
+}
+
+// ── 6a) a race names the branch it took, and a losing branch's answer is not acted on ─────────
+// F380: run show listed every answered pause as acted on and named no race winner, and an answer a
+// losing branch's pause accepted before it was cancelled was listed nowhere.
+{
+  const race = { v: 1, seq: 1, run: "r", scope: "s", kind: "race", name: "doppel", occurrence: 0, inputHash: "h", state: "settled", status: "ok" } as JournalEntry;
+  c("a settled race row names the branch it took",
+    journalStepRow(1, { ...race, result: { branches: ["eins", "zwei"], value: { index: "eins", value: 1 } } }).winner === "eins");
+  c("a failed race row names no winner",
+    journalStepRow(2, { ...race, status: "failed", error: { code: "L4000", kind: "scope-fault", message: "no" } }).winner === undefined);
+
+  reset();
+  const driven = wf(["start"], { file: RACE });
+  let R: string | undefined;
+  for (let i = 0; i < 100 && R === undefined; i += 1) { await wait(50); R = startedId(); }
+  const rid = R ?? "";
+  let open = 0;
+  for (let i = 0; i < 100 && open < 2; i += 1) {
+    await wait(200);
+    const back = await journal(rid).catch(() => undefined);
+    open = new Set((back?.records ?? []).flatMap((r) => r.record.kind === "step" && (r.record.entry as JournalEntry).kind === "checkpoint" ? [(r.record.entry as JournalEntry).name] : [])).size;
+  }
+  c("both racing checkpoints open", open === 2, open);
+  await wf(["answer", rid, "/race:doppel#0/b:eins/checkpoint:eins#0"], { by: "smoke", value: '"A"' }).catch(() => undefined);
+  const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
+  c("the answered branch completes the race", outcome === "completed", outcome);
+  reset();
+  await wf(["journal", rid]);
+  c("show names the branch the race took on its row", rendered("/race:doppel#0", "ok, eins won"), lines().filter((l) => l.includes("/race:doppel#0")).join(" | "));
+  c("and lists the winning branch's answer as answered", lines().some((l) => l.includes("/checkpoint:eins#0") && l.includes("answered") && !l.includes("not acted on")), lines().filter((l) => l.includes("checkpoint:eins")).join(" | "));
+  const rows = ((await envelopeOf(["journal", rid]))?.result as { view?: { journal?: Array<{ step?: string; winner?: string; lostRace?: string }> } } | undefined)?.view?.journal ?? [];
+  c("show --json carries the winner on the race row and lostRace on every row of the losing branch, and only there",
+    rows.some((r) => r.step === "/race:doppel#0" && r.winner === "eins")
+      && rows.filter((r) => r.step?.startsWith("/race:doppel#0/b:zwei/")).length > 0
+      && rows.filter((r) => r.step?.startsWith("/race:doppel#0/b:zwei/")).every((r) => r.lostRace === "/race:doppel#0")
+      && rows.every((r) => r.step?.startsWith("/race:doppel#0/b:zwei/") || r.lostRace === undefined),
+    rows);
+
+  // Which branch a second, concurrent answer lands in is decided by the broker, so the not-acted-on
+  // lines are read from the rows a lost race leaves: one resolved and one cancelled after it
+  // accepted an answer.
+  const answer = (answerId: string) => ({ answerId, value: answerId, by: "smoke", at: 1 });
+  const step = (n: number, key: string, more: { outcome: string; status: string; lostRace?: string; answer: ReturnType<typeof answer> }) => ({ n, kind: "step" as const, step: key, effect: "checkpoint", name: "q", state: "settled" as const, startedAt: 1, ...more });
+  reset();
+  printRunDetail(SPACE, {
+    runId: "run-view", endpoint: EP, spec: { v: 1, run: "run-view", pins: {}, createdAt: 1 } as never,
+    journal: [
+      step(1, "/race:r#0/b:a/checkpoint:q#0", { outcome: "resolved", status: "ok", answer: answer("won") }),
+      step(2, "/race:r#0/b:b/checkpoint:q#0", { outcome: "resolved", status: "ok", lostRace: "/race:r#0", answer: answer("late") }),
+      step(3, "/race:r#0/b:c/checkpoint:q#0", { outcome: "cancelled", status: "cancelled", lostRace: "/race:r#0", answer: answer("cut") }),
+      { n: 4, kind: "step", step: "/race:r#0", effect: "race", name: "r", state: "settled", outcome: "ok", status: "ok", startedAt: 1, winner: "a" },
+    ],
+  }, {});
+  c("an answer in a losing branch, resolved or cancelled, is listed as not acted on, and the winner's as answered",
+    lines().some((l) => l.includes("/b:a/") && l.includes("answered") && !l.includes("not acted on"))
+      && lines().some((l) => l.includes("/b:b/") && l.includes("not acted on")) && lines().some((l) => l.includes("/b:c/") && l.includes("not acted on"))
+      && captured().includes("It never read a line marked not acted on"),
+    lines().filter((l) => l.includes("/race:r#0") || l.includes("acted on")).join(" | "));
 }
 
 // ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
@@ -676,7 +738,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 67;
+const DECLARED = 75;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

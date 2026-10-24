@@ -8,7 +8,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames } from "../lib/personas.js";
@@ -135,8 +135,11 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     return;
   }
   // `--running` is an explicit live overlay: connect, snapshot who's present, and mark each persona.
-  // Fails loud if the mesh is unreachable (presentNames exits) — never a silent best-effort.
-  const present = running ? await presentNames(values) : undefined;
+  // Fails loud if the mesh is unreachable (presentNames exits) — never a silent best-effort. The
+  // marks follow the mesh they were read from, as every other report that reads one begins.
+  const overlay = running ? await presentNames(values) : undefined;
+  const present = overlay?.names;
+  if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
   // A catalog travels with a cloned repo, so every value read from it is shown with its control
   // characters escaped, as `persona` and `persona show` show them.
   const pad = Math.max(...entries.map((e) => oneLine(e.name).length));
@@ -151,7 +154,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○")) : undefined;
+    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
@@ -164,12 +167,12 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
 }
 
 /** Snapshot the names currently present on the mesh — the live overlay behind `personas list
- *  --running`. The transient endpoint reads the roster once at start. A name is "running" when an
- *  agent of exactly that name is present and not offline. */
-async function presentNames(values: ConnectValues): Promise<Set<string>> {
-  const { ep } = await openTransient(values, "personas");
+ *  --running` — with the space they were read from. The transient endpoint reads the roster once at
+ *  start. A name is "running" when an agent of exactly that name is present and not offline. */
+async function presentNames(values: ConnectValues): Promise<{ space: string; names: Set<string> }> {
+  const { ep, space } = await openTransient(values, "personas");
   try {
-    return new Set(ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name));
+    return { space, names: new Set(ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name)) };
   } finally {
     await ep.stop();
   }
@@ -179,12 +182,16 @@ function show(name: string | undefined, values: { space?: string; server?: strin
   if (!name) return usage();
   const path = agentFilePath(targetRoot(values), name);
   if (!existsSync(path)) return notFound(name, path);
-  // The canonical card (frontmatter + persona body). Piped or redirected it is written byte for byte.
-  // A catalog travels with a cloned repo, so on a terminal its control characters are escaped, as
-  // `persona show` shows them.
-  console.log(c.dim(path));
+  // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
+  // byte and nothing else, so `show p > p.md` copies it. A catalog travels with a cloned repo, so on
+  // a terminal its control characters are escaped, as `persona show` shows them, under its path.
   const bytes = readFileSync(path);
-  process.stdout.write(process.stdout.isTTY ? bytes.toString("utf8").split(/\r?\n/).map(oneLine).join("\n") : bytes);
+  if (!process.stdout.isTTY) {
+    process.stdout.write(bytes);
+    return;
+  }
+  console.log(c.dim(path));
+  process.stdout.write(bytes.toString("utf8").split(/\r?\n/).map(oneLine).join("\n"));
 }
 
 /** `cotal personas edit <name>` — open the card in the `editor` preference ($VISUAL, then $EDITOR,

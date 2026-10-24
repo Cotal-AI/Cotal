@@ -260,7 +260,10 @@ or agent that holds the `run` capability.
 `journal` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
 accepted answer, it instead prints the answer value as JSON, who answered, the artifact when one was
 cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
-answer line.
+answer line. A settled `race` names on its line the branch it took. An answer the program never read
+is marked `not acted on`: its step was in a branch that lost a race, or its pause accepted it and
+was then cancelled, as a losing branch's pause is. `--json` carries the race's `winner` and, on each
+step of a losing branch, the `lostRace` it lost.
 
 A settled step is never answered twice, so a participant who changes their mind uses `amend`. It
 files a new answer beside the accepted one, naming the answer it supersedes, and `journal` prints

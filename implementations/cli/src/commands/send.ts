@@ -22,12 +22,13 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { brokerStoreWrite } from "../lib/broker-store-health.js";
+import { chatStreamGone, streamsAbsent } from "../lib/space-streams.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -439,6 +440,8 @@ export async function send(args: ParsedArgs): Promise<void> {
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(bytes);
       if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered);
+      // No stream stores a message whose space's streams were removed, so the send stored nothing.
+      if (spaceStreamsExpected(space, connection.mode) && await chatStreamGone(ep)) throw streamsAbsent(connection);
       // A broker sends nothing back for a stream it cannot write, so its own log here may name why.
       const store = connection.root ? brokerStoreWrite(connection.root, space) : undefined;
       if (store?.state === "write-failed")

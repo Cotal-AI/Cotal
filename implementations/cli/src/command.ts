@@ -1,4 +1,5 @@
 import { writeSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { isAbsolute, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
@@ -26,6 +27,7 @@ import {
   localeIsUtf8,
   operationWarnings,
   outputDeclarationProblems,
+  oneLine,
   preferencesFolderWarning,
   recordOperationWarning,
   renderReport,
@@ -57,6 +59,7 @@ import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
+import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
@@ -304,13 +307,13 @@ export interface RunCliOptions {
 
 /** A usage refusal on stderr, then `cmd`'s help when one is given. Plain output and a locale without
  *  UTF-8 have no refusal mark, so there the refusal is the classified report, which names its outcome
- *  in words. */
+ *  in words. Either way the words it quotes are escaped, as the report escapes every text. */
 function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command): void {
   const report = plain || !localeIsUtf8();
   if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
   else {
-    stderrLine("✗ ", failure.message, c.red);
-    if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
+    stderrLine("✗ ", oneLine(failure.message), c.red);
+    if (failure.remedy) stderrLine("  ", oneLine(failure.remedy), c.dim);
   }
   if (!cmd) return;
   if (report) console.error("");
@@ -335,6 +338,7 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
  *  text, which is read as a positional. */
 function misspelledOption(cmd: Command, rest: readonly string[]): { message: string; remedy: string } | undefined {
   const names = new Set<string>([...(cmd.flags ?? []).map((flag) => flag.name), ...GLOBAL_FLAGS]);
+  const shorts = new Set<string>((cmd.flags ?? []).flatMap((flag) => (flag.short ? [flag.short] : [])));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
     const previous = rest[index - 1];
@@ -343,7 +347,8 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
     const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
-    if (typed && names.has(typed[1]!)) return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: --${typed[1]}` };
+    if (typed && (names.has(typed[1]!) || shorts.has(typed[1]!)))
+      return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
   }
   return undefined;
 }
@@ -404,17 +409,15 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   return canonical;
 }
 
+/** The commands that never read the working folder, so they run from one that was removed. */
+const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"]);
+
 /** A working folder removed before this process read it fails every cwd read the command makes, and
  *  Node caches the first read that succeeds. One read refuses that case before the command's own
- *  checks, such as `up`'s, or any effect. Help, version and completion never read the folder. */
+ *  checks, such as `up`'s, or any effect, unless the command never reads the folder. */
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs): void {
-  if (cmd.name.startsWith("__") || ["help", "version", "completion"].includes(cmd.name)) return;
-  try {
-    process.cwd();
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
-  }
+  if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
+  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
 }
 
 /** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
@@ -603,17 +606,6 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     parsed = parseOrExit(cmd, rest);
   }
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
-  // A working folder removed before this process read it fails every cwd read the command makes, and
-  // Node caches the first read that succeeds. One read here refuses that case before any effect.
-  // Help, version and completion never read the folder.
-  if (!cmd.name.startsWith("__") && !["help", "version", "completion"].includes(cmd.name)) {
-    try {
-      process.cwd();
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
-    }
-  }
   // A preferences file that does not validate stops every command that could act on a default, as a
   // broken config file does, so nothing runs on a default the person did not mean. Help, shell
   // completion, version and docs use no preference, and status reports the file as a warning, so they
@@ -628,7 +620,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
     // records, and every reader would otherwise report a different wrong cause.
-    const dirProblem = cmd.name === "version" ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
+    const dirProblem = cmd.name === "version" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
     if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     if (!["version", "docs", "status"].includes(cmd.name)) {
       try {

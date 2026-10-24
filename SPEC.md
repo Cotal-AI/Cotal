@@ -5942,6 +5942,9 @@ characters**, which is an id token by construction. The reference implementation
   step's amendments beside its accepted answer in the order the records bucket committed them (each
   record's revision); `at` is the filer's clock and never decides the order. The last one listed is
   the step's current recorded position, and the accepted answer remains what the program acted on.
+  A pause in a branch that lost a `race`, or one cancelled after it accepted an answer, settled
+  with an answer the program never read: the run surface lists that answer as not acted on and
+  names the branch the race took.
 - A held `once` step (`spec/cotal-lang.md` §7.8) is answered like a checkpoint, addressed by its
   step key; the driver presents the hold id (`spec/cotal-lang.md` §7.8) as the token, whatever kind
   the step is, and reads the step's accepted answer and amendments under the same id once it
