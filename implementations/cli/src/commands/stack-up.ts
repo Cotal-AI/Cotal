@@ -25,12 +25,12 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
+import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { prepareKernelServiceStop, prepareProcessService, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
@@ -179,7 +179,8 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
 
 /** A root takes the controller route when it already has a stack journal, or when it is a fresh,
  *  prepared root with nothing legacy, maintenance or team-owned retained under it. On either, an
- *  input the controller has no route for refuses `UNSUPPORTED`. A static-auth request needs an `up`
+ *  input the controller has no route for refuses `UNSUPPORTED`. A recorded stack that launched a
+ *  member keeps its auth mode. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
  *  its native auth service. Anything else keeps the retained path. */
@@ -191,6 +192,8 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   if (recorded) {
     const refused = unsupported.filter((name) => name !== "rotate-sys");
     if (refused.length) throw controllerUnsupported(canonical, refused, false);
+    // A stack that never launched a member pins no mode; its next up plans a first start.
+    if (stackNeverStarted(recorded.journal)) return true;
     if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${recorded.journal.mode === "open" ? "open" : recorded.journal.mode === "user" ? "user auth" : "static auth"}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: "run bare cotal up to keep the recorded mode" });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
     return true;
@@ -364,6 +367,24 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   });
 }
 
+/** The running broker of an unregistered space: what an up stopped before registration leaves. */
+function strandedBroker(space: string): ServiceInstance | undefined {
+  if (findMesh(space)) return undefined;
+  const rows = serviceInstances(space, STACK_DEFINITION.broker);
+  return rows.length === 1 && observeServiceProcess(rows[0]!.record.value) === "running" ? rows[0]!.record.value : undefined;
+}
+
+/** What a detached up interrupted by a signal left: the members that run, and the command that
+ *  finishes the start or stops them. */
+export function stackUpInterruptNotice(root: string, space: string): string {
+  const stranded = strandedBroker(space);
+  if (stranded) return `Interrupted before the space was registered; its broker keeps running as pid ${stranded.process?.pid}. Run cotal down --yes, then cotal up.`;
+  const running = runningStackRoles(space);
+  return running.length
+    ? `Interrupted while starting the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "keeps" : "keep"} running. Run cotal up to finish the start, or cotal down --yes to stop ${running.length === 1 ? "it" : "them"}.`
+    : `Interrupted before any member of the stack in ${root} started. Run cotal up to start it.`;
+}
+
 /** Whether a broker bound to `host` is reached at `server`'s address: a wildcard bind is reached at
  *  any address, and any other host must name that address. */
 export function bindReaches(host: string, server: string): boolean {
@@ -469,6 +490,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     throw new CommandFailure("refused", "CONFLICT", "the space is registered to another root, broker address or external origin; nothing was prepared or started", { target: { root, space }, remedy: `inspect it with cotal space show ${space}` });
   if (!registration && (!preparedSpace || canonicalRoot(preparedSpace.root) !== root))
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with cotal space create ${space} --root ${shellWord(root)}, then run cotal up` });
+  // An up stopped after its broker served and before it registered the space leaves a broker whose
+  // stream setup and registration only that up's own preparation could finish, and trust is never
+  // prepared again under a running broker. This start refuses before any write and names the stop.
+  const stranded = registration ? undefined : strandedBroker(space);
+  if (stranded)
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the cotal up that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: "stop that broker with cotal down --yes, then run cotal up again" });
   // An earlier up or down that never recorded its outcome is settled from its members' process
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
@@ -757,7 +784,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const cause = pending && failure ? ` (${pending.role}: ${failure.message}${starved !== undefined ? `; the broker's log${starved ? ` at ${starved}` : ""} records that it ran out of open files` : ""})` : "";
     // A refusal or failure with no member started or reused leaves nothing of the stack running.
     const none = !uncertain && !journal.members.some((row) => row.state === "started" || row.state === "reused");
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with cotal down --yes from ${root}, raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up there again` : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with cotal down --yes from ${root}, raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up there again` : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${shellWord(space)} before another cotal up; a later bare cotal down stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });

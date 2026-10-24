@@ -16,6 +16,9 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 
 type Docs = typeof import("@cotal-ai/connector-core/docs");
 
+/** Every page name `docs <page>` reads. */
+const pageSlugs = (d: Docs): string[] => ["spec", "lang", "schema", ...d.docsIndex().pages.map((p) => p.slug)];
+
 interface DocsIndexResult extends ReturnType<Docs["docsIndex"]> {
   readonly kind: "docs-index";
 }
@@ -51,8 +54,7 @@ async function docs(args: ParsedArgs): Promise<void> {
   if (page !== undefined) {
     const read = await d.readDocsPage(page, { refresh: v.refresh });
     if (!read) {
-      const slugs = ["spec", "lang", "schema", ...d.docsIndex().pages.map((p) => p.slug)];
-      throw usage(`no docs page "${page}"; pages: ${slugs.join(", ")}`);
+      throw usage(`no docs page "${page}"; pages: ${pageSlugs(d).join(", ")}`);
     }
     const result: DocsPageResult = { kind: "docs-page", version: read.version, slug: read.page.slug, title: read.page.title, source: read.source, refresh: read.refresh, body: read.page.body };
     writeResult(presentation, { command: "docs", target: null, result }, pageView);

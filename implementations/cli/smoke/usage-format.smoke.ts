@@ -10,9 +10,10 @@
  * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
  *
  * A folder whose `.cotal` is a file refuses every command with `CONFLICT`, naming that file, before
- * anything runs. A removed working folder refuses every command but help and version with its line
- * and the `cd` remedy and no help, as a missing --yes does, `up`, `down` and `backup create` included,
- * which crashed with Node's stack trace.
+ * anything runs. A removed working folder refuses every command but help, version, docs and
+ * telemetry with its line and the `cd` remedy and no help, as a missing --yes does, `up`, `down` and
+ * `backup create` included, which crashed with Node's stack trace. Help there says the folder no
+ * longer exists.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
@@ -50,6 +51,20 @@ const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
 
 const parser = run(["status", "--bogus"]);
 check("control: a parser usage error has the documented shape", usageShape(parser, /Unknown option '--bogus'/), shown(parser));
+
+// A refusal points the way the command reads its words: a word that starts with "-" goes after
+// --, an option value that starts with "-" is written --name=value, a short option takes its value
+// after a space, and an option typed with a typographic dash is named with hyphens.
+const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
+check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
+const dashValue = run(["history", "--from", "-bob"]);
+check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
+const shortEquals = run(["send", "-c=general", "hello"]);
+check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
+for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
+  const r = run(["status", typed]);
+  check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
+}
 
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
@@ -174,6 +189,17 @@ if (process.platform !== "win32") {
   check("up --json from a removed folder is a USAGE_INVALID refusal", upJson.status === 1 && upEnvelope?.outcome === "refused" && upEnvelope.error?.code === "USAGE_INVALID", shown(upJson));
   const upHelp = fromRemoved(["up", "--help"]);
   check("up --help still answers from a removed folder", upHelp.status === 0 && /cotal up/.test(upHelp.stdout + upHelp.stderr), shown(upHelp));
+  // Help said the space or defaults could not be read, and docs and telemetry, which use no folder,
+  // refused.
+  for (const args of [["help"], []]) {
+    const r = fromRemoved(args);
+    check(`${["cotal", ...args].join(" ")} from a removed folder says the folder no longer exists, exit 0`,
+      r.status === 0 && r.stdout.startsWith("This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.\n") && !/could not be read/.test(r.stdout), shown(r));
+  }
+  const docs = fromRemoved(["docs", "--json"]);
+  check("docs runs from a removed folder", docs.status === 0 && docs.stdout.includes('"outcome":"ok"'), shown(docs));
+  const telemetry = fromRemoved(["telemetry", "--json"]);
+  check("telemetry runs from a removed folder", telemetry.status === 0 && telemetry.stdout.includes('"outcome":"ok"'), shown(telemetry));
 }
 
 // A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.

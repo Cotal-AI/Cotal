@@ -20,10 +20,11 @@
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
  *     definitions saved for the root, and another folder starts a stack under the same name.
  *  6. Space delete under a stopped stack. With only the broker running the delete applies, and its
- *     receipt names `cotal up`, and `cotal down --yes` with `cotal space forget`. A run waiting at a
- *     checkpoint is listed with its state in the preview and the receipt, and a finished run is not. A bare `up` then
- *     creates the streams again on the running broker, empty, says so and starts delivery, and a
- *     later `up` finds them held.
+ *     receipt names `cotal up`, and `cotal down --yes` with `cotal space forget`. History, send and
+ *     `run ps` then refuse naming the missing streams, and `status` shows them absent with `up
+ *     --root` first in its Next. A run waiting at a checkpoint is listed with its state in the
+ *     preview and the receipt, and a finished run is not. A bare `up` creates the streams again on
+ *     the running broker, empty, says so and starts delivery, and a later `up` finds them held.
  *  7. A partial loss. When the running broker lost only the delivery bucket, `up` leaves the rest as
  *     they are and refuses TARGET_NOT_FOUND (exit 2) naming the restart, which creates it.
  *  8. A stack whose registration an older CLI dropped or replaced. With none, `down --yes` refuses
@@ -34,9 +35,13 @@
  *  9. A store directory that also holds the user's files. After `up --store-dir` and `down`,
  *     `reset store`, `reset space` and their dry runs refuse CONFLICT naming those files, and the
  *     folder keeps them. Once that store path is a link, they refuse naming it and its target.
- *  9. A deleted folder. With a whole stack running, its folder is deleted. `status` marks the folder
+ * 10. A deleted folder. With a whole stack running, its folder is deleted. `status` marks the folder
  *     gone, `down --space --yes` from another folder stops every member by signal and removes the
  *     stack definitions, no member process is left, and another folder starts the same name.
+ * 11. An open space deleted under its running stack. Another Cotal home adds the space and deletes
+ *     it. `status` says the space was deleted under the running stack and leads its Next with
+ *     `cotal down --yes`, then `cotal up`; history, send and `run ps` refuse with that cause and
+ *     remedy. `down --yes` and `up` give the space its streams back.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -271,6 +276,15 @@ try {
     check("before the up, history and send refuse TARGET_UNAVAILABLE: the streams are not on the broker, and cotal up there creates them",
       [readGone, sendGone].every((r) => r.status === 2 && r.env?.error?.code === "TARGET_UNAVAILABLE" && r.env.error.message?.startsWith(`the streams of ${space} are not on its broker; a space delete removes them`) === true
         && r.env.error.remedy === `run cotal up in ${root} to create them again, empty`), { history: shown(readGone), send: shown(sendGone) });
+    const statusGone = cli(root, "status", "--json");
+    const streamsGone = (statusGone.env?.result?.selected as { spaceStreams?: { state: string; stack: string | null } } | undefined)?.spaceStreams;
+    check("status says the streams are not on the broker while the stack's other members are stopped", statusGone.status === 0 && streamsGone?.state === "absent" && streamsGone.stack === "stopped", shown(statusGone));
+    const statusShown = cli(root, "status");
+    const statusNext = statusShown.stdout.slice(statusShown.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "";
+    check("its Space streams row says a space delete removed them, and its first Next is the up that creates them again",
+      statusShown.stdout.includes("Space streams:") && statusShown.stdout.includes("not on the broker · a space delete removed them") && statusNext.includes(`up --root ${root}`) && statusNext.includes("Create the space's streams again, empty"), shown(statusShown));
+    const runsGone = cli(root, "run", "ps", "--space", space);
+    check("run ps refuses TARGET_UNAVAILABLE naming the same cause", runsGone.status === 2 && runsGone.stderr.includes(`the streams of ${space} are not on its broker; a space delete removes them`), shown(runsGone));
     const bare = cli(root, "up", "--json");
     const members = (bare.env?.result?.members as { role: string; state: string }[] | undefined) ?? [];
     check("a bare up creates the streams again on the running broker and starts delivery", bare.status === 0 && bare.env?.result?.streamsRecreated === true && members.some((row) => row.role === "broker" && row.state === "reused") && members.some((row) => row.role === "delivery" && row.state === "started"), shown(bare))
@@ -418,6 +432,49 @@ try {
     const reused = cli(elsewhere, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
     check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
     const last = cli(elsewhere, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 11. An open space another machine deleted under its running stack.
+  {
+    const space = "tear9";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares an open stack's root", created.status === 0, shown(created));
+    anchor(root);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(root, "up", "--open", "--server", server, "--json");
+    check("up --open starts the stack with its manager", started.status === 0, shown(started));
+    // The other machine: a Cotal home and a project folder of its own, on the same broker.
+    const elsewhere = folder(`${space}-elsewhere`);
+    const elsewhereEnv = { ...env, COTAL_HOME: join(elsewhere, "home"), XDG_CONFIG_HOME: join(elsewhere, "xdg") };
+    for (const dir of ["home", "xdg", "proj"]) mkdirSync(join(elsewhere, dir), { mode: 0o700 });
+    const other = (...args: string[]) => {
+      const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: join(elsewhere, "proj"), env: elsewhereEnv, encoding: "utf8", timeout: 180_000 });
+      return { status: run.status, stdout: run.stdout, stderr: run.stderr } as Run;
+    };
+    const added = other("space", "add", space, "--server", server, "--root", join(elsewhere, "proj"));
+    const deleted = other("space", "delete", space, "--yes");
+    check("another Cotal home adds the open space and deletes it while the stack runs", added.status === 0 && deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), { added: shown(added), deleted: shown(deleted) });
+    const statusGone = cli(root, "status", "--json");
+    const streamsGone = (statusGone.env?.result?.selected as { spaceStreams?: { state: string; root: string | null; stack: string | null } } | undefined)?.spaceStreams;
+    check("status says the streams are not on the broker while the stack runs", statusGone.status === 0 && streamsGone?.state === "absent" && streamsGone.stack === "running" && streamsGone.root === root, shown(statusGone));
+    const statusShown = cli(root, "status");
+    const next = statusShown.stdout.slice(statusShown.stdout.indexOf("\nNext\n") + 6).split("\n");
+    check("its Space streams row says the space was deleted under the running stack, and Next leads with down --yes, then up",
+      statusShown.stdout.includes("not on the broker · the space was deleted under its running stack") && /cotal down --yes +Stop the stack its space was deleted under/.test(next[0] ?? "") && /cotal up +Then start it again; up creates the space's streams, empty/.test(next[1] ?? ""), shown(statusShown));
+    const message = `the streams of ${space} are not on its broker while its stack runs, so the space was deleted under it; nothing can be read or stored until they are created again`;
+    const remedy = `stop the stack with cotal down --yes in ${root}, then run cotal up there to create them again, empty`;
+    const [readGone, sendGone] = [cli(root, "history", "general", "--json"), cli(root, "send", "-c", "general", "after the delete", "--json")];
+    check("history and send refuse TARGET_UNAVAILABLE naming the deletion and down --yes, then up, where they read 0 messages and exited 3",
+      [readGone, sendGone].every((r) => r.status === 2 && r.env?.error?.code === "TARGET_UNAVAILABLE" && r.env.error.message === message && r.env.error.remedy === remedy), { history: shown(readGone), send: shown(sendGone) });
+    const runsGone = cli(root, "run", "ps");
+    check("run ps refuses TARGET_UNAVAILABLE naming the same cause, not the contract-store read", runsGone.status === 2 && runsGone.stderr.includes(`the streams of ${space} are not on its broker`) && !runsGone.stderr.includes("contract-store"), shown(runsGone));
+    const stopped = cli(root, "down", "--yes", "--json");
+    const restarted = cli(root, "up", "--json");
+    const sent = cli(root, "send", "-c", "general", "after the restart", "--json");
+    check("down --yes, then up, gives the space its streams back", stopped.status === 0 && restarted.status === 0 && sent.status === 0, { down: shown(stopped), up: shown(restarted), send: shown(sent) });
+    const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
   }
 } finally {
