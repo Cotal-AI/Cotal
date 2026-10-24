@@ -399,6 +399,8 @@ try {
     const reused = cli(elsewhere, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
     check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
     const last = cli(elsewhere, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
+  }
 
   // 11. An open space another machine deleted under its running stack.
   {
