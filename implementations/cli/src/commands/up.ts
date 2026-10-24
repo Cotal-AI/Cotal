@@ -207,10 +207,22 @@ import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { checkSpaceName } from "./meshes-add.js";
 import { cleanedManifestStart } from "../lib/legacy-start.js";
-import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, stackUpInterruptNotice, keptOnUp, selectedOnUp, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import {
+  bindReaches,
+  controllerStackApplies,
+  recheckExistingStore,
+  requestedStackMode,
+  stackUp,
+  stackUpForegroundNotice,
+  stackUpInterruptNotice,
+  keptOnUp,
+  selectedOnUp,
+  type ExistingStorePin,
+  type StackUpNative,
+  unparsableDaemonCredsNotice,
+} from "./stack-up.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
-import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, unparsableDaemonCredsNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
