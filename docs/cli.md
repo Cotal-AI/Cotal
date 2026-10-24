@@ -3889,6 +3889,8 @@ from a file's `role`. Each entry of `--subscribe`, `--allow-subscribe` and
 must be within `--allow-subscribe` when it is given, or creation refuses with `USAGE_INVALID`,
 naming the flag and the entry. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
+Create and edit refuse a definition over 1 MiB with `SCHEMA_INVALID`, the bound a create on a
+manager applies to its input, and an edit keeps that draft and names it.
 Creation refuses an existing definition, and with `CONFLICT` a name that differs from an existing
 one only in case, since a case-insensitive file system holds the two as one file. Mutation receipts contain names and paths, not bodies.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`

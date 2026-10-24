@@ -129,6 +129,14 @@ function assertCatalogWritable(dir: string): void {
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${shellWord(dir)}\` to change its personas` }); }
 }
 
+/** The largest persona definition the CLI saves, the bound a create on a manager applies to its input. */
+export const PERSONA_LIMIT = 1024 * 1024;
+
+/** The refusal of a definition over {@link PERSONA_LIMIT}, the same for create and edit. */
+function tooLarge(bytes: Buffer, remedy: string): CommandFailure | undefined {
+  return bytes.length > PERSONA_LIMIT ? new CommandFailure("refused", "SCHEMA_INVALID", `the persona definition is ${bytes.length} bytes, over the 1 MiB limit, so it was not saved`, { remedy }) : undefined;
+}
+
 /** The persona whose file name differs from `path`'s only in case. A case-insensitive file system
  *  holds the two as one file. */
 function caseTwin(path: string): string | undefined {
@@ -140,6 +148,8 @@ function caseTwin(path: string): string | undefined {
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock.
  *  A new persona whose name differs from an existing one only in case is refused. */
 export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined): void {
+  const oversized = bytes && tooLarge(bytes, "shorten its instructions to 1 MiB or less");
+  if (oversized) throw oversized;
   const dir = dirname(path);
   assertCatalogWritable(dir);
   mkSecretDir(dir);
@@ -291,6 +301,8 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     }
     const edited = requirePersonaSource(draft).bytes;
     if (edited.equals(source.bytes)) return { action: "unchanged" };
+    const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run cotal persona edit ${name} again and paste it in, then remove ${dirname(draft)}`);
+    if (oversized) { keep = true; throw oversized; }
     try { validatePersona(edited, draft); }
     catch (error) {
       if (!isCommandFailure(error)) throw error;

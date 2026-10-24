@@ -515,6 +515,23 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }, noSeed);
   check("personas list -v prints a body's first line once, with or without a matching description",
     verbose.status === 0 && verbose.stdout.split("Reviews pull requests.").length === 2 && verbose.stdout.includes("    Then it reports.") && verbose.stdout.split(/^ +hi$/m).length === 2, shown(verbose));
+  // A definition over 1 MiB is refused by create and edit with one refusal, and nothing is saved.
+  {
+    const big = mkdtempSync(join(tmpdir(), "cotal-entry-big-"));
+    cleanup.push(big);
+    const body = join(big, "body.txt");
+    writeFileSync(body, "x".repeat(1024 * 1024));
+    const grow = join(big, "grow.sh");
+    writeFileSync(grow, `#!/bin/sh\ncat '${body}' >> "$1"\n`, { mode: 0o755 });
+    const over = /the persona definition is \d+ bytes, over the 1 MiB limit, so it was not saved/;
+    let agents = "";
+    const created = cotal(["persona", "create", "big", "--from", body, "--subscribe", ""], (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
+    check("persona create refuses a definition over 1 MiB and writes nothing", created.status === 1 && over.test(created.stderr) && created.stderr.includes("SCHEMA_INVALID") && readdirSync(agents).join() === "x.md", shown(created));
+    let file = "";
+    const edited = cotal(["persona", "edit", "x"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, { ...noSeed, VISUAL: grow, EDITOR: grow, TMPDIR: big });
+    const kept = /your edit is kept in (\S+\.md);/.exec(edited.stderr)?.[1];
+    check("persona edit refuses a definition over 1 MiB the same way and keeps the draft", edited.status === 1 && over.test(edited.stderr) && kept !== undefined && statSync(kept).size > 1024 * 1024 && readFileSync(file, "utf8") === "---\nname: x\n---\nhi\n", shown(edited));
+  }
   // An empty --model is refused by name.
   for (const [argv, model] of [[["persona", "create", "q"], ""], [["persona", "create", "q"], " "], [["personas", "new", "q"], ""]] as const) {
     const r = cotal([...argv, "--model", model, "--prompt", "body", "--subscribe", ""], persona, noSeed);
