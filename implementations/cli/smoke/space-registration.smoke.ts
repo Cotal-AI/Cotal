@@ -194,6 +194,7 @@ setCurrent("keep");
   const before = registryFiles();
   const dead = await json(["space", "add", "dead1", "--server", DEAD, "--root", root]);
   check("a broker that does not answer is TARGET_UNAVAILABLE, exit 2", refused(dead, 2, "TARGET_UNAVAILABLE") && /no broker answered/.test(dead.env?.error?.message ?? ""), shown(dead));
+  check("…and its next step is --force, for a space that is down right now", (dead.env?.error?.remedy ?? "").includes(`pass --force to add "dead1" unchecked`), shown(dead));
   for (const scheme of ["tls", "wss"]) {
     const wrong = await json(["space", "add", "open3", "--server", LIVE.replace("nats://", `${scheme}://`), "--root", root]);
     check(`a plain broker reached over ${scheme}:// is TARGET_UNAVAILABLE naming the scheme and the nats:// address`,
@@ -202,11 +203,38 @@ setCurrent("keep");
   const unserved = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
   check("an open name the broker does not serve is TARGET_NOT_FOUND, exit 2, naming the spaces it serves",
     refused(unserved, 2, "TARGET_NOT_FOUND") && unserved.env?.error?.message === `the broker at ${LIVE} serves no space named "open"; it serves ${SERVED.map((space) => `"${space}"`).join(", ")}` && /--force/.test(unserved.env?.error?.remedy ?? ""), shown(unserved));
+  // The guided form offers the same served names, so the operator picks one instead of typing it blind.
+  {
+    const { addWizard } = await import("../src/commands/meshes-wizard.js");
+    const asked: { message: string; options?: unknown[] }[] = [];
+    const answers: unknown[] = ["open3", false];
+    const next = (message: string) => {
+      if (!answers.length) throw new Error(`the wizard asked more than the script answers: "${message}"`);
+      return answers.shift();
+    };
+    const io = {
+      intro() {}, outro() {}, note() {}, cancel() {},
+      log: { info() {}, warn() {}, error() {} },
+      spinner: () => ({ start() {}, stop() {} }),
+      async text(o: { message: string }) { asked.push({ message: o.message }); return next(o.message); },
+      async select(o: { message: string; options: { value: unknown }[] }) { asked.push({ message: o.message, options: o.options.map((x) => x.value) }); return next(o.message); },
+      async confirm(o: { message: string }) { asked.push({ message: o.message }); return next(o.message); },
+    };
+    const declined = await addWizard({ server: LIVE, root: projectRoot("wizard-open") }, home, io as never);
+    const which = asked.find((a) => a.message === "Which space on that broker?");
+    check("the guided form offers the spaces an open broker serves", declined === false && SERVED.every((space) => which?.options?.includes(space)), asked);
+    check("…and a picked name goes on to the final question, where declining writes nothing", asked.some((a) => a.message === "Register this mesh?") && findMesh("open3") === undefined, asked);
+  }
   const wantsAuth = await json(["space", "add", "o2", "--server", AUTH_LIVE, "--mode", "open", "--root", root]);
   check("an open claim on a broker that requires auth is CONFLICT", refused(wantsAuth, 2, "CONFLICT"), shown(wantsAuth));
   check("its refusal and the copy cost it names are one line", (wantsAuth.env?.error?.message ?? "").includes("signing seed") && !(wantsAuth.env?.error?.message ?? "").includes("\n"), wantsAuth.env?.error?.message);
   const noTrust = await json(["space", "add", "a2", "--server", AUTH_LIVE, "--mode", "auth", "--root", root]);
   check("an auth claim with no trust under --root is DEPENDENCY_UNAVAILABLE", refused(noTrust, 2, "DEPENDENCY_UNAVAILABLE"), shown(noTrust));
+  // A machine without the signing seed is told what it can use instead, and is not offered `--mode
+  // open`, which a broker that requires auth refuses.
+  const seedless = (m: string) => m.includes("`cotal auth mint`") && m.includes("`--creds <file> --server <url>`") && !m.includes("--mode open");
+  check("…naming an owner's minted credential with --creds, not --mode open", seedless(noTrust.env?.error?.message ?? ""), noTrust.env?.error?.message);
+  check("the open claim's refusal names the same route", seedless(wantsAuth.env?.error?.message ?? ""), wantsAuth.env?.error?.message);
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);

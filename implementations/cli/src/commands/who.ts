@@ -124,7 +124,14 @@ export async function who(args: ParsedArgs): Promise<void> {
   // manager on the roster none can be running one, so nothing is asked.
   let managers: WhoResult["managers"] = "none-present";
   let runs = (_p: Presence): boolean | null => false;
-  if (roster.some(isManager)) {
+  if (roster.some(isManager) && v.creds !== undefined) {
+    // A credential passed with --creds carries no endpoint-caller triple, and this command cannot
+    // mint one for it, so the managers are not asked. That is how far this identity reaches, as for
+    // one the managers refuse, and not a part left unread.
+    managers = "denied";
+    runs = () => null;
+    labels.push({ code: "MANAGERS_DENIED", target, message: "a credential passed with --creds carries no caller the managers accept from this command, so every seat shows managed as unknown" });
+  } else if (roster.some(isManager)) {
     try {
       const judged = judgeSeats(await readSeats(v, "ps", undefined));
       managers = judged.managers;

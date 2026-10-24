@@ -153,7 +153,8 @@ export interface Command extends Extension {
    *  via the hidden `__complete` dispatcher, so it MUST be import-light and side-effect-free —
    *  no network, no spawns. Omit it to offer no argument completion for this command.
    *  Flag-name candidates are generated from {@link Command.flags} by the dispatcher, which also
-   *  completes every `--space` value; this hook supplies the other positional and value candidates. */
+   *  completes every `--space` and `--creds` value; this hook supplies the other positional and value
+   *  candidates. */
   complete?(argv: string[]): CompletionResult | Promise<CompletionResult>;
 }
 

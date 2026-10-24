@@ -4,14 +4,16 @@
  * terminal the command asks which space, uses the answer for that one run and leaves the selection
  * alone; a script, `--json` and `--no-input` refuse with `TARGET_AMBIGUOUS` and the remedy apart from
  * the message. A manifest's declared space is the target of `up -f` and `spawn -f`, so a `--space`
- * that names another space is refused before anything is written.
+ * that names another space is refused before anything is written. In a folder whose records name no
+ * space, as after `space forget`, `whoami` and `spawn --dry-run` keep exit 0 under the held default's
+ * heading, say it was assumed, and name the folder and that space in their target.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty, Windows under ConPTY.
  *
  * Run: pnpm smoke:target-resolution
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, createSuite, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -159,6 +161,50 @@ const QUESTION = "Which one?";
   check("up -f with a --space repeating the manifest's space runs", dry.status === 0 && /space "alpha"/.test(dry.stdout), shown(dry));
   const deploy = run(["team", "deploy", "mesh.yaml", "--space", "beta"], project);
   check("team deploy with a --space naming another space refuses before it connects", deploy.status === 2 && /--space differs from this manifest's exact target; no broker was contacted/.test(`${deploy.stdout}${deploy.stderr}`) && !existsSync(join(project, ".cotal")), shown(deploy));
+}
+
+// ── A refused start leaves the folder as it found it ───────────────────────────────────────────────
+{
+  // Outside every project and the machine home, so a start here would make this folder a root. Its
+  // lock creates `.cotal/maintenance` before these refusals, and a folder left with it reads as a
+  // root of the default space.
+  const fresh = mkdtempSync(join(tmpdir(), "cotal-target-resolution-fresh-"));
+  try {
+    const entries = () => readdirSync(fresh).sort().join(",");
+    writeFileSync(join(fresh, "list.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: ["${A}"] }\nchannels: {}\n`);
+    const invalid = run(["up", "-f", "list.yaml"], fresh);
+    check("up -f with a manifest that does not validate refuses, exit 1, and leaves the folder as it found it",
+      invalid.status === 1 && /expected string, received array \(at broker\.servers\)/.test(invalid.stderr) && entries() === "list.yaml", { ...shown(invalid), entries: entries() });
+    writeFileSync(join(fresh, "user.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "${A}", auth: user }\nchannels: {}\n`);
+    const contradicted = run(["up", "-f", "user.yaml", "--open"], fresh);
+    check("up -f refused after its lock, for a flag the manifest contradicts, leaves the folder as it found it",
+      contradicted.status === 1 && /--open contradicts this manifest's broker\.auth/.test(contradicted.stderr) && entries() === "list.yaml,user.yaml", { ...shown(contradicted), entries: entries() });
+    const json = run(["up", "--json", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
+    check("up --json on the retained launcher refuses UNSUPPORTED, exit 2, and leaves the folder as it found it",
+      json.status === 2 && envelope(json)?.error?.code === "UNSUPPORTED" && entries() === "list.yaml,user.yaml", { ...shown(json), entries: entries() });
+  } finally { rmSync(fresh, { recursive: true, force: true }); }
+}
+
+// A forgotten space's folder keeps its `.cotal/` records, which name no space, so the held default is
+// assumed there only to report on it.
+{
+  clearCurrent();
+  const forgotten = join(home, "forgotten");
+  mkdirSync(forgotten, { mode: 0o700 });
+  const prepared = run(["space", "create", "gone"], forgotten);
+  const forgot = run(["space", "forget", "gone"], forgotten);
+  check("control: a space prepared in a folder and then forgotten", prepared.status === 0 && forgot.status === 0 && existsSync(join(forgotten, ".cotal")), { prepared: shown(prepared), forgot: shown(forgot) });
+  const line = "this folder names no space; the held default main was assumed";
+  const root = realpathSync(forgotten);
+  for (const command of [["whoami"], ["spawn", "--dry-run"]]) {
+    const json = run([...command, "--json"], forgotten);
+    const target = json.status === 0 ? (JSON.parse(json.stdout) as { target?: Record<string, unknown> }).target : undefined;
+    check(`${command.join(" ")} there exits 0 with a target naming the folder and the assumed space, not a space`,
+      target?.root === root && target.assumed === "main" && !Object.hasOwn(target, "space"), shown(json));
+    const plain = run([...command, "--plain"], forgotten);
+    check(`${command.join(" ")} there keeps the Mesh: main heading and says the default was assumed`,
+      plain.status === 0 && new RegExp(`^Mesh: main\n\\s*${line}\n`).test(plain.stdout), shown(plain));
+  }
 }
 
 for (const p of ptys) p.kill();

@@ -1,8 +1,9 @@
 import * as p from "../lib/prompts.js";
-import { findMesh, inputDisabledByFlag, type MeshEntry } from "@cotal-ai/workspace";
+import { findMesh, findPreparedSpace, inputDisabledByFlag, type MeshEntry } from "@cotal-ai/workspace";
 import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";
 import { readFileSync } from "node:fs";
+import { listSpaces } from "@cotal-ai/core";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -56,7 +57,7 @@ export interface WizardIO {
   cancel(message: string): void;
   log: { info(m: string): void; warn(m: string): void; error(m: string): void };
   spinner(): { start(m: string): void; stop(m: string): void };
-  text(opts: { message: string; placeholder?: string; validate?: (v: string | undefined) => string | undefined }): Promise<string>;
+  text(opts: { message: string; placeholder?: string; defaultValue?: string; validate?: (v: string | undefined) => string | undefined }): Promise<string>;
   select<T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }): Promise<T>;
   confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean>;
 }
@@ -319,13 +320,23 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   // Gating it on "did we just ask?" let `cotal meshes add <already-registered>` overwrite silently —
   // something the flag form refuses outright.
   let space = seed.space;
+  // An open broker lists the spaces it serves, so they are offered rather than typed blind.
+  let served: string[] = [];
+  if (!space && enforces === "open") {
+    try {
+      served = (await listSpaces({ servers: server as string })).map((info) => info.space).filter((name) => !accounts.includes(name));
+    } catch {
+      io.log.warn(`${server} answered, but the spaces it serves could not be read`);
+    }
+  }
   for (;;) {
     while (!space) {
-      if (accounts.length > 0) {
+      if (accounts.length > 0 || served.length > 0) {
         const picked = await io.select<string | null>({
             message: "Which space on that broker?",
             options: [
               ...accounts.map((s) => ({ value: s as string | null, label: s, hint: "credentials for this space are already here" })),
+              ...served.map((s) => ({ value: s as string | null, label: s, hint: "that broker serves it" })),
               { value: null, label: "Another name…" }, // null, not a sentinel string: no space name can collide with it
             ],
           });
@@ -340,12 +351,16 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
       }
     }
     const clash = findMesh(space);
-    if (!clash || replace) break;
+    // A prepared space, or one this machine started or a catalog lists, is not replaced, as
+    // `space add` refuses it, so only another name is offered.
+    const owner = findPreparedSpace(space) ? "a space prepared on this machine" : clash && clash.origin !== "manual" ? clash.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started" : undefined;
+    if (!owner && (!clash || replace)) break;
+    // Another name comes first, so pressing Enter never replaces a record.
     const next = await io.select({
-        message: `"${space}" is already registered here (${clash.server}).`,
+        message: owner ? `"${space}" is ${owner}, so it is not replaced.` : `"${space}" is already registered here (${clash!.server}).`,
         options: [
-          { value: "replace", label: "Replace that record", hint: clash.root },
           { value: "rename", label: "Use a different name" },
+          ...(owner ? [] : [{ value: "replace", label: "Replace that record", hint: clash!.root }]),
           { value: "cancel", label: "Cancel" },
         ],
       });
@@ -457,6 +472,8 @@ async function askRoot(io: WizardIO, cwd: string, defaultTo: string | undefined)
     const typed = await io.text({
         message: "Local folder for this mesh's credentials and personas",
         placeholder: defaultTo ?? "the folder holding its .cotal/auth",
+        // Pressing Enter takes the default, and the answer line then shows that folder.
+        ...(defaultTo ? { defaultValue: defaultTo } : {}),
         validate: (v) => {
           const candidate = v || defaultTo;
           if (!candidate) return "Required - the folder that holds this mesh's .cotal/auth and .cotal/agents.";

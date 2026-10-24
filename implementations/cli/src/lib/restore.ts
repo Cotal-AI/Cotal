@@ -46,6 +46,7 @@ import {
 import {
   CommandFailure,
   acquireMaintenanceLock,
+  assessMaintenanceClaim,
   assessRestoreClaim,
   bindRestoreListener,
   bindRestoreTarget,
@@ -72,6 +73,7 @@ import {
   type JsonValue,
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
+  type MaintenanceClaim,
   type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
@@ -82,10 +84,11 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, missingBackupPath, missingBackupPathText, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
+import { displayCmd } from "./self-exec.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
@@ -300,6 +303,12 @@ function canonicalServerEndpoint(value: string): string {
       (endpoint.pathname && endpoint.pathname !== "/"))
     throw new Error(`restore listener endpoint is not canonicalizable: ${value}`);
   return `${endpoint.protocol}//${endpoint.hostname.toLowerCase()}:${endpoint.port || "4222"}`;
+}
+
+/** Whether `path` is a link that resolves to `target`. A dangling link resolves nowhere. */
+function linksTo(path: string, target: string): boolean {
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) return false;
+  try { return realpathSync.native(path) === target; } catch { return false; }
 }
 
 function contains(parent: string, child: string): boolean {
@@ -677,10 +686,41 @@ export function movedFolderRefusal(root: string, space: string, recordedStore: s
 
 /** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
  *  degraded attempt goes forward through bare `up`, which continues it. */
-export function restoreNextStep(state: string, attemptId: string): string {
+export function restoreNextStep(state: string, attemptId: string, selection?: string): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with cotal backup recover ${attemptId} --yes; preview it first with --dry-run`;
+  // A registry restore's cleanup also deletes the store that holds the only copy of the history it
+  // left out, so it runs only with --discard-history.
+  if (state === "active" && selection === "registry") return `the registry restore completed: cotal backup cleanup-fallback ${attemptId} --yes --discard-history retires its journal and deletes the previous store, the only copy of the chat and DM history it left out; preview it first with --dry-run`;
   if (state === "active") return `the restore completed: retire its journal with cotal backup cleanup-fallback ${attemptId} --yes; preview it first with --dry-run`;
   return `recover forward with bare cotal up from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
+}
+
+/** A ready journal's next step. Resume and backup use the store at its recorded path, so a folder
+ *  moved after the cut is told to move back, and a missing store is named. */
+function readyNextStep(root: string, source: Parameters<typeof preservedSourceState>[1]): string {
+  const where = preservedSourceState(root, source);
+  if (where.state === "moved") return `this folder was moved from ${where.recordedRoot} after its state was preserved: move it back there, then create a backup or resume with bare ${displayCmd()} up`;
+  if (where.state === "missing") return `the preserved store recorded at ${source.path} is missing: if this folder was moved, move it back; if the store is lost, restore a backup with ${displayCmd()} backup restore <dir> --accept-missing-source`;
+  return `create a backup with ${displayCmd()} backup create <dir>, or resume with bare ${displayCmd()} up`;
+}
+
+/** The next step for a cut a backup create still claims: wait while it runs, or release it once it
+ *  stopped before it finished. */
+function claimedNextStep(root: string, claim: MaintenanceClaim): string {
+  const recover = `${displayCmd()} backup recover ${claim.attemptId} --yes`;
+  if (assessMaintenanceClaim(claim, { unrecordedOwnersDead: attemptProcessesGone(root) }) === "stale")
+    return `backup attempt ${claim.attemptId} stopped before it finished: release it with ${recover}`;
+  return `backup attempt ${claim.attemptId} holds this root until ${claim.deadline} (process ${claim.coordinator.pid}); if it was stopped, run ${recover} once it has exited`;
+}
+
+/** The attempt a root's maintenance journal holds and the step that moves it on, as `cotal status`
+ *  shows it and a command that refuses over that journal names it. */
+export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null } {
+  const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
+  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, journal.restore.selection)
+    : journal.state === "ready" ? readyNextStep(root, journal.source)
+    : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
+  return { attemptId, next };
 }
 
 /** The refusal while a restore's or backup's claim is not provably stale: what holds it, until
@@ -724,13 +764,13 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
   let journal: ReturnType<typeof readMaintenanceJournal>;
   try { journal = readMaintenanceJournal(root); } catch { return undefined; }
   if (!journal || !("restore" in journal)) return undefined;
-  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId) };
+  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, journal.restore.selection) };
 }
 
 /** A root with no stopped preserved cut to restore into. Nothing was staged, moved or claimed. */
 function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
   const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root"
-    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId)
+    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal.restore.selection)
     : "this root's maintenance attempt must finish first; check it with cotal status";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
 }
@@ -748,6 +788,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   // With no journal there is no cut to restore into. Refuse before the lock creates the maintenance
   // directory, so a refused restore leaves the folder as it found it and `up` there sees no state.
   if (!readMaintenanceJournal(root)) throw notRestorable(root, undefined);
+  // A path that names nothing is refused here too, saying whether its folder or the artifact is missing.
+  const named = resolve(flags.restore);
+  const missing = missingBackupPath(named);
+  if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; cotal backup verify <dir> checks one before a restore" });
   let lock = acquireStackOperationLock(root);
   let staged: StagedArtifact | undefined;
   let transitioned = false;
@@ -807,22 +851,21 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       throw new Error("restore artifact must not overlap the preserved source store");
     if (contains(stageParent, artifactPath) || contains(artifactPath, stageParent))
       throw new Error("restore artifact must not overlap the maintenance attempt directory");
-    targetPath = resolve(flags["store-dir"] ?? (controller ? journal.source.path : join(root, ".cotal", "nats")));
+    // The cut records its source by real path, so a default .cotal/nats that links there is that
+    // source and is restored in place, not taken for an alternate target.
+    const defaultStore = join(root, ".cotal", "nats");
+    targetPath = resolve(flags["store-dir"] ?? (controller || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
     if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
     assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
     // The journal is ready with no live claim, and the artifact/target are proven disjoint from
     // the attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
-    // Staging checks each artifact file before any transition, so a file fault leaves the preserved
-    // cut unchanged: the same refusal `backup verify` gives for that file.
     let artifact: StagedArtifact;
+    // A faulty artifact is refused before anything moves, naming the file and fault verify names.
     try { artifact = stageArtifact(artifactPath, stageParent); }
     catch (error) {
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored and the preserved cut was not changed`, {
-        target: { directory: artifactPath, file: error.file, fault: error.fault },
-        remedy: "this copy cannot be restored as it is: check another copy of the same artifact with cotal backup verify and restore that one, or restore a newer backup",
-      });
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: check it with cotal backup verify, or restore another copy of the same artifact; the preserved cut is unchanged" });
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);

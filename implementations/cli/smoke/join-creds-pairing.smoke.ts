@@ -13,7 +13,8 @@
  *      unreachable-server preflight, which is the point: the refusal is gone).
  *   4. same via COTAL_LIFECYCLE_UID env (the launcher seam).
  *   5. `--creds` / `--token` with no `--server` go to the broker the space is registered at, and an
- *      unregistered space is refused before any dial. The default address is never assumed.
+ *      unregistered space is refused before any dial. The default address is never assumed. With no
+ *      `--space` either, the space is the selected one.
  *
  * Run: pnpm smoke:join-creds
  */
@@ -51,7 +52,7 @@ const dir = mkdtempSync(pathJoin(tmpdir(), "join-pair-"));
 const credsPath = pathJoin(dir, "x.creds");
 const cotalHome = pathJoin(dir, "cotal-home");
 process.env.COTAL_HOME = cotalHome; // sandbox the registry before the module that reads it loads
-const { recordMesh } = await import("@cotal-ai/workspace");
+const { recordMesh, setCurrent } = await import("@cotal-ai/workspace");
 // The client parses a file before it dials, so the stand-in has both blocks and a real seed. The
 // broker never sees it: every probe stops at a gate or at an address nothing listens on.
 writeFileSync(credsPath, `-----BEGIN NATS USER JWT-----\nplaceholder\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${newIdentity().seed}\n------END USER NKEY SEED------\n`, { mode: 0o600 });
@@ -101,6 +102,12 @@ try {
     const registered = await run(mode, mintLifecycleUid(), { COTAL_HOME: cotalHome, JPAIR_SPACE: "jpair-rec" });
     check(`${flag} with no --server dials the broker the space is registered at`,
       registered.code === 1 && registered.stderr.includes("nats://127.0.0.1:1 ") && !/4222/.test(registered.stderr), registered.stderr);
+  }
+  setCurrent("jpair-rec");
+  for (const [mode, flag] of [["creds-noserver", "--creds"], ["token-noserver", "--token"]] as const) {
+    const selected = await run(mode, mintLifecycleUid(), { COTAL_HOME: cotalHome });
+    check(`${flag} with no --space or --server dials the broker of the selected space, not the default space's`,
+      selected.code === 1 && selected.stderr.includes("nats://127.0.0.1:1 ") && !/4222|"main"/.test(selected.stderr), selected.stderr);
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

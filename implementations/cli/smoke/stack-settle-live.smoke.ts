@@ -48,7 +48,7 @@
  *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
- *     and reuses it.
+ *     and reuses it. After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
  *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
  *     stack, `up` starts it again and a later `down` stops it.
@@ -90,7 +90,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, releaseMaintenanceLock, stopReservationPath } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -106,6 +106,7 @@ process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
+const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -271,6 +272,12 @@ try {
     check("down of that never-started stack stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
     const reset = cli(second, "reset", "space", other, "--dry-run", "--json");
     check("reset space finds nothing to reset there and names cotal up", reset.status === 2 && reset.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(reset.env.error.remedy?.includes("cotal up")), shown(reset));
+    // A space with neither a registration nor a stopped stack, as a legacy root's down leaves one, is
+    // cleared with clean from its root, and each reset names its own clean route.
+    for (const [kind, clean] of [["space", "cotal clean all --force"], ["store", "cotal clean store --force"]] as const) {
+      const unregistered = cli(second, "reset", kind, "neverregistered", "--dry-run", "--json");
+      check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run ${clean} from that root`)), shown(unregistered));
+    }
     const movedPort = await freePort();
     const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
     track(other);
@@ -389,6 +396,17 @@ try {
     const afterCrash = cli(root, "reset", "store", space, "--dry-run", "--json");
     const verdict = afterCrash.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
     check("reset store --dry-run after crashes and down --yes offers the apply", afterCrash.status === 0 && verdict?.offered === true, shown(afterCrash));
+    // A reset that finds the root's maintenance lock held, as by an `up` started at the same time,
+    // names the holder's pid as whole-stack commands do, and removes nothing.
+    const held = acquireMaintenanceLock(root);
+    try {
+      for (const verb of ["store", "space"]) {
+        const raced = cli(root, "reset", verb, space, "--yes", "--json");
+        check(`reset ${verb} refuses a held maintenance lock by its holder's pid`, raced.status === 2 && raced.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(raced.env.error.message.includes(`(pid ${process.pid})`)) && raced.env.target?.holderPid === process.pid, shown(raced));
+      }
+    } finally { releaseMaintenanceLock(held); }
+    const stillOffered = cli(root, "reset", "store", space, "--dry-run", "--json");
+    check("...and those refusals removed nothing", stillOffered.status === 0 && (stillOffered.env?.result?.applyVerdict as { offered?: boolean } | undefined)?.offered === true, shown(stillOffered));
     // The killed daemon never released shard 0. That down kept its credential, so the repair up
     // recognises the row as the dead daemon's, waits out its TTL and starts delivery.
     check("down --yes after a delivery crash keeps the delivery credential", settled.env?.result?.cleanup === "registration-removed-delivery-credential-kept", settled.env?.result?.cleanup);
@@ -604,6 +622,16 @@ try {
     check("bare up after the interrupted redefinition adopts the journaled replacement and reuses it", recovered.status === 0 && row?.instanceId === replacement && row?.state === "reused" && journal?.operation.phase === "completed" && serviceInstances("redefup", "stack-manager").length === 1, shown(recovered));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down then stops the recovered stack", stopped.status === 0 && gone("redefup", "stack-manager"), shown(stopped));
+    // The session ceiling stays with the manager's saved definition, so a bare up does not drop it.
+    const again = cli(root, "up", "--json");
+    track("redefup");
+    const launch = serviceDefinitionStore("redefup").read("stack-manager")?.record.value.launch;
+    check("a bare up after down keeps the --max-sessions 32 an earlier up set, in the definition and the registration",
+      again.status === 0 && launch?.type === "adapter" && launch.options["max-sessions"] === 32 && findMesh("redefup")?.maxSessions === 32 &&
+        serviceInstances("redefup", "stack-manager").some((row) => observeServiceProcess(row.record.value) === "running"),
+      { ...shown(again), options: launch?.type === "adapter" ? launch.options : undefined, registered: findMesh("redefup")?.maxSessions });
+    const last = cli(root, "down", "--yes", "--json");
+    check("down stops it again", last.status === 0 && gone("redefup", "stack-manager"), shown(last));
   }
 
   // 8. An upgrade: this release controls member records an earlier release wrote.

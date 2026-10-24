@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { accountFromCreds, isLoopbackLiteral, type ParsedArgs } from "@cotal-ai/core";
 import {
-  acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, localMeshesForRoot, oneLine, presentationOf,
+  acquireMaintenanceLock, canonicalRoot, CommandFailure, isCommandFailure, findMesh, localMeshesForRoot, oneLine, presentationOf,
   releaseMaintenanceLock, removeMeshesByRoot, renderReport, terminalWidth, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import { protectedCredentialReference } from "../lib/protected-records.js";
@@ -13,6 +13,7 @@ import { assertResetIdentityRemoved, planResetSpaceIdentity, recheckResetSpaceId
 import { removeLocalState, type safeStoreCleanupPath } from "./clean.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { assertResetEligible, selectResetTarget } from "./reset-store-apply.js";
+import { acquireStackOperationLock } from "../lib/stack-journal.js";
 
 /** This space's saved service definitions whose credential file the account `accountPub` issued.
  *  A reset removes that account, so the next identity rejects each such credential. A file that
@@ -74,9 +75,13 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
       return;
     }
   }
+  // A live holder, such as a racing `up`, is named by its pid, as whole-stack commands name it.
   let lock: ReturnType<typeof acquireMaintenanceLock>;
-  try { lock = acquireMaintenanceLock(root); }
-  catch { throw new CommandFailure("refused", "CONFLICT", "the exclusive root maintenance lock could not be acquired; no reset was submitted", { target }); }
+  try { lock = acquireStackOperationLock(root); }
+  catch (error) {
+    if (isCommandFailure(error)) throw error;
+    throw new CommandFailure("refused", "CONFLICT", "the exclusive root maintenance lock could not be acquired; no reset was submitted", { target });
+  }
   const removed: string[] = [];
   // A deletion through the reviewed secret store is reported by the store and again by the local
   // cleanup. The receipt lists each path once, keeping the annotated label when there is one.

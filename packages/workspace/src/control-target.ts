@@ -4,8 +4,8 @@
  * run`, the web dashboard), so they all resolve the same target the same way: exactly
  * {@link connectOrExit}'s precedence (--creds raw > --server + unregistered --space open >
  * registry/`current` with mint + preflight + stale-prune) with one control-specific delta: on the
- * raw `--creds` path the space defaults to THIS FOLDER's `.cotal/auth` space rather than
- * `DEFAULT_SPACE`, because a control op addresses the manager of the folder's mesh.
+ * raw `--creds` path with `--server` and no `--space`, the space is THIS FOLDER's `.cotal/auth`
+ * space rather than `DEFAULT_SPACE`, because a control op addresses the manager of the folder's mesh.
  */
 import { existsSync, readFileSync } from "node:fs";
 import {
@@ -86,8 +86,10 @@ export async function resolveControlTarget(
   // A credential-less resolve sweeps once when no space is named, unless the caller already swept
   // for these flags, and the peek and the connect helper both resolve against that `offline` set,
   // so they see one world and a kept dead record is a live candidate for neither.
+  // A raw `--creds` with `--server` and no `--space` takes this folder's space; with neither, the
+  // connect helper takes the selected space or this folder's.
   const withSpace = flags.creds
-    ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
+    ? flags.space === undefined && flags.server !== undefined ? { ...flags, space: soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE } : flags
     : { ...flags, offline: flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes()).offline) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the

@@ -167,14 +167,14 @@ const baseCommands: Command[] = [
     name: "completion",
     group: "Setup",
     summary: "read shell integration, print a script, or install/remove unchanged owned files",
-    usage: "cotal completion [--json|--plain] | script <bash|zsh|fish|powershell> | install|uninstall [shell] [--json|--plain]",
+    usage: "cotal completion [--json|--plain] | script <bash|zsh|fish|powershell> | install|uninstall [shell] [--force] [--json|--plain]",
     positionals: "[script <shell> | install|uninstall [shell]]",
     flags: completionFlags,
     outputs: ["json", "plain"],
     subcommands: [
       { name: "script", flagNames: [], summary: "print a shell's completion stub as raw shell code", usage: "cotal completion script <bash|zsh|fish|powershell>" },
-      { name: "install", flagNames: ["json", "plain"], summary: "install or refresh unchanged owned files (detects $SHELL)", usage: "cotal completion install [shell]", outputs: ["json", "plain"] },
-      { name: "uninstall", flagNames: ["json", "plain"], summary: "remove only unchanged owned files and startup blocks", usage: "cotal completion uninstall [shell]", outputs: ["json", "plain"] },
+      { name: "install", flagNames: ["json", "plain", "force"], summary: "install or refresh unchanged owned files (detects $SHELL)", usage: "cotal completion install [shell] [--force]", outputs: ["json", "plain"] },
+      { name: "uninstall", flagNames: ["json", "plain", "force"], summary: "remove only unchanged owned files and startup blocks", usage: "cotal completion uninstall [shell] [--force]", outputs: ["json", "plain"] },
       ...["bash", "zsh", "fish", "powershell"].map((name) => ({ name, summary: `replaced by completion script ${name}`, hidden: true })),
     ],
     validate: validateCompletionArguments,
@@ -302,7 +302,7 @@ const baseCommands: Command[] = [
     summary:
       "configurable cleanup - history/store/all, plus explicit committed-restore fallback cleanup",
     usage:
-      "cotal clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force [--discard-history]",
+      "cotal clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | cotal clean <store|all> --dry-run [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force [--discard-history]",
     positionals: "<history|store|all|restore-attempt|restore-fallback>",
     flags: [
       ...targetFlags,
@@ -311,6 +311,7 @@ const baseCommands: Command[] = [
       { name: "attempt", type: "string", value: "<id>", description: "restore-fallback: matching committed restore attempt" },
       { name: "discard-history", type: "boolean", description: "restore-fallback: also delete a registry-only restore's previous store, the only copy of the history it left out" },
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
+      { name: "dry-run", type: "boolean", description: "store/all: list what would be removed and remove nothing" },
     ],
     run: clean,
     complete: cleanComplete,

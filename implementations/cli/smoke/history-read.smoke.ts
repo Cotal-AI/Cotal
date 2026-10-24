@@ -4,7 +4,8 @@
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
  * `--grep`, `--dms`, the usage refusals, a credential that may not read history, writes an observer
  * credential may not make, one another space's
- * account issued, `--follow` as NDJSON
+ * account issued (also with `--server`, when that space is registered here at another address),
+ * `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
  * same broker, `cotal channel remove` says whether it removed a saved entry and refuses a name with
@@ -36,7 +37,7 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
@@ -95,9 +96,9 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key ===
 // Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[], env: Record<string, string> = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], opts: { env?: Record<string, string>; cwd?: string } = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...env }, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd: opts.cwd ?? shell, env: { ...isolatedEnv, ...opts.env }, timeout: 120_000 }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -211,8 +212,8 @@ try {
   const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: kiritimati.TZ }).format(new Date()).split("-").map(Number) as [number, number, number];
   const localDay = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   const midnight = new Date(Date.UTC(y, m - 1, d) - 14 * 3_600_000).toISOString();
-  const byDate = await run(["history", "general", "--since", localDay, "--json"], kiritimati);
-  const byDatePlain = await run(["history", "general", "--since", localDay, "--plain"], kiritimati);
+  const byDate = await run(["history", "general", "--since", localDay, "--json"], { env: kiritimati });
+  const byDatePlain = await run(["history", "general", "--since", localDay, "--plain"], { env: kiritimati });
   check("--since a date alone starts at local midnight, and the plain report prints that cutoff",
     byDate.envelope?.result?.window.since === midnight && JSON.stringify(texts(byDate)) === JSON.stringify(texts(general)) && /Since: .*\(/.test(byDatePlain.stdout) && byDatePlain.stdout.includes(`(${midnight})`),
     { since: byDate.envelope?.result?.window.since, midnight, texts: texts(byDate), plain: byDatePlain.stdout.slice(0, 300) });
@@ -258,6 +259,62 @@ try {
     crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && crossed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", not "${space}"`) && (crossed.envelope.target as { credentialSpace?: string } | null)?.credentialSpace === "elsewhere" && (crossed.envelope.error.remedy ?? "").includes(`cotal auth mint <label> --space ${space}`), shown(crossed));
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
   check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
+  // With that space registered here at another address, a `--server` at this broker is the mismatch:
+  // the next step drops it, and following the first step with `--server` kept says so again.
+  const inHome = (f: () => void) => {
+    const prior = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
+    try { f(); } finally { if (prior === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prior; }
+  };
+  const elsewhereServer = `nats://127.0.0.1:${await pickFreePort()}`;
+  const elsewhereRoot = join(home, "elsewhere-root");
+  mkdirSync(elsewhereRoot);
+  inHome(() => recordMesh({ space: "elsewhere", server: elsewhereServer, root: elsewhereRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() }));
+  try {
+    const byServer = await run(["history", "general", "--json", "--creds", elsewhere, "--server", servers]);
+    check("with --server, the next step for a credential whose space is registered elsewhere drops --server",
+      byServer.status === 2 && byServer.envelope?.error?.code === "PERMISSION_DENIED" && byServer.envelope.error.remedy === `use it with --space elsewhere and without --server, which dials elsewhere's broker at ${elsewhereServer}`, shown(byServer));
+    const followed = await run(["history", "general", "--json", "--creds", elsewhere, "--space", "elsewhere", "--server", servers]);
+    check("following it with --server kept names the address the space is registered at, not the plain rejection",
+      followed.status === 2 && followed.envelope?.error?.code === "PERMISSION_DENIED" &&
+        followed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", which is registered here at ${elsewhereServer}, not ${servers}`) &&
+        followed.envelope.error.remedy === `drop --server to use elsewhere's broker at ${elsewhereServer}, or point --server at it` &&
+        (followed.envelope.target as { server?: string } | null)?.server === servers, shown(followed));
+  } finally {
+    inHome(() => removeMesh("elsewhere"));
+  }
+  // With neither --space nor --server, a credential goes to the selected space, else to the space of
+  // the folder the command runs in, and a refusal names that space rather than the default.
+  const selectionObserver = join(home, "selectionObserver.creds");
+  writeFileSync(selectionObserver, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  const spaceOf = (r: { envelope?: Envelope }) => (r.envelope?.target as { space?: string } | null)?.space;
+  const bySelection = await run(["history", "general", "--json", "--creds", selectionObserver]);
+  check("--creds with no --space or --server reads the selected space", bySelection.status === 0 && bySelection.envelope?.outcome === "ok" && spaceOf(bySelection) === space, shown(bySelection));
+  inHome(() => setCurrent("histunreg"));
+  try {
+    const unregistered = await run(["history", "general", "--json", "--creds", selectionObserver]);
+    check("a selected space not registered here is refused by name, not as the default space",
+      unregistered.status === 2 && unregistered.envelope?.error?.code === "TARGET_NOT_FOUND" &&
+        unregistered.envelope.error.message === '--creds needs --server <url> or a registered --space: the selected space "histunreg" is not registered here, so nothing was dialed' &&
+        spaceOf(unregistered) === "histunreg", shown(unregistered));
+    inHome(() => clearCurrent());
+    const byFolder = await run(["history", "general", "--json", "--creds", selectionObserver], { cwd: meshRoot });
+    check("with nothing selected, it reads the space registered for the folder it runs in", byFolder.status === 0 && spaceOf(byFolder) === space, shown(byFolder));
+    const prepRoot = join(home, "prep-root");
+    mkdirSync(prepRoot);
+    const prepared = await run(["space", "create", "histprep"], { cwd: prepRoot });
+    check("control: a space is prepared in another folder", prepared.status === 0, shown(prepared));
+    const unstarted = await run(["history", "general", "--json", "--creds", selectionObserver], { cwd: prepRoot });
+    check("there, the refusal names that folder's space",
+      unstarted.status === 2 && unstarted.envelope?.error?.message === '--creds needs --server <url> or a registered --space: this folder\'s space "histprep" is not registered here, so nothing was dialed' &&
+        spaceOf(unstarted) === "histprep", shown(unstarted));
+    const nowhere = await run(["history", "general", "--json", "--creds", selectionObserver]);
+    check("control: with nothing selected and no space in the folder, it is still the default space, not a registered one",
+      nowhere.status === 2 && nowhere.envelope?.error?.message === `--creds needs --server <url> or a registered --space: the default space "main" is not registered here, so nothing was dialed` &&
+        nowhere.envelope.target === null, shown(nowhere));
+  } finally {
+    inHome(() => setCurrent(space));
+  }
 
   // ── a write the broker refuses for the credential's grant applied nothing ───────────────────────
   // An observer credential may read but not write channel metadata or purge history. Each refusal

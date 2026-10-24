@@ -12,6 +12,9 @@
  * consumer, and a channel send reads that channel's policy with a Direct Get, so the consumer count
  * on both buckets is the same before and after the sends. The old watch, and the policy read's scan,
  * left one consumer per send on the bucket they read for five minutes. `cotal channel` on the same
+ * operator credential reads the registry with a Direct Get and leaves no consumer either. An operator
+ * credential passed with `--creds` reads the same way. An agent credential, which holds no Direct
+ * Get row, watches instead, and one that may not read presence is refused.
  * operator credential reads the registry with a Direct Get and leaves no consumer either. A post to
  * an unregistered channel reads that channel's retained count once with STREAM.INFO, which opens no
  * consumer.
@@ -51,7 +54,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 63;
+const EXPECTED = 66;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -219,6 +222,23 @@ try {
   const consumersAfter = await watchConsumers();
   const listed = await run(["channel"]);
   const consumersAfterList = await watchConsumers();
+  // A --creds credential reads once when its own grant holds the Direct Get rows, as the operator
+  // credential does. An agent credential from `cotal auth mint` holds none, so it watches instead.
+  const operatorRead = join(tmp, "operator-read.creds");
+  writeFileSync(operatorRead, await mintCreds(auth, newIdentity(), "operator"), { mode: 0o600 });
+  const agentRead = join(tmp, "agent-read.creds");
+  writeFileSync(agentRead, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), allowPublish: ["general"] }), { mode: 0o600 });
+  const noRead = join(tmp, "no-read.creds");
+  writeFileSync(noRead, await mintCreds(auth, newIdentity(), "probe"), { mode: 0o600 });
+  const operatorReadText = `creds-operator-${randomUUID().slice(0, 6)}`;
+  const agentReadText = `creds-agent-${randomUUID().slice(0, 6)}`;
+  const operatorSend = await run(["send", "-c", "general", operatorReadText, "--space", space, "--server", servers, "--creds", operatorRead]);
+  await wait(700);
+  const consumersAfterOperator = await watchConsumers();
+  const agentSend = await run(["send", "-c", "general", agentReadText, "--space", space, "--server", servers, "--creds", agentRead]);
+  const noReadSend = await run(["send", "-c", "general", "never stored", "--space", space, "--server", servers, "--creds", noRead, "--json"]);
+  await wait(700);
+  const consumersAfterAgent = await watchConsumers();
   // A channel with no registry entry: a first post says it starts the channel, a later one says the
   // channel already has messages, and both name the registered channels.
   const fresh = `fresh-${randomUUID().slice(0, 6)}`;
@@ -245,6 +265,22 @@ try {
   );
 
   check(
+    "an operator credential passed with --creds reads once and leaves no consumer",
+    operatorSend.code === 0 && got.some((m) => m.route === "#general" && m.text === operatorReadText) &&
+      consumersAfterOperator.presence === consumersAfterList.presence && consumersAfterOperator.channels === consumersAfterList.channels,
+    { operatorSend, before: consumersAfterList, after: consumersAfterOperator },
+  );
+  check(
+    "an agent credential passed with --creds, which holds no Direct Get row, watches presence and its channel send is stored",
+    agentSend.code === 0 && got.some((m) => m.route === "#general" && m.text === agentReadText) && consumersAfterAgent.presence > consumersAfterOperator.presence,
+    { agentSend, before: consumersAfterOperator, after: consumersAfterAgent },
+  );
+  check(
+    "a credential passed with --creds that may not read presence refuses PERMISSION_DENIED, exit 2, before anything is sent",
+    noReadSend.code === 2 && noReadSend.stdout.includes('"code":"PERMISSION_DENIED"') && !got.some((m) => m.text === "never stored"),
+    noReadSend,
+  );
+  check(
     "a first post to an unregistered channel says it starts the channel and names the registered ones",
     firstFresh.code === 0 && firstFresh.stderr.includes(`#${fresh} has no channel metadata and no earlier message, so this message starts it`) && firstFresh.stderr.includes("Registered channels: #general."),
     firstFresh,
@@ -257,8 +293,8 @@ try {
   );
   check(
     "reading an unregistered channel's earlier messages leaves no consumer on the presence or channel-registry stream",
-    consumersAfterFresh.presence === consumersAfterList.presence && consumersAfterFresh.channels === consumersAfterList.channels,
-    { before: consumersAfterList, after: consumersAfterFresh },
+    consumersAfterFresh.presence === consumersAfterAgent.presence && consumersAfterFresh.channels === consumersAfterAgent.channels,
+    { before: consumersAfterAgent, after: consumersAfterFresh },
   );
 
   check("`cotal send -t` outside a seat exits 0", dm.code === 0, dm.stderr);

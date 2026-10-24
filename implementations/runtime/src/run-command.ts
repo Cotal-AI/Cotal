@@ -742,8 +742,12 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // is refused here, against that contract, before it is sent.
     if (e instanceof EpEnvelopeError && command === "run-status" && e.code === "bad-request" && /additional properties: "journal"/.test(e.message))
       throw new CommandFailure("refused", "UNSUPPORTED", "this manager is from release 0.99.3 or earlier and reads no journal page, so this command cannot read the run through it", { target: { space: t.space }, remedy: `upgrade that manager, or read the run from its project folder with ${localJournal(args)}` });
+    // No answer is an unavailable target, not a usage error. Only this machine's records can name a
+    // manager that runs and does not answer, and `cotal status` reads them.
+    if (e instanceof EpEnvelopeError && unansweredRequest(e))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", unansweredManagerRefusal(e), { target: { space: t.space }, native: { code: e.code }, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
     if (e instanceof EpEnvelopeError) {
-      console.error(unansweredRequest(e) ? unansweredManagerRefusal(e) : `${e.code}: ${e.message}`);
+      console.error(`${e.code}: ${e.message}`);
       process.exit(1);
     }
     throw e;
