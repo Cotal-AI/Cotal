@@ -10,6 +10,10 @@
  * `service add --file` of a broker definition whose server is no broker address is refused, quoting
  * it, before anything is saved. It used to be saved, and only its start refused.
  *
+ * `service add --preset broker` in a prepared, unstarted space saves into that space. The preset's own
+ * `--server` and `--root` used to select the target, so it went to "main", or with `--space` it was
+ * refused as not started.
+ *
  * `help service remove` lists `--instance`, which `remove` takes. It used to leave it out.
  *
  * Driven through the built binary in a sandboxed COTAL_HOME, from a folder that is not a project and
@@ -98,6 +102,16 @@ check("help service remove lists --instance <full-id> in its usage and options",
     word.status === 1 && wordRefusal?.error?.code === "SCHEMA_INVALID" && wordRefusal.error.message === `the definition's launch.options.server "hallo welt": the broker address must be one nats:// or tls:// URL; nothing was saved`, shown(word));
   const kept = run(["service", "--space", "sa", "--json"], a);
   check("...and saves nothing", kept.status === 0 && !kept.stdout.includes('"name":"word"'), shown(kept));
+
+  // A preset's own --server and --root describe the service. They used to pick the target too, so in
+  // this prepared, unstarted space the add went to "main", and with --space it was refused as not started.
+  const presetArgs = ["--preset", "broker", "--root", a, "--config", config, "--binary", realpathSync("/bin/sleep"), "--server", "nats://127.0.0.1:4999"];
+  for (const [name, extra] of [["viafolder", []], ["viaspace", ["--space", "sa"]]] as const) {
+    const added = run(["service", "add", name, ...presetArgs, ...extra, "--json"], a);
+    check(`service add --preset broker ${extra.length ? "with --space sa" : "in sa's folder"} saves into sa`, added.status === 0 && added.stdout.includes('"target":{"space":"sa"'), shown(added));
+  }
+  const listed = run(["service", "--space", "sa", "--json"], a);
+  check("...and sa lists both", listed.status === 0 && listed.stdout.includes('"name":"viafolder"') && listed.stdout.includes('"name":"viaspace"'), shown(listed));
 }
 
 finish();

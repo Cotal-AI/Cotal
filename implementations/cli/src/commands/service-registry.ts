@@ -68,7 +68,9 @@ function legacyProcesses(context: LocalProcessContext) {
 export async function service(args: ParsedArgs, commandName = "service"): Promise<void> {
   validateServiceArguments(args);
   const presentation = presentationOf(args.values);
-  const catalog = personaCatalog(args.values as { space?: string });
+  // Only --space selects the space: a preset's own options, such as the broker's --server and --root,
+  // describe the service and never the target.
+  const catalog = personaCatalog({ space: args.values.space as string | undefined });
   const { space, root } = catalog;
   recordOperationSpace(space);
   const store = serviceDefinitionStore(space);

@@ -3982,6 +3982,9 @@ presets this machine has, and a name it does not have is refused as `DEPENDENCY_
 marked `(required)`, and an option that takes a path shows `<dir>` or `<file>`. A missing required
 option is refused with each one named.
 
+A preset's options describe the service and never choose its space. `add` saves into the space
+`--space` names, or else the selected space or the folder's, as other commands resolve it.
+
 `add` checks the options against the preset's schema, and checks that each declared path exists
 with its required protection. It does not check that a root or credential suits the preset, such
 as a root's auth mode or which credential a file holds. Those are checked when the service starts.
