@@ -4,7 +4,9 @@
  * Bare `cotal`, help and version read local metadata only, and every usage error is refused before
  * any effect: no connector seed, no config write. An alias resolves to the same command as its name
  * (help, refusal and parse), and a word that only prefixes a command selects nothing. A short flag
- * parses as its long form, and a wrong-case short flag or a missing value is refused. `version --json`
+ * parses as its long form, and a wrong-case short flag or a missing value is refused. So is a flag typed
+ * with a typographic dash, naming the dash and the flag; after `--`, or naming no flag, such a word is
+ * an argument. `version --json`
  * writes one envelope, and a usage error under `--json` is one refusal envelope. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`.
  *
@@ -425,6 +427,18 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("a prefix of a command selects nothing", cotal(["spaw"]), /unknown command: spaw/);
   refused("a prefix of an aliased command selects nothing", cotal(["hist"]), /unknown command: hist/);
   refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /unknown command: web - run `cotal help`/);
+}
+
+// ── A flag typed with a typographic dash, as autocorrect writes `--` ──────────────────────────────
+{
+  refused("an en-dash flag is refused naming the dash and the flag", cotal(["down", "\u2013yes"]), /"\u2013yes" starts with an en dash, a typographic dash, so it is not a flag; type --yes with ASCII hyphens/);
+  refused("an em-dash flag after an argument is refused the same way", cotal(["history", "general", "\u2014limit", "1"]), /"\u2014limit" starts with an em dash.*type --limit/);
+  refused("a minus-sign short flag names the short flag", cotal(["history", "general", "\u2212j"]), /"\u2212j" starts with a minus sign.*type -j with an ASCII hyphen/);
+  refused("a command's own flags are what it names, wherever the word stands", cotal(["send", "-c", "general", "hallo", "\u2013json"]), /"\u2013json" starts with an en dash.*type --json/);
+  const noFlag = cotal(["history", "\u2013nichts"], undefined, noSeed);
+  check("a dash word that names no flag is still the argument it reads as", noFlag.status !== 1 && !/typographic dash/.test(noFlag.stderr), shown(noFlag));
+  const terminated = cotal(["send", "-c", "general", "--", "\u2013json"], undefined, noSeed);
+  check("after -- a dash word that names a flag is an argument as typed", terminated.status !== 1 && !/typographic dash/.test(terminated.stderr), shown(terminated));
 }
 
 // ── Every alias is its command: same help, same refusal ───────────────────────────────────────────

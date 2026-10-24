@@ -1,4 +1,5 @@
 import { writeSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -305,12 +306,33 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false):
   process.exit(1);
 }
 
+const TYPOGRAPHIC_DASHES: Readonly<Record<string, string>> = { "\u2013": "an en dash", "\u2014": "an em dash", "\u2212": "a minus sign" };
+
+/** Why a word `cmd` would read as an argument is one of its flags typed with a typographic dash, as
+ *  an autocorrecting editor or chat client writes `--`. A word after `--`, or one whose name after
+ *  its dashes is no flag of `cmd`, is the argument it reads as. */
+function typographicFlag(cmd: Command, rest: readonly string[]): string | undefined {
+  if (cmd.rawArgs) return undefined;
+  const flags = cmd.flags ?? [];
+  const options = Object.fromEntries(flags.map((flag) => [flag.name, { type: flag.type, ...(flag.short ? { short: flag.short } : {}), ...(flag.multiple ? { multiple: true } : {}) }]));
+  for (const token of parseArgs({ args: [...rest], options, strict: false, allowPositionals: true, tokens: true }).tokens) {
+    if (token.kind === "option-terminator") return undefined;
+    if (token.kind !== "positional") continue;
+    const [, dash, name] = /^([\u2013\u2014\u2212])[\u2013\u2014\u2212-]*([^=]+)/u.exec(token.value) ?? [];
+    const flag = name === undefined ? undefined : flags.find((candidate) => candidate.name === name || candidate.short === name);
+    if (flag) return `"${token.value}" starts with ${TYPOGRAPHIC_DASHES[dash!]}, a typographic dash, so it is not a flag; type ${flag.name === name ? `--${name} with ASCII hyphens` : `-${name} with an ASCII hyphen`}`;
+  }
+  return undefined;
+}
+
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. Node's
  *  parse error is trimmed to its first sentence: the verbose "To specify a positional argument
  *  starting with a '-' …" tail is dropped. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const json = asksForJson(cmd, rest);
   const plain = rest.includes("--plain");
+  const dashed = typographicFlag(cmd, rest);
+  if (dashed) usageExit(dashed, cmd, json, plain);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);

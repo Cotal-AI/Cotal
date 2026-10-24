@@ -76,7 +76,10 @@ An undeclared flag is a usage error, and so is a flag given more than once unles
 repeatable, as `--opt` and `down --session-store` are. So is an unknown command, and a first word
 that is not one of the command's subcommands when it declares them. So is input a command checks
 before it acts, such as a missing argument, an invalid flag value or two flags that conflict, and
-`cotal help` with a subcommand that does not exist. The command prints the error, then any remedy,
+`cotal help` with a subcommand that does not exist. So is a word that starts with an en dash, an em
+dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
+`--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
+typed. The command prints the error, then any remedy,
 then its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 
