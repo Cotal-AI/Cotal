@@ -174,6 +174,8 @@ try {
     ].join("\n"),
     usageOf(send.all),
   );
+  const setup80 = await helpAt(["help", "setup"], 80);
+  check("cotal help setup on an 80-column terminal fits every line, its examples included", setup80.exitCode === 0 && fit(setup80.all.join("\n"), 80).length === 0 && setup80.all.includes("Examples"), fit(setup80.all.join("\n"), 80));
   const setup = await helpAt(["help", "setup"], 40);
   check("cotal help setup on a 40-column terminal fits every line before its examples", setup.exitCode === 0 && fit(setup.shown, 40).length === 0 && lines(setup.shown).length > 10, fit(setup.shown, 40));
   check(

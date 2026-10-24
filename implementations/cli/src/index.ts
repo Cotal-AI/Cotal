@@ -71,7 +71,7 @@ const baseCommands: Command[] = [
     flags: setupFlags,
     validate: validateSetupArguments,
     outputs: ["json", "plain"],
-    examples: ["cotal setup", "cotal setup --destination local --harness claude --runtime tmux --project ~/research --space research --no-input", "cotal setup --destination self-hosted --harness claude --project ~/team --space team --connection-file team.json --json", "cotal setup --destination local --harness claude --project ~/research --space research --start --detach --json", "cotal setup --skills"],
+    examples: ["cotal setup", "cotal setup --destination local -H claude --project ~/research -s research -y", "cotal setup --runtime tmux", "cotal setup --destination self-hosted --connection-file team.json", "cotal setup --destination local -H claude --project . -s demo --start -d", "cotal setup --skills"],
     run: setup,
   },
   {
