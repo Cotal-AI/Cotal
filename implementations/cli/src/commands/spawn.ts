@@ -1019,9 +1019,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // The not-found text names the mesh's space and server, which for a handoff are its values.
     if (handoffText !== undefined) {
       stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
-    } else if (code === "ENOENT" && path !== join(target.personaRoot, `${ref}.md`)) {
-      // A path reference opened that one file and never read the catalog, so name the file.
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona "${ref}"${fromEnv}: ${path} was not found`, { target: { space, path }, remedy: "check the path, or name a persona from the catalog" });
     } else if (code === "ENOENT") {
       const missing = missingPersona(target, ref, personaFrom, path);
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
