@@ -6396,7 +6396,8 @@ material, and is the path on a bare broker with no manager or for a run with no 
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
-patterns or `none`), the run's channel ceiling. On a
+patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
+`a b`, is refused `USAGE_INVALID` naming it. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
 its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides

@@ -53,6 +53,15 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   c("no verb at all is the list command, not a refusal", !(bare instanceof Error) && bare.verb === "ps", bare);
 }
 
+// A local start's ceiling entry is a channel or a pattern; one the wire layer would rewrite is refused by name.
+{
+  const local = (read: string, publish: string) => gate(["start"], { local: true, file: "p.cotal.js", "admit-read": read, "admit-publish": publish });
+  for (const [read, publish, flag, entry] of [["a b", "none", "admit-read", "a b"], ["general,team x", "none", "admit-read", "team x"], ["none", "a b", "admit-publish", "a b"]] as const)
+    c(`--${flag} ${JSON.stringify(entry)} is refused naming the entry`, usageRefusal(local(read, publish), `--${flag}: invalid channel "${entry}"`), local(read, publish));
+  for (const [read, publish] of [["general,team.>", "none"], ["none", "general, ops"]] as const)
+    c(`control: --admit-read ${JSON.stringify(read)} --admit-publish ${JSON.stringify(publish)} passes the grammar`, !(local(read, publish) instanceof Error), local(read, publish));
+}
+
 {
   reset();
   // Complete answer-shaped arguments and invalid JSON: the verb gate must answer before either the

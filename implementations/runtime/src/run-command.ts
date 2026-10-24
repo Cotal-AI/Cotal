@@ -21,6 +21,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
+  assertValidChannel,
   BASELINE_LIFECYCLE_ENDPOINT,
   chatStream,
   EpEnvelopeError,
@@ -1095,6 +1096,15 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (values.plain) usage("diagnostic pages produce bounded JSON and take no --plain");
   }
   if ((values["admit-read"] !== undefined || values["admit-publish"] !== undefined) && values.local !== true) usage("admission ceilings belong to the explicit local start");
+  // A ceiling entry is a channel or a channel pattern. One the wire layer would rewrite, such as
+  // `a b`, would admit a channel nobody named.
+  for (const flag of ["admit-read", "admit-publish"] as const) {
+    const entries = (values[flag] ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (entries.length === 1 && entries[0] === "none") continue;
+    for (const entry of entries) {
+      try { assertValidChannel(entry); } catch (error) { usage(`--${flag}: ${oneLine((error as Error).message)}`); }
+    }
+  }
   // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.
   if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
