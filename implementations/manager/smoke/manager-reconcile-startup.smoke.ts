@@ -419,7 +419,7 @@ try {
       managerInstanceId: string;
       goalWriter?: unknown;
       pendingTurns: Map<string, { acceptedAt: number; seatDiedAt?: number; seat: { name: string } }>;
-      adoptTurnGoal: (e: { ref: GoalRef; iid: string; allocated?: { name: string; actor: string; uid: string }; note?: string }) => Promise<void>;
+      adoptTurnGoal: (e: { ref: GoalRef; iid: string; allocated?: { name: string; owner?: string; actor: string; uid: string }; note?: string }) => Promise<void>;
     };
     // The fixture writes through the LIVE manager's own goal-writer connection: these records are
     // the ones a manager writes, and no other credential in this suite may write them.
@@ -456,10 +456,10 @@ try {
       // currency against it, and a goal with no pin is refused there as a wiring confusion.
       target: { owner: "local", actor: "seat9", lifecycleUid: seatUid, mappingRevision: 0 },
     });
-    const allocated = { name: "adopted-seat", actor: "seat9", uid: seatUid };
+    const allocated = { name: "adopted-seat", owner: "local", actor: "seat9", uid: seatUid };
     const DEADLINE_AT = Date.now() + 600_000;
     // The note records the hold token, as the accept path writes it.
-    const noteOf = (id: string) => JSON.stringify({ payload: "do the thing", deadlineAt: DEADLINE_AT, holdEpoch: serveEpoch, owner: "local", holdToken: holdTokenOf(id) });
+    const noteOf = (id: string) => JSON.stringify({ payload: "do the thing", deadlineAt: DEADLINE_AT, holdEpoch: serveEpoch, holdToken: holdTokenOf(id) });
     const note = noteOf(goalId);
     await recordGoalIndex(actx, ref, doors.managerInstanceId, allocated, note);
     // The turn's HOLD, minted exactly as the accept path mints it: the record over the goal-writer's
@@ -523,6 +523,31 @@ try {
       !doors.pendingTurns.has(relayKey(holdless)) && !(adopting as unknown as { turnAcceptances: Map<string, unknown> }).turnAcceptances.has(relayKey(holdless)),
       { pending: doors.pendingTurns.has(relayKey(holdless)) });
 
+    // A FLOOR THAT NAMES NO OWNER, the record an older manager wrote with the owner in its note.
+    // The seat is read from the floor alone, so this relay is garbled and left, hold and all.
+    const ownerless = "o".repeat(43);
+    const ownerlessRef: GoalRef = { endpoint: MANAGER_ENDPOINT, caller: runner, goalId: ownerless };
+    await bindGoal(actx, ownerlessRef, "fp-ownerless");
+    await createGoal(actx, ownerlessRef, {
+      fingerprint: "fp-ownerless", command: "turn",
+      caller: { id: `${runner.owner}.${runner.actor}`, lifecycleUid: runner.uid },
+      acceptedEpoch: 0, requestId: ownerless, sourceSeq: 0, acceptedAt: ACCEPTED_AT, readinessDeadlineMs: 600_000,
+      target: { owner: "local", actor: "seat9", lifecycleUid: seatUid, mappingRevision: 0 },
+    });
+    const ownerlessFloor = { name: allocated.name, actor: allocated.actor, uid: seatUid };
+    const olderNote = JSON.stringify({ ...(JSON.parse(noteOf(ownerless)) as object), owner: "local" });
+    await recordGoalIndex(actx, ownerlessRef, doors.managerInstanceId, ownerlessFloor, olderNote);
+    await mintCheckpoint(actx.kv, serveJs, space, {
+      ref: { endpoint: MANAGER_ENDPOINT, token: holdTokenOf(ownerless) },
+      instanceId: doors.managerInstanceId, epoch: serveEpoch,
+      goal: { caller: runner, goalId: ownerless },
+      holder: { id: MANAGER_ENDPOINT, lifecycleUid: doors.managerInstanceId },
+      deadline: DEADLINE_AT, now: ACCEPTED_AT,
+    });
+    await doors.adoptTurnGoal({ ref: ownerlessRef, iid: doors.managerInstanceId, allocated: ownerlessFloor, note: olderNote });
+    check("a turn whose floor names no owner is not adopted, even with an owner in its note",
+      !doors.pendingTurns.has(relayKey(ownerless)), { pending: doors.pendingTurns.get(relayKey(ownerless)) });
+
     // #1262: a late yield after the deadline committed. The CI flake is not "the deny lost to a
     // success" — the deny held — and it is not the durable goal-index drop itself: the yield path
     // never consults that index. After commitTurnDeadline deletes the pending entry (the latch is
@@ -558,7 +583,7 @@ try {
     };
     const armLate = async (goalId: string, fingerprint: string) => {
       const ref: GoalRef = { endpoint: MANAGER_ENDPOINT, caller: runner, goalId };
-      const lateNote = JSON.stringify({ payload: "too late", deadlineAt: LATE_DEADLINE, holdEpoch: serveEpoch, owner: "local" });
+      const lateNote = JSON.stringify({ payload: "too late", deadlineAt: LATE_DEADLINE, holdEpoch: serveEpoch });
       await bindGoal(actx, ref, fingerprint);
       await createGoal(actx, ref, {
         fingerprint, command: "turn",
@@ -874,7 +899,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 32;
+const EXPECTED_CELLS = 33;
 console.log(`\n${fail === 0 ? "MANAGER RECONCILE STARTUP SMOKE OK ✅" : "MANAGER RECONCILE STARTUP SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

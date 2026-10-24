@@ -91,10 +91,18 @@ function parseErrorMessage(cmd: Command, e: Error): string {
   return hint ? `${message} - ${hint}` : message;
 }
 
-/** `words` without the global flags before any `--`, each applied. */
-function stripGlobalFlags(words: readonly string[]): string[] {
+/** `words` without the global flags before any `--`, each applied. A global flag is given once, as
+ *  any flag is: one already in `words` or in `leading`, those taken before the command word, is the
+ *  usage error a repeated flag of `cmd` is. */
+function stripGlobalFlags(words: readonly string[], leading: ReadonlySet<string> = new Set(), cmd?: Command): string[] {
   const end = words.indexOf("--");
-  const head = (end === -1 ? words : words.slice(0, end)).filter((word) => !takeGlobalFlag(word));
+  const taken = new Set(leading);
+  const head = (end === -1 ? words : words.slice(0, end)).filter((word) => {
+    if (taken.has(word)) usageExit(`Option '${word}' cannot be repeated`, cmd, cmd !== undefined && asksForJson(cmd, words), words.includes("--plain"));
+    if (!takeGlobalFlag(word)) return true;
+    taken.add(word);
+    return false;
+  });
   return end === -1 ? head : [...head, ...words.slice(end)];
 }
 
@@ -106,8 +114,8 @@ function takesWordsRaw(cmd: Command | undefined): boolean {
 
 /** The words `cmd` parses: the global flags are the kernel's, except for a command that takes its
  *  words raw. */
-function ownWords(cmd: Command | undefined, words: readonly string[]): string[] {
-  return takesWordsRaw(cmd) ? [...words] : stripGlobalFlags(words);
+function ownWords(cmd: Command | undefined, words: readonly string[], leading: ReadonlySet<string>): string[] {
+  return takesWordsRaw(cmd) ? [...words] : stripGlobalFlags(words, leading, cmd);
 }
 
 /** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
@@ -139,7 +147,8 @@ function debugStacks(failure: Error): void {
 /** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
  *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
  *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, warnings: readonly OutputWarning[] = operationWarnings()): never {
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope): never {
+  const warnings = scope ? scope.warnings ?? [] : operationWarnings();
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes, a missing scripted input or a removed working folder is not a grammar mistake,
@@ -150,7 +159,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     debugStacks(failure);
     process.exit(1);
   }
-  writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}
+  // Rendered in the run's scope, so the `Mesh:` heading keeps the note on how the run chose its space.
+  const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr));
+  writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
   // The refusal is on stderr and its exit status below stands whether or not the envelope lands.
   if (json) try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure, warnings))); } catch (error) { reportLostOutput(error as NodeJS.ErrnoException); }
@@ -171,7 +182,7 @@ function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
  * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
  * which resolves its alias too.
  */
-async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined): Promise<boolean> {
+async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined, leading: ReadonlySet<string>): Promise<boolean> {
   const [word, sub] = argv;
   const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
   if (extCmd?.name !== "ext" || sub !== "seed") return false;
@@ -182,7 +193,7 @@ async function extSeedGate(registry: Registry, argv: string[], configFolder: Con
     return true;
   }
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
-  await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1))));
+  await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1), leading, extCmd)));
   return true;
 }
 
@@ -406,9 +417,19 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain);
     throw error;
   }
+  // The NATS client keeps only the host and port of a broker URL, so a user and password in it were
+  // dropped in silence and the command connected with whatever credential it resolved instead. A
+  // command whose own check names this, such as `up`'s, has refused above. The value is never repeated.
+  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string" && carriesUserinfo(canonical.values.server))
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "--server must not embed credentials; the command did not run", { remedy: "name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust", selfContained: true }), json, canonical.values.plain === true);
   return canonical;
 }
 
+/** Whether a broker URL, or any URL in a comma-separated list, has a userinfo part. A value with no
+ *  scheme is read as nats://, as the client reads it. */
+function carriesUserinfo(server: string): boolean {
+  return server.split(",").some((entry) => /^[^:/?#]+:\/\/[^/?#]*@/.test(entry.includes("://") ? entry.trim() : `nats://${entry.trim()}`));
+}
 /** The commands that never read the working folder, so they run from one that was removed. */
 const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"]);
 
@@ -472,11 +493,14 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // the leading flags. A command that takes its words raw has no flags to read them as, so it
   // refuses them there. The built-in surface decides that before any extension overlay is read.
   const output: string[] = [];
+  const leadingGlobals = new Set<string>();
   let lead = 0;
   for (; lead < argv.length; lead++) {
     const word = argv[lead]!;
     if (word === "--json" || word === "-j" || word === "--plain") output.push(word);
-    else if (!takeGlobalFlag(word)) break;
+    else if (leadingGlobals.has(word)) usageExit(`Option '${word}' cannot be repeated`);
+    else if (takeGlobalFlag(word)) leadingGlobals.add(word);
+    else break;
   }
   if (argv[lead] === "--") lead++;
   if (output.length && lead >= argv.length) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
@@ -508,7 +532,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const configFolder = globalConfigDirProblem();
   if (opts.extensions) {
     try {
-      if (await extSeedGate(registry, argv, configFolder)) return;
+      if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
     } catch (e) {
       stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
@@ -540,7 +564,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const [word, ...words] = argv;
   if (word === undefined) return printEntry(commands);
   let cmd = findCommand(commands, word);
-  let rest = ownWords(cmd, words);
+  let rest = ownWords(cmd, words, leadingGlobals);
   const wantsHelp = asksForHelp(rest);
   if (cmd?.name === "service") {
     try { cmd = servicePresetCommand(cmd, rest); }
@@ -591,7 +615,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     commands = surface();
     cmd = findCommand(commands, word);
     if (!cmd) usageExit(unknownCommandMessage(commands, word));
-    rest = ownWords(cmd, words);
+    rest = ownWords(cmd, words, leadingGlobals);
     arm();
   }
   // An extension stub materializes before parsing: verify the version pin, import the package
@@ -666,22 +690,22 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // and the command again with `--on` for it.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
     const choice = async (failure: CommandFailure) => (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? failure;
-    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope.warnings);
+    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure()), scope.space), json, parsed.values.plain === true, scope.warnings);
+      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure()), scope.space), json, parsed.values.plain === true, scope);
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
         const target = spaceRootTarget(e.details);
-        failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true, scope.warnings);
+        failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true, scope);
       }
       // A registry record or directory it could not read is refused by its file, as `space` reports
       // it, and as a target it could not resolve is refused above.
-      if (isMeshRegistryError(e)) failureExit(cmd, inOperationSpace(registryFailure(e), scope.space), json, parsed.values.plain === true, scope.warnings);
-      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true, scope.warnings);
-      failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true, scope.warnings);
+      if (isMeshRegistryError(e)) failureExit(cmd, inOperationSpace(registryFailure(e), scope.space), json, parsed.values.plain === true, scope);
+      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true, scope);
+      failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true, scope);
     }
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
     // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe

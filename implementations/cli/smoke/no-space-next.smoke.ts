@@ -5,7 +5,9 @@
  * remedy says to run it in a space's root, in JSON and in the text report; in the root of a space
  * registered as open it is a no-op that says the space issues no credentials. `cotal persona` with
  * nothing selected, or with a `--server` no registration names, refuses with TARGET_NOT_FOUND and
- * says no space is selected here, since its catalog is read offline. Nothing is written.
+ * says no space is selected here, since its catalog is read offline. Nothing is written. In a
+ * folder a space is prepared for, the same `--server` reads that folder's catalog under the
+ * prepared space's name, as `cotal up` there starts it.
  * Broker-free; the mesh registry is private to this run.
  *
  * Run: pnpm smoke:no-space-next
@@ -15,7 +17,7 @@ import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { exitCode, findCotalRoot, isCommandFailure, recordMesh, type CommandFailure } from "@cotal-ai/workspace";
+import { exitCode, findCotalRoot, isCommandFailure, recordMesh, recordPreparedSpace, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 import { mint } from "../src/commands/mint.js";
 import { persona } from "../src/commands/persona.js";
@@ -40,6 +42,21 @@ async function personaRefusal(values: Record<string, string | boolean | undefine
   catch (error) { if (isCommandFailure(error)) return error; throw error; }
   finally { process.chdir(startCwd); }
   throw new Error(`persona ${positionals.join(" ")} did not refuse`);
+}
+
+/** The target one `persona --json` run in `cwd` reports. */
+async function personaTarget(values: Record<string, string | boolean | undefined>, cwd: string): Promise<unknown> {
+  const out: string[] = [];
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array) => (out.push(String(chunk)), true)) as typeof process.stdout.write;
+  process.chdir(cwd);
+  try {
+    await persona({ values: { ...values, json: true }, positionals: [], raw: [] });
+    return (JSON.parse(out.join("")) as { target?: unknown }).target;
+  } finally {
+    process.stdout.write = write;
+    process.chdir(startCwd);
+  }
 }
 
 /** One doctor run in `cwd`: what it wrote to stdout and stderr, and its exit code. */
@@ -120,6 +137,15 @@ try {
     assert.equal(failure.code, "TARGET_NOT_FOUND", `${what}: code (${failure.message})`);
     assert.equal(failure.message, "no space registered here is at nats://127.0.0.1:1, and this folder is not a space's project", `${what}: the refusal names the address`);
     assert.deepEqual(readdirSync(bare), [], `${what} writes nothing here`);
+  }
+
+  // 4b. persona with a --server that no registration names, in a folder a space is prepared for: the
+  //     folder's catalog under the prepared space's name, where it used to read as `main`.
+  {
+    const prepared = join(base, "prepared");
+    mkdirSync(join(prepared, ".cotal", "agents"), { recursive: true });
+    recordPreparedSpace({ space: "b2", root: prepared, ts: new Date().toISOString() });
+    assert.deepEqual(await personaTarget({ server: "nats://127.0.0.1:1" }, prepared), { root: prepared, space: "b2" }, "persona --server <unregistered> in a prepared folder names its prepared space");
   }
 
   // 5. doctor auth in the root of a space registered as open: it issues no credentials, so there is

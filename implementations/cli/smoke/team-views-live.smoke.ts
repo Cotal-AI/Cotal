@@ -19,7 +19,9 @@
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
  *     auth mode in words; the JSON keeps the recorded values.
  *     Its show and its `team remove` refusal offer `cotal down --space <space> --dry-run` with the
- *     space filled in, with no placeholder and no note that the stop is not integrated.
+ *     space filled in, with no placeholder and no note that the stop is not integrated. After
+ *     `down`, a second boot refuses LIFECYCLE_BLOCKED naming `cotal up` and the earlier boot's ID,
+ *     and that `cotal up` starts the stack again.
  *  H. a deployment ID that no record names is TARGET_NOT_FOUND, naming the ID, from `team show` and
  *     from `team remove` with and without `--dry-run`.
  *  I. `team boot --dry-run` of another space's manifest in this prepared folder says the folder
@@ -31,7 +33,7 @@
  * Needs `nats-server` on PATH. Run: pnpm smoke:team-views:live
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -185,6 +187,16 @@ try {
   const freshList = cotal(b, "team");
   check("the inventory row names them in words", new RegExp(`${bootId}\\s+fresh boot\\s+boot returned\\s+inspect the stack`).test(freshList.stdout), freshList.stdout);
   check("the boot preview names the requested auth mode in words", /Auth mode request:\s+static auth\n/.test(cotal(b, "team", "boot", "boot.yaml", "--dry-run").stdout));
+  // A stopped stack that carried a team is not booted with another one. The refusal names the
+  // earlier boot's ID and cotal up, which starts that stack again.
+  const stopped = cotal(b, "down", "--yes");
+  const again = cotal(b, "team", "boot", "boot.yaml", "--json");
+  const againError = envelope(again.stdout)?.error;
+  check("a second team boot after down refuses LIFECYCLE_BLOCKED, naming cotal up and the earlier boot's ID",
+    stopped.status === 0 && again.status === 2 && againError?.code === "LIFECYCLE_BLOCKED" &&
+      againError.remedy === `start this stack again with cotal up in ${realpathSync(b)}, or inspect the earlier boot with cotal team show ${bootId}`, { down: stopped.out.slice(-400), again: again.out.slice(-800) });
+  const restarted = cotal(b, "up");
+  check("cotal up there starts that stack again", restarted.status === 0 && /Controller stack started/.test(restarted.stdout), restarted.out.slice(-800));
   const additiveShow = cotal(s, "team", "show", deployment);
   check("an additive team show names its state and auth mode in words",
     /Auth mode:\s+static auth\n/.test(additiveShow.stdout) && /Recorded state:\s+channels created\n/.test(additiveShow.stdout), additiveShow.stdout);

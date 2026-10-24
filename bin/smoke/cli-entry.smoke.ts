@@ -7,9 +7,11 @@
  * parses as its long form, and a wrong-case short flag or a missing value is refused. So is a flag typed
  * with a typographic dash, naming the dash and the flag; after `--`, or naming no flag, such a word is
  * an argument. A usage refusal escapes the control bytes of each word it quotes. `version --json`
- * writes one envelope, and a usage error under `--json` is one refusal envelope. `--no-color` and
- * `--no-input` are accepted by every command in any position before `--`. A command an official
- * extension adds, run or asked for help before that extension is added, names the package to add.
+ * writes one envelope, and a usage error under `--json` is one refusal envelope. A `--server` with a
+ * user and password is refused by every command that takes one, without repeating it. `--no-color` and
+ * `--no-input` are accepted by every command in any position before `--`, once each. A command an
+ * official extension adds, run or asked for help before that extension is added, names the package
+ * to add.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -243,6 +245,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const emptyJson = cotal(["history", "clear", "--space", "", "--yes", "--json"], selected, noSeed);
   check("an empty --space under --json is one USAGE_INVALID envelope with the space-listing remedy",
     envelopes(emptyJson).length === 1 && envelopes(emptyJson)[0]?.error?.code === "USAGE_INVALID" && envelopes(emptyJson)[0]?.error?.remedy === "name the space; `cotal space` lists the spaces this machine knows", shown(emptyJson));
+  // The NATS client keeps only a broker URL's host and port, so a user and password in --server were
+  // dropped in silence. Every command that takes --server refuses them before it runs, and never
+  // repeats the value. `up` keeps its own refusal, which names the address it listens on.
+  const userinfo = "--server must not embed credentials; the command did not run";
+  for (const argv of [["send", "-c", "general", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1"], ["history", "general", "--server", "u:pw0rdX@127.0.0.1:1"], ["whoami", "--server", "nats://127.0.0.1:1,tls://u:pw0rdX@127.0.0.1:2"], ["space", "add", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1", "--yes"]]) {
+    const r = cotal(argv, undefined, noSeed);
+    refused(`cotal ${argv.slice(0, 2).join(" ")} refuses a --server with a user and password, never repeating it`, r, new RegExp(`^✗ ${userinfo}$`, "m"));
+    check(`cotal ${argv.slice(0, 2).join(" ")} prints no part of that --server`, !`${r.stdout}${r.stderr}`.includes("pw0rdX") && !r.stderr.includes("127.0.0.1"), shown(r));
+  }
+  const userinfoJson = cotal(["send", "-c", "general", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1", "--json"], undefined, noSeed);
+  check("a --server with a user and password under --json is one USAGE_INVALID envelope without the value",
+    envelopes(userinfoJson).length === 1 && envelopes(userinfoJson)[0]?.error?.code === "USAGE_INVALID" && envelopes(userinfoJson)[0]?.error?.message === userinfo && !userinfoJson.stdout.includes("pw0rdX"), shown(userinfoJson));
+  const upUserinfo = cotal(["up", "--server", "nats://u:pw0rdX@127.0.0.1:1"], undefined, noSeed);
+  refused("control: up keeps its own --server credential refusal", upUserinfo, /--server must not embed credentials; nothing was started or written/);
+  check("control: up's refusal is its own, and does not repeat the value", !upUserinfo.stderr.includes(userinfo) && !`${upUserinfo.stdout}${upUserinfo.stderr}`.includes("pw0rdX"), shown(upUserinfo));
 }
 
 // ── Global flags: accepted by every command, before or after its words, and text after -- ─────────
@@ -282,6 +299,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("--no-input after the command's words is accepted", same(cotal(["version", "--no-input"]), cotal(["version"])));
   check("--no-input and --no-color together are accepted", same(cotal(["--no-input", "version", "--no-color"]), cotal(["version"])));
   refused("a global flag after -- is a word", cotal(["ext", "--", "--no-input"]), /cotal ext has no subcommand "--no-input"/);
+  // A global flag is given once, as any flag is, wherever the two stand.
+  for (const argv of [["version", "--no-color", "--no-color"], ["--no-color", "--no-color", "version"], ["--no-input", "version", "--no-input"]])
+    refused(`${argv.join(" ")} is refused as a repeated flag`, cotal(argv, undefined, noSeed), new RegExp(`Option '${argv.find((word) => word.startsWith("--no-"))}' cannot be repeated`));
+  const repeatedJson = cotal(["status", "--no-input", "--no-input", "--json"], undefined, noSeed);
+  let repeatedEnvelope: { error?: { code?: string; message?: string } } = {};
+  try { repeatedEnvelope = JSON.parse(repeatedJson.stdout); } catch { /* shown below */ }
+  check("under --json the repeat is one USAGE_INVALID envelope", repeatedJson.status === 1 && repeatedEnvelope.error?.code === "USAGE_INVALID" && repeatedEnvelope.error.message === "Option '--no-input' cannot be repeated", shown(repeatedJson));
   // `personas edit` opens an editor, which --no-input forbids. The control runs a do-nothing editor.
   const persona = (home: string) => {
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });

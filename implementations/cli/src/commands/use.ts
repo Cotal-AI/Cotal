@@ -47,7 +47,14 @@ export async function use(args: ParsedArgs): Promise<void> {
   }
   const m = findMesh(name);
   const p = m ? undefined : findPreparedSpace(name);
-  if (!m && !p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { space: name }, remedy: "see the registered spaces with `cotal space`, or clear the selection with `cotal use --clear`" });
+  if (!m && !p) {
+    // No target, so the refusal is not headed with a space that does not exist. Clearing is a step only
+    // while something is selected.
+    const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)])].sort();
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered or prepared here${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
+      remedy: `see the registered and prepared spaces with \`cotal space\`${previous === null ? "" : ", or clear the selection with `cotal use --clear`"}`,
+    });
+  }
   const changed = previous !== name;
   if (changed) setCurrent(name);
   const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null, folder: folderSpaceOverSelection(process.cwd(), name) ?? null };
