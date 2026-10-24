@@ -46,6 +46,7 @@ import {
   folderSpaceOverSelection,
   MIN_FILE_STORE,
   stoppedStack,
+  unsettledStackOperation,
   hasUserAuthState,
   homeCotalDir,
   cachedPreferences,
@@ -1056,7 +1057,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
     }
     const selected = current !== null && !entries.some((m) => m.space === current) ? prepared.spaces.find((p) => p.space === current) : undefined;
     currentPrepared = selected !== undefined;
-    currentStopped = selected !== undefined && stoppedStack(selected.root, selected.space) !== undefined;
+    currentStopped = selected !== undefined && stoppedStack(selected.root, selected.space) !== undefined && unsettledStackOperation(selected.root, selected.space) === undefined;
   } catch (e) {
     if (!isMeshRegistryError(e)) throw e;
     unread(e.file, e.message);

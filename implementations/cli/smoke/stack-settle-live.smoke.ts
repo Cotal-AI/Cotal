@@ -126,9 +126,12 @@
  * 15. An `up` killed while its broker is frozen, before it registered the space. `status` says the
  *     last up has no recorded outcome, names the half-started stack under the selected space and
  *     leads Next with `down --yes`, then `up --root <root>`, since the next `up` reuses the broker and
- *     cannot finish it; it offers no bare `up`, and `--json` names the space and root. `ps` refuses
+ *     cannot finish it; it offers no bare `up`, and `--json` names the space and root. With the space
+ *     selected, the Brokers block calls it prepared, not started, never stopped, and
+ *     `meshes.currentStopped` is false while its broker runs. `ps` refuses
  *     `TARGET_UNAVAILABLE` and names `cotal status` in the root. `down` settles that up and stops the
- *     broker, `up` then starts the stack and registers the space, and `down` stops it.
+ *     broker, `up` then starts the stack and registers the space, and `down` stops it, after which the
+ *     Brokers block and `meshes.currentStopped` call it stopped.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -1380,6 +1383,8 @@ try {
   {
     const space = "cutup";
     const root = prepare(space);
+    // Selected, so status also names it under Brokers, where an unregistered selection is shown.
+    check(`${space}: use selects it`, cli(root, "use", space, "--json").status === 0);
     const port = await freePort();
     const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
     // Freeze the broker once its process is pinned, so the up cannot reach the space's registration.
@@ -1397,7 +1402,11 @@ try {
     check(`${space}: status names the half-started stack under the selected space and leads Next with down, then the up that starts it again`,
       status.stdout.includes(cut) && status.stdout.includes("Half started · the last up ended before delivery and manager started; broker runs") && Boolean(first?.includes("down --yes") && first.includes("it ended before it registered the space, so up cannot finish it")) && Boolean(second?.includes(`up --root ${root}`) && second.includes("Then start the stack again")) && !status.stdout.includes("start it with"),
       { first, second, stdout: status.stdout.slice(-3000) });
+    check(`${space}: the Brokers block calls the selection prepared, not started, and not stopped, while its broker runs`,
+      status.stdout.includes(`Selected space '${space}' is prepared, not started`) && !status.stdout.includes(`Selected space '${space}' is stopped`), { stdout: status.stdout.slice(0, 2500) });
     const json = cli(root, "status", "--json");
+    const meshes = json.env?.result?.meshes as { currentStopped?: boolean; currentPrepared?: boolean } | undefined;
+    check(`${space}: status --json says the selection is prepared and not a stopped stack`, meshes?.currentPrepared === true && meshes.currentStopped === false, meshes);
     const selected = json.env?.result?.selected as { resolved?: boolean; code?: string; space?: string; root?: string } | undefined;
     const hints = (json.env?.result?.hints ?? []) as string[];
     check(`${space}: status --json names that prepared space and its root, and no hint names up`, selected?.resolved === false && selected.code === "not-started" && selected.space === space && selected.root === root && !hints.some((hint) => hint.includes(" up")), { selected, hints });
@@ -1410,6 +1419,9 @@ try {
     check(`${space}: up then starts the stack and registers the space`, restarted.status === 0 && findMesh(space) !== undefined && !gone(space, "stack-manager"), shown(restarted));
     const stopped = cli(root, "down", "--yes", "--json");
     check(`${space}: down stops it`, stopped.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), shown(stopped));
+    const after = cli(root, "status"), afterJson = cli(root, "status", "--json");
+    check(`${space}: once a completed down stopped it, the Brokers block calls it stopped and status --json says so`,
+      after.stdout.includes(`Selected space '${space}' is stopped`) && (afterJson.env?.result?.meshes as { currentStopped?: boolean } | undefined)?.currentStopped === true, { stdout: after.stdout.slice(0, 2500) });
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
