@@ -33,8 +33,8 @@
       "file": "implementations/cli/src/lib/delivery-proc.ts",
       "find": "    if (previous !== undefined) {\n      const recorded",
       "replace": "    if (previous !== undefined && process.env.COTAL_4092_NEVER_SET !== undefined) {\n      const recorded",
-      "expectRed": "D1 repair up after a broker SIGKILL exits 0",
-      "cell": "D1 repair up after a broker SIGKILL exits 0",
+      "expectRed": "D1-held repair up after a daemon SIGKILL exits 0",
+      "cell": "D1-held repair up after a daemon SIGKILL exits 0",
       "command": "pnpm build >/dev/null && pnpm smoke:up-crash-repair-lease:live",
       "afterRestore": "pnpm build"
     },
