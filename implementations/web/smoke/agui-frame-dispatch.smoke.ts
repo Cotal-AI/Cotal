@@ -172,7 +172,7 @@ ok("and the row points at the file this suite just evaluated",
 
 // BOTH pages, because a kind that draws on one surface and shows a marker on the other is worse
 // than one that shows a marker on both: it makes the gap look like a data problem.
-const PAGES = [["index.html", "app.js"], ["graph.html", "graph.js"]] as const;
+const PAGES = [["../../ui/pages/index.astro", "app.js"], ["graph.html", "graph.js"]] as const;
 ok("both pages are covered (a short table would silently check fewer)", PAGES.length === 2, { n: PAGES.length });
 for (const [file, consumer] of PAGES) {
   const html = readFileSync(join(webSrc, file), "utf8");

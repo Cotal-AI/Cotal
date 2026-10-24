@@ -248,6 +248,7 @@
     for (const p of list) {
       if (p.card?.kind === "endpoint") continue;
       const a = ensureAgent({ id: p.card.id, name: p.card.name, role: p.card.role });
+      a.presence = p;
       a.status = p.status; a.progress = p.progress; a.activity = p.activity || ""; a.role = p.card.role;
       a.harness = p.card.meta?.connector; a.model = p.card.meta?.model; a.variant = p.card.meta?.variant;
       a.attention = p.attention; // open/absent both mean receives-all; only dnd/focus render
@@ -262,6 +263,7 @@
     // render as "member, currently offline" (the feed's durable arm survives offline). Membership is
     // broker-truth, applied separately; presence no longer carries channels.
     for (const [id, a] of agents) { if (!seen.has(id)) a.present = false; if ((!seen.has(id) || a.status === "offline") && !(a.wideReader || (a.memberOf && a.memberOf.size))) { agents.delete(id); for (const k of [...edges.keys()]) if (edges.get(k).a === a) edges.delete(k); for (const k of [...dms.keys()]) { const d = dms.get(k); if (d.a === a || d.b === a) dms.delete(k); } reheat(); if (sel === a) closeDetail(); } }
+    refreshPresenceDetail();
   }
 
   // ── membership (authoritative spokes) ──
@@ -640,6 +642,7 @@
         : sel.model
           ? `<div class="d-row"><span class="k">model</span><span class="v">${esc(sel.model)}${sel.variant ? ` · ${esc(sel.variant)}` : ""}</span></div>`
           : "";
+      const wording = sel.presence ? window.COTAL_PRESENCE.describe(sel.presence) : undefined;
       const att = attMark(sel.attention);
       const attRow = att
         ? `<div class="d-row"><span class="k">attention</span><span class="v att-${esc(sel.attention)}">${att} ${esc(sel.attention)}</span></div>`
@@ -657,9 +660,10 @@
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">agent</div>
         <div class="d-who">${esc(sel.name)}${sel.role ? `<span class="role">${esc(sel.role)}</span>` : ""}</div>
-        <div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>
+        <div class="d-status ${sel.status}"><span class="dot"></span><span data-presence-status>${esc(wording ? wording.status : sel.status)}</span></div>
+        ${wording?.heartbeat ? `<div class="d-block muted" data-presence-heartbeat>${esc(wording.heartbeat)}</div>` : ""}
         ${descBlock}
-        <div class="d-section"><div class="d-label">activity</div><div class="d-block ${sel.activity ? "" : "muted"}">${esc(sel.activity || "no current activity")}</div></div>
+        <div class="d-section"><div class="d-label">activity<span data-presence-activity-age>${wording?.activityAge ? ` · ${esc(wording.activityAge)}` : ""}</span></div><div class="d-block ${sel.activity ? "" : "muted"}" data-presence-activity>${esc(sel.activity || "no current activity")}</div></div>
         ${(harnessRow || modelRow || attRow) ? `<div class="d-rows">${harnessRow}${modelRow}${attRow}</div>` : ""}
         <div class="d-section"><div class="d-label">subscribes</div>${subs}</div>
         ${modesSection}
@@ -667,6 +671,25 @@
         <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`;
     }
     el.classList.add("open"); $("dx").onclick = closeDetail;
+  }
+
+  function refreshPresenceDetail() {
+    if (!sel?.presence) return;
+    const wording = window.COTAL_PRESENCE.describe(sel.presence);
+    const values = [
+      ["[data-presence-status]", wording.status],
+      ["[data-presence-heartbeat]", wording.heartbeat],
+      ["[data-presence-activity-age]", wording.activityAge ? ` · ${wording.activityAge}` : ""],
+      ["[data-presence-activity]", sel.presence.activity || "no current activity"],
+    ];
+    for (const [selector, text] of values) {
+      const element = $("detail").querySelector(selector);
+      if (element && element.textContent !== text) element.textContent = text;
+    }
+    const activity = $("detail").querySelector("[data-presence-activity]");
+    if (activity) activity.classList.toggle("muted", !sel.presence.activity);
+    const status = $("detail").querySelector(".d-status");
+    if (status && status.className !== `d-status ${sel.status}`) status.className = `d-status ${sel.status}`;
   }
 
   // ── events ──
@@ -812,7 +835,8 @@
   function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => { liveApplied.add("peers"); updateRoster(JSON.parse(e.data)); }); es.addEventListener("presence-view", (e) => { applyPresenceView(JSON.parse(e.data)); }); es.addEventListener("membership", (e) => { liveApplied.add("membership"); applyMembership(JSON.parse(e.data)); }); es.addEventListener("membership-read-failed", () => { liveApplied.add("membership"); membershipUnreadable(); }); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
 
   resize();
-  setInterval(setFeed, 5000); // age "live" → "stale" even without new events
+  setInterval(setFeed, 5000);
+  setInterval(refreshPresenceDetail, 1000); // age "live" → "stale" even without new events
   // THE FEED IS NOT GATED ON THE BOOTSTRAP, IN EITHER SENSE. It was once chained behind `load()`
   // RESOLVING, so a single refused read left the page permanently disconnected with nothing on it.
   // That was fixed by making `load()` never reject, which guaranteed `connect()` would RUN but not

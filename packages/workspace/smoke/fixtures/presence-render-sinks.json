@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 649,
-    "honest-text": 37,
-    "presence-only-glyph/count": 57,
+    "total": 631,
+    "honest-text": 47,
+    "presence-only-glyph/count": 71,
     "command-ack": 10,
-    "non-render/control": 545
+    "non-render/control": 503
   },
   "renderers": [
     {
@@ -1701,79 +1701,30 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "Id(id);\nconst STATUS = [\"working\", \"waiting\", \"idle\", \"of",
+      "anchor": "\"working\"",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "st STATUS = [\"working\", \"waiting\", \"idle\", \"offline\"];\n//",
+      "anchor": "st STATUS = [\"working\", \"waiting\", \"idle\", \"offline\"];\n\n\n",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": " [\"working\", \"waiting\", \"idle\", \"offline\"];\n// Status ",
+      "anchor": "\"idle\"",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "ng\", \"waiting\", \"idle\", \"offline\"];\n// Status as shape *a",
+      "anchor": "ng\", \"waiting\", \"idle\", \"offline\"];\n\n\nconst MODES = [\"cha",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "\n  const tiles = [\n    [\"working\", counts.working],\n    [",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ", counts.working],\n    [\"waiting\", counts.waiting],\n    [",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ", counts.waiting],\n    [\"idle\", counts.idle],\n    [\"of",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "le\", counts.idle],\n    [\"offline\", counts.offline],\n    [",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "    const alert = k === \"waiting\" && Number(n) > 0 ? \" al",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`<div class=\"peer ${p.status}${nav}\"${attrs}>\n    <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\">\n        <span class=\"name\">${esc(p.name)}</span>\n        ${p.harness ? harnessBadge(p.harness, { compact: true }) : \"\"}\n        ${p.role ? `<span class=\"role\">${esc(p.role)}</span>` : \"\"}\n        ${attentionChip(p.attention, { compact: true })}\n        ${p.tag ? `<span class=\"tag\">${esc(p.tag)}</span>` : \"\"}\n      </div>\n      ${p.act ? `<div class=\"act\" title=\"${esc(p.act)}\">${esc(p.act)}</div>` : \"\"}\n    </div>\n  </div>`",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "indexed-map",
-      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n    <div",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
@@ -1792,93 +1743,9 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "  return r ? r.status : \"offline\";\n}\n// id→name resolutio",
+      "anchor": "  return r ? r.status : \"offline\";\n}\n\nfunction nameIndex(",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`<div class=\"dm${expanded ? \" sel\" : \"\"}\" data-dm=\"${esc(p.id)}\">\n    <span class=\"caret\">${expanded ? \"▾\" : \"▸\"}</span>\n    <span class=\"l\">\n      <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n      <span class=\"nm\">${esc(p.name)}</span>\n      ${p.role ? `<span class=\"role\">${esc(p.role)}</span>` : \"\"}\n    </span>\n    ${p.unread ? `<span class=\"mention\">${p.unread}</span>` : \"\"}\n    ${expanded ? \"\" : `<span class=\"threads\">${plural(p.threads, \"thread\")}</span>`}\n  </div>`",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "indexed-map",
-      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n      <s",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`<div class=\"dm sub${sel ? \" sel\" : \"\"}\" data-dm=\"${esc(peer)}${SEP}${esc(c.with)}\">\n    <span class=\"ln\">↳</span>\n    <span class=\"l\">\n      <span class=\"dot ${c.status}\">${GLYPH[c.status] ?? \"○\"}</span>\n      <span class=\"nm\">${esc(c.withName ?? c.with)}</span>\n      ${c.role ? `<span class=\"role\">${esc(c.role)}</span>` : \"\"}\n    </span>\n    ${c.unread ? `<span class=\"mention\">${c.unread}</span>` : \"\"}\n  </div>`",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "indexed-map",
-      "anchor": "GLYPH[c.status]",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"●\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.who)}</span>${m.role ? `<span class=\"role\">${esc(m.role)}</span>` : \"\"}</div>\n      ${bodyBlock(m.body)}\n      ${m.thread ? `<span class=\"thread\">${esc(m.thread)}</span>` : \"\"}\n    </div>\n  </div>`",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "indexed-map",
-      "anchor": "<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"●\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.who)}</span>",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`${plural(msgCount, \"message\")}`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "$(\"center\").innerHTML = `\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">👥 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">✦ summarize</span><span class=\"chip static\" title=\"demo only\">🔕 mute</span>` : \"\"}\n          ${isDemo || !channelDeleteSupported ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">🗑 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">👥 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">✦ summarize</span><span class=\"chip static\" title=\"demo only\">🔕 mute</span>` : \"\"}\n          ${isDemo || !channelDeleteSupported ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">🗑 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`HTTP ${r.status}`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"●\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.whoName ?? m.who)}</span><span class=\"dir\">→ ${esc(to)}</span></div>\n      <div class=\"body md\">${MD.render(m.body)}</div>\n    </div>\n  </div>`",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "indexed-map",
-      "anchor": "<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"●\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.whoName ?? m",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
@@ -1889,358 +1756,29 @@
     },
     {
       "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": " waiting = p.status === \"waiting\";\n  const who = card.rol",
+      "kind": "derived-output",
+      "anchor": "hot() {\n  if (snapshot) return snapshot;\n  const counts = Object",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "progress = p.status === \"working\" && p.progress?.kind ===",
+      "anchor": "ilter(p => p.status !== \"offline\" && typeof p.ts === \"num",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`${esc(progress)} · heartbeat ${esc(ago(p.ts))} ago`",
+      "anchor": "used, expandAll,\n  };\n  return snapshot;\n}\nasync function delete",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "esc(progress)",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "`\n    <div class=\"detail${waiting ? \" amber\" : \"\"}\">\n      <div class=\"d-head\">\n        <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"●\"}</span>\n        <span class=\"d-status\">${esc(waiting ? \"WAITING\" : p.status)}</span>\n        <span class=\"d-age\">${since}</span>\n      </div>\n      <div class=\"d-who\">${who}</div>\n      ${badges ? `<div class=\"d-badges\">${badges}</div>` : \"\"}\n      ${desc}\n      ${blocked}\n      ${sec(\"Channel attention\", channelModes)}\n      ${sec(\"Tags\", tags)}\n      ${sec(\"Skills\", skills)}\n      ${sec(\"Metadata\", metaKv)}\n      <div class=\"d-foot\"><span class=\"d-foot-item id\">${esc(card.id)}</span>${proto}</div>\n    </div>`",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "indexed-map",
-      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"●\"}</span>\n        ",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "indexed-map",
-      "anchor": "for (const p of roster) counts[p.status] = (counts[p.status] ?? ",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "indexed-map",
-      "anchor": "er) counts[p.status] = (counts[p.status] ?? 0) + 1;\n  // Stalest",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ter((p) => p.status !== \"offline\" && typeof p.ts === \"num",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "$(\"online-c\").textContent = roster.filter((p) => p.status !== \"offline\").length",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ter((p) => p.status !== \"offline\").length;\n  renderRoster",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ", who: \"alice\", status: \"waiting\", body: \"can you take th",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "8\", who: \"bob\", status: \"working\", body: \"on it — grabbin",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ", who: \"alice\", status: \"waiting\", body: \"🙏 thanks — I'l",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "\", who: \"dave\", status: \"working\", body: \"want me to stub",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ", who: \"alice\", status: \"waiting\", body: \"yes please — a ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ", who: \"scout\", status: \"idle\", body: \"logged your blo",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "9\", who: \"bob\", status: \"working\", body: \"merged your fil",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "\", who: \"dave\", status: \"working\", body: \"ty — running th",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "\", who: \"maya\", status: \"idle\", body: \"sent the NATS v",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"planner\", status: \"waiting\", tag: \"needs input\", ac",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "le: \"reviewer\", status: \"working\", act: \"reviewing PR #42",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"builder\", status: \"working\", act: \"writing tests · ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"builder\", status: \"working\", act: \"refactoring endp",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ": \"researcher\", status: \"idle\", act: \"—\", harness: \"op",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "le: \"observer\", status: \"idle\", act: \"watching #team.>",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": " { ts: \"09:58\", status: \"working\", who: \"bob\", role: \"bui",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": " { ts: \"10:05\", status: \"working\", who: \"dave\", role: \"bu",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": " { ts: \"10:12\", status: \"idle\", who: \"maya\", role: \"re",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": " { ts: \"10:39\", status: \"working\", who: \"dave\", role: \"bu",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": " { ts: \"10:41\", status: \"working\", who: \"bob\", role: \"bui",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": " { ts: \"10:44\", status: \"waiting\", who: \"alice\", role: \"p",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "bers: [\n      { status: \"working\", name: \"bob\", role: \"bu",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "der\" },\n      { status: \"working\", name: \"dave\", role: \"b",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "der\" },\n      { status: \"waiting\", name: \"alice\", role: \"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ner\" },\n      { status: \"idle\", name: \"maya\", role: \"r",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "her\" },\n      { status: \"idle\", name: \"scout\", role: \"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"planner\", status: \"waiting\", unread: 2, threads: 3,",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"builder\", status: \"working\", unread: 0, msgs: ab },",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"builder\", status: \"working\", unread: 1, msgs: ad },",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "le: \"observer\", status: \"idle\", unread: 1, msgs: as },",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"builder\", status: \"working\", unread: 0, threads: 2,",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"planner\", status: \"waiting\", unread: 0, msgs: ab },",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "\n      { with: \"dave\", role: \"builder\", status: \"working\", unread: 0, msgs: bd },\n    ] },\n    { id: \"dav",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"builder\", status: \"working\", unread: 1, threads: 2,",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "ole: \"planner\", status: \"waiting\", unread: 1, msgs: ad },",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ",\n      { with: \"bob\", role: \"builder\", status: \"working\", unread: 0, msgs: bd },\n    ] },\n    { id: \"lin",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "le: \"reviewer\", status: \"working\", unread: 0, threads: 1,",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ": \"researcher\", status: \"idle\", unread: 0, msgs: lm },",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": ": \"researcher\", status: \"idle\", unread: 0, threads: 1,",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "status-token",
-      "anchor": "le: \"reviewer\", status: \"working\", unread: 0, msgs: lm },",
+      "anchor": "`HTTP ${r.status}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -2254,9 +1792,23 @@
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
+      "anchor": "agents.set(id, a)",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: indexes the node record in the agents map; not a rendered status."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
       "anchor": "return a;",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "a.status = p.status",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: stores the peer's raw status on the node record for later color/glyph lookups; not rendered as text."
     },
     {
       "path": "implementations/web/src/web/graph.js",
@@ -2278,6 +1830,13 @@
       "anchor": "eOnly || e.a.status === \"offline\";\n      const lit = inFa",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(off ? MEM_OFF : MEM_LIVE, (off ? 0.3 : 0.42) * (lit ? 1 : 0.28))",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
     },
     {
       "path": "implementations/web/src/web/graph.js",
@@ -2306,6 +1865,69 @@
       "anchor": "\n      if (a.status === \"waiting\") { const pulse = 0.5 + ",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(MEM_LIVE, off ? 0.3 : 0.6)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.shadowColor = col",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: glow color from the presence palette; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.shadowBlur = focus ? 20 : off ? 0 : idle ? 6 : 13",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: glow radius chosen from the node's presence state; visual emphasis only, no textual claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(col, 0.85)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "rgba(col, 0.85)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": ", r); g.addColorStop(0, rgba(col, 1)); g.addColorStop(0.55, ",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: gradient stops from the presence color; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "rgba(col, 0.55)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(col, 1)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": " = 2; ctx.strokeStyle = rgba(col, 1); ctx.stroke();\n      }\n",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and width for a graph element; color carries presence class only, no textual claim."
     },
     {
       "path": "implementations/web/src/web/graph.js",
@@ -2345,6 +1967,13 @@
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
+      "anchor": "mem.map(memberRow)",
+      "class": "non-render/control",
+      "rationale": "Dashboard data shaping: maps member records to row models for the sidebar; rendering classifies at the row sink, not here."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
       "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">channel</div>\n        <div class=\"d-who\">#${esc(sel.name)}</div>\n        ${sel.desc ? `<div class=\"d-block\">${esc(sel.desc)}</div>` : \"\"}\n        <div class=\"d-rows\">\n          <div class=\"d-row\"><span class=\"k\">subscribers</span><span class=\"v\">${hiddenOff ? `${mem.length} shown <span style=\"color:var(--faint)\">+${hiddenOff} offline hidden</span>` : `${mem.length} agent${mem.length === 1 ? \"\" : \"s\"}`}</span></div>\n          <div class=\"d-row\"><span class=\"k\">messages</span><span class=\"v\">${sel.msgs || 0}</span></div>\n          ${deliveryRow}\n          ${replayRow}\n        </div>\n        <div class=\"d-section\"><div class=\"d-label\">members</div>${memberList}</div>\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.chan === sel.name)}</div></div>`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
@@ -2359,31 +1988,63 @@
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
-      "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
+      "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span><span data-presence-status>${esc(wording ? wording.status : sel.status)}</span></div>\n        ${wording?.heartbeat ? `<div class=\"d-block muted\" data-presence-heartbeat>${esc(wording.heartbeat)}</div>` : \"\"}\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity<span data-presence-activity-age>${wording?.activityAge ? ` · ${esc(wording.activityAge)}` : \"\"}</span></div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\" data-presence-activity>${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
       "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
       "proof": {
-        "path": "implementations/web/src/web/graph.js",
-        "anchor": "<div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>"
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
       }
     },
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
-      "anchor": "`<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
+      "anchor": "`<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span><span data-presence-status>${esc(wording ? wording.status : sel.status)}</span></div>\n        ${wording?.heartbeat ? `<div class=\"d-block muted\" data-presence-heartbeat>${esc(wording.heartbeat)}</div>` : \"\"}\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity<span data-presence-activity-age>${wording?.activityAge ? ` · ${esc(wording.activityAge)}` : \"\"}</span></div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\" data-presence-activity>${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
       "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
       "proof": {
-        "path": "implementations/web/src/web/graph.js",
-        "anchor": "<div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>"
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
       }
     },
     {
       "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "&& status.className !== `d-status ${sel.status}`) status.className = `d-",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "status.className = `d-status ${sel.status}`",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "s}`) status.className = `d-status ${sel.status}`;\n  }\n\n  // ── events ──",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/presence.js",
       "kind": "status-token",
       "anchor": "\"working\"",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/presence.js",
+      "kind": "derived-output",
+      "anchor": "status + condition + unchanged + active",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
     },
     {
       "path": "implementations/web/src/web/snapshot.js",
@@ -2409,9 +2070,430 @@
     {
       "path": "implementations/web/src/web.ts",
       "kind": "derived-output",
+      "anchor": "`native dashboard request ${caller ? \"refused\" : \"failed\"}; diagnostic body omitted`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: logs whether a native dashboard request was refused or failed from its status code; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
       "anchor": "`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection: \"close\" }\n        : { \"content-type\": \"application/json\" })",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: writes the status code on the server's error response; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "lifecycle.onSession(browserSession)",
+      "class": "non-render/control",
+      "rationale": "Dashboard lifecycle: hands the browser session to the native lifecycle hook; status here is an HTTP code, and nothing is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`${probeUrl}: HTTP ${answer.status}`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: records the readiness probe's status code for the startup error; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${capProbeText(lastProbe)}` : \"\"}`",
+      "class": "non-render/control",
+      "rationale": "Dashboard startup failure: reports the readiness timeout with the last HTTP probe; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`; last probe ${capProbeText(lastProbe)}`",
+      "class": "non-render/control",
+      "rationale": "Dashboard startup failure fragment: the last HTTP probe text; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "capProbeText(lastProbe)",
+      "class": "non-render/control",
+      "rationale": "Dashboard startup failure: caps the last HTTP probe text; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "res.writeHead(status, { \"content-type\": \"application/json\" })",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: writes the status code on the server's JSON response; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "status-token",
+      "anchor": "\"idle\"",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "derived-output",
+      "anchor": "key={status}",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "derived-output",
+      "anchor": ".map(status => <div key={status} className=\"flex items-c",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "derived-output",
+      "anchor": "{status !== \"heartbeat\" && <span aria-hidden=\"true\"><Status status={status} /></span>}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "derived-output",
+      "anchor": "status={status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "derived-output",
+      "anchor": "n=\"true\"><Status status={status} /></span>}{status === \"",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "derived-output",
+      "anchor": "{status === \"heartbeat\" ? \"Oldest heartbeat\" : status[0].toUpperCase() + status.slice(1)}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "derived-output",
+      "anchor": "status[0].toUpperCase() + status.slice(1)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/Dashboard.tsx",
+      "kind": "indexed-map",
+      "anchor": "state.counts[status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/details.tsx",
+      "kind": "derived-output",
+      "anchor": "status={p.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/details.tsx",
+      "kind": "derived-output",
+      "anchor": "{p.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/details.tsx",
+      "kind": "derived-output",
+      "anchor": "{wording.status}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/details.tsx",
+      "kind": "derived-output",
+      "anchor": "{p.status === \"waiting\" ? \"Blocked on\" : \"Current activity\"}",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/details.tsx",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/details.tsx",
+      "kind": "derived-output",
+      "anchor": "{state.waiting.length > 0 ? <ItemGroup>{state.waiting.map(item => <Item key={item.id} role=\"listitem\">\n      <ItemMedia variant=\"icon\"><CirclePause /></ItemMedia>\n      <ItemContent className=\"min-w-0\"><ItemTitle>{state.roster.find(peer => peer.card.id === item.id)?.card.name || item.title}</ItemTitle><ItemDescription className=\"line-clamp-none break-words\">{item.status}</ItemDescription><ItemDescription className=\"line-clamp-none break-words\">{item.desc}</ItemDescription><ItemDescription>{item.role} · {item.age}</ItemDescription></ItemContent>\n      <ItemActions><Button variant=\"ghost\" size=\"icon-sm\" aria-label={`View ${state.roster.find(peer => peer.card.id === item.id)?.card.name || item.title}`} onClick={() => { window.COTAL_DASHBOARD.selectAgent(item.id); onSelect?.(); }}><ChevronRight /></Button></ItemActions>\n    </Item>)}</ItemGroup> : <Blank title=\"All clear\" description=\"Agents waiting for your input will appear here.\" />}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/details.tsx",
+      "kind": "derived-output",
+      "anchor": "{state.waiting.map(item => <Item key={item.id} role=\"listitem\">\n      <ItemMedia variant=\"icon\"><CirclePause /></ItemMedia>\n      <ItemContent className=\"min-w-0\"><ItemTitle>{state.roster.find(peer => peer.card.id === item.id)?.card.name || item.title}</ItemTitle><ItemDescription className=\"line-clamp-none break-words\">{item.status}</ItemDescription><ItemDescription className=\"line-clamp-none break-words\">{item.desc}</ItemDescription><ItemDescription>{item.role} · {item.age}</ItemDescription></ItemContent>\n      <ItemActions><Button variant=\"ghost\" size=\"icon-sm\" aria-label={`View ${state.roster.find(peer => peer.card.id === item.id)?.card.name || item.title}`} onClick={() => { window.COTAL_DASHBOARD.selectAgent(item.id); onSelect?.(); }}><ChevronRight /></Button></ItemActions>\n    </Item>)}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/details.tsx",
+      "kind": "derived-output",
+      "anchor": "{item.status}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "status-token",
+      "anchor": "ffline\").sort((a,b) => [\"working\",\"waiting\",\"idle\"].index",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "status-token",
+      "anchor": "ort((a,b) => [\"working\",\"waiting\",\"idle\"].indexOf(a.statu",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "status-token",
+      "anchor": "=> [\"working\",\"waiting\",\"idle\"].indexOf(a.status)-[\"wo",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "status-token",
+      "anchor": "le\"].indexOf(a.status)-[\"working\",\"waiting\",\"idle\"].index",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "status-token",
+      "anchor": "Of(a.status)-[\"working\",\"waiting\",\"idle\"].indexOf(b.statu",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "status-token",
+      "anchor": "s)-[\"working\",\"waiting\",\"idle\"].indexOf(b.status) || a",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "{online.length}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "{state.loading && !online.length && <div className=\"flex flex-col gap-3 p-3\"><Skeleton className=\"h-7 w-full\" /><Skeleton className=\"h-7 w-4/5\" /></div>}",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "{hosts.map(host => <li key={host} className=\"list-none\">\n                <p className=\"flex items-center justify-between gap-2 px-2 pb-1 pt-3 text-xs font-medium text-muted-foreground\"><span className=\"truncate\">{host || \"Host not reported\"}</span><span>{online.filter(p => text(p.card.meta?.host) === host).length}</span></p>\n                <SidebarMenu>{online.filter(p => text(p.card.meta?.host) === host).map(p => { const wording = window.COTAL_PRESENCE.describe(p); return <SidebarMenuItem key={p.card.id}>\n                  <SidebarMenuButton size=\"lg\" isActive={state.agentSel === p.card.id} onClick={() => navigate(() => store.selectAgent(p.card.id))} title={[wording.status, wording.activity, wording.heartbeat].filter(Boolean).join(\" · \")} className=\"h-auto py-2\" aria-pressed={state.agentSel === p.card.id}>\n                    <Status status={p.status} /><span className=\"flex min-w-0 flex-1 flex-col gap-0.5\"><span className=\"flex items-center gap-2\"><span className=\"truncate font-medium\">{p.card.name}</span><Harness compact connector={p.card.meta?.connector} /><span className=\"truncate text-xs text-muted-foreground\">{p.card.role}</span>{p.attention && p.attention !== \"open\" && <Badge variant=\"outline\">{p.attention}</Badge>}</span><span className=\"truncate text-xs text-muted-foreground\">{wording.status}</span><span className=\"truncate text-xs text-muted-foreground\">{wording.activity || \"No current activity reported\"}</span></span>\n                  </SidebarMenuButton>\n                </SidebarMenuItem>; })}</SidebarMenu>\n              </li>)}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "{online.filter(p => text(p.card.meta?.host) === host).map(p => { const wording = window.COTAL_PRESENCE.describe(p); return <SidebarMenuItem key={p.card.id}>\n                  <SidebarMenuButton size=\"lg\" isActive={state.agentSel === p.card.id} onClick={() => navigate(() => store.selectAgent(p.card.id))} title={[wording.status, wording.activity, wording.heartbeat].filter(Boolean).join(\" · \")} className=\"h-auto py-2\" aria-pressed={state.agentSel === p.card.id}>\n                    <Status status={p.status} /><span className=\"flex min-w-0 flex-1 flex-col gap-0.5\"><span className=\"flex items-center gap-2\"><span className=\"truncate font-medium\">{p.card.name}</span><Harness compact connector={p.card.meta?.connector} /><span className=\"truncate text-xs text-muted-foreground\">{p.card.role}</span>{p.attention && p.attention !== \"open\" && <Badge variant=\"outline\">{p.attention}</Badge>}</span><span className=\"truncate text-xs text-muted-foreground\">{wording.status}</span><span className=\"truncate text-xs text-muted-foreground\">{wording.activity || \"No current activity reported\"}</span></span>\n                  </SidebarMenuButton>\n                </SidebarMenuItem>; })}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "title={[wording.status, wording.activity, wording.heartbeat].filter(Boolean).join(\" · \")}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "{[wording.status, wording.activity, wording.heartbeat].filter(Boolean).join(\" · \")}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "                <Status status={p.status} /><span className=\"flex",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "         <Status status={p.status} /><span className=\"flex",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "{wording.status}",
+      "class": "honest-text",
+      "rationale": "Shared browser presence wording reports the harness status and explicitly names unknown work progress for working peers.",
+      "proof": {
+        "path": "implementations/web/src/web/presence.js",
+        "anchor": "const status = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "{!state.loading && !online.length && <li><Blank title=\"No agents online\" description=\"Agents appear here when they join the space.\" /></li>}",
+      "class": "non-render/control",
+      "rationale": "Status is used for data shaping, filtering, sorting, a heading choice or component identity rather than a human work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "{state.dmPeers.map(p => <Collapsible key={p.id} open={state.dmSel?.peer === p.id} asChild><SidebarMenuItem>\n                <CollapsibleTrigger asChild><SidebarMenuButton aria-label={`Direct messages ${p.name}, ${p.threads} threads`} onClick={() => navigate(() => store.selectDM(p.id))}><Status status={p.status} /><span>{p.name}</span><ChevronDown className=\"ml-auto\" /></SidebarMenuButton></CollapsibleTrigger>\n                <CollapsibleContent><SidebarMenu className=\"pl-4\">{p.conversations.map(c => <SidebarMenuItem key={c.with}><SidebarMenuButton isActive={state.dmSel?.peer === p.id && state.dmSel.with === c.with} aria-pressed={state.dmSel?.peer === p.id && state.dmSel.with === c.with} onClick={() => navigate(() => store.selectDM(p.id,c.with))}><span>↳</span><span>{c.withName || c.with}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></CollapsibleContent>\n              </SidebarMenuItem></Collapsible>)}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "electDM(p.id))}><Status status={p.status} /><span>{p.name}</span>",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/navigation.tsx",
+      "kind": "derived-output",
+      "anchor": "(p.id))}><Status status={p.status} /><span>{p.name}</span>",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/primitives.tsx",
+      "kind": "indexed-map",
+      "anchor": "statusIcons[status as keyof typeof statusIcons]",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/primitives.tsx",
+      "kind": "derived-output",
+      "anchor": "aria-label={status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/primitives.tsx",
+      "kind": "derived-output",
+      "anchor": "{status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/primitives.tsx",
+      "kind": "indexed-map",
+      "anchor": "statusColors[status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/transcript.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.mode ? <Badge variant=\"secondary\">{row.mode}</Badge> : row.status && <Status status={row.status} />}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/transcript.tsx",
+      "kind": "derived-output",
+      "anchor": "status={row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
+    },
+    {
+      "path": "implementations/web/ui/components/dashboard/transcript.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Coarse presence status drives an icon, accessible glyph name, visual class or status count, not a measured work-progress claim."
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
@@ -2650,132 +2732,6 @@
       "anchor": "pe.lastTs = Math.max(pe.lastTs, c.last)",
       "class": "non-render/control",
       "rationale": "Console state update: keeps the newest presence timestamp in the mesh view model; not a rendered status."
-    },
-    {
-      "path": "implementations/web/src/web.ts",
-      "kind": "derived-output",
-      "anchor": "res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection: \"close\" }\n        : { \"content-type\": \"application/json\" })",
-      "class": "non-render/control",
-      "rationale": "HTTP response plumbing: writes the status code on the server's error response; no agent presence is rendered."
-    },
-    {
-      "path": "implementations/web/src/web.ts",
-      "kind": "derived-output",
-      "anchor": "res.writeHead(status, { \"content-type\": \"application/json\" })",
-      "class": "non-render/control",
-      "rationale": "HTTP response plumbing: writes the status code on the server's JSON response; no agent presence is rendered."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "(p) => p.ts))) : \"—\";\n  renderTiles(counts, stalest);\n  $(\"online-c\").textCo",
-      "class": "non-render/control",
-      "rationale": "Dashboard state update: computes counts and stalest timestamps and refreshes the header counters; the tile view carries only counts, not progress claims."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "plural(msgCount, \"message\")",
-      "class": "presence-only-glyph/count",
-      "rationale": "Pluralizes an aggregate message count for the header; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/app.js",
-      "kind": "derived-output",
-      "anchor": "toggleAllChip(items)",
-      "class": "non-render/control",
-      "rationale": "Dashboard state update: toggles the select-all chip from the current selection; not a rendered status."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": " = 2; ctx.strokeStyle = rgba(col, 1); ctx.stroke();\n      }\n",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: stroke color and width for a graph element; color carries presence class only, no textual claim."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": ", r); g.addColorStop(0, rgba(col, 1)); g.addColorStop(0.55, ",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: gradient stops from the presence color; no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "a.status = p.status",
-      "class": "non-render/control",
-      "rationale": "Dashboard state update: stores the peer's raw status on the node record for later color/glyph lookups; not rendered as text."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "agents.set(id, a)",
-      "class": "non-render/control",
-      "rationale": "Dashboard state update: indexes the node record in the agents map; not a rendered status."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "ctx.shadowBlur = focus ? 20 : off ? 0 : idle ? 6 : 13",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: glow radius chosen from the node's presence state; visual emphasis only, no textual claim."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "ctx.shadowColor = col",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: glow color from the presence palette; no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "ctx.strokeStyle = rgba(MEM_LIVE, off ? 0.3 : 0.6)",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "ctx.strokeStyle = rgba(col, 0.85)",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "ctx.strokeStyle = rgba(col, 1)",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "ctx.strokeStyle = rgba(off ? MEM_OFF : MEM_LIVE, (off ? 0.3 : 0.42) * (lit ? 1 : 0.28))",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "mem.map(memberRow)",
-      "class": "non-render/control",
-      "rationale": "Dashboard data shaping: maps member records to row models for the sidebar; rendering classifies at the row sink, not here."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "rgba(col, 0.55)",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
-    },
-    {
-      "path": "implementations/web/src/web/graph.js",
-      "kind": "derived-output",
-      "anchor": "rgba(col, 0.85)",
-      "class": "presence-only-glyph/count",
-      "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
     },
     {
       "path": "implementations/cli/src/commands/doctor.ts",
@@ -4578,48 +4534,6 @@
       "anchor": "{connected ? \"Waiting for activity in this authorized view.\" : \"No current feed. Events may be missing.\"}",
       "class": "non-render/control",
       "rationale": "Watch empty-feed placeholder: chosen by the observer's own connection state, not any peer's presence or progress."
-    },
-    {
-      "path": "implementations/web/src/web.ts",
-      "kind": "derived-output",
-      "anchor": "`native dashboard request ${caller ? \"refused\" : \"failed\"}; diagnostic body omitted`",
-      "class": "non-render/control",
-      "rationale": "HTTP response plumbing: logs whether a native dashboard request was refused or failed from its status code; no agent presence is rendered."
-    },
-    {
-      "path": "implementations/web/src/web.ts",
-      "kind": "derived-output",
-      "anchor": "lifecycle.onSession(browserSession)",
-      "class": "non-render/control",
-      "rationale": "Dashboard lifecycle: hands the browser session to the native lifecycle hook; status here is an HTTP code, and nothing is rendered."
-    },
-    {
-      "path": "implementations/web/src/web.ts",
-      "kind": "derived-output",
-      "anchor": "`${probeUrl}: HTTP ${answer.status}`",
-      "class": "non-render/control",
-      "rationale": "HTTP response plumbing: records the readiness probe's status code for the startup error; no agent presence is rendered."
-    },
-    {
-      "path": "implementations/web/src/web.ts",
-      "kind": "derived-output",
-      "anchor": "`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${capProbeText(lastProbe)}` : \"\"}`",
-      "class": "non-render/control",
-      "rationale": "Dashboard startup failure: reports the readiness timeout with the last HTTP probe; no agent presence is rendered."
-    },
-    {
-      "path": "implementations/web/src/web.ts",
-      "kind": "derived-output",
-      "anchor": "`; last probe ${capProbeText(lastProbe)}`",
-      "class": "non-render/control",
-      "rationale": "Dashboard startup failure fragment: the last HTTP probe text; no agent presence is rendered."
-    },
-    {
-      "path": "implementations/web/src/web.ts",
-      "kind": "derived-output",
-      "anchor": "capProbeText(lastProbe)",
-      "class": "non-render/control",
-      "rationale": "Dashboard startup failure: caps the last HTTP probe text; no agent presence is rendered."
     },
     {
       "path": "extensions/connector-core/src/gateway.ts",

@@ -1,0 +1,27 @@
+{
+  "suite": [
+    "implementations/web/smoke/console-auth.smoke.ts"
+  ],
+  "guard": "built dashboard and assets are served behind the existing auth gate",
+  "command": "pnpm smoke:web-console-auth",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/web/smoke/mutations/dashboard-assets.json",
+  "why": [
+    "The suite drives the web source with tsx against the already-built Astro assets. Mutations do not compile a package."
+  ],
+  "mutations": [
+    {
+      "name": "the server omits all built dashboard routes",
+      "file": "implementations/web/src/web.ts",
+      "find": "    const file = Object.hasOwn(PAGE, path) ? PAGE[path] : dashboardPages[path];",
+      "replace": "    const file = Object.hasOwn(PAGE, path) ? PAGE[path] : undefined;",
+      "expectRed": "the authenticated root dashboard serves the built Astro page"
+    },
+    {
+      "name": "the asset map assigns the wrong JavaScript MIME type",
+      "file": "implementations/web/src/dashboard-assets.ts",
+      "find": "  \".js\": \"text/javascript; charset=utf-8\",",
+      "replace": "  \".js\": \"text/plain; charset=utf-8\",",
+      "expectRed": "the existing server serves the complete built dashboard asset with its MIME type"
+    }
+  ]
+}

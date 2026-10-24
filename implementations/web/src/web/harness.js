@@ -44,3 +44,11 @@ window.COTAL_HARNESS = {
     svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7v12"/><path d="M15 7v12c0 1.5 1.5 2 3 1"/></svg>`,
   },
 };
+
+// Expose the existing trusted logo paths to React without injecting SVG markup.
+// The graph retains the original SVG strings and glyphs.
+for (const harness of Object.values(window.COTAL_HARNESS)) {
+  harness.paths = [...harness.svg.matchAll(/<path d="([^"]+)"\s*\/>/g)].map(match => match[1]);
+  if (!harness.paths.length) throw new Error("Harness logo has no supported path data");
+  harness.outline = harness.svg.includes('fill="none"');
+}

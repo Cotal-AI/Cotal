@@ -485,7 +485,7 @@ async function runBackfillFunction(code: string, call: string, file: string, ent
     fetch: async (u: string) => ({ ok: true, json: async () => json(u) }),
     __entries: entries,
     // app.js
-    refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {}, setStale() {},
+    publish() {}, refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {}, setStale() {},
     roster: [], channels: null, dms: [], activity: [], agentSel: null, dmSel: null, selected: "*",
     // graph.js
     $: () => ({ textContent: "" }), ensureHub: () => ({}), updateRoster() {}, applyMembership() {},

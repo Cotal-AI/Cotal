@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { loadDashboardPages } from "./dashboard-assets.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -288,11 +289,11 @@ export const MEMBERSHIP_READ_FAILED = "membership-read-failed";
 /** Exported so a test can resolve what the browser is actually served, rather than restating the
  *  route table in its own source and agreeing with itself. */
 export const PAGE: Record<string, { path: string; type: string }> = {
-  "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
   "/harness.js": { path: join(here, "web/harness.js"), type: jsType },
   // Shared message-part renderer for both pages. This map is an allow-list, so a page script that
   // depends on this file is broken until it has a row here, whatever the HTML requests.
   "/parts.js": { path: join(here, "web/parts.js"), type: jsType },
+  "/presence.js": { path: join(here, "web/presence.js"), type: jsType },
   // Registers an `ag-ui.frame` renderer into the map `parts.js` consults. Served to both pages: a
   // frame is as likely to arrive on the graph's detail row as in the console body, and a kind that
   // draws on one page and shows a marker on the other is worse than one that shows a marker on both.
@@ -806,6 +807,7 @@ export interface WebServiceLifecycle {
  *  and a live message stream — no manager required. Bound to loopback unless the operator opts in
  *  to a different host explicitly. */
 export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Promise<void> {
+  const dashboardPages = loadDashboardPages();
   const values = args.values as { space?: string; server?: string; host?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
   // Validate the exposure coordinates before connecting to the broker or claiming local artifacts.
   // An invalid exposure request must have no dashboard side effects.
@@ -1124,7 +1126,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       }
     }
 
-    const file = PAGE[path];
+    const file = Object.hasOwn(PAGE, path) ? PAGE[path] : dashboardPages[path];
     if (file) {
       // Read before the status line: a read that throws after `writeHead` reaches the catch below
       // with the 200 already sent, and the browser runs an empty file as a success.

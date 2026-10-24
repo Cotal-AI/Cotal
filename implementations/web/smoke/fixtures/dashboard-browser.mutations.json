@@ -1,0 +1,88 @@
+{
+  "command": "pnpm --filter @cotal-ai/web build && pnpm --filter @cotal-ai/web test:browser",
+  "mutations": [
+    {
+      "name": "the root UI is removed while its controller and APIs still run",
+      "file": "implementations/web/ui/pages/index.astro",
+      "find": "    <Dashboard client:only=\"react\">\n      <p slot=\"fallback\" class=\"p-6 text-sm text-muted-foreground\">Connecting to your workspace\u2026</p>\n    </Dashboard>",
+      "replace": "    <p>The old dashboard</p>",
+      "expectRed": "the EXISTING root dashboard uses the shadcn sidebar",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "React no longer subscribes to controller state changes",
+      "file": "implementations/web/src/web/app.js",
+      "find": "  getSnapshot, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },",
+      "replace": "  getSnapshot, subscribe() { return () => {}; },",
+      "expectRed": "channel selection reaches the subscribed React dashboard",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the dev proxy rewrites a foreign write origin into an authorized one",
+      "file": "implementations/web/scripts/dev-proxy.mjs",
+      "find": "if (incoming.headers.origin === `http://${incoming.headers.host}`)",
+      "replace": "if (true)",
+      "expectRed": "foreign-origin writes remain refused through the dev proxy",
+      "command": "COTAL_DASHBOARD_DEV=1 pnpm --filter @cotal-ai/web test:browser"
+    },
+    {
+      "name": "message scrolling no longer follows arriving content",
+      "file": "implementations/web/ui/components/dashboard/transcript.tsx",
+      "find": "autoScroll={!all || !state.paused}",
+      "replace": "autoScroll={false}",
+      "expectRed": "the message scroller follows the live edge",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "manual pause stops disabling automatic message following",
+      "file": "implementations/web/ui/components/dashboard/transcript.tsx",
+      "find": "autoScroll={!all || !state.paused}",
+      "replace": "autoScroll={true}",
+      "expectRed": "pause keeps the reader's position while messages arrive",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "closing deletion stops returning focus to its trigger",
+      "file": "implementations/web/ui/components/dashboard/transcript.tsx",
+      "find": "if (!deleteTrigger.current) { event.preventDefault(); titleElement.current?.focus(); }",
+      "replace": "if (true) { event.preventDefault(); titleElement.current?.focus(); }",
+      "expectRed": "closing deletion returns focus to its trigger",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "channel deletion failures stop rendering beside the retry action",
+      "file": "implementations/web/ui/components/dashboard/transcript.tsx",
+      "find": "{deleteError && <Alert variant=\"destructive\"",
+      "replace": "{false && <Alert variant=\"destructive\"",
+      "expectRed": "deletion failure stays beside its retry action",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "presence wording omits the harness condition",
+      "file": "implementations/web/src/web/presence.js",
+      "find": "const condition = p.condition ?",
+      "replace": "const condition = false ?",
+      "expectRed": "the live roster shows the harness condition and its age",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "graph details lose the original presence stamps",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "      a.presence = p;",
+      "replace": "      a.presence = undefined;",
+      "expectRed": "the live graph detail shows the harness condition and its age",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the graph clock replaces selected detail nodes",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "setInterval(refreshPresenceDetail, 1000);",
+      "replace": "setInterval(renderDetail, 1000);",
+      "expectRed": "graph age updates preserve selected detail text",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    }
+  ],
+  "suite": [
+    "implementations/web/smoke/dashboard-browser.smoke.ts"
+  ]
+}

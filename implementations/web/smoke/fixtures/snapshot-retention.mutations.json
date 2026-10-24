@@ -79,10 +79,10 @@
       "expectRed": "4.11 a refused channel history does not erase the poll's other marks"
     },
     {
-      "name": "W12 recovery only HIDES the marker instead of clearing it, so the previous label and tooltip sit in the element and anything that unhides it tells the reader a source is stale that recovered long ago",
+      "name": "W12 recovery retains the previous stale set instead of clearing it",
       "file": "implementations/web/src/web/app.js",
-      "find": "  el.hidden = !label;\n",
-      "replace": "  el.hidden = !label;\n  if (!label) return;\n",
+      "find": "function setStale(stale) {\n  staleNow = stale;",
+      "replace": "function setStale(stale) {\n  if (!stale.length) return;\n  staleNow = stale;",
       "expectRed": "4.9 and a read that lands clears it"
     },
     {

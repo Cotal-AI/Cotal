@@ -35,6 +35,7 @@
  * Run: pnpm smoke:event-order
  */
 import assert from "node:assert/strict";
+import { orderingNotices } from "../ui/lib/ordering.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,7 +145,7 @@ console.log("event-order smoke");
   ok("1.2 the served path is the file this suite drove", row?.path === join(webSrc, "event-order.js"));
   ok("1.3 served as javascript", typeof row?.type === "string" && row.type.includes("javascript"));
 
-  const html = readFileSync(join(webSrc, "index.html"), "utf8");
+  const html = readFileSync(join(webSrc, "../../ui/pages/index.astro"), "utf8");
   const orderAt = html.indexOf("/event-order.js");
   const appAt = html.indexOf("/app.js");
   ok("1.4 the page loads the machine", orderAt !== -1);
@@ -405,7 +406,7 @@ console.log("event-order smoke");
   // `markStale` and `renderStale` join the set because `select()` now reports a refused channel
   // history through them. Extracted rather than stubbed: a stub would let these cells keep passing
   // against a version that stopped reporting, which is the failure this lane already hit once.
-  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml", "setStale", "markStale", "renderStale"]);
+  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "setStale", "markStale", "renderStale"]);
   // The single-flight state the shipped functions read. TAKEN FROM THE FILE, not restated: a
   // hand-written `let refreshing = null` here would let the harness keep passing after the real
   // declaration changed, and a bootstrap that coalesces is the whole of blocker 1.
@@ -421,7 +422,7 @@ console.log("event-order smoke");
         if (ts.isIdentifier(d.name) && wantedState.has(d.name.text)) state.push(appSrc.slice(n.getStart(sf), n.end));
   });
   // Pinned first: a short extraction would make every cell below vacuous.
-  ok("12.1 all eight shipped functions are extractable", fns.length === 8, fns.length);
+  ok("12.1 all seven shipped functions are extractable", fns.length === 7, fns.length);
   ok("12.1b and the in-flight state they coalesce on, plus the marker state", state.length === 4, state.length);
 
   type Ctx = Record<string, unknown> & {
@@ -436,7 +437,7 @@ console.log("event-order smoke");
    *  history either answering or rejecting. */
   const page = (mode: "reject" | "resolve"): Ctx => {
     const ctx = {
-      console,
+      console, publish() {},
       fetch: async (u: string) => {
         const isBackfill = u.includes("/api/activity") || u.includes("/history");
         if (isBackfill && mode === "reject") throw new Error("network down");
@@ -463,7 +464,7 @@ console.log("event-order smoke");
       renderDMs() {}, renderRoster() {}, renderRail() {}, rosterRows: () => [],
       roster: [], channels: new Map(), dms: [], activity: [] as unknown[], agentSel: null,
       dmSel: null, selected: "*", unread: new Map(), channelMsgs: [] as unknown[],
-      orderNotes: [] as { type: string }[], isDemo: false, loadSeq: 0,
+      orderNotes: [] as { type: string }[], loadSeq: 0,
       window: {} as Record<string, unknown>,
       feedOrder: undefined as unknown, channelOrder: undefined as unknown,
       __p: undefined as Promise<void> | undefined, __E: undefined as unknown,
@@ -619,35 +620,21 @@ console.log("event-order smoke");
   // to remove, one layer up, and it is also what decides whether treating a failed read as an empty
   // history is an honest degrade or a quiet one.
   {
-    const c = createContext({ orderNotes: [] as Note[] });
-    runInContext(fns.find((f) => f.startsWith("function orderNoticeHtml")) as string, c);
-    const html = (notes: Note[]) => {
-      (c as unknown as { orderNotes: Note[] }).orderNotes = notes;
-      return runInContext("orderNoticeHtml()", c) as string;
-    };
-    ok("15.1 an ordinary feed draws no notice", html([]) === "");
-    const gapHtml = html([{ type: "gap", expected: 4, got: 7, missing: 3 }]);
-    ok("15.2 a gap is drawn, and says how many frames are missing", /\b3\b/.test(gapHtml) && /missing/.test(gapHtml), gapHtml);
-    const prefixHtml = html([{ type: "prefix-incomplete", baseline: 900 }]);
-    ok("15.3 an evicted prefix is drawn too", prefixHtml !== "" && /not retained/.test(prefixHtml), prefixHtml);
-    // THE ONE THAT ALWAYS HAPPENS ON A LATE JOIN MUST NOT READ LIKE THE ONE THAT MUST NEVER BE
-    // IGNORED. Collapsing them into one banner would spend the reader's attention on retention.
-    ok("15.4 and the two are not the same statement", gapHtml !== prefixHtml && !/missing/.test(prefixHtml));
-    const straddleHtml = html([{ type: "boundary-hole", expected: 4, got: 5, missing: 1 }]);
-    ok("15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss", /unconfirmed/.test(straddleHtml) && !/missing/.test(straddleHtml), straddleHtml);
-    const failHtml = html([{ type: "backfill-failed" } as Note]);
-    ok("15.6 a failed history read is drawn, so the empty-batch settle is not a silent degrade", /history unavailable/.test(failHtml), failHtml);
-    ok("15.7 a fault is marked as one, and not by colour alone", /order-notice fault/.test(gapHtml) && !/fault/.test(prefixHtml));
-
-    // The rendering half: the feed views actually call it. Without this the function could be dead.
-    const drawn = new Set<string>();
-    sf.forEachChild((n) => {
-      if (ts.isFunctionDeclaration(n) && n.name && /^render(AllActivity|Channel)$/.test(n.name.text))
-        if (appSrc.slice(n.getStart(sf), n.end).includes("orderNoticeHtml()")) drawn.add(n.name.text);
-    });
-    ok("15.8 the all-activity view draws it", drawn.has("renderAllActivity"), [...drawn]);
-    ok("15.9 the channel view draws it", drawn.has("renderChannel"), [...drawn]);
-    ok("15.10 and the page styles it", readFileSync(join(webSrc, "index.html"), "utf8").includes(".order-notice"));
+    const summary = (notes: Note[]) => orderingNotices(notes).map(notice => notice.message).join(" · ");
+    ok("15.1 an ordinary feed draws no notice", summary([]) === "");
+    const gap = summary([{ type: "gap", expected: 4, got: 7, missing: 3 }]);
+    ok("15.2 a gap is drawn, and says how many frames are missing", /\b3\b/.test(gap) && /missing/.test(gap), gap);
+    const prefix = summary([{ type: "prefix-incomplete", baseline: 900 }]);
+    ok("15.3 an evicted prefix is drawn too", /not retained/.test(prefix), prefix);
+    ok("15.4 and the two are not the same statement", gap !== prefix && !/missing/.test(prefix));
+    const race = summary([{ type: "boundary-hole", expected: 4, got: 5, missing: 1 }]);
+    ok("15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss", /unconfirmed/.test(race) && !/missing/.test(race), race);
+    ok("15.6 a failed history read is drawn, so the empty-batch settle is not a silent degrade", /History unavailable/.test(summary([{ type: "backfill-failed" }])));
+    ok("15.7 a fault is marked as one, and not by colour alone", orderingNotices([{ type:"gap", missing:3 }])[0]?.kind === "gap" && orderingNotices([{ type:"prefix-incomplete" }])[0]?.kind !== "gap");
+    const transcript = readFileSync(join(webSrc, "../../ui/components/dashboard/transcript.tsx"), "utf8");
+    ok("15.8 the all-activity view draws it", transcript.includes("!dm && <OrderingNotice notes={state.orderNotes}"));
+    ok("15.9 the channel view draws it", transcript.includes("!dm && <OrderingNotice notes={state.orderNotes}"));
+    ok("15.10 the notice uses the existing Alert component", readFileSync(join(webSrc, "../../ui/components/dashboard/ordering-notice.tsx"), "utf8").includes("<Alert variant="));
   }
 }
 

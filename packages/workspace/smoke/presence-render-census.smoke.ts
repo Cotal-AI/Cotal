@@ -36,6 +36,7 @@ const renderRoots = [
   join(root, "extensions/connector-core/src"),
   join(root, "implementations/cli/src"),
   join(root, "implementations/web/src"),
+  join(root, "implementations/web/ui"),
 ];
 const skipDirs = new Set(["dist", "smoke", "test", "tests", "fixtures", "node_modules"]);
 const sourceExt = /\.(?:ts|tsx|js|mjs|mts)$/;
@@ -329,16 +330,14 @@ const connectorHonestStatusAnchor = 'status === "working" ? "working · progress
 const connectorRosterProgressAnchor = 'const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;';
 const inkDetailStatusAnchor = '<Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>';
 const inkRosterProgressAnchor = 'return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";';
-const webMonitorProgressAnchor = 'const progress = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
-const webGraphProgressAnchor = '<div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>';
+const webPresenceProgressAnchor = 'const status = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
 const proofAnchors = new Map<string, string>([
   ["extensions/connector-core/src/orientation.ts", connectorHonestStatusAnchor],
   ["extensions/connector-core/src/tool-specs.ts", connectorRosterProgressAnchor],
   ["implementations/cli/src/ui.ts", sharedStatusBadgeAnchor],
   ["implementations/cli/src/console/ui/Detail.tsx", inkDetailStatusAnchor],
   ["implementations/cli/src/console/ui/Roster.tsx", inkRosterProgressAnchor],
-  ["implementations/web/src/web/app.js", webMonitorProgressAnchor],
-  ["implementations/web/src/web/graph.js", webGraphProgressAnchor],
+  ["implementations/web/src/web/presence.js", webPresenceProgressAnchor],
 ]);
 
 const entryKeys = new Set<string>();

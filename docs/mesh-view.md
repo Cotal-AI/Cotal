@@ -137,7 +137,7 @@ one feed is not.
 | roster (status, activity, age) | `agents` / `endpoints` | ✓ panel | ✓ presence lines | ✓ sidebar |
 | all-activity feed | `feed` | ✓ feed panel | ✓ log | ✓ Monitor view |
 | channels plus counts, unread badges | `channels` (+ client state) | ✓ tabs (`1`–`9`, `+N`) |  | ✓ sidebar + Channel view |
-| golden-signal counts | `signals.counts` | ✓ tiles strip |  | ✓ tiles |
+| golden-signal counts | `signals.counts` | ✓ tiles strip |  | ✓ status summary |
 | needs-you / blocked | `signals.waiting` | ✓ rail (`n`) |  | ✓ NEEDS-YOU rail |
 | direct-message lens | `signals.dms` | ✓ lens (`d`) |  | ✓ DM view |
 | topology (membership plus who-talks-to-whom) | `feed` + `agents` + `membership` | ✓ lens (`t`, 3 variants) |  | ✓ graph |
@@ -148,7 +148,7 @@ one feed is not.
 | per-channel attention (`quiet` / `muted`) | `agents[].channelModes` |  |  | ✓ agent detail |
 | harness, model, variant | `agents[].card.meta` | ✓ roster tag + detail |  | ✓ badges + graph |
 | host (which machine it runs on) | `agents[].card.meta.host` |  |  | ✓ agent detail |
-| channel policy (replay, delivery class) | `/api/channels` (web) |  |  | ✓ sidebar + header chips |
+| channel policy (replay, delivery class) | `/api/channels` (web) |  |  | ✓ header badges |
 
 Each interactive surface renders the fields its column above marks; `rates.activity` is the
 console's alone. The console adds the signals as an always-on
@@ -169,11 +169,9 @@ line-oriented, so the signals stay out of it.
 
 ## Future work
 
-The web's `?demo` scene also mocks features that **no protocol message backs yet**. They render
-only as the static design reference, never from live data, and are deliberately *not* implemented
-on the live surfaces, design intent until the wire grows to support them:
+These features need additional protocol or view support before surfaces can display them:
 
-| Flourish | What it would need |
+| Feature | What it would need |
 |---|---|
 | intent badges ("about to act") | a new intent message kind / field on the wire |
 | approval requests (approve / deny) | a request message kind plus a response path (interactive) |

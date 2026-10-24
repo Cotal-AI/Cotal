@@ -165,7 +165,7 @@ ok("and the row points at the file this suite just evaluated",
 
 // Both pages must load it, and load it BEFORE the script that calls it: a classic script reading a
 // global defined by a LATER script gets `undefined` and throws in the browser only.
-const PAGES = [["index.html", "app.js"], ["graph.html", "graph.js"]] as const;
+const PAGES = [["../../ui/pages/index.astro", "app.js"], ["graph.html", "graph.js"]] as const;
 ok("both pages are covered (a short table would silently check fewer)", PAGES.length === 2, { n: PAGES.length });
 for (const [page, consumer] of PAGES) {
   const html = readFileSync(join(webSrc, page), "utf8");

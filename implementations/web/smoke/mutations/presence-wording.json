@@ -1,0 +1,31 @@
+{
+  "suite": [
+    "implementations/web/smoke/presence-wording.smoke.ts"
+  ],
+  "guard": "browser presence wording matches core age semantics",
+  "command": "pnpm smoke:web-presence-wording",
+  "proveWith": "pnpm mutation-proof --config implementations/web/smoke/mutations/presence-wording.json",
+  "mutations": [
+    {
+      "name": "minute ages round up instead of flooring",
+      "file": "implementations/web/src/web/presence.js",
+      "find": "return `${Math.floor(s / 60)}m`;",
+      "replace": "return `${Math.round(s / 60)}m`;",
+      "expectRed": "browser age agrees with core at 90000ms"
+    },
+    {
+      "name": "activity is dated by status instead of its own stamp",
+      "file": "implementations/web/src/web/presence.js",
+      "find": "activitySince: p.activity ? ageAt(now, p.activitySince) : undefined,",
+      "replace": "activitySince: p.activity ? ageAt(now, p.statusSince) : undefined,",
+      "expectRed": "presence wording dates condition, status, activity, progress and heartbeat separately"
+    },
+    {
+      "name": "unchecked nonnumeric timestamps become dates",
+      "file": "implementations/web/src/web/presence.js",
+      "find": "typeof at === \"number\" && Number.isFinite(at)",
+      "replace": "at != null",
+      "expectRed": "browser presence ages agree with core for 1000"
+    }
+  ]
+}
