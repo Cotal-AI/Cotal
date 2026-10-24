@@ -69,7 +69,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
   boundedValue,
   CommandFailure,
@@ -493,7 +493,11 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
   const open = await locateOpenCheckpoint(
     { kv: reader.kv, js: reader.js, jsm: reader.jsm, space: reader.space, endpoint },
     { runId, stepKey, takeoverId },
-  );
+  ).catch((e: unknown) => {
+    // Locating writes nothing, so a pause it does not find is refused as the hosted answer refuses it.
+    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's open requests with cotal run show ${runId} --local` });
+    throw e;
+  });
   // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
   // the ARMING holder it read off the checkpoint's own record, so a fresh invocation answers
   // exactly as the minter would have. The answerer's name rides `by`, never the presenter.

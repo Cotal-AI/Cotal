@@ -403,6 +403,12 @@ let P = "";
   const late = await wf(["answer", rid, "/race:doppel#0/b:zwei/checkpoint:zwei#0"], { by: "smoke", value: '"B"' }).then(() => undefined, (e: Error) => e);
   c("an answer at the losing branch's cancelled checkpoint says the race cancelled it and which branch won",
     late?.message === `run ${rid} has no open checkpoint at /race:doppel#0/b:zwei/checkpoint:zwei#0: that step was cancelled because branch eins won the race /race:doppel#0`, late?.message);
+  // A run ID nothing records used to read "no step is recorded under that key", and the local
+  // answer reported it as an unknown outcome although locating a pause writes nothing.
+  const nowhere = await wf(["answer", "run-0123456789abcdef0123456789abcdef", "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
+  c("an answer to a run ID nothing records is refused TARGET_NOT_FOUND, saying no run is recorded under that ID",
+    isCommandFailure(nowhere) && nowhere.code === "TARGET_NOT_FOUND"
+      && nowhere.message === "run run-0123456789abcdef0123456789abcdef has no open checkpoint at /checkpoint:approve#0: no run is recorded under that id", nowhere?.message);
 
   // Which branch a second, concurrent answer lands in is decided by the broker, so the not-acted-on
   // lines are read from the rows a lost race leaves: one resolved and one cancelled after it
@@ -767,7 +773,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 82;
+const DECLARED = 83;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

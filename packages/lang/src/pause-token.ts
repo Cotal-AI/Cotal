@@ -7,17 +7,19 @@ import { holdRequestId } from "./keys.js";
 import { journalEntryKeyString, type JournalEntry } from "./journal.js";
 
 /** No open checkpoint (or ask) answers to this address in this run. A `cancelled` step names the
- *  race it lost and the branch that won it, when a race cancelled it. */
+ *  race it lost and the branch that won it, when a race cancelled it. `no-run`: nothing records a
+ *  run under that id. */
 export class CheckpointNotOpen extends Error {
   constructor(
     readonly runId: string,
     readonly stepKey: string,
-    readonly why: "unknown" | "settled" | "cancelled" | "not-a-checkpoint" | "no-identity",
+    readonly why: "no-run" | "unknown" | "settled" | "cancelled" | "not-a-checkpoint" | "no-identity",
     readonly lostRace?: { readonly race: string; readonly winner?: string },
   ) {
     super(
       `run ${runId} has no open checkpoint at ${stepKey}: ${
         {
+          "no-run": "no run is recorded under that id",
           unknown: "no step is recorded under that key",
           settled: "that step has already settled",
           cancelled: lostRace === undefined ? "that step was cancelled"

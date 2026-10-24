@@ -6527,7 +6527,8 @@ answerer from your credential, so no `--by` is taken there. A settled step refus
 revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. A step the run holds no
 open request at is also `TARGET_NOT_FOUND`; when an open checkpoint or `ask` has the name you typed,
 as `frage` names `/checkpoint:frage#0`, the next step gives its full key, and several matches are
-listed for you to pick from. An
+listed for you to pick from. A run ID that no run is recorded under is `TARGET_NOT_FOUND` too, with
+or without `--local`, and the refusal says no run is recorded under that ID. An
 answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
