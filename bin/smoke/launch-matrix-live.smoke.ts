@@ -258,6 +258,18 @@ try {
   const withHandoff = cotal([...delegated.args], { extraEnv: delegated.env });
   check("with its handoff env the delegated command takes the file and passes the expect-flag gate",
     withHandoff.status !== 0 && !existsSync(handoff) && !out(withHandoff).includes(gate) && !/usage/i.test(out(withHandoff)), out(withHandoff));
+  const missing = join(root, "missing-handoff.json");
+  const noFile = cotal([...delegated.args, "--json"], { extraEnv: { [MANAGED_HANDOFF_FILE_ENV]: missing } });
+  let refusal: { code?: string; message?: string; remedy?: string } | undefined;
+  try { refusal = (JSON.parse(noFile.stdout) as { error?: typeof refusal }).error; } catch {}
+  check("a missing handoff file refuses the delegated command USAGE_INVALID, naming the variable and the path, with unset as Next",
+    noFile.status === 1 && refusal?.code === "USAGE_INVALID" && refusal.message === `the managed handoff file does not exist: ${MANAGED_HANDOFF_FILE_ENV} names ${missing}` && refusal.remedy === `unset ${MANAGED_HANDOFF_FILE_ENV}`, out(noFile));
+  // Only the spawn a managed launch runs owns the file; a variable left in a shell reaches other commands.
+  writeFileSync(handoff, "{}", { mode: 0o600 });
+  const others = [["version"], ["--help"], ["status", "--json"]].map((args) => ({ args, run: cotal(args, { extraEnv: delegated.env }) }));
+  check("every other command leaves the handoff file and does not mention it",
+    existsSync(handoff) && others.every(({ args, run }) => (args[0] === "status" || run.status === 0) && !/handoff/i.test(out(run))), others.map(({ args, run }) => ({ args, status: run.status, out: out(run).slice(0, 300) })));
+  rmSync(handoff, { force: true });
 
   // ---- The bearer command a running seat execs -------------------------------------------------------
   const entry = resolveAuthProvider().agentBearerCommand;

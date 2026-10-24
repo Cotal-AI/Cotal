@@ -3121,9 +3121,12 @@ COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json \
     --expect-owner <owner> --expect-lifecycle-uid <uid>
 ```
 
-The `cotal` entry reads the file, deletes it and drops the variable before it parses flags, prints
-help or loads extensions, so every outcome leaves no file. The variable is read under any letter
-case; spellings that name different files are refused after every one of them was deleted. The
+`cotal spawn` reads the file, deletes it and drops the variable before it parses flags, prints
+help or loads extensions, so every outcome leaves no file. Every other command drops the variable
+without reading the file and leaves the file in place. The variable is read under any letter case;
+spellings that name different files are refused after every one of them was deleted. A file spawn
+cannot take, such as a missing one, is refused `USAGE_INVALID`, naming the variable and the path,
+with `unset COTAL_MANAGED_HANDOFF_FILE` as Next. The
 spawn then refuses a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
 from `--space`, `--expect-owner`, `--name` and `--expect-lifecycle-uid`, before any broker
 connection or exchange request. Every refusal on this path names the field and never a value from
