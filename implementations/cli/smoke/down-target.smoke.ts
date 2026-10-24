@@ -52,16 +52,19 @@ let setInstalledExtensionsEnabled!: typeof import("../src/ext-loader.js").setIns
 let stopLocalProcess!: typeof import("../src/lib/local-process-stop.js").stopLocalProcess;
 let webProcess!: typeof import("../../web/src/web.js").webProcess;
 let writeStackJournal!: typeof import("../src/lib/stack-journal.js").writeStackJournal;
+let acquireStackOperationLock!: typeof import("../src/lib/stack-journal.js").acquireStackOperationLock;
+let releaseMaintenanceLock!: typeof import("@cotal-ai/workspace").releaseMaintenanceLock;
+let runOperation!: typeof import("@cotal-ai/workspace").runOperation;
 try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
   ({ registry } = await import("@cotal-ai/core"));
-  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace"));
+  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, releaseMaintenanceLock, removeMesh, runOperation, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace"));
   ({ down } = await import("../src/commands/down.js"));
   ({ setInstalledExtensionsEnabled } = await import("../src/ext-loader.js"));
   ({ stopLocalProcess } = await import("../src/lib/local-process-stop.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
-  ({ writeStackJournal } = await import("../src/lib/stack-journal.js"));
+  ({ acquireStackOperationLock, writeStackJournal } = await import("../src/lib/stack-journal.js"));
 } catch (e) { cleanScratch(e); }
 
 let pass = 0;
@@ -853,6 +856,14 @@ try {
     const unknown = await bareDownIn(sa, { space: "nosuch", yes: true });
     check("a --space no local stack holds names this folder's stack and the step to stop it",
       unknown.error?.code === "CONFLICT" && Boolean(unknown.error.message?.includes("--space nosuch is not this folder's stack")) && Boolean(unknown.error.remedy?.includes("drop --space to stop sa here")), unknown);
+    // Another whole-stack operation holds sa's root: the refusal names sa, as up's refusal does.
+    const held = acquireStackOperationLock(sa);
+    const scope: { space?: string } = {};
+    let busy: Awaited<ReturnType<typeof bareDownIn>>;
+    try { busy = await runOperation(scope, () => bareDownIn(sa, { yes: true })); }
+    finally { releaseMaintenanceLock(held); }
+    check("down --yes on a root another operation holds refuses LIFECYCLE_BLOCKED, and its report is headed with this folder's stack",
+      busy.error?.code === "LIFECYCLE_BLOCKED" && scope.space === "sa", { busy, scope });
     const leftover = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-leftover-")));
     mkdirSync(join(leftover, ".cotal"), { recursive: true, mode: 0o700 });
     writeFileSync(join(leftover, ".cotal", "server-open.conf"), "# rendered by a start that failed\n", { mode: 0o600 });

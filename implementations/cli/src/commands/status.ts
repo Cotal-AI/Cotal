@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, preferencesFolderWarning, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone, assessMaintenanceClaim, preferencesPath, type MaintenanceClaim, type Preferences } from "@cotal-ai/workspace";
+import { accountInventory, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, preferencesFolderWarning, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone, assessMaintenanceClaim, preferencesPath, type MaintenanceClaim, type Preferences, workspaceErrorParts } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -874,16 +874,17 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       // A bare `up` in a folder whose records name no space starts the default space there, which
       // then holds the folder, so the step that brings a forgotten space back is to prepare it again.
       hints.push(e.namesNoSpace
-        ? `${message} - prepare one there with \`${cmd} space create <name> --root ${e.root}\`, or select a space with \`${cmd} use <name>\``
-        : `${message} - run \`${cmd} up\` there to start one, or select a space with \`${cmd} use <name>\``);
+        ? `prepare a space with \`${cmd} space create <name> --root ${e.root}\`, or select one with \`${cmd} use <name>\``
+        : `run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
       return { resolved: false, code: "unregistered-root", message };
     }
     if (!isWorkspaceTargetError(e)) throw e;
-    // The canonical renderer names the ACTUAL repair per code (`cotal meshes rm`, `--space
+    // The canonical parts name the ACTUAL repair per code (`cotal meshes rm`, `--space
     // <name>`, `cotal up --user-auth`, …). A fixed `up --detach` hint would be right for at most one
-    // of the codes and point the others at a command that does not fix them.
-    const message = renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "");
-    hints.push(message);
+    // of the codes and point the others at a command that does not fix them. The section states the
+    // selection, and Next gives its repair once.
+    const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
+    hints.push(remedy ?? message);
     return { resolved: false, code: e.code, message };
   }
   const target = selected.target;
@@ -1297,9 +1298,13 @@ function brokerOverview(r: StatusResult): Section {
   return { title: "Brokers", blocks };
 }
 
+/** The unresolved selections that mean nothing runs or is selected here, rather than a failure. */
+const NOTHING_SELECTED = new Set(["no-meshes", "not-started", "unregistered-root"]);
+
 function selectedOverview(r: StatusResult): Section | undefined {
   const s = r.selected;
-  if (!s.resolved) return { title: "Selected space", blocks: [{ kind: "lines", lines: [stateCell(s.message, "failed")] }] };
+  // Nothing running or selected is a state to start from, so it does not carry the mark of a live connection.
+  if (!s.resolved) return { title: "Selected space", blocks: [{ kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] }] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
   if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
   const responder = responderText(s.deliveryResponder, s.mode);

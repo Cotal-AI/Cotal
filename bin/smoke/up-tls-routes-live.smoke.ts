@@ -82,7 +82,7 @@ function sh(cmd: string, args: string[], cwd?: string): void {
 /** A throwaway CA plus a leaf it signs. The CA is what makes the admission leg a real verification
  *  rather than a disabled one: it is handed to `tls.connect` as `ca`, so `rejectUnauthorized` stays
  *  on and the chain and hostname are genuinely checked. */
-function mintPki(): { ca: string; cert: string; key: string; expiredCert: string; expiredKey: string; otherCert: string; otherKey: string } {
+function mintPki(): { ca: string; cert: string; key: string; ipCert: string; ipKey: string; expiredCert: string; expiredKey: string; otherCert: string; otherKey: string } {
   sh("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"),
     "-out", join(pki, "ca.pem"), "-days", "2", "-subj", "/CN=cotal-smoke-ca",
     "-addext", "basicConstraints=critical,CA:TRUE"]);
@@ -95,6 +95,14 @@ function mintPki(): { ca: string; cert: string; key: string; expiredCert: string
   sh("openssl", ["x509", "-req", "-in", join(pki, "good.csr"), "-CA", join(pki, "ca.pem"),
     "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "good.pem"),
     "-days", "2", "-extfile", join(pki, "good.ext")]);
+
+  // A leaf that names only the dialed IP, with no DNS:localhost for a client to fall back on.
+  sh("openssl", ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ip.key"),
+    "-out", join(pki, "ip.csr"), "-subj", "/CN=127.0.0.1"]);
+  writeFileSync(join(pki, "ip.ext"), "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\n");
+  sh("openssl", ["x509", "-req", "-in", join(pki, "ip.csr"), "-CA", join(pki, "ca.pem"),
+    "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "ip.pem"),
+    "-days", "2", "-extfile", join(pki, "ip.ext")]);
 
   // EXPIRED. OpenSSL 3.4+ accepts absolute `-not_before`/`-not_after`; 3.0.x does not (and 3.6+
   // rejects `-days -1`). Try absolute dates first, fall back to `-days -1` which yields an
@@ -118,6 +126,7 @@ function mintPki(): { ca: string; cert: string; key: string; expiredCert: string
   return {
     ca: join(pki, "ca.pem"),
     cert: join(pki, "good.pem"), key: join(pki, "good.key"),
+    ipCert: join(pki, "ip.pem"), ipKey: join(pki, "ip.key"),
     expiredCert: join(pki, "expired.pem"), expiredKey: join(pki, "expired.key"),
     otherCert: join(pki, "other.pem"), otherKey: join(pki, "other.key"),
   };
@@ -1009,6 +1018,35 @@ async function main(): Promise<void> {
     console.log("  ✓ S10: no-CA keeps tlsRequired registry; plaintext-on-port is unreachable not tls-trust");
   });
 
+  // ── T: A CERTIFICATE THAT NAMES ONLY THE DIALED IP. ────────────────────────────────────────────
+  //    The TCP transport upgrades with no server name for an IP, so Node checked every certificate
+  //    against "localhost": a valid leaf for 127.0.0.1 alone never started, and the start waited
+  //    out its readiness before a cause-free OPERATION_UNKNOWN.
+  await route("ip-only-certificate", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    rememberSandbox(home, port, cwd);
+    const args = ["up", "--detach", "--server", `tls://127.0.0.1:${port}`, "--tls-cert", pkiFiles.ipCert, "--tls-key", pkiFiles.ipKey];
+    const untrusted = cotal(args, home, cwd, { NODE_EXTRA_CA_CERTS: "" });
+    assert.equal(untrusted.status, 5, `an untrusted certificate must fail the start, exit 5:\n${untrusted.out}`);
+    assert.match(untrusted.out, /refused its TLS certificate in the handshake/, `the failure must name the handshake:\n${untrusted.out}`);
+    assert.match(untrusted.out, /NODE_EXTRA_CA_CERTS/, `the failure must name how to trust the certificate:\n${untrusted.out}`);
+    assert.equal(await serverInfo(port), undefined, "the refused start must not leave its listener");
+
+    const up = cotal(args, home, cwd);
+    assert.equal(up.status, 0, `a trusted certificate for the dialed IP must start the mesh:\n${up.out}`);
+    const send = cotal(["send", "-c", "general", "probe"], home, cwd);
+    assert.equal(send.status, 0, `a send must reach the mesh over TLS:\n${send.out}`);
+    cotal(["down"], home, cwd);
+
+    const other = sandbox();
+    rememberSandbox(other.home, port, other.cwd);
+    const nats = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`, "--tls-cert", pkiFiles.ipCert, "--tls-key", pkiFiles.ipKey], other.home, other.cwd);
+    assert.equal(nats.status, 5, `a nats:// address checks the certificate against localhost, exit 5:\n${nats.out}`);
+    assert.match(nats.out, new RegExp(`pass --server tls://127\\.0\\.0\\.1:${port}`), `the failure must name the tls:// address:\n${nats.out}`);
+    console.log("  ✓ ip-only certificate: untrusted names the handshake and NODE_EXTRA_CA_CERTS, trusted starts and sends, nats:// names tls://");
+  });
+
   // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
   console.log("  ── route outcomes ──");
   for (const o of outcomes) {
@@ -1019,11 +1057,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 16)
-    throw new Error(`HARNESS: expected 16 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 17)
+    throw new Error(`HARNESS: expected 17 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/16 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 16/16 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/17 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 17/17 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {
