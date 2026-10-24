@@ -166,7 +166,7 @@ try {
   check("team boot on the running stack refuses LIFECYCLE_BLOCKED and says the space is already up",
     second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no cotal down has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
   check("its Next offers team deploy with the same manifest, or cotal down",
-    blocked?.remedy === `add this manifest's channels and agents to the running stack with cotal team deploy ${join(s, "live.yaml")}, or stop it with cotal down before a team boot`, blocked);
+    blocked?.remedy === `add this manifest's channels and agents to the running stack with \`cotal team deploy ${join(s, "live.yaml")}\`, or stop it with \`cotal down\` before a team boot`, blocked);
 
   console.log("\nG. a fresh boot's records in words");
   check("space create prepares folder b", cotal(b, "space", "create", SPACE_B).status === 0);

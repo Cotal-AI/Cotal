@@ -139,14 +139,21 @@ check("below 20 columns nothing is wrapped", wrapWords("a b c d e f g h i j k l 
 // Broken at its spaces, "[--server" would still fit on the first line and leave "<url>]" alone.
 const kept = wrapWords(["[--a <x>]", "[--server <url>]"], 20);
 check("given words are kept whole", JSON.stringify(kept) === JSON.stringify(["[--a <x>]", "[--server <url>]"]), kept);
-// A command wraps as one word, so a copied line never holds part of one. With a long space name,
-// "cotal reset store" used to end one line and the name start the next.
+// A command in backticks wraps as one word, so a copied line never holds part of one. With a long
+// space name, "cotal reset store" used to end one line and the name start the next.
 const longName = `b541_${"x".repeat(56)}_la`;
-const named = wrapWords(`remove its stored streams with cotal reset store ${longName} --yes, or remove only the local record with cotal space forget ${longName}`, 78);
-check("a command a line names wraps as one word, from its cotal to its last argument",
-  JSON.stringify(named) === JSON.stringify(["remove its stored streams with", `cotal reset store ${longName} --yes,`, "or remove only the local record with", `cotal space forget ${longName}`]), named);
-const prose = wrapWords("run cotal down --yes then cotal up from the root folder again", 24);
-check("a command ends before a word of prose", JSON.stringify(prose) === JSON.stringify(["run cotal down --yes", "then cotal up from the", "root folder again"]), prose);
+const named = wrapWords(`remove its stored streams with \`cotal reset store ${longName} --yes\`, or remove only the local record with \`cotal space forget ${longName}\``, 78);
+check("a command a line names in backticks wraps as one word, to its closing backtick",
+  JSON.stringify(named) === JSON.stringify(["remove its stored streams with", `\`cotal reset store ${longName} --yes\`,`, "or remove only the local record with", `\`cotal space forget ${longName}\``]), named);
+// An argument is whatever word it is: a persona named "with", or a quoted path with "from" in it.
+const proseName = wrapWords("change it with `cotal persona edit with`, or remove it with `cotal persona remove with` first", 78);
+check("a command whose argument is a word of prose stays whole",
+  JSON.stringify(proseName) === JSON.stringify(["change it with `cotal persona edit with`, or remove it with", "`cotal persona remove with` first"]), proseName);
+const spacedPath = wrapWords("add them to the running stack with `cotal team deploy '/srv/proj/data from s3/team.yaml'`, or stop it", 56);
+check("a quoted path inside a command is never split",
+  JSON.stringify(spacedPath) === JSON.stringify(["add them to the running stack with", "`cotal team deploy '/srv/proj/data from s3/team.yaml'`,", "or stop it"]), spacedPath);
+const bare = wrapWords("run cotal down --yes then cotal up", 24);
+check("a command outside backticks wraps at its spaces", JSON.stringify(bare) === JSON.stringify(["run cotal down --yes", "then cotal up"]), bare);
 const ticked = wrapWords("the restore left it stopped; start it with `cotal up --space restored-space` in its folder", 30);
 check("a command in backticks wraps as one word", JSON.stringify(ticked) === JSON.stringify(["the restore left it stopped;", "start it with", "`cotal up --space restored-space`", "in its folder"]), ticked);
 const quoted = wrapWords("it refuses with `this would migrate the machine-wide store` and stops", 30);

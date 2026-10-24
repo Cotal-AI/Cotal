@@ -92,7 +92,7 @@ const conflict = cotal("persona", "create", "rev", "--json");
 check("persona create over an existing file is a CONFLICT in the prepared space", conflict.status === 2 && conflict.envelope?.error?.code === "CONFLICT" && conflict.envelope.target?.space === "opsp", shown(conflict));
 check("its remedy names the edit and the remove that resolve it", (conflict.envelope?.error?.remedy ?? "").includes("cotal persona edit rev") && (conflict.envelope?.error?.remedy ?? "").includes("cotal persona remove rev"), conflict.envelope?.error);
 const conflictPlain = cotal("persona", "create", "rev", "--plain");
-check("its plain report begins with Mesh: <space> and ends with a Next", conflictPlain.status === 2 && conflictPlain.first === "Mesh: opsp" && /\nNext\n\s+change it with cotal persona edit rev/.test(conflictPlain.stderr), shown(conflictPlain));
+check("its plain report begins with Mesh: <space> and ends with a Next", conflictPlain.status === 2 && conflictPlain.first === "Mesh: opsp" && /\nNext\n\s+change it with `cotal persona edit rev`/.test(conflictPlain.stderr), shown(conflictPlain));
 // A persona that does not exist: show and remove name where to see the ones that do.
 for (const args of [["show", "nosuch"], ["remove", "nosuch", "--yes"]]) {
   const missing = cotal("persona", ...args, "--json");

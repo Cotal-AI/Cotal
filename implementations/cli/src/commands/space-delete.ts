@@ -104,8 +104,8 @@ async function readSpaceDeletion(name: string) {
       let stopped: boolean;
       try { stopped = readStackJournal(prepared.root)?.journal.space === name; } catch { stopped = true; }
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `"${oneLine(name)}" is prepared and not running, so it has no live broker to delete from; no broker was contacted`, { target: { space: name, root: prepared.root }, remedy: stopped
-        ? `remove its stored streams with cotal reset store ${oneLine(name)} --yes, or remove only the local record with cotal space forget ${oneLine(name)}`
-        : `no stack has run for it in ${oneLine(prepared.root)}, so it has no stored streams; remove its local record with cotal space forget ${oneLine(name)}` });
+        ? `remove its stored streams with \`cotal reset store ${oneLine(name)} --yes\`, or remove only the local record with \`cotal space forget ${oneLine(name)}\``
+        : `no stack has run for it in ${oneLine(prepared.root)}, so it has no stored streams; remove its local record with \`cotal space forget ${oneLine(name)}\`` });
     }
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with cotal space" });
   }

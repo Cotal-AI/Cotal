@@ -6,15 +6,10 @@ export function displayWidth(text: string): number {
   return stringWidth(text);
 }
 
-/** Words of prose that end a command a line names, as `or` ends `cotal down --yes` in
- *  "run cotal down --yes or cotal up". */
-const PROSE = new Set(["a", "after", "again", "an", "and", "as", "before", "does", "first", "for", "from", "here", "if", "in", "instead", "is", "it", "its", "lists", "names", "not", "once", "or", "prints", "reads", "says", "shows", "so", "that", "the", "then", "there", "this", "to", "until", "when", "which", "while", "with", "without"]);
-
 /** `text` split at spaces into the words {@link wrapWords} breaks between. A command a sentence
- *  names after other words, in backticks or bare, from its `cotal` word to its last argument, is one
- *  word, so no line holds part of it. A bare command ends after a word with closing punctuation, or
- *  before a word of prose. A line that starts with a command, as a usage line or a code line does,
- *  wraps at its spaces. */
+ *  names in backticks after other words, from its `cotal` to its closing backtick, is one word, so
+ *  no line holds part of it, whatever words its arguments are. A line that starts with a command, as
+ *  a usage line or a code line does, wraps at its spaces. */
 function wrapUnits(text: string): string[] {
   const parts = text.split(" "), words: string[] = [];
   for (let i = 0; i < parts.length; i++) {
@@ -22,9 +17,6 @@ function wrapUnits(text: string): string[] {
     if (i > 0 && /^[("']*`(cotal|pnpm|npx)$/.test(parts[i]!)) {
       const close = parts.findIndex((part, j) => j > i && part.includes("`"));
       if (close > 0) end = close;
-    } else if (i > 0 && (/^\(?cotal$/.test(parts[i]!) || /^\(?(pnpm|npx)$/.test(parts[i]!) && parts[i + 1] === "cotal")) {
-      if (!parts[end]!.endsWith("cotal")) end++;
-      while (end + 1 < parts.length && !/[,;:.)]$/.test(parts[end]!) && parts[end + 1] && !PROSE.has(parts[end + 1]!) && !parts[end + 1]!.includes("`")) end++;
     }
     words.push(parts.slice(i, end + 1).join(" "));
     i = end;
