@@ -124,7 +124,12 @@ bounded decision record, not prose.
   A branch may not write to anything declared outside it; return the value and read it out of the
   scope's result.
 - **Time and randomness are tamed.** `now()` is the branch's run clock, the end of the last effect
-  it awaited; `random()` is a seeded stream derived per scope. Both replay identically.
+  it awaited; `random()` is a seeded stream derived per scope, each draw a number from 0 up to but
+  not including 1. `randomInt(n)` is `floor(random() * n)`, an integer from 0 to `n - 1` for a
+  positive integer `n`, and `pick(xs)` draws one element. They replay identically. A builtin ignores
+  arguments past the ones it takes, as JavaScript does, so there is no range form:
+  `randomInt(1, 1000)` is `randomInt(1)`, which is always 0, and `1 + randomInt(1000)` draws from 1
+  to 1000.
 - **Values freeze at the boundary.** What crossed into or out of an effect is what the journal
   recorded, and it cannot change afterwards; build a new value.
 - **The journal is the debugger.** Every entry carries its key, its inputs' hash, its outcome and
