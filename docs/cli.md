@@ -2922,6 +2922,7 @@ tight loop there can reach the broker's limit of 1000 consumers per stream.
 
 ```bash
 cotal whoami [--json | --plain] [--space <s>] [--server <url>]
+cotal whoami --creds <file> [--json | --plain]
 ```
 
 Reports the identity this CLI acts under in the selected space and what it may read, post and do.
@@ -2953,6 +2954,14 @@ say whether a broker at another address serves the space, and the remedy names `
 In a folder whose `.cotal/` names no space, as after `space forget`, the held default `main` is
 assumed. The report keeps `Mesh: main` and says under it that the default was assumed, and the JSON
 `target` is `{"root": <folder>, "assumed": "main"}`.
+`--creds <file>` reports what a credential file may do instead, with `kind: "credential"`: the space
+its permissions name, the profile it was minted with, its principal, the agent lifecycle its
+delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was
+issued and when it expires, the channels it may read and post to, and whether it may read every DM
+in the space, only its own, or none. It reads the file as every `--creds` file is read and decodes
+the claims without checking the signature or contacting the broker, which enforces them. When the
+permissions name no single space, `space`, `read`, `post` and `dms` are `null`, and the run is
+`partial` (exit 4) with `CREDENTIAL_SPACE_UNKNOWN`. `--creds` takes no `--space` or `--server`.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments, and escape terminal
 controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
@@ -3015,7 +3024,8 @@ This reads one protected native handle artifact or a bounded array of artifacts 
 issuer authority, parent links, holder currency and revocation remain not checked. No broker
 is contacted or credential issued. Signature bytes and original signed artifacts are never printed.
 A handle is a signed JSON grant, so a file that is not JSON, such as a NATS credential file, refuses
-`SCHEMA_INVALID` and says what it is.
+`SCHEMA_INVALID` and says what it is. For a credential file, the Next names
+[`cotal whoami --creds <file>`](#whoami), which reports what it may do.
 The human report shows at most 50 scope rows and names omissions; JSON retains public metadata.
 
 An explicit `--space` selects online inspection on a registered static-auth space whose root
@@ -5106,8 +5116,9 @@ The actor ledger is the single authorization source of a user-auth space: no row
 `auth revoke` do, and refuse the same way. With no space to resolve they refuse with a next step,
 such as `cotal up`, rather than assume one, and a root that does not hold the space's user-auth
 ledger refuses `list` rather than report no rows. On a static or open space the refusal says that
-actor grants apply only to a space started with `cotal up --user-auth`.
-A usage error refuses with exit 1 before any space or authority is read, and one refusal names every
+actor grants apply only to a space started with `cotal up --user-auth`, and `grant` and `revoke`
+refuse that way before asking for `--sub`, `--owner` or the ACL flags.
+Otherwise a usage error refuses with exit 1 before any authority is read, and one refusal names every
 missing input: `--sub` or `--owner`, and for `grant` the ACL flags left off without `--full`.
 `grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
 `grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
@@ -6507,13 +6518,14 @@ space a bare command resolves; with no space they point to `cotal space`. `auth 
 selected root's authoritative user-auth actor ledger; a root without its owner secret and pinned IdP
 refuses rather than reporting an empty authoritative list. A static or open space has no such ledger
 on any machine, so there `auth grants`, `auth grant` and `auth revoke` refuse with `UNSUPPORTED` and
-say that actor grants apply only to a space started with `cotal up --user-auth`. A space that cannot
-be resolved refuses with its next step, such as `cotal up` or `cotal space`.
+say that actor grants apply only to a space started with `cotal up --user-auth`. `auth grant` and
+`auth revoke` refuse there before they ask for a subject or the ACL flags. A space that cannot be
+resolved refuses with its next step, such as `cotal up` or `cotal space`.
 
 `auth grant <actor>` and `auth revoke <actor>` use the existing local operator authority path.
 Choose `--sub` or `--owner`, never both. Grant requires explicit scope/read/post lists unless
 `--full` deliberately selects the native wide defaults. These usage errors refuse with exit 1 before
-the space or its authority is read, and one refusal names every missing input. Re-grant/revoke
+the space's authority is read, and one refusal names every missing input. Re-grant/revoke
 retain predecessor lifecycle retirement and concurrent-row checks before replacing or deleting
 authority. A retirement that did not run, because the auth service is not running, refused the
 connection or answered that the retirement did not run, is refused (exit 2) with the actor row
