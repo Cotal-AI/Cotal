@@ -343,7 +343,11 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const store = failed.envelope?.result?.store;
   check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk", shown(failed));
   const plain = run(["status", ...server, "--plain"]);
-  check("the report shows a Store row and leads Next with down", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +Free space on the disk that holds \/store\/msgs\/1\.blk first/.test(plain.stdout), plain.stdout);
+  check("the report shows a Store row and leads Next with down, after freeing space on the disk for a full one", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +First free space on the disk that holds \S+; then .*cotal up starts the broker again with the history it kept/.test(plain.stdout), plain.stdout);
+  // The repair follows the cause: a permission is given back, not disk space freed.
+  appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: open /store/msgs/2.blk: permission denied\n`);
+  const denied = run(["status", ...server, "--plain"]);
+  check("for a permission denied, Next makes the store writable by this account again and says nothing of disk space", /cotal down +First make \S+ writable by this account again/.test(denied.stdout) && !/Free space|free space/.test(denied.stdout), denied.stdout);
 }
 
 // ── a nats-server on PATH below the broker floor ─────────────────────────────────────────────────

@@ -43,6 +43,7 @@ import {
   DELIVERY_PIDFILE,
   extensionsDir,
   findCotalRoot,
+  folderSpaceOverSelection,
   MIN_FILE_STORE,
   stoppedStack,
   hasUserAuthState,
@@ -104,7 +105,7 @@ import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_STALE_TEXT, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
-import { brokerStoreWrite, storeFull, type StoreWriteObservation } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -266,6 +267,9 @@ export interface StatusResult {
     currentPrepared: boolean;
     /** Whether that prepared space's controller stack ran and was stopped. */
     currentStopped: boolean;
+    /** This folder's space when a command without `--space` targets it here instead of `current`, as
+     *  `cotal space` gives it, else null. Older inputs may omit it. */
+    folder?: string | null;
     unreadable: { file: string; error: string }[];
     items: {
       space: string;
@@ -404,7 +408,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // the delivery process row, and a live pid means nothing without it.
   const responder = await readResponderAxis(selected);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
-  const meshes = await readMeshes(selected, Boolean(values.all), gaps);
+  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps);
   const target = await readSelected(selected, responder, folder, gaps, hints);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
@@ -430,7 +434,8 @@ export async function status(args: ParsedArgs): Promise<void> {
     presentation,
     {
       command: "status",
-      target: { space: selected.ok ? selected.target.space : null, scope: values.all ? "all" : "selected" },
+      // A prepared or stopped space is still the one this report is for, so it heads the report too.
+      target: { space: result.selected.space ?? null, scope: values.all ? "all" : "selected" },
       result,
       completeness: parts ? "partial" : "complete",
       warnings: [...gaps.warnings, ...invalidValues, ...survivors],
@@ -996,7 +1001,7 @@ function deliveryDetail(live: boolean, responder: DeliveryResponderState): strin
  *  probe would green-light a plaintext broker that has substituted for a TLS-required mesh — the
  *  FAIL1 attack — so a list that only asks "is anything listening" cannot report on the one property
  *  the record claims. */
-async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise<StatusResult["meshes"]> {
+async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps): Promise<StatusResult["meshes"]> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
   const unreadable: StatusResult["meshes"]["unreadable"] = [];
@@ -1020,6 +1025,9 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
     if (!isMeshRegistryError(e)) throw e;
     unread(e.file, e.message);
   }
+  // A record this needs that cannot be read is already named above.
+  let folder: string | null = null;
+  try { folder = folderSpaceOverSelection(cwd, current) ?? null; } catch (e) { if (!isMeshRegistryError(e)) throw e; }
   const chosen = selected.ok ? selected.target.space : undefined;
   const items = await Promise.all(
     entries.map(async (m) => ({
@@ -1058,6 +1066,7 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
     currentRecorded: current === null || entries.some((m) => m.space === current),
     currentPrepared,
     currentStopped,
+    folder,
     unreadable,
     items,
     catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),
@@ -1570,17 +1579,24 @@ function brokerOverview(r: StatusResult): Section {
   }
   for (const unreadable of r.meshes.unreadable) blocks.push({ kind: "lines", lines: [stateCell(`Registration could not be read: ${unreadable.error}`, "failed")] });
   for (const account of r.meshes.catalogs) if (account.error) blocks.push({ kind: "lines", lines: [stateCell(`Space catalog for ${account.idp}: ${account.error}`, "failed")] });
-  if (!r.meshes.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`Selected space '${r.meshes.current}' is ${r.meshes.currentStopped ? "stopped" : r.meshes.currentPrepared ? "prepared, not started" : "not recorded"}`, "waiting")] });
+  if (!r.meshes.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`Selected space '${r.meshes.current}' is ${r.meshes.currentStopped ? "stopped" : r.meshes.currentPrepared ? "prepared, not started" : "not recorded"}${folderTargeted(r) ? "; it applies outside this folder" : ""}`, "waiting")] });
   return { title: "Brokers", blocks };
 }
 
 /** The unresolved selections that mean nothing runs or is selected here, rather than a failure. */
 const NOTHING_SELECTED = new Set(["no-meshes", "not-started", "unregistered-root"]);
 
+/** Whether this report is for this folder's space, which a command without `--space` targets here
+ *  instead of the selection. */
+function folderTargeted(r: StatusResult): boolean {
+  return typeof r.meshes.folder === "string" && r.meshes.folder === r.selected.space;
+}
+
 function selectedOverview(r: StatusResult): Section | undefined {
   const s = r.selected;
+  const title = folderTargeted(r) ? "This folder's space" : "Selected space";
   // Nothing running or selected is a state to start from, so it does not carry the mark of a live connection.
-  if (!s.resolved) return { title: "Selected space", blocks: [
+  if (!s.resolved) return { title, blocks: [
     { kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] },
     ...(s.storeCap !== undefined ? [{ kind: "fields" as const, rows: [["Store cap", cell(`${s.storeCap} bytes recorded, below the ${MIN_FILE_STORE} the space's streams start on`, "failed")] as [string, Cell]] }] : []),
     ...(servedStack(r.folder, s) ? stackLines(r.folder) : []),
@@ -1629,7 +1645,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     });
   } else blocks.push({ kind: "lines", lines: [cell("Legacy process records not checked here · the selected space has a different or unresolved local process scope", "hint")] });
   if (r.folder.launches === false) blocks.push({ kind: "lines", lines: [cell(`This folder's personas are not used by the selected space. Spawn uses ${s.personas.root}.`, "waiting")] });
-  return { title: `Selected space  → ${s.space}`, blocks };
+  return { title: `${title}  → ${s.space}`, blocks };
 }
 
 /** The selected space and its root when this folder's controller stack serves it: a resolved one, or
@@ -1728,7 +1744,7 @@ function nextActions(r: StatusResult): Section {
     items.unshift({ command: `kill -KILL ${r.stackManager.pid}`, description: `The stack manager does not answer, so ${cmd} down cannot stop it. If it stays that way, end its process; ${cmd} down --yes then records it stopped` });
   // The broker keeps a store write error until it restarts, so messages sent meanwhile may be lost.
   if (r.store?.state === "write-failed")
-    items.unshift({ command: `${cmd} down`, description: `Free space on the disk that holds ${r.store.path ?? "the broker's store"} first; then ${cmd} up starts the broker again` });
+    items.unshift({ command: `${cmd} down`, description: `First ${storeWriteRepair(r.store, r.selected.resolved ? r.selected.root : undefined, r.selected.space ?? "")}; then ${cmd} up starts the broker again with the history it kept` });
   // The broker refuses every write while the store is over its cap, so sends store nothing.
   if (r.store?.state === "full" && r.selected.resolved)
     items.unshift({ command: `${cmd} history clear --space ${r.selected.space} --yes`, description: `Make room in the full store: this purges the space's channel history; --dms also purges its direct messages` });

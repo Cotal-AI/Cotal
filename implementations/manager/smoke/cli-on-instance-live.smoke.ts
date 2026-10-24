@@ -52,6 +52,11 @@
  * instance; those mutate, and a live-mutation cell is a different fixture. And this suite does not
  * grade the class-queue split itself (SPEC 13.2 behaviour, not this seam).
  *
+ * Cell 11 starts a manager with no agent application installed and grades the refusal a pinned and
+ * an unpinned `spawn --detach` meet there: the code, the manager and host it names, and its Next.
+ * Cell 12 adds a second manager whose catalog lacks a persona the first one has, and grades the
+ * refusal of a spawn pinned to it: the manager, host and file it names, and the manager its Next pins.
+ *
  * Mutation-proof target `cli-on-mint`: drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
  * "a pinned ps is answered by the instance it names" goes red.
@@ -61,7 +66,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, registry, type Connector, type LaunchOpts, type LaunchSpec,
@@ -210,6 +215,28 @@ try {
       JSON.stringify(census.result?.managers.map((m) => m.instanceId).sort()) === JSON.stringify([IID1, IID2].sort()) &&
       census.result?.managers.every((m) => m.state === "answered") === true && census.warnings.length === 0,
     { status: unpinnedJson.status, stdout: unpinnedJson.stdout.slice(-600) });
+
+  // An unpinned `models` goes to the one manager the class queue picks. It names the other as not
+  // asked, and an empty catalog list says the answering manager has no application installed.
+  check("rig: no connector is registered yet, so each manager lists no catalog", registry.all<Connector>("connector").length === 0, registry.all<Connector>("connector").map((c) => c.name));
+  const modelsUnpinned = await cotal(["models", "--json", "--space", space], root1);
+  mustHaveRun(modelsUnpinned, "the unpinned `models --json`");
+  let modelsEnv: { result?: { answeringManagerInstanceId?: string | null; notAskedManagerInstanceIds?: string[] | null; items?: unknown[] } } | undefined;
+  try { modelsEnv = JSON.parse(modelsUnpinned.stdout) as typeof modelsEnv; } catch { modelsEnv = undefined; }
+  const answering = modelsEnv?.result?.answeringManagerInstanceId;
+  check("an unpinned models --json names the live manager it did not ask",
+    modelsUnpinned.status === 0 && (answering === IID1 || answering === IID2) && modelsEnv?.result?.items?.length === 0 &&
+      JSON.stringify(modelsEnv.result.notAskedManagerInstanceIds) === JSON.stringify([answering === IID1 ? IID2 : IID1]),
+    { status: modelsUnpinned.status, stdout: modelsUnpinned.stdout.slice(-600) });
+  const modelsHuman = await cotal(["models", "--space", space], root1);
+  mustHaveRun(modelsHuman, "the unpinned `models`");
+  const modelsOut = strip(modelsHuman.out);
+  const asked = /Answering manager: +(\S+)/.exec(modelsOut)?.[1];
+  const notAsked = asked === IID1 ? IID2 : IID1;
+  check("...and its report says why no catalog came back, names the other manager and asks it with --on",
+    modelsHuman.status === 0 && modelsOut.includes("No model catalogs were returned: the answering manager has no agent application installed.") &&
+      (asked === IID1 || asked === IID2) && new RegExp(`Not asked: +${notAsked}$`, "m").test(modelsOut) && modelsOut.includes(`cotal models --space ${space} --on ${notAsked}`),
+    modelsOut.slice(-900));
 
   // ---- 2. THE FLAG IS ACCEPTED AND VALIDATED --------------------------------------------------
   // Cheap, but it separates "the flag is gone" from "the flag is dead", which are different bugs
@@ -593,6 +620,68 @@ try {
   check("the report names the load failure under that connector, not a missing catalog",
     installedHuman.status === 4 && /models-unloadable[\s\S]*not installed at/.test(strip(installedHuman.out)) && !strip(installedHuman.out).includes("no model catalog exposed"),
     { status: installedHuman.status, out: strip(installedHuman.out).slice(-600) });
+
+  // A manager with no agent application installed takes no unpinned launch and refuses a pinned one.
+  // Both refusals carry the code a spawn in this terminal gives and name the manager and its host,
+  // because the application is added where that manager runs.
+  console.log("\n11. a manager with no agent application: a pinned and an unpinned spawn name it and its host");
+  await m1.stop({ withAgents: true });
+  saveExtensionsManifest({ extensions: [] });
+  const root5 = mkRoot("ws5");
+  writeFileSync(join(root5, ".cotal", "agents", "bare.md"), "---\nname: bare\nrole: worker\n---\n");
+  m1 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root5, installedExtensions: true });
+  await m1.start();
+  const IID5 = (m1 as unknown as MgrPriv).managerInstanceId;
+  const onHost = `manager ${IID5} on host ${hostname()}`;
+  const addThere = "add it where that manager runs, such as `cotal ext add @cotal-ai/connector-claude-code`, then restart that manager";
+  const pinnedApp = await cotal(["spawn", "bare", "--detach", "--on", IID5, "--harness", "claude", "--space", space], root1);
+  mustHaveRun(pinnedApp, "a pinned spawn with no agent application");
+  const pinnedAppOut = strip(pinnedApp.out);
+  check("a pinned spawn the manager has no connector for is DEPENDENCY_UNAVAILABLE, exit 2, naming the manager, its host and the restart",
+    pinnedApp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(pinnedAppOut) && pinnedAppOut.includes(`no connector "claude" is installed on ${onHost}; nothing was launched`) &&
+      pinnedAppOut.includes(addThere),
+    { status: pinnedApp.status, out: pinnedAppOut.slice(-900) });
+  const pinnedAppJson = await cotal(["spawn", "bare", "--detach", "--on", IID5, "--harness", "claude", "--space", space, "--json"], root1);
+  mustHaveRun(pinnedAppJson, "a pinned spawn --json with no agent application");
+  let pinnedAppEnv: { error?: { code?: string; message?: string; remedy?: string } } | undefined;
+  try { pinnedAppEnv = JSON.parse(pinnedAppJson.stdout); } catch { pinnedAppEnv = undefined; }
+  check("...and its --json refusal carries the same code, manager and Next",
+    pinnedAppJson.status === 2 && pinnedAppEnv?.error?.code === "DEPENDENCY_UNAVAILABLE" && pinnedAppEnv.error.message?.includes(onHost) === true && pinnedAppEnv.error.remedy?.startsWith(addThere) === true,
+    { status: pinnedAppJson.status, stdout: pinnedAppJson.stdout.slice(-900) });
+  const unpinnedApp = await cotal(["spawn", "bare", "--detach", "--harness", "claude", "--space", space], root1);
+  mustHaveRun(unpinnedApp, "an unpinned spawn with no agent application");
+  const unpinnedAppOut = strip(unpinnedApp.out);
+  check("an unpinned spawn no manager takes is DEPENDENCY_UNAVAILABLE, exit 2, naming the manager, its host and the restart",
+    unpinnedApp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(unpinnedAppOut) &&
+      unpinnedAppOut.includes(`no manager of yours takes unpinned launches: none has an agent application installed (${onHost}); nothing was launched`) &&
+      unpinnedAppOut.includes("add one where that manager runs, such as `cotal ext add @cotal-ai/connector-claude-code`, then restart that manager"),
+    { status: unpinnedApp.status, out: unpinnedAppOut.slice(-900) });
+
+  // A second manager whose catalog lacks the persona refuses a spawn pinned to it. The refusal names
+  // that manager, its host and the file to create there, and its Next pins the spawn to the live
+  // manager whose catalog has the persona. A persona no manager has gets the create step alone.
+  console.log("\n12. a pinned spawn of a persona the manager lacks names it, its host and file, and a manager that has it");
+  const root6 = mkRoot("ws6");
+  m2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root6, installedExtensions: true });
+  await m2.start();
+  const IID6 = (m2 as unknown as MgrPriv).managerInstanceId;
+  const lacking = await cotal(["spawn", "bare", "--detach", "--on", IID6, "--harness", "claude", "--space", space, "--json"], root1);
+  mustHaveRun(lacking, "a pinned spawn of a persona that manager lacks");
+  let lackingEnv: { error?: { code?: string; message?: string; remedy?: string } } | undefined;
+  try { lackingEnv = JSON.parse(lacking.stdout); } catch { lackingEnv = undefined; }
+  check("it names the manager, its host and the catalog file to create there, and not --config or a local personas list",
+    lacking.status === 2 && lackingEnv?.error?.message === `no persona "bare" in the catalog of manager ${IID6} on host ${hostname()}: ${join(root6, ".cotal", "agents", "bare.md")} not found; create it there`,
+    { status: lacking.status, stdout: lacking.stdout.slice(-900) });
+  check("...and its Next runs the spawn again on the live manager whose catalog has it",
+    lackingEnv?.error?.remedy?.startsWith('nothing was launched; this manager of yours has persona "bare": ') === true && lackingEnv.error.remedy.includes(`--on ${IID5}`) && !lackingEnv.error.remedy.includes(IID6),
+    { remedy: lackingEnv?.error?.remedy });
+  const nowhere = await cotal(["spawn", "nowhere", "--detach", "--on", IID6, "--harness", "claude", "--space", space], root1);
+  mustHaveRun(nowhere, "a pinned spawn of a persona no manager has");
+  const nowhereOut = strip(nowhere.out);
+  check("a persona no live manager has is refused with the create step on that manager's host",
+    nowhere.status === 2 && nowhereOut.includes(`no persona "nowhere" in the catalog of manager ${IID6} on host ${hostname()}`) &&
+      nowhereOut.includes("nothing was launched; create that file on the manager's host, then run the spawn again") && !nowhereOut.includes("--config"),
+    { status: nowhere.status, out: nowhereOut.slice(-900) });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {

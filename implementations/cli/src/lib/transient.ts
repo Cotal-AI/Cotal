@@ -1,8 +1,9 @@
-import { CotalEndpoint, channelBucket, credsClaims, isPublishPermissionDenied, presenceBucket, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, channelBucket, credsClaims, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches } from "@cotal-ai/core";
 import { CommandFailure, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
-import { streamsAbsent } from "./space-streams.js";
+import { brokerStoreWrite, storeWriteRepair } from "./broker-store-health.js";
+import { chatStreamGone, streamsAbsent } from "./space-streams.js";
 
 /**
  * A one-shot, write-capable connection for the headless commands that touch the live mesh
@@ -39,9 +40,45 @@ export function batchedRead(conn: Connection, bucket: string): boolean {
   return (pub?.allow ?? []).some((row) => subjectMatches(row, subject)) && !(pub?.deny ?? []).some((row) => subjectMatches(row, subject));
 }
 
-/** A JetStream request that no responder answered: the stream it names is not on the broker. */
+/** A JetStream request that no responder answered: the stream it names is not on the broker, or the
+ *  broker's JetStream is stopped. */
 function noResponders(e: unknown): boolean {
   return e instanceof Error && e.name === "JetStreamStatusError" && String((e as { code?: unknown }).code) === "503";
+}
+
+/** Whether the chat stream of `conn`'s space is gone, asked over a connection of its own that reads
+ *  nothing else: an endpoint whose start failed keeps no connection to ask on. The stream's info is
+ *  an observer's read, which a sender may not ask, so this machine mints an observer from the
+ *  space's trust material as `status` does; without it the connection's own credential asks. A
+ *  connection that cannot start or ask answers no. */
+async function chatStreamGoneAt(conn: Connection): Promise<boolean> {
+  let probe: CotalEndpoint | undefined;
+  try {
+    const id = newIdentity();
+    const auth = conn.auth ? { creds: await mintCreds(conn.auth, id, "observer"), ...(conn.tls ? { tls: true } : {}) } : endpointAuth(conn);
+    probe = new CotalEndpoint({ space: conn.space, servers: conn.server, ...auth, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { ...(conn.auth ? { id: id.id } : {}), name: "stream-probe", kind: "endpoint" } });
+    probe.on("error", () => {});
+    probe.on("warning", () => {});
+    await probe.start();
+    return await chatStreamGone(probe);
+  } catch {
+    return false;
+  } finally {
+    await probe?.stop().catch(() => {});
+  }
+}
+
+/** The refusal for a space whose broker answered no read of it while its chat stream was not found
+ *  missing. nats-server stops JetStream after a store write it could not make and keeps the streams in
+ *  its store, so the write failure this machine's broker logged names the cause and the repair. */
+function jetStreamUnanswered(conn: Connection): CommandFailure {
+  const failed = conn.root ? brokerStoreWrite(conn.root, conn.space) : undefined;
+  if (failed?.state === "write-failed")
+    return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker of ${conn.space} has answered no JetStream request since it logged a store write failure at ${failed.at}: ${failed.cause}${failed.path ? ` (${failed.path})` : ""}; nats-server stops JetStream after such a write and keeps the streams and their history in its store`, {
+      target: { space: conn.space },
+      remedy: `${storeWriteRepair(failed, conn.root, conn.space)}, then restart the broker with cotal down --yes and cotal up in ${conn.root}, which keeps the history`,
+    });
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker of ${conn.space} answered no JetStream read, and the space's streams were not found missing`, { target: { space: conn.space }, remedy: "run cotal status, which names a store write failure its broker logged on this machine" });
 }
 
 /** Open a transient endpoint: it holds the roster and channel registry on return but never registers
@@ -88,8 +125,10 @@ export async function openTransient(
         target: { space: conn.space },
         remedy: values.creds === undefined ? `use a credential that may read both in ${conn.space}` : `run it without --creds to use the credential this machine records for ${conn.space}, or use one that may read both`,
       });
-    // A one-time read is a Direct Get, which nothing answers when the bucket's stream is gone.
-    if (readOnce && !opts.watch && noResponders(e)) throw streamsAbsent(conn);
+    // A one-time read is a Direct Get, which nothing answers when the bucket's stream is gone, and
+    // nothing answers either while the broker's JetStream is stopped, as nats-server stops it after a
+    // store write it could not make. Only the chat stream's own not-found says the streams are gone.
+    if (readOnce && !opts.watch && noResponders(e)) throw await chatStreamGoneAt(conn) ? streamsAbsent(conn) : jetStreamUnanswered(conn);
     throw e;
   }
   return { ep, space: conn.space, connection: conn };

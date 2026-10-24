@@ -56,7 +56,7 @@
     {
       "name": "manager resume skips revocation",
       "file": "implementations/manager/src/run-hosting.ts",
-      "find": "        if (admission.revoked !== undefined)\n          throw new EpEnvelopeError(\"permission-denied\", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed (SPEC 14.8)`);",
+      "find": "        if (admission.revoked !== undefined)\n          throw new EpEnvelopeError(\"permission-denied\", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed`);",
       "replace": "        if (false)\n          throw new Error(\"disabled resume revocation guard\");",
       "expectRed": "U6-6 manager resume of a revoked run is refused",
       "cell": "U6-6 manager resume of a revoked run is refused",

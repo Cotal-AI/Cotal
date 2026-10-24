@@ -8,7 +8,9 @@
  * first: one that does not validate refuses `SCHEMA_INVALID` with its problem, and a valid one refuses
  * `UNSUPPORTED`, naming only `--json` to omit. In a folder whose records name no
  * space, as after `space forget`, `whoami` and `spawn --dry-run` keep exit 0 under the held default's
- * heading, say it was assumed, and name the folder and that space in their target.
+ * heading, say it was assumed, and name the folder and that space in their target. In a folder
+ * prepared for a space other than the selection, `status`, bare `cotal` and `help` lead with that
+ * folder's space, and `history clear` names the space it targets.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty, Windows under ConPTY.
  *
@@ -182,6 +184,34 @@ const QUESTION = "Which one?";
       /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
       envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === "delta" && usedText.stdout.includes(`commands in this folder target its space "delta"; the selection applies outside it`),
     { listed: shown(listed), listedText: shown(listedText), shownSpace: shown(shownSpace), used: shown(used), usedText: shown(usedText) });
+  // status, the entry screen and history clear's wording follow the same rule there.
+  const statusHere = run(["status", "--json"], delta), statusHereText = run(["status"], delta);
+  check("in that folder status reports delta, prepared, under its heading and as this folder's space",
+    envelope(statusHere)?.target?.space === "delta" && envelope(statusHere)?.result?.meshes?.folder === "delta" && envelope(statusHere)?.result?.meshes?.current === "alpha" &&
+      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(statusHereText.stdout) &&
+      /^This folder's space\n {2}○ "delta" is prepared but not started$/m.test(statusHereText.stdout) && !/^Selected space/m.test(statusHereText.stdout),
+    { json: envelope(statusHere)?.target, text: statusHereText.stdout.slice(0, 1600) });
+  // A selection that is only prepared itself is named apart, as the space that applies outside the folder.
+  const epsilon = join(home, "epsilon");
+  mkdirSync(join(epsilon, ".cotal"), { recursive: true });
+  recordPreparedSpace({ space: "epsilon", root: epsilon, ts: new Date(0).toISOString() });
+  setCurrent("epsilon");
+  const preparedSelection = run(["status"], delta);
+  check("with a prepared selection, status names it as applying outside this folder, and delta as this folder's space",
+    /^ {2}Selected space 'epsilon' is prepared, not started; it applies outside this folder$/m.test(preparedSelection.stdout) && /^This folder's space\n {2}○ "delta" is prepared but not started$/m.test(preparedSelection.stdout),
+    preparedSelection.stdout.slice(0, 1600));
+  setCurrent("alpha");
+  removePreparedSpace("epsilon");
+  const entry = run([], delta), entryHelp = run(["help"], delta), entryAway = run([]);
+  check("in that folder bare cotal and help lead with delta and its own up, and say the selection applies outside it",
+    [entry, entryHelp].every((r) => r.status === 0 && r.stdout.startsWith("delta · prepared here · ") && r.stdout.includes(`this folder's space; the selected space "alpha" applies outside it`) && /^Start here\n {2}cotal up +Start this space$/m.test(r.stdout) && !/^alpha · /m.test(r.stdout)),
+    [entry, entryHelp].map(shown));
+  check("control: away from any project bare cotal leads with the selection, with no note",
+    entryAway.status === 0 && entryAway.stdout.startsWith("alpha · ") && !entryAway.stdout.includes("this folder's space"), shown(entryAway));
+  const clearChannel = run(["history", "clear", "general"], delta);
+  check("history clear with a channel refuses naming the space it targets, not the selected space",
+    clearChannel.status === 1 && clearChannel.stderr.includes("history clear takes no channel; it clears all retained channel history in the space it targets") && !/in the selected space/.test(clearChannel.stderr),
+    shown(clearChannel));
   const listedAway = run(["space", "--json"]), usedAway = run(["use", "--json"]);
   check("control: from a folder with no project space and use name no folder space",
     envelope(listedAway)?.result?.folder === null && envelope(usedAway)?.result?.folder === null, { listed: shown(listedAway), used: shown(usedAway) });

@@ -50,6 +50,12 @@
  * 12. Reset targets with nothing to reset. `reset store` and `reset space` of a name no space has
  *     refuse TARGET_NOT_FOUND saying so, naming `cotal space` first. Of a prepared space no stack
  *     has run for, they refuse TARGET_NOT_FOUND naming its root, `cotal up` and `cotal space forget`.
+ * 13. A store write the broker could not make. With the store made read-only, a send that needs a
+ *     new block file fails and nats-server stops JetStream. That send exits 3 naming the logged
+ *     permission failure, and later sends refuse DEPENDENCY_UNAVAILABLE naming it, with no claim that
+ *     the space was deleted and no step that creates its streams again empty. Each Next makes the
+ *     store writable again, and `status` leads with the same step. With the store writable, `down
+ *     --yes` and `up` bring back every message stored before the failure.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -90,7 +96,8 @@ type Envelope = {
 };
 type Run = { status: number | null; stdout: string; stderr: string; env?: Envelope };
 const cli = (cwd: string, ...args: string[]): Run => {
-  const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
+  // Room for a history that holds messages near the broker's payload limit.
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000, maxBuffer: 64 * 1024 * 1024 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
@@ -552,6 +559,58 @@ try {
         unstarted.status === 2 && unstarted.env?.error?.code === "TARGET_NOT_FOUND" && unstarted.env.error.message === `reset ${command} found nothing to reset: no stack has run for "${space}" in ${root}, so no broker wrote a store; nothing was removed`
           && unstarted.env.error.remedy === `start it with cotal up from ${root}, or remove its local record with cotal space forget ${space}`, shown(unstarted));
     }
+  }
+
+  // 13. A store write the broker could not make stops JetStream; it deletes nothing.
+  if (process.platform !== "win32") {
+    const space = "tear13";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a stack whose store goes read-only", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    check("up starts it", started.status === 0, shown(started));
+    const texts = ["eins", "zwei", "drei", "vier", "fünf", "sechs"];
+    check("six messages are stored", texts.every((text) => cli(root, "send", "-c", "general", text, "--json").status === 0));
+    const store = join(root, ".cotal", "nats");
+    const big = join(root, "big.txt");
+    writeFileSync(big, "B".repeat(900_000));
+    spawnSync("chmod", ["-R", "a-w", join(store, "jetstream")]);
+    try {
+      // The chat stream's first block holds about 8 MB, so a later message needs a file the broker cannot create.
+      let failed: Run | undefined, stored = 0;
+      for (let i = 0; i < 14 && !failed; i++) {
+        const sent = cli(root, "send", "-c", "general", "--file", big, "--json");
+        if (sent.status === 0) stored++;
+        else failed = sent;
+      }
+      check("the send whose block the broker cannot create exits 3 naming the logged permission failure, and its Next makes the store writable, not free disk",
+        failed?.status === 3 && failed.env?.error?.code === "OPERATION_UNKNOWN" && /broker logged a store write failure at .*: permission denied/.test(failed.env.error.message) &&
+          failed.env.error.remedy === `make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with cotal down and cotal up before sending again`, failed && shown(failed));
+      const after = cli(root, "send", "-c", "general", "after the failure", "--json");
+      const message = after.env?.error?.message ?? "";
+      check("a later send refuses DEPENDENCY_UNAVAILABLE naming the write failure, and does not say the space was deleted",
+        after.status === 2 && after.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && message.startsWith(`the broker of ${space} has answered no JetStream request since it logged a store write failure at `) && message.includes(": permission denied") && !/deleted/.test(message), shown(after));
+      check("its Next makes the store writable and restarts the broker, which keeps the history, and creates nothing again empty",
+        after.env?.error?.remedy === `make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with cotal down --yes and cotal up in ${root}, which keeps the history` && !/empty/.test(after.env.error.remedy), shown(after));
+      const status = cli(root, "status", "--json");
+      const selected = status.env?.result?.selected as { spaceStreams?: { state: string } } | undefined;
+      check("status names the write failure and does not report the streams absent", (status.env?.result?.store as { state?: string; cause?: string } | undefined)?.state === "write-failed" && selected?.spaceStreams?.state !== "absent", shown(status));
+      const statusText = cli(root, "status");
+      check("its Next leads with down, after making the store writable again",
+        statusText.stdout.split("\n").some((line) => /cotal down +First make /.test(line) && line.includes(`${store} writable by this account again`)) && !statusText.stdout.includes("deleted under"), shown(statusText));
+      spawnSync("chmod", ["-R", "u+w", join(store, "jetstream")]);
+      const stopped = cli(root, "down", "--yes", "--json");
+      const restarted = cli(root, "up", "--json");
+      const kept = cli(root, "history", "general", "--limit", "100", "--json");
+      const held = ((kept.env?.result?.items ?? []) as { text?: string }[]).map((m) => m.text);
+      check("with the store writable, down --yes and up bring back every message stored before the failure",
+        stopped.status === 0 && restarted.status === 0 && kept.status === 0 && texts.every((text) => held.includes(text)) && held.length === texts.length + stored, { down: shown(stopped), up: shown(restarted), held: held.map((text) => text?.slice(0, 12)), stored });
+    } finally {
+      spawnSync("chmod", ["-R", "u+w", join(store, "jetstream")]);
+    }
+    const last = cli(root, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");

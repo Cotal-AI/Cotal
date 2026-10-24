@@ -22,6 +22,8 @@ export function printRunList(space: string | undefined, items: readonly RunListR
     { title: "Workflow runs", blocks: [
       { kind: "fields", rows: [["Space", space ?? "not reported"], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : [])] },
       result.items.length ? { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "endpoint", label: "Endpoint" }, { key: "state", label: "Recorded state" }, { key: "journal", label: "Journal" }], rows: result.items.map((row) => ({ run: row.runId, endpoint: row.endpoint, state: row.revoked ? { text: "admission revoked", tone: "failed" } : row.revocationUnreadable !== undefined ? { text: "revocation not checked", tone: "waiting" } : recordedState(row.state, row.failure), journal: row.journalHigh === undefined ? "not reported" : String(row.journalHigh) })) } : { kind: "lines", lines: ["No workflow runs in this authorized record view."] },
+      // The state column says a run is revoked; who revoked it and why go under the table.
+      ...(result.items.some((row) => row.revoked) ? [{ kind: "lines" as const, lines: result.items.flatMap((row) => row.revoked ? [`${row.runId}: revoked by ${oneLine(row.revoked.by)} (${oneLine(row.revoked.reason)})`] : []) }] : []),
       { kind: "lines", lines: [{ text: "Recorded workflow state, not a live agent-progress report. Revoking admission is not task cancellation.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show <run-id>${managerPin(values)}`, description: "Read state, open requests and journal steps" }, { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" }] }] },

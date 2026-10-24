@@ -3,6 +3,7 @@ import { JetStreamApiError } from "@nats-io/jetstream";
 import { CotalEndpoint, mintCreds, newIdentity } from "@cotal-ai/core";
 import { CommandFailure, loadMeshes, localProcessPath, type MeshTarget } from "@cotal-ai/workspace";
 import { pidfileState } from "../commands/down.js";
+import { shellWord } from "./endpoint-errors.js";
 import { readOwnedLogTail, readServiceLog } from "./service-process.js";
 import { serviceInstances, instanceProjection } from "./service-instances.js";
 import { readStackJournal, STACK_DEFINITION } from "./stack-journal.js";
@@ -73,6 +74,19 @@ export function storeFull(root: string, space: string, used: number): Extract<St
   let store: ReturnType<typeof recordedStore>;
   try { store = recordedStore(root, space); } catch { return undefined; }
   return store.cap !== undefined && used > store.cap ? { state: "full", used, cap: store.cap, path: store.path } : undefined;
+}
+
+/** The step that repairs the store write `failed` names, by its cause: a permission this account
+ *  lost, a read-only file system, a full disk, or else the cause as the broker logged it. It names the
+ *  store this machine records for `space` at `root`, else the file the write failed on. */
+export function storeWriteRepair(failed: Extract<StoreWriteObservation, { state: "write-failed" }>, root: string | undefined, space: string): string {
+  let store: string | undefined;
+  try { store = root ? recordedStore(root, space).path : undefined; } catch { store = undefined; }
+  const where = store ?? failed.path ?? "the broker's store";
+  if (/permission denied|operation not permitted/i.test(failed.cause)) return `make ${where} writable by this account again${store ? `, as chmod -R u+w ${shellWord(store)} does` : ""}`;
+  if (/read-only file system/i.test(failed.cause)) return `make the file system that holds ${where} writable again`;
+  if (/no space left|quota exceeded/i.test(failed.cause)) return `free space on the disk that holds ${where}`;
+  return `fix what failed the write to ${where}: ${failed.cause}`;
 }
 
 /** The newest `Critical write error` the running broker logged since it started. */

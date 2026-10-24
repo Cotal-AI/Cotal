@@ -5994,7 +5994,7 @@ export class Manager {
     } else {
       configPath = agentFilePath(this.workspaceRoot, ref);
       if (!existsSync(configPath))
-        return { error: `no persona "${ref}" - ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
+        return { error: `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
     }
 
     // Load the persona ONCE, here, ahead of the connector choice. The file's `agent:` pin feeds the
