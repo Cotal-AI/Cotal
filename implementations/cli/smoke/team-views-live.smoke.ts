@@ -11,6 +11,8 @@
  *     saying a reapply refuses.
  *  D. a manifest `defaults:` block: `team check` and `team boot --dry-run` show it, and mark each
  *     channel field that inherits it `(default)` instead of "not declared".
+ *  E. rows that do not apply are left out: no "Durable delivery on open" row for a static space,
+ *     and no empty agent table; the deploy preview's TLS row reads as `team show` reads it.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -51,12 +53,13 @@ const answered = (run: ReturnType<typeof cotal>) => { const e = envelope(run.std
 /** A text read that completed: exit 0, with its caveat in the report on stdout and not on stderr. */
 const reported = (run: ReturnType<typeof cotal>, caveat: string) => run.status === 0 && run.stdout.includes(caveat) && !run.stderr.includes(caveat);
 
-const manifest = (name: string, space: string, channels: Record<string, string>, head = "") => {
-  writeFileSync(join(s, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${SERVER}\n${head}channels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
+const manifest = (name: string, space: string, channels: Record<string, string>, { head = "", open = false } = {}) => {
+  writeFileSync(join(s, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${SERVER}\n${open ? "  auth: false\n" : ""}${head}channels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
 };
 manifest("live.yaml", SPACE, { live1: "    deliveryClass: live\n", live2: "    deliveryClass: live\n" });
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
-manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n");
+manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
+manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
 
 let up = false;
 try {
@@ -125,6 +128,17 @@ try {
   check("team boot --dry-run shows them the same way", /Manifest defaults:\s+delivery live, replay off, window 2h/.test(bootDefaults.stdout) && inheritedRow.test(bootDefaults.stdout), bootDefaults.stdout.slice(-1500));
   const noDefaults = cotal(s, "team", "check", "live.yaml");
   check("a manifest with no defaults block says none are declared", /Manifest defaults:\s+none declared/.test(noDefaults.stdout) && /#live1\s+live\s+not declared\s+not declared/.test(noDefaults.stdout), noDefaults.stdout);
+
+  console.log("\nE. rows that do not apply");
+  const staticCheck = cotal(s, "team", "check", "live.yaml");
+  check("team check of a static manifest has no durable-on-open row", staticCheck.status === 0 && !staticCheck.stdout.includes("Durable delivery on open"), staticCheck.stdout);
+  check("team check with no agents says so instead of printing an empty agent table", staticCheck.stdout.includes("No agents declared.") && !/Agent\s+Application\s+Role\s+Declared model/.test(staticCheck.stdout), staticCheck.stdout);
+  const openCheck = cotal(s, "team", "check", "open.yaml");
+  check("team check of an open manifest keeps the durable-on-open row", /Durable delivery on open:\s+not a contradiction/.test(openCheck.stdout), openCheck.stdout);
+  const staticDeploy = cotal(s, "team", "deploy", "live.yaml", "--dry-run");
+  check("the deploy preview on a static space has no durable-on-open row, and its TLS row reads not required",
+    !staticDeploy.stdout.includes("Durable delivery on open") && /\n\s+TLS:\s+not required\n/.test(staticDeploy.stdout) && !staticDeploy.stdout.includes("recorded required"), staticDeploy.stdout.slice(0, 1200));
+  check("the boot preview of a static manifest has no durable-on-open row", !cotal(s, "team", "boot", "live.yaml", "--dry-run").stdout.includes("Durable delivery on open"));
 } finally {
   if (up) {
     const down = cotal(s, "down", "--yes");
