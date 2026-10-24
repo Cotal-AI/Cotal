@@ -5183,7 +5183,9 @@ credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `
 static-auth space the follow mints its own credential from the space's trust, so when the broker
 rejects it the Next says to run the follow again, which mints one from the current trust. With
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
-The first record is a `snapshot` holding the window, then one `event` per message. An `error`
+The first record is a `snapshot` holding the window, then one `event` per message. An event has
+no `seq`, because the live feed carries no stream sequence; the snapshot's items keep theirs. To
+read on from a follow, give `--since` the last event's `ts`. An `error`
 record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
 shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
