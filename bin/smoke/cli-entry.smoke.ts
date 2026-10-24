@@ -489,6 +489,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
   }
+  // A name that differs from an existing persona's only in case is refused, and nothing is written.
+  for (const argv of [["persona", "create", "X", "--prompt", "body", "--subscribe", ""], ["personas", "new", "X", "--prompt", "body", "--subscribe", "", "--force"]]) {
+    let agents = "";
+    const r = cotal(argv, (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
+    check(`${argv.slice(0, 3).join(" ")} refuses a name that differs from x only in case`,
+      r.status === 2 && r.stderr.includes("persona 'X' differs from the existing 'x' only in case") && r.stderr.includes("CONFLICT") && readdirSync(agents).join() === "x.md", { ...shown(r), files: readdirSync(agents) });
+  }
   // An empty --model is refused by name.
   for (const [argv, model] of [[["persona", "create", "q"], ""], [["persona", "create", "q"], " "], [["personas", "new", "q"], ""]] as const) {
     const r = cotal([...argv, "--model", model, "--prompt", "body", "--subscribe", ""], persona, noSeed);

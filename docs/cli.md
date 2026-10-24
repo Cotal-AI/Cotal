@@ -3889,7 +3889,8 @@ from a file's `role`. Each entry of `--subscribe`, `--allow-subscribe` and
 must be within `--allow-subscribe` when it is given, or creation refuses with `USAGE_INVALID`,
 naming the flag and the entry. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
-Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
+Creation refuses an existing definition, and with `CONFLICT` a name that differs from an existing
+one only in case, since a case-insensitive file system holds the two as one file. Mutation receipts contain names and paths, not bodies.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
 persona is one: its file is `default.md` and its agents launch as `default_agent`. That name is
 reserved, so a create under it is refused with `USAGE_INVALID`.

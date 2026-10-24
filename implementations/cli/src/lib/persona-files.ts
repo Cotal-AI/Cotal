@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import {
@@ -129,7 +129,16 @@ function assertCatalogWritable(dir: string): void {
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${shellWord(dir)}\` to change its personas` }); }
 }
 
-/** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock. */
+/** The persona whose file name differs from `path`'s only in case. A case-insensitive file system
+ *  holds the two as one file. */
+function caseTwin(path: string): string | undefined {
+  const file = basename(path);
+  const twin = readdirSync(dirname(path)).find(entry => entry !== file && entry.toLowerCase() === file.toLowerCase());
+  return twin === undefined ? undefined : basename(twin, ".md");
+}
+
+/** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock.
+ *  A new persona whose name differs from an existing one only in case is refused. */
 export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined): void {
   const dir = dirname(path);
   assertCatalogWritable(dir);
@@ -140,6 +149,9 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
     const current = readPersonaSource(path);
     if (!sameSource(expected, current))
       throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
+    const twin = current === undefined && bytes !== undefined ? caseTwin(path) : undefined;
+    if (twin !== undefined)
+      throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with cotal persona edit ${twin}` });
     if (bytes === undefined) unlinkSync(path);
     else writeSecretFileAtomic(path, bytes);
   } finally { lock.release(); }
