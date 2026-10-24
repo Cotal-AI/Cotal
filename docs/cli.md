@@ -8252,7 +8252,9 @@ the stored readiness observation and its time separately from the current proces
 Before it launches a process with HTTP readiness, `service start` sends one such request. When
 something already answers there, such as an instance of the same definition on its port, any answer
 could come from it rather than the new process, so the start refuses `CONFLICT`, exit 2, names the
-address and that instance, and launches nothing. When the HTTP deadline passes first, `service start`
+address and that instance, and launches nothing. When no instance answers there, the refusal names
+each process of this account that listens there by PID and program name, as `SERVICE_ADDRESS_HELD`
+does, and its Next says to stop that process. The start does not signal it. When the HTTP deadline passes first, `service start`
 names the loopback address without the URL's path, the expected status and the deadline. When the
 service kept answering another status, such as 503, it exits 5 with `OPERATION_FAILED` and names that
 status. When the last check got no answer, such as a refused connection, it exits 3, names what it
@@ -8307,7 +8309,9 @@ remote log service is used. These are authorized local logs and can contain secr
 A background start runs its process as the leader of its own process group. `service stop`, and
 the stop half of a restart, signal that group and wait until the process and every member of the
 group are gone, so a descendant left in the group, such as a server a shell backgrounded, ends with
-it. A foreground start shares the command's group, so only its own process is signalled. A
+it. A foreground start shares the command's group, so only its own process is signalled.
+`service stop --dry-run` names which it would signal, the process group with its member count or
+the process alone, and the grace period before `SIGKILL`; `--json` carries it as `stopSignal`. A
 descendant that leaves the group, such as one started with `setsid`, is not followed, and a
 stopped/direct-process-gone observation is not proof that all external work ended. When the HTTP
 readiness address of a saved service still answers while none of its instances runs, `service

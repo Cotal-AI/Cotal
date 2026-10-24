@@ -355,6 +355,15 @@ async function readinessAddressAnswers(url: string): Promise<boolean> {
   }
 }
 
+/** The processes of this account that listen on `url`'s loopback address, each as its PID and
+ *  program name. */
+function addressHolders(url: string): string[] {
+  return loopbackListeners(url).map((pid) => {
+    const command = readProcessCommand(pid);
+    return command.kind === "command" ? `${pid} (${basename(command.command.split(" ")[0]!)})` : String(pid);
+  });
+}
+
 /** A warning for each saved service of `space`, or of those of `names`, whose HTTP readiness address
  *  still answers while none of its instances runs, as a descendant that outlived a stop, or left the
  *  service's process group, can. It names the address and the processes of this account that listen
@@ -376,10 +385,7 @@ export async function readinessAddressSurvivors(space: string, names?: readonly 
   for (const { name, url } of idle) {
     if (!await readinessAddressAnswers(url)) continue;
     const address = new URL(url).host;
-    const holders = loopbackListeners(url).map((pid) => {
-      const command = readProcessCommand(pid);
-      return command.kind === "command" ? `${pid} (${basename(command.command.split(" ")[0]!)})` : String(pid);
-    });
+    const holders = addressHolders(url);
     warnings.push({ code: "SERVICE_ADDRESS_HELD", target: { space, definition: name, address }, message: `something still answers ${address}, where ${name}'s HTTP readiness is checked, and no instance of ${name} runs${holders.length ? `; process ${holders.join(", ")} of this account listens there` : ""}` });
   }
   return warnings;
@@ -529,9 +535,13 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     // launch could pass a child that never listened, such as a second instance on the first one's port.
     if (value.readiness.type === "http" && await readinessAddressAnswers(value.readiness.url)) {
       const host = new URL(value.readiness.url).host, live = rows.find((row) => observeServiceProcess(row.record.value) === "running");
-      throw new CommandFailure("refused", "CONFLICT", `something already answers ${host}, where ${definition.name}'s HTTP readiness is checked, so a new process's readiness could not be told from it; nothing was launched`, {
+      // Another listener, such as a server that left a stopped instance's process group, is named as
+      // SERVICE_ADDRESS_HELD names it. It is not signalled: no instance of this service owns it.
+      const holders = live ? [] : addressHolders(value.readiness.url);
+      throw new CommandFailure("refused", "CONFLICT", `something already answers ${host}, where ${definition.name}'s HTTP readiness is checked, so a new process's readiness could not be told from it${holders.length ? `; process ${holders.join(", ")} of this account listens there` : ""}; nothing was launched`, {
         target: { space: value.space, definition: definition.name, address: host, ...(live ? { instanceId: live.name } : {}) },
-        remedy: live ? `instance ${live.name} of ${definition.name} answers there; give another instance its own port, or stop that one with cotal service stop ${definition.name} --instance ${live.name} --space ${value.space} --yes first` : `stop what listens on ${host}, then run the command again`,
+        remedy: live ? `instance ${live.name} of ${definition.name} answers there; give another instance its own port, or stop that one with cotal service stop ${definition.name} --instance ${live.name} --space ${value.space} --yes first`
+          : holders.length ? `stop process ${holders.join(", ")}, which is not an instance of ${definition.name}, then run the command again` : `stop what listens on ${host}, then run the command again`,
       });
     }
     hold.check();
