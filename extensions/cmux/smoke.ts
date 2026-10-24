@@ -62,6 +62,18 @@ try {
   /* best-effort cleanup */
 }
 
+// Env names are rendered unquoted into the script, so a name that isn't an env identifier must be
+// refused before anything is written, or bash would run `$(...)` in it when the pane starts.
+for (const name of ["$(touch MARKER)X", "A=B", "1A", "", "A B", "A;B", "A\nB", "A-B"]) {
+  let refusal = "";
+  try {
+    paneCommand({ command: "/bin/true", env: { [name]: "1" } }, false, true);
+  } catch (err) {
+    refusal = (err as Error).message;
+  }
+  ok(`paneCommand refuses env var name ${JSON.stringify(name)}`, refusal === `cmux: refusing to render unsafe env var name ${JSON.stringify(name)}`);
+}
+
 if ((process.platform as NodeJS.Platform) !== "win32") {
   const stubDir = mkdtempSync(join(tmpdir(), "cotal-cmux-wait-"));
   // The extension is load-bearing. This stub is written under TMPDIR and its body is CommonJS,
