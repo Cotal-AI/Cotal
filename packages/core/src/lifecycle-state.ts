@@ -491,8 +491,8 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
 export const STATIC_SLOT_PHASES: ReadonlySet<string> = new Set(["provisioning", "active", "terminalizing", "retired"]);
 export type StaticSlotPhase = "provisioning" | "active" | "terminalizing" | "retired";
 
-/** The static manager's durable alias -> (owner, actor, lifecycleUid) slot mapping (Unit B,
- *  the F5-bind split-coordinates design): the ALIAS is routing/display, protected by this
+/** The static manager's durable alias -> (owner, actor, lifecycleUid) slot mapping
+ *  (split-coordinates design): the ALIAS is routing/display, protected by this
  *  name-keyed row plus the uid reservation and the manager's freeSlot hold; the AUTHORITY
  *  coordinate is the incarnation-unique wire `actor` (the nkey) recorded here as DATA. The row
  *  lives in the records store — the same durability domain as the head — and survives manager
