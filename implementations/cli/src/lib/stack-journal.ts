@@ -311,8 +311,9 @@ export function acquireStackOperationLock(root: string): MaintenanceLock {
   return lock;
 }
 
-/** An earlier operation that had no recorded outcome, and the member evidence it was settled from. */
-export interface StackSettlement { operation: StackJournal["operation"]; members: { role: StackRole; instanceId: string; process: "running" | "gone" }[] }
+/** An earlier operation that had no recorded outcome, and the member evidence it was settled from.
+ *  `unstarted` names the members it applies to that have no instance record. */
+export interface StackSettlement { operation: StackJournal["operation"]; members: { role: StackRole; instanceId: string; process: "running" | "gone" }[]; unstarted: StackRole[] }
 
 const UNSETTLED_PHASES: readonly StackJournal["operation"]["phase"][] = ["planned", "applying", "unknown"];
 
@@ -465,9 +466,11 @@ export function settleStackOperation(lock: MaintenanceLock, snapshot: StackJourn
   const journal = snapshot.journal, operation = journal.operation;
   if (!stackOperationUnsettled(journal) || operation.kind !== "up" && operation.kind !== "down") return { snapshot };
   if (lock.root !== journal.root) throw new CommandFailure("refused", "CONFLICT", "the held maintenance lock belongs to another root; the earlier operation was not settled", { target: { root: journal.root } });
-  const members = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role)).flatMap((role) => classifyStackMember(journal, role, true) ?? []);
-  const settled = writeStackJournal(journal.root, snapshot, { ...journal, members: withSettledMembers(journal, { operation, members }).members.map((row) => row.state !== "planned" && row.state !== "unknown" ? row : members.some((member) => member.role === row.role) ? { ...row, state: "unknown", code: "OPERATION_UNKNOWN" } : { ...row, state: "not-attempted", code: undefined }), operation: { ...operation, phase: "failed" }, updatedAt: new Date().toISOString() });
-  return { snapshot: settled, settled: { operation, members } };
+  const roles = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role));
+  const members = roles.flatMap((role) => classifyStackMember(journal, role, true) ?? []);
+  const settlement = { operation, members, unstarted: attemptedRoles(journal).filter((role) => !members.some((member) => member.role === role)) };
+  const settled = writeStackJournal(journal.root, snapshot, { ...journal, members: withSettledMembers(journal, settlement).members.map((row) => row.state !== "planned" && row.state !== "unknown" ? row : members.some((member) => member.role === row.role) ? { ...row, state: "unknown", code: "OPERATION_UNKNOWN" } : { ...row, state: "not-attempted", code: undefined }), operation: { ...operation, phase: "failed" }, updatedAt: new Date().toISOString() });
+  return { snapshot: settled, settled: settlement };
 }
 
 /** The journal with each journaled replacement resolved, and each member row that has no recorded
@@ -501,13 +504,44 @@ function resolveReplacement(journal: StackJournal, row: StackMember): StackMembe
 /** The read-only classification `settleStackOperation` would record, for a preview. Writes nothing. */
 export function previewStackSettlement(journal: StackJournal): StackSettlement | undefined {
   if (!stackOperationUnsettled(journal) || journal.operation.kind !== "up" && journal.operation.kind !== "down") return undefined;
-  return { operation: journal.operation, members: STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role)).flatMap((role) => classifyStackMember(journal, role, false) ?? []) };
+  const roles = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role));
+  const members = roles.flatMap((role) => classifyStackMember(journal, role, false) ?? []);
+  return { operation: journal.operation, members, unstarted: attemptedRoles(journal).filter((role) => !members.some((member) => member.role === role)) };
+}
+
+/** The members the journal's operation planned, as a `--no-manager` up plans no manager. */
+function attemptedRoles(journal: StackJournal): StackRole[] {
+  return STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role) && journal.members.some((row) => row.role === role && row.state !== "not-attempted"));
+}
+
+/** An earlier `up` that ended with no recorded outcome before every member it planned started, or
+ *  a `down` that ended so before every member stopped, with the members on each side as their
+ *  processes show. A member with no instance record counts as stopped, and `noManager` says the up
+ *  planned no manager, as `up --no-manager` does. Read-only. Undefined when the last
+ *  operation settled, when it reached its end anyway, or when a member's process is neither running
+ *  nor proven gone. */
+export function unfinishedStackOperation(journal: StackJournal): { kind: "up" | "down"; id: string; running: StackRole[]; stopped: StackRole[]; noManager: boolean } | undefined {
+  const { kind, id } = journal.operation;
+  if (!stackOperationUnsettled(journal) || kind !== "up" && kind !== "down") return undefined;
+  const running: StackRole[] = [], stopped: StackRole[] = [];
+  for (const role of attemptedRoles(journal)) {
+    const observed = serviceInstances(journal.space, STACK_DEFINITION[role]).map((row) => observeServiceProcess(row.record.value));
+    if (observed.includes("running")) running.push(role);
+    else if (observed.every(processGone)) stopped.push(role);
+    else return undefined;
+  }
+  if (kind === "up" ? !stopped.length : !running.length) return undefined;
+  return { kind, id, running, stopped, noManager: kind === "up" && stackRoleApplies(journal.mode, "manager") && !running.includes("manager") && !stopped.includes("manager") };
 }
 
 /** The one-line notice a command prints after it settled an earlier operation. */
 export function stackSettlementNotice(settled: StackSettlement): string {
   const gone = settled.members.filter((row) => row.process === "gone").map((row) => row.role), running = settled.members.filter((row) => row.process === "running").map((row) => row.role);
-  return `the earlier ${settled.operation.kind} ${settled.operation.id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"})`;
+  const { kind, id } = settled.operation;
+  // An up whose members all run, or a down whose members are all gone, reached its end anyway.
+  if (kind === "up" && !gone.length && !settled.unstarted.length) return `the earlier up ${id} was interrupted before it recorded an outcome; every member is running (${running.join(", ")})`;
+  if (kind === "down" && !running.length) return `the earlier down ${id} was interrupted before it recorded an outcome; every member is stopped`;
+  return `the earlier ${kind} ${id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"}${settled.unstarted.length ? `; not started: ${settled.unstarted.join(", ")}` : ""})`;
 }
 
 export function newStackOperation(kind: "up" | "down", withAgents = false): StackJournal["operation"] {

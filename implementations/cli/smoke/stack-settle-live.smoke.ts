@@ -2,7 +2,8 @@
  * LIVE: a controller stack is settled from process evidence instead of wedging its root.
  *
  *  1. Crash mid-start. An `up` killed while delivery waits for readiness leaves an applying
- *     operation. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
+ *     operation. `status` names the half-started stack and leads Next with the `up --root
+ *     <root> --no-manager` that finishes it. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
  *  2. Broker crash after start. The next `up` restarts the broker from its records. After a manager
@@ -51,7 +52,8 @@
  *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
- *     and reuses it. After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
+ *     and reuses it, and its notice says the earlier up was interrupted with every member running.
+ *     After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
  *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
  *     stack, `up` starts it again and a later `down` stops it.
@@ -104,8 +106,8 @@ const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 const owned = new Set<number>();
 
-type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string } };
-type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stderr: string; env?: Envelope };
+type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; message?: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string } };
+type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
@@ -113,7 +115,7 @@ const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
-  return { status: run.status, signal: run.signal, ms: Date.now() - began, stderr: run.stderr, env: parsed };
+  return { status: run.status, signal: run.signal, ms: Date.now() - began, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
 const cli = (cwd: string, ...args: string[]): Run => cliAs(env, cwd, ...args);
 /** `cli` without blocking this process, so a watcher in it can act while the command runs. */
@@ -129,7 +131,7 @@ const cliAsync = (cwd: string, ...args: string[]): Promise<Run> => {
     clearTimeout(timer);
     let parsed: Envelope | undefined;
     try { parsed = JSON.parse(stdout) as Envelope; } catch { parsed = undefined; }
-    done({ status, signal, ms: Date.now() - began, stderr, env: parsed });
+    done({ status, signal, ms: Date.now() - began, stdout, stderr, env: parsed });
   }));
 };
 const shown = (run: Run) => ({ status: run.status, signal: run.signal, ms: run.ms, outcome: run.env?.outcome, error: run.env?.error, stderr: run.stderr.slice(-1500) });
@@ -188,6 +190,12 @@ try {
     if (delivery !== null) process.kill(delivery, "SIGKILL");
     await until(() => gone(space, "stack-delivery"), 10_000);
     check("the killed up left its operation applying", readStackJournal(root)?.journal.operation.phase === "applying", readStackJournal(root)?.journal.operation);
+    const half = cli(root, "status", "--json");
+    const unfinished = (half.env?.result?.folder as { stackUnfinished?: { kind?: string; running?: string[]; stopped?: string[]; noManager?: boolean } | null } | undefined)?.stackUnfinished;
+    check("status names the half-started stack: the broker runs and delivery did not start", half.status === 0 && unfinished?.kind === "up" && unfinished.running?.join() === "broker" && unfinished.stopped?.join() === "delivery" && unfinished.noManager === true, shown(half));
+    const halfShown = cli(root, "status");
+    const halfNext = halfShown.stdout.slice(halfShown.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "";
+    check("its first Next finishes that up, keeping --no-manager", halfShown.stdout.includes("Half started · the last up ended before delivery started; broker runs") && halfNext.includes(`up --root ${root} --no-manager`) && halfNext.includes("Finish starting the stack: the last up ended before delivery started"), { next: halfNext, ...shown(halfShown) });
 
     const preview = cli(root, "down", "--dry-run", "--json");
     check("down --dry-run on the unsettled root exits 0 and names the settlement", preview.status === 0 && preview.env?.outcome === "ok" && preview.env.result?.settlesOperation !== null, shown(preview));
@@ -655,6 +663,8 @@ try {
     const recovered = cli(root, "up", "--json");
     track("redefup");
     const journal = readStackJournal(root)?.journal, row = journal?.members.find((member) => member.role === "manager");
+    const notice = recovered.env?.warnings?.find((warning) => warning.code === "OPERATION_SETTLED")?.message ?? "";
+    check("its notice says the earlier up was interrupted with every member running, not that it failed", /^the earlier up \S+ was interrupted before it recorded an outcome; every member is running \(broker, delivery, manager\)$/.test(notice), recovered.env?.warnings);
     check("bare up after the interrupted redefinition adopts the journaled replacement and reuses it", recovered.status === 0 && row?.instanceId === replacement && row?.state === "reused" && journal?.operation.phase === "completed" && serviceInstances("redefup", "stack-manager").length === 1, shown(recovered));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down then stops the recovered stack", stopped.status === 0 && gone("redefup", "stack-manager"), shown(stopped));

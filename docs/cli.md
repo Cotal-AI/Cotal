@@ -2316,7 +2316,15 @@ saw that process exit, `up` and `down` refuse until that stop is abandoned. `sta
 under the selected space, names the member, and offers `cotal down --abandon-stop <request-id> --yes`
 with the request ID their refusal names, and the member's `service status`, in place of `up --root`.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
-receipts, which only `up` and `down` read, so `status` does not name it.
+receipts, which only `up` and `down` read, so `status` does not name it. An `up` or `down` that was
+interrupted before it recorded an outcome, and left some members running and others stopped, is
+named under the selected space as `Half started` or `Half stopped`, with the members on each side.
+Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, or
+`cotal down --yes` for a `down`, followed by `cotal up --root <root>` to restart instead. `--json`
+carries it as `folder.stackUnfinished`, with `kind`, `id`, `running` and `stopped`. The next bare
+`up` or `down` settles the interrupted operation with an `OPERATION_SETTLED` warning. When the
+stack reached that operation's end anyway, every member running after an `up` or stopped after a
+`down`, the warning says it was interrupted and where the stack stands, without calling it failed.
 A running `stack-manager` gets one
 probe of its manager endpoint, and the selected space's `Manager` row reads `answering`,
 `not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be

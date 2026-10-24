@@ -51,7 +51,7 @@ import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries 
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { preservedSourceState, restoreNextStep, maintenanceNextStep } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
-import { readStackJournal, stackOperationBlock, STACK_DEFINITION, type StackJournal, type StackOperationBlock } from "../lib/stack-journal.js";
+import { readStackJournal, stackOperationBlock, STACK_DEFINITION, unfinishedStackOperation, type StackJournal, type StackOperationBlock, type StackRole } from "../lib/stack-journal.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
@@ -168,6 +168,9 @@ export interface StatusResult {
      *  with no recorded outcome, with why and the way out their refusal names. Null when none does;
      *  older inputs may omit it. */
     stackBlock?: StackOperationBlock | null;
+    /** That stack's last `up` or `down` when it ended with no recorded outcome part way, with the
+     *  members left running and stopped. Null when there is none; older inputs may omit it. */
+    stackUnfinished?: { kind: "up" | "down"; id: string; running: StackRole[]; stopped: StackRole[]; noManager: boolean } | null;
   };
   meshes: {
     current: string | null;
@@ -587,7 +590,7 @@ async function readResponderAxis(selected: Selected): Promise<{ state: DeliveryR
 
 async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<StatusResult["folder"]> {
   const cmd = displayCmd();
-  const folder = (auth: StatusResult["folder"]["auth"], processes: ProcessRow[] | null = null, storedState = false, processSpace: string | null = null, controllerStack = false, stackBlock: StackOperationBlock | null = null): StatusResult["folder"] => ({
+  const folder = (auth: StatusResult["folder"]["auth"], processes: ProcessRow[] | null = null, storedState = false, processSpace: string | null = null, controllerStack = false, stackBlock: StackOperationBlock | null = null, stackUnfinished: StatusResult["folder"]["stackUnfinished"] = null): StatusResult["folder"] => ({
     root,
     auth,
     ...folderPersonas(root, selected, values, gaps, hints),
@@ -596,6 +599,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     storedState,
     controllerStack,
     stackBlock,
+    stackUnfinished,
   });
   const unreadable = (error: string, hint: string): StatusResult["folder"] => {
     gaps.add("AUTH_UNREADABLE", `this folder's trust material could not be read: ${error}`, { root });
@@ -690,12 +694,15 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // why and the way out their refusal names. A refusal of another kind is left to them.
   let stackBlock: StackOperationBlock | null = null;
   if (journal && controllerStack) try { stackBlock = stackOperationBlock(journal) ?? null; } catch { stackBlock = null; }
+  // One that left the stack part way is named with the command that finishes it.
+  let stackUnfinished: StatusResult["folder"]["stackUnfinished"] = null;
+  if (journal && controllerStack && !stackBlock) try { stackUnfinished = unfinishedStackOperation(journal) ?? null; } catch { stackUnfinished = null; }
   const storedState = !controllerStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
   if (storedState && !maintained) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
-  return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, stackBlock);
+  return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, stackBlock, stackUnfinished);
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does
@@ -1374,6 +1381,10 @@ function selectedOverview(r: StatusResult): Section | undefined {
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
     blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] });
     if (r.folder.stackBlock) blocks.push({ kind: "lines", lines: [stateCell(`Stack blocked · ${r.folder.stackBlock.reason}`, "waiting")] });
+    const part = r.folder.stackUnfinished;
+    if (part) blocks.push({ kind: "lines", lines: [stateCell(part.kind === "up"
+      ? part.running.length ? `Half started · the last up ended before ${roleList(part.stopped)} started; ${roleList(part.running)} ${part.running.length === 1 ? "runs" : "run"}` : "Start interrupted · the last up ended before any member started"
+      : part.stopped.length ? `Half stopped · the last down ended with ${roleList(part.running)} still running; ${roleList(part.stopped)} ${part.stopped.length === 1 ? "is" : "are"} stopped` : "Stop interrupted · the last down ended before any member stopped", "waiting")] });
   } else if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.processes) {
     blocks.push({ kind: "lines", lines: [cell("Legacy local process records", "label")] });
     blocks.push({
@@ -1387,6 +1398,11 @@ function selectedOverview(r: StatusResult): Section | undefined {
   } else blocks.push({ kind: "lines", lines: [cell("Legacy process records not checked here · the selected space has a different or unresolved local process scope", "hint")] });
   if (r.folder.launches === false) blocks.push({ kind: "lines", lines: [cell(`This folder's personas are not used by the selected space. Spawn uses ${s.personas.root}.`, "waiting")] });
   return { title: `Selected space  → ${s.space}`, blocks };
+}
+
+/** Stack members as a status line names them: `broker`, `delivery and manager`. */
+function roleList(roles: readonly StackRole[]): string {
+  return roles.length > 1 ? `${roles.slice(0, -1).join(", ")} and ${roles.at(-1)}` : roles[0] ?? "";
 }
 
 function nextActions(r: StatusResult): Section {
@@ -1419,6 +1435,12 @@ function nextActions(r: StatusResult): Section {
   if (block && r.selected.resolved) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${r.selected.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
+  } else if (own && r.selected.resolved && r.folder.stackUnfinished) {
+    const part = r.folder.stackUnfinished;
+    items.unshift(...(part.kind === "up"
+      ? [{ command: `${cmd} up --root ${r.selected.root}${part.noManager ? " --no-manager" : ""}`, description: `Finish starting the stack: the last up ended before ${roleList(part.stopped)} started` }]
+      : [{ command: `${cmd} down --yes`, description: `Finish stopping the stack: the last down ended with ${roleList(part.running)} still running` },
+        ...(part.stopped.length ? [{ command: `${cmd} up --root ${r.selected.root}`, description: "Or restart this stack's stopped members from its recorded inputs" }] : [])]));
   } else if (r.selected.resolved && r.selected.spaceStreams.state === "absent") {
     // Up creates the streams again only while the stack's other members are stopped.
     const stack = r.selected.spaceStreams.stack;
