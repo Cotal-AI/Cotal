@@ -28,7 +28,7 @@ import {
 import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { c, presenceFacts, stderrLine } from "../ui.js";
+import { c, presenceFacts } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
@@ -267,10 +267,12 @@ export type SeatLocation =
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
   /** The registry lists no live manager, so no instance can host the seat or be asked for it. */
   | { kind: "no-manager"; space: string; native: { code?: string; detail: string } }
-  | { kind: "absent"; checked: number }
+  /** Every instance answered and none hosts the seat; `instances` names them. `space` is set by
+   *  {@link locateSeat}, which knows it. */
+  | { kind: "absent"; checked: number; instances: string[]; space?: string }
   /** #1638 item 3: the search could not settle. At least one registered instance did not answer
    *  FOR ITSELF, so the seat may be sitting on it; absence is not what was established. */
-  | { kind: "unknown"; answered: number; silent: string[]; refused: { instanceId: string; error: string }[] };
+  | { kind: "unknown"; answered: number; silent: string[]; refused: { instanceId: string; error: string }[]; space?: string };
 
 /** Exported for the console, which drives the same targeted verbs (`stop`/`attach`) from
  *  inside a TUI and so needs the THROWING resolve: an unreachable mesh there is a notice on the
@@ -288,7 +290,8 @@ export async function locateSeat(
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok && scatter.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: scatter.code, detail: scatter.error } };
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
-  return locateSeatIn(scatter.instances, name);
+  const loc = locateSeatIn(scatter.instances, name);
+  return loc.kind === "absent" || loc.kind === "unknown" ? { ...loc, space: probe.space } : loc;
 }
 
 /**
@@ -312,7 +315,7 @@ export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: s
   const host = answered.find((i) => ((i.data as AgentRow[] | undefined) ?? []).some((r) => r.name === name));
   if (host) return { kind: "pin", instanceId: host.instanceId };
   if (silent.length || refused.length) return { kind: "unknown", answered: answered.length, silent, refused };
-  return { kind: "absent", checked: answered.length };
+  return { kind: "absent", checked: answered.length, instances: answered.map((i) => i.instanceId).sort() };
 }
 
 /** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
@@ -328,8 +331,13 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
     recordOperationSpace(loc.space);
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to reach agent "${oneLine(String(v.name))}"`, { target: { space: loc.space, managerInstanceId: null, agent: String(v.name) }, native: loc.native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
   }
-  stderrLine("✗ ", `${seatMissRefusal(String(v.name), verb, loc)}`, c.red);
-  process.exit(1);
+  // Refused before anything is sent, as the same miss with `--on` refuses: a whole space that answered
+  // proves the name absent; one that did not cannot say where it is.
+  if (loc.space !== undefined) recordOperationSpace(loc.space);
+  const agent = String(v.name), message = seatMissRefusal(agent, verb, loc);
+  if (loc.kind === "absent")
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: "run cotal ps to see the agents each manager runs" });
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", message, { target: { space: loc.space ?? null, agent, answered: loc.answered, silent: loc.silent, refused: loc.refused }, remedy: "run cotal ps to see which managers answer and the agents they run" });
 }
 
 /** The console's wording for a seat the whole space proved absent. Main's richer `seatMissRefusal`
@@ -364,7 +372,7 @@ export function seatMissRefusal(
 ): string {
   const address = `To address one directly: \`${verb} --on <instance>\` (the whole id, as printed).`;
   if (loc.kind === "absent")
-    return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.`;
+    return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space (${loc.instances.join(", ")}).`;
   const silent = loc.silent.length
     ? ` ${loc.silent.length} registered manager instance(s) gave no answer within the deadline (${loc.silent.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.`
     : "";

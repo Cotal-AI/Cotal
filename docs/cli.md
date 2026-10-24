@@ -3798,7 +3798,11 @@ pid.
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
 static/open mesh both verbs first ask every registered instance which one hosts the named seat, then
-address that instance directly. This happens by default; you do not need `--on`.
+address that instance directly. This happens by default; you do not need `--on`. When every instance
+answers and none hosts the name, `stop`, `attach` and `input` refuse `TARGET_NOT_FOUND` (exit 2)
+before anything is sent, as they do with `--on`, naming the managers that answered, with `cotal ps`
+as Next. When an instance did not answer for itself, the seat may run there, so they refuse
+`TARGET_UNAVAILABLE` (exit 2) and name that instance. `--json` carries either refusal.
 
 `--on <instance>` remains the override, for when you already know where the seat lives or the
 lookup itself is degraded. On a **user-auth mesh**, the exchange selects one authorized manager

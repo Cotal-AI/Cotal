@@ -199,6 +199,16 @@ try {
   check("stop on a nonexistent name exits non-zero", ghost.status !== 0, { status: ghost.status, out: ghost.out.slice(-300) });
   check("...and the error says the space was SEARCHED, not just that one manager missed",
     /no managed agent .* on any of the \d+ reachable manager instance/.test(ghost.out), ghost.out.slice(-400));
+  // The same miss with `--on` refuses TARGET_NOT_FOUND, exit 2; the unpinned form refuses the same way.
+  check("...as a TARGET_NOT_FOUND refusal, exit 2, naming both managers and `cotal ps`",
+    ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes(IID1) && ghost.out.includes(IID2) && ghost.out.includes("run cotal ps to see the agents each manager runs"), ghost.out.slice(-600));
+  const misses = await Promise.all([
+    cotal(["stop", "--name", "no-such-seat", "--space", space, "--server", SERVERS, "--json"], root1),
+    cotal(["input", "no-such-seat", "hello", "--space", space, "--server", SERVERS, "--json"], root1),
+    cotal(["attach", "no-such-seat", "--space", space, "--server", SERVERS], root1),
+  ]);
+  check("stop --json and input --json print the refusal envelope, and attach refuses the same way, each exit 2",
+    misses.every((r) => r.status === 2 && /TARGET_NOT_FOUND/.test(r.out)) && misses.slice(0, 2).every((r) => r.out.includes('"outcome":"refused"')), misses.map((r) => ({ status: r.status, out: r.out.slice(-400) })));
 
   console.log(`\n4. THE CLAIM: bare \`cotal stop --name <seat>\` locates each seat and stops it (x${SEATS.length})`);
   const results: { seat: string; status: number | null; out: string }[] = [];
