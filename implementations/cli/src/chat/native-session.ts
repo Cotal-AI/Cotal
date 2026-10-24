@@ -167,8 +167,17 @@ export class NativeChatSession implements AdmittedChatSession {
     if (s.connected) this.setState("connected");
     else if (this.state !== "reconnecting") this.setState("disconnected");
   };
-  private readonly onPresence = (ev: { type: "join" | "update" | "offline"; presence: Presence }) =>
-    this.emit({ type: "presence", row: rowOf(ev.presence), change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
+  /** The last row each roster member's presence event carried, as JSON. */
+  private readonly rows = new Map<string, string>();
+  /** A presence update the row cannot show, such as a change of attention or a channel mode, leaves the
+   *  row as it was, so it is not reported as an update. */
+  private readonly onPresence = (ev: { type: "join" | "update" | "offline"; presence: Presence }) => {
+    const row = rowOf(ev.presence), shown = JSON.stringify(row);
+    if (ev.type === "update" && this.rows.get(row.id) === shown) return;
+    if (ev.type === "offline") this.rows.delete(row.id);
+    else this.rows.set(row.id, shown);
+    this.emit({ type: "presence", row, change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
+  };
   private readonly onError = () => { /* surfaced through call results; never thrown at the UI */ };
   /** A reconnect that finds this session's own DM durable gone cannot succeed by retrying: the
    *  session was retired while the broker was away, as a stack restart retires the sessions its old

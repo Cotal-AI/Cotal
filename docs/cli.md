@@ -4727,6 +4727,11 @@ The session also writes these records on its own:
 | `error` | `id` (`null`), `error` | A line was refused before an id could be read from it, or was too long |
 | `end` | `reason`, `close` | The session ended. Nothing follows it |
 
+A `presence` record's `joined` is a member coming online and `left` one going offline. `updated`
+means a field the row shows changed, such as `status` or `activity`. A presence change the row does
+not show, such as a member's attention or channel modes, writes no record. `cotal who --all --json`
+shows attention.
+
 A message's `text` is untrusted. JSON escapes its control characters, so a body can never start
 another record. `channel` is set on a channel message and `service` on an anycast. `mentionsMe`
 means the message's mention list holds this session's label, ignoring case. The sender writes that

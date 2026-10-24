@@ -9,7 +9,8 @@
  *  4. `/reconnect` reconnects and reports the one outage it causes once.
  *  5. `/quit` retires the session and exits 0.
  *  6. A `chat --stdio` session's `status` request with an activity reaches a second stdio session as
- *     one presence `updated` record carrying both.
+ *     one presence `updated` record carrying both, and its `attention` and `channelMode` requests,
+ *     which change no row field, reach it as none.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the chat child it started. Needs `nats-server` on PATH.
@@ -89,8 +90,8 @@ try {
   let records = "";
   watcher.stdout.on("data", (b: Buffer) => { records += b.toString(); });
   const request = (fields: Record<string, unknown>) => `${JSON.stringify({ schemaVersion: 1, ...fields })}\n`;
-  const actorRows = (change: string) => records.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; change?: string; row?: { name: string; status: string; activity?: string } })
-    .filter((r) => r.type === "presence" && r.row?.name === "actor" && r.change === change).map((r) => [r.row!.status, r.row!.activity ?? null]);
+  const actorRows = (change: string, name = "actor") => records.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; change?: string; row?: { name: string; status: string; activity?: string } })
+    .filter((r) => r.type === "presence" && r.row?.name === name && r.change === change).map((r) => [r.row!.status, r.row!.activity ?? null]);
   try {
     watcher.stdin.write(request({ type: "connection", id: "c0" }));
     for (let i = 0; i < 150 && !records.includes('"id":"c0"'); i++) await sleep(200);
@@ -99,6 +100,13 @@ try {
     for (let i = 0; i < 150 && actorRows("left").length === 0; i++) await sleep(200);
     check("a status request with an activity reaches a peer as one presence record carrying both",
       actor.status === 0 && actor.stdout.includes('"id":"s1","outcome":"ok"') && JSON.stringify(actorRows("updated")) === JSON.stringify([["working", "reviewing"]]), { updated: actorRows("updated"), actor: actor.stdout.slice(-600) });
+    // Attention and channel modes are not in the row, so changing them changes no row.
+    const moder = spawnSync(TSX, [CLI, "chat", "general", "--stdio", "--name", "moder"], { cwd: root, env, encoding: "utf8", timeout: 120_000,
+      input: request({ type: "connection", id: "c0" }) + request({ type: "attention", id: "a1", mode: "dnd" }) + request({ type: "channelMode", id: "m1", channel: "general", mode: "quiet" }) });
+    for (let i = 0; i < 150 && actorRows("left", "moder").length === 0; i++) await sleep(200);
+    check("attention and channelMode requests reach a peer as no updated record, since its row does not change",
+      moder.status === 0 && moder.stdout.includes('"id":"a1","outcome":"ok"') && moder.stdout.includes('"id":"m1","outcome":"ok"') && actorRows("joined", "moder").length === 1 && actorRows("updated", "moder").length === 0,
+      { updated: actorRows("updated", "moder"), moder: moder.stdout.slice(-600) });
   } finally {
     watcher.stdin.end();
     const code = await new Promise<number | null>((r) => {
