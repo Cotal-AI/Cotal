@@ -6273,7 +6273,8 @@ and non-zero on not. An edited program that does not validate is refused before 
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
 migration is not reachable yet, and the report says so. `migrate` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
 commit does and the check files nothing. `--timeout` sets the default
-checkpoint timeout for a drive (default 1h). `--on <instance>` sends a hosted verb to one manager
+limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). It takes a duration
+longer than zero, such as `30m`, and refuses anything else with `USAGE_INVALID` before the run starts. `--on <instance>` sends a hosted verb to one manager
 instance, with the same rules as [`ps`](#managed-seats). On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
