@@ -53,6 +53,15 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   c("no verb at all is the list command, not a refusal", !(bare instanceof Error) && bare.verb === "ps", bare);
 }
 
+// A local start's ceiling entry is a channel or a pattern; one the wire layer would rewrite is refused by name.
+{
+  const local = (read: string, publish: string) => gate(["start"], { local: true, file: "p.cotal.js", "admit-read": read, "admit-publish": publish });
+  for (const [read, publish, flag, entry] of [["a b", "none", "admit-read", "a b"], ["general,team x", "none", "admit-read", "team x"], ["none", "a b", "admit-publish", "a b"]] as const)
+    c(`--${flag} ${JSON.stringify(entry)} is refused naming the entry`, usageRefusal(local(read, publish), `--${flag}: invalid channel "${entry}"`), local(read, publish));
+  for (const [read, publish] of [["general,team.>", "none"], ["none", "general, ops"]] as const)
+    c(`control: --admit-read ${JSON.stringify(read)} --admit-publish ${JSON.stringify(publish)} passes the grammar`, !(local(read, publish) instanceof Error), local(read, publish));
+}
+
 {
   reset();
   // Complete answer-shaped arguments and invalid JSON: the verb gate must answer before either the
@@ -79,6 +88,11 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   c("an answer value with a number outside the range JSON carries is refused SCHEMA_INVALID", schemaRefusal(huge, "outside the range JSON carries"), huge);
   const deep = answerWith("[".repeat(1001) + "]".repeat(1001));
   c("an answer value nested more than 1000 levels deep is refused SCHEMA_INVALID", schemaRefusal(deep, "--value nests more than 1000 levels deep"), deep);
+  // An artifact reference names something, so an empty or blank one is refused before anything is sent.
+  for (const verb of ["answer", "amend"]) for (const artifact of ["", "   "]) {
+    const got = gate([verb, "run-0", "/checkpoint:probe#0"], { artifact });
+    c(`${verb} --artifact ${JSON.stringify(artifact)} is refused USAGE_INVALID naming --artifact`, usageRefusal(got, "--artifact names the artifact the answer cites, so it cannot be empty"), got);
+  }
   const fine = answerWith('{"a":1,"b":[1e300,"a"]}');
   const deepest = answerWith("[".repeat(1000) + "]".repeat(1000));
   c("and a value JSON carries as typed, 1000 levels deep at most, passes the gate",
@@ -310,6 +324,20 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("the text view prints the last 20 rows by default and the last n under --limit n",
     bare.includes("last 20 of 30") && rows(bare) === 20 && limited.includes("last 25 of 30") && rows(limited) === 25 && limited.includes("epoch 29") && !limited.split("\n").some((line) => line.trimEnd().endsWith("epoch 4")),
     { bare: rows(bare), limited: rows(limited) });
+  // A failure raised outside any step is in no journal row. When the status recorded its cause, the
+  // view prints the cause and does not also say that nothing records why.
+  const failed = (failure?: { message: string }): string => {
+    const out: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { out.push(a.map(String).join(" ")); };
+    try { printRunDetail("usage", { ...view, journal: [], status: { state: "failed", ...(failure ? { failure } : {}) } as RunStatusView["status"] }, { plain: true }); } finally { console.log = origLog; process.exitCode = 0; }
+    return out.join("\n");
+  };
+  const caused = failed({ message: "the program gave up outside any step" }), uncaused = failed();
+  c("a failure outside any step whose cause the status recorded prints that cause and not that no row records why",
+    caused.includes("the program gave up outside any step") && !caused.includes("No journal row records why") && caused.includes("cotal service logs stack-manager --space usage"), caused);
+  c("one whose status recorded no cause says no journal row records why, and names the manager's log",
+    uncaused.includes("No journal row records why this run failed") && uncaused.includes("cotal service logs stack-manager --space usage"), uncaused);
 }
 
 // A source file that cannot be read is refused with the path to check.

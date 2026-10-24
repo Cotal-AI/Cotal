@@ -21,6 +21,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
+  assertValidChannel,
   BASELINE_LIFECYCLE_ENDPOINT,
   chatStream,
   EpEnvelopeError,
@@ -451,12 +452,17 @@ async function drive(
   }
 }
 
+/** The endpoints a listing's runs are recorded under, each once. */
+const recordedUnder = (rows: readonly RunListRow[]): string[] => [...new Set(rows.map((row) => row.endpoint))].sort();
+
 async function ps(values: RunValues, planes: Planes): Promise<void> {
   // The same rows the manager answers `run-ps` with, read under this call's operator credential:
   // the record's state beside its revocation marker (SPEC 14.8), so `--local` and hosted agree
   // row for row, `--json` included.
   const rows = await runHost.list(planes, values.endpoint !== undefined ? { endpoint: values.endpoint } : {});
-  printRunList(planes.space, rows, values);
+  // An endpoint no run lives under is named, with the endpoints that hold runs.
+  const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await runHost.list(planes, {})) } : undefined;
+  printRunList(planes.space, rows, values, unmatched);
 }
 
 async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
@@ -907,7 +913,8 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
       return;
     }
     const rows = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
-    printRunList(space, rows, values);
+    const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await ask("run-ps", undefined) as RunListRow[]) } : undefined;
+    printRunList(space, rows, values, unmatched);
     return;
   }
   if (verb === "journal") {
@@ -1095,11 +1102,21 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (values.plain) usage("diagnostic pages produce bounded JSON and take no --plain");
   }
   if ((values["admit-read"] !== undefined || values["admit-publish"] !== undefined) && values.local !== true) usage("admission ceilings belong to the explicit local start");
+  // A ceiling entry is a channel or a channel pattern. One the wire layer would rewrite, such as
+  // `a b`, would admit a channel nobody named.
+  for (const flag of ["admit-read", "admit-publish"] as const) {
+    const entries = (values[flag] ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (entries.length === 1 && entries[0] === "none") continue;
+    for (const entry of entries) {
+      try { assertValidChannel(entry); } catch (error) { usage(`--${flag}: ${oneLine((error as Error).message)}`); }
+    }
+  }
   // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.
   if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
+  if (values.artifact !== undefined && !values.artifact.trim()) usage("--artifact names the artifact the answer cites, so it cannot be empty");
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
   if (verb === "yield") {

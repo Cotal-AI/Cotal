@@ -99,7 +99,8 @@ typed word cannot clear the screen or retitle the terminal. A usage error is fou
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
-which the refusal gives. A short option takes its value after a space, so `-c=general` is refused
+which the refusal gives. An option given with no value, last or just before another option, is
+refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
 typeset text, is refused naming the option it meant, rather than read as a positional.
 
@@ -277,7 +278,7 @@ partway, so check what it did before you retry. A reader that closes the output 
 does, ends the command quietly with the status it had already set, or 0. A command that follows a
 stream, such as `watch`, `history --follow`, `console` or `channel members --follow`, notices the
 closed reader at its next line, so on a quiet mesh it runs until a message arrives or it is
-interrupted. Ctrl-C ends it at once: `watch` exits 130, and the other three exit 0.
+interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above.
 
 ## Commands
 
@@ -1680,7 +1681,11 @@ After an `--accept-missing-source` restore there is no old store, so it only ret
 An attempt the root's maintenance record does not name refuses with `TARGET_NOT_FOUND`, exit 2, and
 deletes nothing. A repeat after a completed cleanup is such an attempt, and its refusal says the
 restore has settled and names `cotal status`. Without `--force`, `restore-attempt` and
-`restore-fallback` name the command to run with its `--attempt`.
+`restore-fallback` name the command to run with its `--attempt`. `restore-attempt` refuses the same
+way, with `TARGET_NOT_FOUND`, for an attempt the record does not name, and with `LIFECYCLE_BLOCKED`
+for a recorded attempt past its pre-commit point, which recovers forward. Without `--attempt` both
+verbs refuse with `USAGE_INVALID`. Each refusal's Next names the attempt the root records and its
+step.
 
 ## reset
 
@@ -1782,8 +1787,8 @@ reason; for a group- or world-writable path it names `chmod go-w <path>`. Values
 fingerprints are not printed. No maintenance lock is taken by the preview. Like the store dry-run, it
 has a Store contents section when a store is present, naming what removing it removes and the runs
 the last down recorded, and `--json` carries them as `storeContents`. The apply's confirmation shows
-the same section. A preview that passes every check says the apply is offered and names
-`cotal reset space <space> --yes` as Next.
+the same section. A preview that passes every check opens with a verdict, as the store dry-run
+does: the apply is offered, with `cotal reset space <space> --yes` as Next.
 
 Apply shows the path inventory and defaults to cancellation, or requires
 `--yes` in a script. Under the maintenance lock it repeats the eligibility
@@ -2448,7 +2453,9 @@ the running services and `cotal down`, then `cotal reset store <space> --yes` on
 one of the stack's members runs, such as one added with `cotal service add`, `cotal down` refuses
 too, so the refusal first names `cotal service stop <name> --instance <id> --space <space> --yes`
 for each one. With only the broker left after that, it names the delete again in place of
-`cotal down`. The dry-run shows the same refusal as a warning.
+`cotal down`. The dry-run opens with a verdict, as `reset store`'s does: the apply would refuse,
+with that refusal's reason and remedy, or it is offered, with `cotal space delete <space> --yes` as
+Next. `--json` carries the refusal as `applyBlockedBy` and as a `LIFECYCLE_BLOCKED` warning.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. A script supplies the exact positional name with `--yes`;
@@ -2584,9 +2591,11 @@ space, this folder's space or the default space, and a space other than the defa
 The file is read and checked with the NATS client's own parser before anything is dialed, and the
 refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A directory, an empty file and
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
-no seed block, an invalid seed, or Windows (CRLF) line endings. A file that other accounts can read
-is still used, with a warning on stderr that gives the `chmod 600` command. `join --creds` reads its
-file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
+no seed block, an invalid seed, or Windows (CRLF) line endings. A file in a folder that another
+account can write, or below one, is refused `PERMISSION_DENIED`, exit 2, as `auth mint` refuses to
+write one there: the refusal names the folder, and its Next is the `chmod`, such as `chmod o-w <dir>`.
+A file that other accounts can read is still used, with a warning on stderr that gives the
+`chmod 600` command. `join --creds` reads its file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
 credential's own permissions name one other space, the refusal names that space, such as
 `credentials rejected at <server>: <file> is a credential for space "<owner>", not "<space>"`, and
 its Next is `--space <owner>`. When `--server` named another broker than the one that space is
@@ -5212,7 +5221,9 @@ credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `
 static-auth space the follow mints its own credential from the space's trust, so when the broker
 rejects it the Next says to run the follow again, which mints one from the current trust. With
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
-The first record is a `snapshot` holding the window, then one `event` per message. An `error`
+The first record is a `snapshot` holding the window, then one `event` per message. An event has
+no `seq`, because the live feed carries no stream sequence; the snapshot's items keep theirs. To
+read on from a follow, give `--since` the last event's `ts`. An `error`
 record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
 shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
@@ -5780,6 +5791,9 @@ expired names `cotal auth mint <label> --identity <file> --out <file>`, which si
 again with the same grants. One whose key was revoked, or that an earlier space identity issued,
 names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`
 refuses a revoked one.
+A run with no findings says so in its heading only when nothing else is printed. While an exported
+file needs attention, or a credential is unbounded by request, the heading starts `No findings;` and
+names each, such as `2 exported credential files need attention`. The exit code stays 0.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.
@@ -6356,8 +6370,9 @@ escape. A run that failed records its cause on its status. Its recorded state re
 view prints the message under `Failure`. When a step's error is the run's failure, `Failure` names
 that step and the message stays under `Step errors`. A run that failed before its status recorded a
 cause shows only `failed`. A failure raised by program code outside any step is recorded in no
-journal row. The view says so under `Failure` and names
-`cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
+journal row. When the status recorded no cause either, the view says so under `Failure`. Either way
+it names `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its
+manager's log.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
 A program's `log(...)` lines are not journalled, so `show` and `journal` do not print them. A hosted
@@ -6380,7 +6395,8 @@ escalates again. A settled pause adds its `answer` and its `amendments`, as the 
 them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
 An unreadable revocation marker makes the result partial, exit 4, with a `REVOCATION_NOT_CHECKED`
-warning naming the run. The text view is presentation and is not a stable parsing target. With
+warning naming the run. A `ps --endpoint <endpoint>` that matches no run lists nothing and says so,
+naming the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning. The text view is presentation and is not a stable parsing target. With
 `--local`, only `ps`, `journal`, `answer` and `amend` take `--json` or `--plain`.
 `ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
 diagnostic JSON page instead of the full list:
@@ -6401,8 +6417,8 @@ answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
 a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
-deep. The receipt of `answer` and `amend` names the step, the
-value it filed or that none was given, any artifact and the answer id. With `--json` they are in
+deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receipt of `answer` and
+`amend` names the step, the value it filed or that none was given, any artifact and the answer id. With `--json` they are in
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
@@ -6416,7 +6432,9 @@ and non-zero on not. An edited program that does not validate is refused before 
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
 migration is not reachable yet, and the report says so. `migrate` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
 commit does and the check files nothing. `--timeout` sets the default
-limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). It takes a duration
+limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
+expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
+or from this default. It takes a duration
 longer than zero, such as `30m`, and refuses anything else with `USAGE_INVALID` before the run starts. `--on <instance>` sends a hosted verb to one manager
 instance, with the same rules as [`ps`](#managed-seats). On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
@@ -6425,7 +6443,8 @@ material, and is the path on a bare broker with no manager or for a run with no 
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
-patterns or `none`), the run's channel ceiling. On a
+patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
+`a b`, is refused `USAGE_INVALID` naming it. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
 its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides
@@ -6656,8 +6675,9 @@ These three forms are offline and reject mesh or caller selection. Validation ch
 language. A program that does not validate is refused by all three with every problem listed: its
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
 `result.problems`. A warning leaves the program valid. All three print it on stderr with its code,
-position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a literal list whose items carry no `id` and
-that passes no `key`, which the run refuses when it reaches it. Plan lists validated static call sites in source order; it does not evaluate branches,
+position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a list written in the call whose items carry no
+`id` and that passes no `key`, which the run refuses when it reaches it. A list held in a variable
+gets no warning, because it can change before the call; the run refuses it the same way. Plan lists validated static call sites in source order; it does not evaluate branches,
 loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
 script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and

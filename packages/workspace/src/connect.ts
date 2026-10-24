@@ -1,4 +1,5 @@
 import { readFileSync, statSync, type Stats } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
@@ -38,7 +39,7 @@ import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type Resolv
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type RefusalCode } from "./output.js";
-import { credentialFileExposure } from "./protected-records.js";
+import { credentialFileExposure, localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
 import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
 import { stoppedLoopbackListener } from "./pid.js";
 import type { MeshTargetErrorCode } from "./mesh-target.js";
@@ -827,6 +828,15 @@ export function readCredsFile(path: string): string {
   try {
     stat = statSync(path);
     if (!stat.isFile()) throw refuse(`${path} is not a regular file`, "SCHEMA_INVALID", "pass the credential file itself");
+    // Another local account that can write a folder on its path can swap the file, so it is refused
+    // as auth mint refuses to write one there. POSIX only, as the file-mode warning below is.
+    if (localRecordAccess() === "posix") {
+      try { protectedLocalDirectory(dirname(resolve(path)), "its path"); }
+      catch (error) {
+        if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") throw refuse(`${path} cannot be used: ${error.message}`, "PERMISSION_DENIED", error.remedy ?? "move it to a folder only you can write");
+        throw error;
+      }
+    }
     text = readFileSync(path, "utf8");
   } catch (e) {
     if (isConnectRefusal(e)) throw e;

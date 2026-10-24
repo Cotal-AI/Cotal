@@ -6,7 +6,8 @@
  *  2. After `down`, without `--yes` it refuses USAGE_INVALID (exit 1). With `--yes` it records the
  *     key from the creds file in the account JWT's revocations, and again by public key it reports
  *     the same time and changes nothing. doctor auth lists the file as revoked, naming a mint with a
- *     new key. A creds file another account issued refuses CONFLICT.
+ *     new key, and its heading says one exported file needs attention. A creds file another account
+ *     issued refuses CONFLICT.
  *  3. After `up`, the broker refuses the revoked credential, another minted credential still reads,
  *     and the channel history is kept. `auth mint --identity` refuses the revoked key, CONFLICT, and
  *     a fresh mint works.
@@ -115,6 +116,9 @@ try {
     check("doctor auth lists the revoked file, and its repair is a mint with a new key, since --identity refuses that key",
       listed?.state === "revoked" && listed.repair?.includes("auth mint --identity refuses that key; mint a new key:") === true && listed.repair.includes("auth mint leaked --out <new file>")
         && exported.find((row) => row.path === kept)?.state === "unbounded", { exported, doctor: shown(doctor) });
+    const heading = cli(root, "doctor", "auth");
+    check("  and its heading says there are no findings and that one exported file needs attention",
+      heading.status === 0 && heading.stdout.includes("No findings; 1 exported credential file needs attention") && !heading.stdout.includes("No local credential findings"), shown(heading));
     const foreign = join(creds, "foreign.creds");
     writeFileSync(foreign, await mintCreds(await createSpaceAuth("elsewhere"), newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
     const other = cli(root, "auth", "revoke-credential", foreign, "--yes", "--json");

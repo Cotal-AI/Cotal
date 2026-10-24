@@ -55,7 +55,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 73;
+const EXPECTED = 75;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -406,6 +406,24 @@ try {
   await wait(400);
   check("a creds file other accounts can read is still used, with a warning that names chmod 600",
     shared.code === 0 && got.some((m) => m.route === "DM" && m.text === sharedText) && (process.platform === "win32" || shared.stderr.includes(`creds file ${sharedCreds} is not private to you (mode 0644); chmod 600 ${sharedCreds}`)), shared.stderr);
+  // Another account that can write the file's folder can swap it, so it is refused as auth mint refuses to write there.
+  if (process.platform !== "win32") {
+    const loose = join(tmp, "loose"), looseCreds = join(loose, "a.creds");
+    mkdirSync(loose);
+    chmodSync(loose, 0o777);
+    writeFileSync(looseCreds, readFileSync(explicitCreds), { mode: 0o600 });
+    const looseText = `loose-${randomUUID().slice(0, 6)}`;
+    const refused = await run(["send", "-t", "bob", looseText, "--space", space, "--server", servers, "--creds", looseCreds]);
+    await wait(400);
+    check("a creds file in a folder every account can write is refused PERMISSION_DENIED, exit 2, naming the folder and its chmod, and nothing is sent",
+      refused.code === 2 && refused.stderr.includes("PERMISSION_DENIED") && refused.stderr.includes(`creds file ${looseCreds} cannot be used: its path is not protected against other local writers: ${loose} is writable by every local account`)
+        && refused.stderr.includes(`chmod o-w ${loose}`) && !got.some((m) => m.text === looseText), refused.stderr);
+    chmodSync(loose, 0o700);
+    const fixedText = `fixed-${randomUUID().slice(0, 6)}`;
+    const fixed = await run(["send", "-t", "bob", fixedText, "--space", space, "--server", servers, "--creds", looseCreds]);
+    await wait(400);
+    check("  once the folder is private the same file is used", fixed.code === 0 && got.some((m) => m.route === "DM" && m.text === fixedText), fixed.stderr);
+  }
 
   const missing = await run(["send", "-t", "nobody-here", "x"]);
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);
