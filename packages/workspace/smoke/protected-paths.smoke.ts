@@ -249,6 +249,13 @@ try {
   assert.ok(thrown instanceof CommandFailure && thrown.code === "PERMISSION_DENIED", "a group-writable credential file refuses");
   assert.match((thrown as Error).message, /must be an owned private regular file/, "a group-writable credential file names the file rule");
   assert.ok((thrown as Error).message.includes(`the referenced credential ${creds} `) && ((thrown as CommandFailure).target as { path?: unknown } | undefined)?.path === creds, "it names the file, in the text and the target");
+  assert.equal((thrown as CommandFailure).remedy, `chmod 600 ${shellPath(creds)}`, "its Next is the chmod that makes the file private");
+  // A file that is not there is absent, not an outage, and is named too.
+  const gone = join(dir, "gone.creds");
+  let missing: unknown;
+  try { protectedCredentialReference(gone); } catch (error) { missing = error; }
+  assert.ok(missing instanceof CommandFailure && missing.code === "TARGET_NOT_FOUND" && missing.message === `the referenced credential ${gone} does not exist`
+    && (missing.target as { path?: unknown } | undefined)?.path === gone, `a missing credential file refuses TARGET_NOT_FOUND, naming it\n${String(missing)}`);
   // The bounded reader names the file it refused, too: a link it does not follow, and a saved record
   // that is not private.
   const credsLink = join(dir, "creds-link");

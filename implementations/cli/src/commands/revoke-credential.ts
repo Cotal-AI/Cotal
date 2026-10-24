@@ -1,9 +1,9 @@
 import { resolve } from "node:path";
 import { accountRevocations, credsClaims, isReachable, isUserNkey, revokeAccountUser, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, oneLine,
+  boundedValue, CommandFailure, ConfirmationRequired, getSpaceAuth, hasUserAuthState, isCommandFailure, isWorkspaceTargetError, oneLine,
   presentationOf, protectedCredentialReference, putSpaceAuth, readLocalRecordSource, readMaintenanceJournal, releaseMaintenanceLock,
-  resolveMeshTarget, targetErrorCode, workspaceErrorParts, workspaceSecretStore, writeResult, type Report,
+  resolveMeshTarget, SHOWN_VALUE_MAX, targetErrorCode, workspaceErrorParts, workspaceSecretStore, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { acquireStackOperationLock, readStackJournal } from "../lib/stack-journal.js";
@@ -40,7 +40,13 @@ async function assertStopped(target: RevokeTarget, subject: string): Promise<voi
 function revokedKey(subject: string, accountPub: string, space: string): { key: string; path?: string } {
   if (isUserNkey(subject)) return { key: subject };
   const path = resolve(subject);
-  protectedCredentialReference(path);
+  try { protectedCredentialReference(path); }
+  catch (error) {
+    // A bare word that names no file here was most likely meant as a public key.
+    if (isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && !/[\\/]/.test(subject))
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `"${oneLine(boundedValue(subject, SHOWN_VALUE_MAX))}" is not a user public key, and no file is at ${path}; nothing was revoked`, { target: { path }, remedy: "name the credential's user public key, the U… key in its mint receipt's Principal, or its creds file" });
+    throw error;
+  }
   const bytes = readLocalRecordSource(path, 1024 * 1024, true);
   if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the creds file disappeared; nothing was revoked", { target: { path } });
   let claims: ReturnType<typeof credsClaims>;

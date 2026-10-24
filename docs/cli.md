@@ -781,7 +781,10 @@ and each path that failed once, with its reason and one `chmod` that fixes every
 whole-stack failure shows that sentence as its native detail. On POSIX, a credential file a command
 is given, such as a `<private-file>` argument, and a saved private record must be a regular file this
 account owns with no group or other access. One that is not, or that this account cannot open,
-refuses `PERMISSION_DENIED` (exit 2) and names the file.
+refuses `PERMISSION_DENIED` (exit 2) and names the file. When only its owner or mode is wrong, the
+Next is the copy or `chmod 600` that fixes it. A credential file that does not exist refuses
+`TARGET_NOT_FOUND`, and one whose path cannot be checked refuses `DEPENDENCY_UNAVAILABLE`; both
+name the file.
 
 A fresh prepared static-auth, open or plain-loopback user-auth root starts through the service
 controller. It records its mode, definitions and full instance IDs in the private
@@ -5845,6 +5848,7 @@ cotal auth revoke-credential <public-key | creds-file> [--space <space>] [--yes]
 It stops one credential that `auth mint` wrote and keeps the space's store and every other
 credential. Name the credential by its user public key, which the mint receipt reports as its
 identity, or by its creds file, which must be private to you and issued by this space's account. A
+word that is not a user public key and names no file refuses `TARGET_NOT_FOUND` and says both. A
 file from another account refuses `CONFLICT`. The command records the key in the space's account,
 re-signed by the space's operator, and the broker refuses that key from its next start.
 

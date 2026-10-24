@@ -418,12 +418,17 @@ export function protectedCredentialReference(path: string): void {
       if (!statSync(path).isFile()) throw new CommandFailure("refused", "PERMISSION_DENIED", `the referenced credential ${path} must be a regular file; its bytes were not read`, { target: { path } });
     } else {
       const stat = lstatSync(path);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", `the referenced credential ${path} must be an owned private regular file; its bytes were not read`, { target: { path } });
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) {
+        const exposure = stat.isFile() ? credentialFileExposure(path, stat) : undefined;
+        throw new CommandFailure("refused", "PERMISSION_DENIED", `the referenced credential ${path} must be an owned private regular file; its bytes were not read`, { target: { path }, ...(exposure ? { remedy: exposure.remedy } : {}) });
+      }
     }
     protectedLocalDirectory(dirname(path), "the credential reference");
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the protected credential reference is missing or unreadable; its bytes were not read");
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the referenced credential ${path} does not exist`, { target: { path } });
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the referenced credential ${path} could not be checked (${code ?? "unreadable"}); its bytes were not read`, { target: { path } });
   }
 }
 
