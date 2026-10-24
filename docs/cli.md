@@ -1161,7 +1161,13 @@ scripts and prints no plan. The receipt names the mesh once, lists each member w
 stop order, and names `cotal up` as the next step. `--with-agents`
 requests the manager's native retirement policy. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
-`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. The broker scope
+`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. So does a
+process record under the root that may front a process, such as a daemon an earlier release
+started; the message and the Next name each record's path and pid. A record whose process is gone,
+or whose pid now runs another start than its identity pin records because the pid was reused, fronts
+nothing. It refuses neither bare `down` nor a stop of `stack-broker`, `down --dry-run` names it, and
+a complete bare `down` removes it with its pin and names it in a `STALE_PROCESS_RECORD` warning. The
+process that holds a reused pid is never signalled. The broker scope
 is checked again after its dependants stop. A failure stops the sequence and preserves completed and
 unattempted members.
 Only a complete confirmed stop removes the delivery credential and local registration. When the
@@ -1401,7 +1407,8 @@ so a recorded pid alone is not a durable target identity. `up` and the dashboard
 process's creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the
 process start reported by the OS. Every stop path, including `down` for the broker, web and
 extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
-that names a different start means the pid was reused, so teardown refuses and preserves it. A torn
+that names a different start means the pid was reused, so teardown refuses and preserves it. A
+controller stack's bare `down` signals no such record, so it removes it, as described above. A torn
 or unreadable pin also refuses. macOS start tokens keep their spaces, including the padded day,
 in both the identity pin and the one-shot shutdown intent. A single record cannot span lines.
 On Windows, the reader calls `GetProcessTimes` through a bundled Node-API binding for x64 or

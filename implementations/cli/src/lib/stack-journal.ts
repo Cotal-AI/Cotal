@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, serviceOperationId, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, stackAdoptionBlock, stackElsewhereRemedy, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -673,23 +673,52 @@ export function releaseStackDefinitions(root: string, space: string): { released
   return { released };
 }
 
-/** Legacy pidfile records under the root that may front a process, excluding the settled records
- *  the stack's own controller children publish for themselves: a record counts as owned only when
- *  its PID is the live creation-pinned process of a stack member instance. Nothing is adopted. */
-export function foreignLocalProcesses(root: string, space: string): string[] {
+/** One legacy pidfile record under the root: whose descriptor names it, its path relative to the
+ *  root, the record as read, the pid it holds when one parses, and its state. A `gone` record's
+ *  process is ESRCH-dead. A `reused` record's pid runs another start than its identity pin records,
+ *  so the pid was reused and the recorded process is gone too. A `live` one may front a process. */
+export interface LocalRecord { readonly name: string; readonly path: string; readonly raw: string; readonly pid?: number; readonly state: "live" | "gone" | "reused" }
+
+/** The legacy pidfile records under the root, excluding the settled records the stack's own
+ *  controller children publish for themselves: a record counts as owned only when its PID is the
+ *  live creation-pinned process of a stack member instance. Read only: nothing is adopted. */
+export function localRecords(root: string, space: string): LocalRecord[] {
   const owned = new Set<number>();
   for (const name of Object.values(STACK_DEFINITION))
     for (const row of serviceInstances(space, name)) if (row.record.value.process && observeServiceProcess(row.record.value) === "running") owned.add(row.record.value.process.pid);
-  const foreign: string[] = [];
+  const records: LocalRecord[] = [];
   for (const component of localProcessSurface()) {
-    const raw = readPidfile(localProcessPath(component.pidFile, { root, space }));
+    const path = localProcessPath(component.pidFile, { root, space });
+    const raw = readPidfile(path);
     if (!raw) continue;
     const pid = parsePid(raw);
     if (pid !== undefined && owned.has(pid)) continue;
-    if (pid === undefined || probeLiveness(pid) !== "dead") foreign.push(`${component.name}${pid === undefined ? " (unattributable record)" : ` (pid ${pid})`}`);
+    const pin = pid === undefined ? undefined : verifyIdentityPin(path).kind;
+    records.push({ name: component.name, path: relative(root, path), raw, ...(pid === undefined ? {} : { pid }), state: pin === "gone" ? "gone" : pin === "mismatch" ? "reused" : "live" });
   }
-  return foreign;
+  return records;
 }
+
+/** How a refusal lists one record: `<name> at <path>, pid <pid>`. */
+export const localRecordLine = (row: LocalRecord): string => `${row.name} at ${row.path}, ${row.pid === undefined ? "unattributable record" : `pid ${row.pid}`}`;
+
+/** Legacy pidfile records under the root that may front a process, as `up` refuses them: every
+ *  record whose process is not gone. */
+export function foreignLocalProcesses(root: string, space: string): string[] {
+  return localRecords(root, space).filter((row) => row.state !== "gone").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
+}
+
+/** Remove the records under the root that front no process, `gone` and `reused` ones, and return
+ *  them. Each is removed with its pin, only while its pidfile still reads as it did. */
+export function removeStaleLocalRecords(root: string, space: string): LocalRecord[] {
+  const stale = localRecords(root, space).filter((row) => row.state !== "live");
+  for (const row of stale) removePidPair(join(root, row.path), row.raw);
+  return stale;
+}
+
+/** What a stop says about a stale record it removed, or for a preview, one it would remove. */
+export const staleRecordNotice = (row: LocalRecord, preview = false): string =>
+  `${preview ? "the stop removes" : "removed"} the stale ${row.name} record ${row.path}: ${row.state === "reused" ? `pid ${row.pid} was reused by another process` : `its process, pid ${row.pid}, is gone`}`;
 
 /** A record under a root that may still front a process: whose descriptor names it, its path
  *  relative to the root, the pid it holds when one parses, and why it counts. */
@@ -748,16 +777,20 @@ export function stackNeverStarted(journal: StackJournal): boolean {
 export const processGone = (state: string) => state === "gone" || state === "previous-boot" || state === "foreign-pid";
 
 /** What stopping the stack's broker would cut off outside its recorded members refuses before the
- *  first signal: another live or unresolved service instance in the space, a legacy pidfile process
- *  under the root, or another registration that names the same broker address. Bare `down` and
- *  `down --preserve-state` both run it; `next` is the command to run once the named dependants are
- *  stopped. */
+ *  first signal: another live or unresolved service instance in the space, a legacy pidfile record
+ *  under the root that may front a process, or another registration that names the same broker
+ *  address. Bare `down` and `down --preserve-state` both run it; `next` is the command to run once
+ *  the named dependants are stopped. */
 export function stackScopeRefusals(journal: StackJournal, next: string): void {
   const memberIds = new Set(journal.members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId]));
   const others = serviceInstances(journal.space).filter((row) => !memberIds.has(row.name) && (!processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state)));
   if (others.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop each with ${others.map((row) => `cotal svc stop ${row.record.value.definition} --instance ${row.name} --space ${journal.space} --yes`).join("; ")}, then run ${next}` });
-  const legacy = foreignLocalProcesses(journal.root, journal.space);
-  if (legacy.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes under this root may depend on the broker; they were neither adopted nor stopped", { target: { root: journal.root, processes: legacy } });
+  // A record whose process is gone, or whose pid now runs another start, fronts nothing.
+  const legacy = localRecords(journal.root, journal.space).filter((row) => row.state === "live");
+  if (legacy.length) {
+    const lines = legacy.map(localRecordLine), checks = legacy.map((row) => row.pid === undefined ? row.path : `pid ${row.pid} at ${row.path}`);
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `legacy pidfile-owned processes under this root may depend on the broker (${lines.join("; ")}); they were neither adopted nor stopped`, { target: { root: journal.root, processes: lines }, remedy: `check ${checks.join(", ")}; stop each process where it was started, or remove a record whose process is gone, then run ${next}` });
+  }
   const sharing = loadMeshes().filter((mesh) => mesh.space !== journal.space && mesh.server === journal.server);
   if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) } });
 }
