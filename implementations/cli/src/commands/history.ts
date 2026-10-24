@@ -567,6 +567,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
         process.exitCode = exitCode(failure.outcome, failure.code);
       }
       if (presentation === "json") writeStreamRecord(streamRecord("history", "end", target, { reason: refusal ? "refused" : ended ?? "stopped" }));
+      if (!refusal && ended) process.exitCode = ended === "interrupted" ? 130 : 143;
     },
   };
 }

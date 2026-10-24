@@ -28,6 +28,7 @@ export * from "./present.js";
 export * from "./prompt-input.js";
 export * from "./provenance.js";
 export * from "./mesh-registry.js";
+export * from "./cotal-home.js";
 export * from "./prepared-spaces.js";
 export * from "./join-target.js";
 export * from "./registration-policy.js";

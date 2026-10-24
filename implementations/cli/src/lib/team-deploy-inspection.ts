@@ -78,6 +78,19 @@ async function channelRegistrySnapshot(server: string, space: string, tls: boole
   } finally { await nc.close(); }
 }
 
+/** The declared cards `team deploy` does not create, because each inherits its delivery class or
+ *  asks for durable delivery, which needs a verified daemon first. Apply creates a card only with an
+ *  explicit `deliveryClass: live`. `cards` names them for a sentence, ten at most. */
+export function cardsWithoutLiveDelivery(channels: readonly { name: string; deliveryClass?: string }[]): { names: string[]; cards: string; verb: string } | undefined {
+  const names = channels.filter((channel) => channel.deliveryClass !== "live").map((channel) => channel.name);
+  if (!names.length) return undefined;
+  const shown = names.slice(0, 10).map((name) => `#${name}`).join(", ");
+  return { names, cards: names.length > 10 ? `${shown} and ${names.length - 10} more` : shown, verb: names.length === 1 ? "does" : "do" };
+}
+
+/** What to do about the cards {@link cardsWithoutLiveDelivery} names. */
+export const LIVE_DELIVERY_REMEDY = "set `deliveryClass: live` on each card, or create a durable channel with `cotal channel set <name> --delivery durable`";
+
 /** Read-only additive classification. The membership feed is display-only and never grants apply. */
 export async function inspectTeamDeployment(root: string, path: string, prepared: PreparedManifest, runtime: string) {
   const space = prepared.manifest.space;

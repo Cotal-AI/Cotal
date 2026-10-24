@@ -8,6 +8,7 @@ import {
   cmdSpawnSpec,
   beginGlobalUpdateChild,
   claimGlobalNpmUpdateLock,
+  launcherInstallRoot,
   loadExtensionsManifest,
   SEEDED_EXTENSIONS,
   type InstalledExtension,
@@ -16,7 +17,7 @@ import {
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
-import { withInstallUmask } from "../lib/install-umask.js";
+import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -125,6 +126,11 @@ const runtime: UpdateRuntime = {
 export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Promise<void> {
   validateUpdateArguments(args);
   if (args.values.check === true) return checkUpdate(args, rt);
+  // The installer's own tree changes nothing a running manager reads, so its modes are repaired
+  // before the continuity check rather than only when the reconcile is allowed to run.
+  const install = launcherInstallRoot();
+  const repaired = install ? repairInstallModes(install) : 0;
+  if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's install at ${install}`));
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
   if (code !== 0) process.exitCode = code;
 }
