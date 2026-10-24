@@ -3444,7 +3444,7 @@ export class Manager {
       console.error(
         `! could not deregister manager instance ${iid}: ${rejectionText(e)}\n` +
           `  Its registration now outlives this process and will be frozen into every class scatter in space "${this.space}", each paying the full deadline.\n` +
-          `  NEXT: remove it with \`cotal deregister-instance --instance ${iid}\` once this process is gone.`,
+          `  NEXT: once this process is gone, start this manager again and stop it cleanly; on a static space \`cotal endpoint deregister manager ${iid} --yes\` from the space's own root also removes it.`,
       );
     }
   }

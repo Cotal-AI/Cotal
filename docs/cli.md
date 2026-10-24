@@ -3743,7 +3743,12 @@ one envelope whose `result` is:
 `target` is `{space, scope: "all-managers"}` for the class scatter, and
 `{space, scope: "manager", managerInstanceId}` for `--on` or a user-auth mesh. A manager that is not
 `answered` makes the read `partial` (exit 4), with a `MANAGER_SILENT`, `MANAGER_REFUSED` or
-`MANAGER_CONTRACT_MISMATCH` warning naming it.
+`MANAGER_CONTRACT_MISMATCH` warning naming it. A `silent` manager whose `liveness` is `gone` is a
+registration its host never removed. On an auth space its row names `cotal endpoint deregister
+manager <id> --yes`, run from the space's own root. On any other space only that manager's own clean
+stop removes it, so the row names starting it again and stopping it if its host is still available,
+and says no supported command removes the record if the host is gone. The row stays and the read
+stays `partial`.
 
 `--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does.
 
@@ -7319,7 +7324,9 @@ refuses before its first effect, such as a missing persona file or connector, ca
 names the file it looked for. An unpinned launch that no manager received is refused with
 `TARGET_UNAVAILABLE` and exit 2. With no manager running, the CLI says so before it sends and
 names bare `cotal up`. When every live manager reports `classSpawn: false`, it says none has an
-agent application installed and names the `cotal ext add` that adds one. A manager reads its
+agent application installed and names the `cotal ext add` that adds one. A registered manager whose
+rail the broker reports empty is skipped without waiting on it and named in a `MANAGER_SILENT`
+warning, and the reason comes from the managers that answered. A manager reads its
 applications when it starts, so restart it after adding one. A failure after the manager reserved
 the name or wrote a launch file keeps its native outcome, and the CLI never reclassifies it from
 its message.
