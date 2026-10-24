@@ -809,9 +809,10 @@ address. When no member started, the refusal says the stack
 started no member. A text `up` prints one `Starting <definition>` line
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's
 Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager after `--no-manager`,
-and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, so a bare
-`cotal spawn` can target another space. When another space stays selected, the receipt says so and
-names `cotal use <space>`, as a legacy `up` does.
+and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, which a bare
+`cotal spawn` run outside this folder targets. When another space stays selected, the receipt says
+so and names `cotal use <space>`, as a legacy `up` does. When no registered or prepared space is
+selected, `up` selects the space it started and says so.
 
 On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
 every stack mode. It refuses while validating its arguments, before the confirmation and before any
@@ -2156,7 +2157,8 @@ naming `cotal down --yes`, then `cotal up`, whose broker start creates the missi
 the space instead, run `cotal down --yes` in its root, then `space forget`. On a legacy root, run
 `cotal down`, then `cotal up` to start it again with empty streams.
 
-`use <space>` selects the space commands target when none is named. It changes only the selection:
+`use <space>` selects the space commands target when none is named, outside another space's
+project folder. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
 registered is refused with `TARGET_NOT_FOUND`, exit 2, and the selection stays. Bare `use` reports
@@ -2168,10 +2170,12 @@ nothing selected it is a `no-op`, exit 0. It takes no space name.
 
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
-it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh. Inside a project whose root has a
-registered space other than the selection, the command still targets the selection. Before it acts,
-it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming both spaces
-and the `--space` that targets the folder's space.
+it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh. Inside a project whose root has one
+registered or prepared space other than the selection, the command targets that space, as it does
+with nothing selected, and the note under its `Mesh:` heading says the selection applies outside the
+folder. Inside a project whose root has several spaces, none of them the selection, the command
+targets the selection. Before it acts, it warns on stderr and in its JSON `warnings` with
+`SELECTION_NOT_FOLDER_SPACE`, naming the folder's spaces and `--space <space>`.
 An empty `--space` value, such as `--space "$S"` with `S` unset, is refused with `USAGE_INVALID`,
 exit 1, by every command that takes `--space`, before anything is read or written. It never falls
 back to the selection.
@@ -2217,8 +2221,8 @@ in `error.remedy`, apart from `error.message`, and names the space and root it c
 
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
 its space is registered at and keeps that registration's TLS requirement. The space is `--space`,
-else the selected space, else the space of the project the command runs in, else `main`. A command
-never picks the only running space for a credential. A space not registered here is refused with
+else the selected space, else the space of the project the command runs in, else `main`. Inside a
+project whose root has one space other than the selection, it is that space. A command never picks the only running space for a credential. A space not registered here is refused with
 `TARGET_NOT_FOUND`, exit 2, before anything is dialed. The refusal says whether it is the selected
 space, this folder's space or the default space, and a space other than the default is also under
 `target`. The default address is never assumed for a credential.
@@ -2455,8 +2459,8 @@ AG-UI runs, regardless of who drives their input. Required events do not turn te
 into agent runs or copy channel and DM text into an event stream. This launch policy is not an
 additional broker authorization boundary. The broker still enforces each endpoint's grants.
 
-The selection `cotal use` sets applies from every directory, including inside another mesh's
-project, where the command warns that it targets the selection. `status` is a read-only report in this order: this machine
+The selection `cotal use` sets applies from every directory except another space's project folder,
+where the command targets that folder's space. `status` is a read-only report in this order: this machine
 (the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
@@ -5208,7 +5212,9 @@ harness. A `--link` supplies the where and the auth in one value. See
 
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
 keeping that registration's TLS requirement. With no `--space`, that is the selected space, else
-this folder's. A space not registered here is refused before anything is dialed. The default address is never assumed for a credential.
+this folder's, and inside a project whose root has one space other than the selection, that space.
+A space not registered here is refused before anything is dialed. The default address is never
+assumed for a credential.
 
 A `--creds` join binds the inbox provisioned for its lifecycle, so the space's owner mints the
 credential with `cotal auth mint <name> --provision` and hands over the lifecycle UID that mint
