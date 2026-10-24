@@ -2,4 +2,8 @@
 "@cotal-ai/cli": patch
 ---
 
-A usage refusal shows a control character in a word it quotes as its `\uXXXX` escape, as every other report does. An unknown command, subcommand or option, an unknown `config get` key or `docs` page, an invalid channel name, and the excerpt of a `--channels` file that is not JSON used to reach the terminal raw, so a typed or committed escape sequence could clear the screen or retitle the terminal.
+The `✗` line of a usage refusal now shows control characters as escapes, as the classified report
+already did. A `.cotal/channels.json` or `--channels` file that is not valid JSON is refused with the
+parser's excerpt of the file, and an escape sequence in that excerpt reached the terminal raw, so
+`cotal up` in a cloned project could clear the screen or set the window title. The same applied to an
+argument a refusal repeats, such as an unknown command, docs page, preference key or channel name.
