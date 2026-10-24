@@ -42,6 +42,7 @@ const downOptions: ParseArgsOptionsConfig = {
   "preserve-state": { type: "boolean" },
   "with-agents": { type: "boolean" },
   "abandon-stop": { type: "string" },
+  "abandon-launch": { type: "string" },
   "store-dir": { type: "string" },
   "session-store": { type: "string", multiple: true },
 };

@@ -13,12 +13,12 @@ export const watchFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 
-/** Complete `--view` with the views it takes. */
+/** The `--view` values as help names them, `feed` for the activity view. */
 export function watchComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, watchFlags);
-  if (flag?.name === "view") return { items: ["feed", ...watchViews.filter((view) => view !== "activity")].map((value) => ({ value })), directive: "nofiles" };
-  if (flag) return { items: [], directive: "nofiles" };
-  return { items: watchFlags.map((item) => ({ value: `--${item.name}`, description: item.description })), directive: "nofiles" };
+  if (flag?.name === "view") return { items: watchViews.map((view) => ({ value: view === "activity" ? "feed" : view })), directive: "nofiles" };
+  if (flag) return { items: [], directive: flag.completion === "files" ? "default" : "nofiles" };
+  return { items: watchFlags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), directive: "nofiles" };
 }
 
 export function validateWatchArguments(args: ParsedArgs): void {

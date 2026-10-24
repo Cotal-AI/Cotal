@@ -17,6 +17,7 @@ import { serviceUnitActionFor } from "../lib/service-unit-action.js";
 import { followServiceJournal, readServiceJournal } from "../lib/service-journal.js";
 import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { yesRequired } from "../lib/confirmation-required.js";
 import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { stackMemberFor } from "../lib/stack-journal.js";
@@ -163,7 +164,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   }
   if (mode === "uninstall") {
     if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "native service removal currently needs the supported Linux user manager; no unit or private store was touched", { target });
-    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired("native uninstall requires --yes outside an interactive terminal", { target, remedy: `confirm with cotal svc uninstall ${name} --yes, or inspect it with --dry-run` });
+    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with cotal svc uninstall ${name} --yes, or inspect it with --dry-run` });
     if (!values.yes) {
       const answer = await prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -221,9 +222,11 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
       const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options);
       if (!sameServiceAdapterPin(selected!.record.value.adapter, adapter.pin) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
     }
-    if (values.follow) return followServiceLog(selected!, presentation, values.tail === undefined ? 100 : Number(values.tail));
-    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, values.tail === undefined ? 100 : Number(values.tail));
-    writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", instance: row, ...log, encoding: "utf8-with-replacement", collection: row.foreground ? "foreground output is not captured in this log" : "owned background stdout/stderr" }, ...(log.omittedBytes ? { completeness: "partial", partial: { message: "The bounded log tail does not contain the complete file; earlier or partial leading bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Service log tail", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", row.instanceId], ["Host", row.executionHost], ["Collection", result.collection], ["Encoding", result.encoding]] }, { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] }, { kind: "lines", lines: [{ text: "Service-produced output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] }] }] }));
+    const tail = values.tail === undefined ? 100 : Number(values.tail);
+    if (values.follow) return followServiceLog(selected!, presentation, tail);
+    // A tail that returned every line asked for is complete, even when earlier bytes were not read.
+    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail);
+    writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", instance: row, ...log, encoding: "utf8-with-replacement", collection: row.foreground ? "foreground output is not captured in this log" : "owned background stdout/stderr" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial", partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Service log tail", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", row.instanceId], ["Host", row.executionHost], ["Collection", result.collection], ["Encoding", result.encoding]] }, { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] }, { kind: "lines", lines: [{ text: "Service-produced output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] }] }] }));
     return;
   }
   const supervisor = selected ? instanceProjection(selected).supervisorRecord : null;
@@ -274,7 +277,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with cotal svc ${mode} ${name} --yes, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with cotal svc ${mode} ${name} --yes, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   const nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined;
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;

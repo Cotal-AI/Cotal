@@ -205,8 +205,11 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
+import { checkSpaceName } from "./meshes-add.js";
 import { cleanedManifestStart } from "../lib/legacy-start.js";
-import { bindReaches, controllerStackApplies, keptOnUp, recheckExistingStore, requestedStackMode, selectedOnUp, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, stackUpInterruptNotice, keptOnUp, selectedOnUp, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
+import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
@@ -222,7 +225,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, configuredStoreDir, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { assertStoreDirArgument, lastServedStore, warnForeignStoreEntries, configuredStoreDir } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -381,6 +384,9 @@ export function validateUpArguments(args: ParsedArgs): void {
   // Only a manifest launch has a plan to print; without -f every route would start the stack.
   if (args.values["dry-run"] === true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; cotal status shows what this folder records" });
+  // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
+  const named = typeof args.values.space === "string" ? checkSpaceName(args.values.space) : undefined;
+  if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
   if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server))}`);
@@ -704,7 +710,9 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     // Path flags still mean paths relative to the invoking directory, not the selected root.
     // The recursive restore/resume re-entries inherit absolute paths and the same absolute root.
     const paths = root ? Object.fromEntries(["file", "restore", "channels", "tls-cert", "tls-key", "store-dir"].filter((key) => typeof args.values[key] === "string" && args.values[key] !== "").map((key) => [key, resolve(String(args.values[key]))])) : {};
-    const invocation: ParsedArgs = { ...args, values: { ...args.values, ...paths, ...(root ? { root } : {}), detach: args.values.foreground !== true } };
+    // The receipt's Next must run from the folder up was invoked in, which a re-entry inherits.
+    const invokedRoot = root && args.values.__invokedRoot === undefined ? { __invokedRoot: canonicalRoot(cotalRoot()) } : {};
+    const invocation: ParsedArgs = { ...args, values: { ...args.values, ...paths, ...(root ? { root } : {}), ...invokedRoot, detach: args.values.foreground !== true } };
     if (root) {
       try { process.chdir(root); }
       catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the prepared --root became inaccessible before startup; no alternate directory was selected", { target: { root } }); }
@@ -741,6 +749,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     json?: boolean; plain?: boolean;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
+    __invokedRoot?: string;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
   if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
@@ -1250,11 +1259,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const start = async () => {
       try {
         if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
+        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
       } finally { releaseMaintenanceLock(stackLock); }
     };
     if (values.foreground) await holdForegroundStack(meshRoot, start);
-    else await start();
+    else {
+      // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
+      // its child, and the notice names what it left running.
+      const release = noticeOnInterrupt(() => { settleInterruptedLaunches(); return stackUpInterruptNotice(meshRoot, stackSpace); });
+      try { await start(); } finally { release(); }
+    }
     return;
   }
   // A named space this machine runs from another folder is refused before anything is written here,
@@ -4696,25 +4710,11 @@ function validateRecorded(
   return transport;
 }
 
-/** The store this root's last broker served, when it differs from `storeDir` and still holds
- *  JetStream data. `down` drops the record that named a custom or restored store, but each real start
- *  writes its `store_dir` into the broker config it renders, and that file outlives `down`. */
-function lastServedStore(storeDir: string): string | undefined {
-  for (const conf of [join(authDir(cotalRoot()), "server.conf"), cotalPath("server-open.conf")]) {
-    if (!existsSync(conf)) continue;
-    // The core renderer writes the path as a JSON string.
-    const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
-    const last = named === undefined ? undefined : resolve(cotalRoot(), JSON.parse(named) as string);
-    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream"))) return last;
-  }
-  return undefined;
-}
-
 /** A start that names no store would open an empty second store and leave the data where it was:
  *  while the last served store holds data and the default store holds none, refuse and name it. */
 function refuseUnnamedLastStore(storeDir: string): void {
   if (existsSync(join(storeDir, "jetstream"))) return;
-  const last = lastServedStore(storeDir);
+  const last = lastServedStore(cotalRoot(), storeDir);
   if (last !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
 }
@@ -4724,7 +4724,7 @@ function refuseUnnamedLastStore(storeDir: string): void {
  *  new store on purpose. */
 function refuseMissingNamedStore(storeDir: string): void {
   if (existsSync(storeDir)) return;
-  const last = lastServedStore(storeDir);
+  const last = lastServedStore(cotalRoot(), storeDir);
   if (last !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and --store-dir names ${storeDir}, which does not exist, so this start would open a new empty store there; nothing was started`, { target: { root: cotalRoot(), storeDir: last, requested: storeDir }, remedy: `reopen it with --store-dir ${last}, or create ${storeDir} first to start on a new empty store` });
 }

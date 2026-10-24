@@ -36,7 +36,7 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
+import { authDir, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -52,8 +52,8 @@ type Envelope = {
   outcome: string;
   completeness: string;
   command: string;
-  target: { space: string; scope?: string };
-  result: { kind: string; server?: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | string | null; capabilities?: unknown; space?: string | null; profile?: string | null; principal?: string | null; lifecycleUid?: string | null; expired?: boolean } | null;
+  target: { space: string; scope?: string; root?: string };
+  result: { kind: string; server?: string | null; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | string | null; capabilities?: unknown; space?: string | null; profile?: string | null; principal?: string | null; lifecycleUid?: string | null; expired?: boolean } | null;
   warnings: { code: string; message: string }[];
   error?: { code: string; message: string; remedy?: string };
 };
@@ -234,6 +234,19 @@ try {
   const all = await run(["who", "--all", "--json"]);
   check("--all adds the infrastructure endpoint, with no managed answer", rowsOf(all).logger?.kind === "endpoint" && rowsOf(all).logger?.managed === null && all.envelope?.result?.hidden === 0, rowsOf(all).logger);
 
+  // `endpoints --json` carries the presence values; the report words them.
+  const live = await run(["endpoints", "--json"]);
+  const liveRows: Record<string, Record<string, unknown>> = Object.fromEntries(((live.envelope?.result?.items ?? []) as unknown as Record<string, unknown>[]).map((row) => [String(row.name), row]));
+  const stamp = (v: unknown) => typeof v === "string" && new Date(Date.parse(v)).toISOString() === v;
+  check("endpoints --json items carry presence values and no rendered text",
+    live.status === 0 && Object.values(liveRows).length > 0 &&
+    Object.values(liveRows).every((row) => Object.keys(row).sort().join() === "activeAt,activity,activitySince,condition,id,kind,name,reportedStatus,role,statusSince" && stamp(row.statusSince)) &&
+    (liveRows.carol?.condition as { code?: string } | null)?.code === "auth" && liveRows.bob?.activity === "reviewing the change" && stamp(liveRows.bob?.activitySince) && liveRows.alice?.activitySince === null,
+    { status: live.status, bob: liveRows.bob, carol: liveRows.carol });
+  const livePlain = await run(["endpoints", "--plain"]);
+  check("the endpoints report words the condition and the ages from those values",
+    livePlain.status === 0 && /carol\s.*idle \(auth for \d+s\) - unchanged for \d+s/.test(livePlain.stdout) && /reviewing the change \(set \d+s ago\)/.test(livePlain.stdout), shown(livePlain));
+
   const plain = await run(["who", "--plain"], { FORCE_COLOR: "1" });
   const rich = await run(["who"], { FORCE_COLOR: "1" });
   check("the plain report is a table with every state word and no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && new RegExp(`^Who's here - ${space}\\n {2}Agent\\s+State\\s+Attention`, "m").test(plain.stdout) && /bob\/reviewer\s+waiting/.test(plain.stdout) && /idle \(auth for/.test(plain.stdout), shown(plain));
@@ -399,6 +412,32 @@ try {
   check("the plain report names the lifecycle and says the claims are not verified", agentPlain.status === 0 && agentPlain.stdout.includes(agentUid) && agentPlain.stdout.includes("its signature is not checked and no broker is contacted"), shown(agentPlain));
   const withSpace = await run(["whoami", "--creds", agentFile, "--space", space, "--json"]);
   check("whoami --creds takes no --space: it is a usage error", withSpace.status === 1 && withSpace.envelope?.error?.code === "USAGE_INVALID", shown(withSpace));
+
+  // A prepared space has no broker yet; whoami reports the identity its folder's trust gives it.
+  const prepFresh = join(home, "prep-fresh"), prepSigned = join(home, "prep-signed");
+  mkdirSync(join(prepFresh, ".cotal"), { recursive: true });
+  mkdirSync(join(prepSigned, ".cotal"), { recursive: true });
+  saveSpaceAuth(authDir(prepSigned), await createSpaceAuth("prep-signed"));
+  process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
+  try {
+    recordPreparedSpace({ space: "prep-fresh", root: prepFresh, ts: new Date().toISOString() });
+    recordPreparedSpace({ space: "prep-signed", root: prepSigned, ts: new Date().toISOString() });
+  } finally {
+    if (priorHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = priorHome;
+  }
+  const fresh = await run(["whoami", "--space", "prep-fresh", "--json"]);
+  const freshResult = fresh.envelope?.result as { mode?: unknown } & NonNullable<Envelope["result"]> | null | undefined;
+  check("whoami on a prepared space before its first up reports no credential, with no server or mode",
+    fresh.status === 0 && fresh.envelope?.outcome === "ok" && fresh.envelope.completeness === "complete" && freshResult?.identity?.kind === "no-credential" && freshResult.server === null && freshResult.mode === null &&
+      fresh.envelope.target.space === "prep-fresh" && fresh.envelope.target.root === prepFresh, shown(fresh));
+  const signed = await run(["whoami", "--space", "prep-signed", "--json"]);
+  check("whoami on a prepared space whose folder holds its signer reports the signer", signed.status === 0 && signed.envelope?.result?.identity?.kind === "space-signer" && signed.envelope.result.read === "all" && signed.envelope.result.server === null, shown(signed));
+  const freshPlain = await run(["whoami", "--space", "prep-fresh", "--plain"]);
+  check("its report says the space is not started and where to start it",
+    freshPlain.status === 0 && /server:\s+not started/.test(freshPlain.stdout) && freshPlain.stdout.includes(`start it with \`cotal up\` in ${prepFresh}`) && !freshPlain.stdout.includes("--creds"), shown(freshPlain));
+  const preparedServer = await run(["whoami", "--space", "prep-fresh", "--server", "nats://127.0.0.1:3", "--json"]);
+  check("control: a prepared space with --server is still refused", preparedServer.status === 2 && preparedServer.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preparedServer));
   const both = await run(["who", "--json", "--plain"]);
   check("who --json --plain is one USAGE_INVALID envelope", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
 } finally {

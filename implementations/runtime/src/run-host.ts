@@ -30,10 +30,12 @@ import {
   type RunHostOpenPause,
   type RunHostAcceptedAnswer,
   type RunHostAmendRequest,
+  type RunJournalPageContext,
   type RunJournalRow,
   type RunListRow,
   type RunStatusView,
   type RunValidation,
+  EpEnvelopeError,
 } from "@cotal-ai/core";
 import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, RootCancellation, journalEntryKeyString, programHashOf, stepPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
@@ -147,6 +149,26 @@ async function acceptedPauseAnswer(kv: KV, endpoint: string, token: string): Pro
     ...(a.artifact !== undefined ? { artifact: a.artifact } : {}),
     at: a.at,
   };
+}
+
+/** The complete reply a journal page may take; the serving connection's payload limit bounds it too. */
+const JOURNAL_PAGE_BYTES = 1_048_576;
+
+/** The rows of `view` from `offset` that fit in one reply, found by halving the row count, with the
+ *  journal's row count. A record that does not fit with no rows, or one row that does not fit,
+ *  refuses `resource-exhausted`. */
+function journalPage(view: RunStatusView, offset: number, context: RunJournalPageContext | undefined): RunStatusView {
+  if (context === undefined) throw new EpEnvelopeError("failed-precondition", "a paged journal read needs the serving connection's reply measure");
+  const rows = view.journal.slice(offset);
+  const page = (count: number): RunStatusView => ({ ...view, journal: rows.slice(0, count), journalTotal: view.journal.length });
+  if (!context.replyFits(page(0), JOURNAL_PAGE_BYTES)) throw new EpEnvelopeError("resource-exhausted", `the record of run ${view.runId} does not fit in one reply even without its journal`);
+  let fits = 0, over = rows.length + 1;
+  while (over - fits > 1) {
+    const count = Math.floor((fits + over) / 2);
+    if (context.replyFits(page(count), JOURNAL_PAGE_BYTES)) fits = count; else over = count;
+  }
+  if (fits === 0 && rows.length > 0) throw new EpEnvelopeError("resource-exhausted", `journal row ${offset} of run ${view.runId} does not fit in one reply`);
+  return page(fits);
 }
 
 /** The journal view `cotal run journal` prints, as rows. The step key is rendered by the export
@@ -362,7 +384,7 @@ export const cotalLangRunHost: RunHost = {
     );
   },
 
-  async status(planes: RunHostPlanes, req: { endpoint: string; runId: string; takeoverId: string }): Promise<RunStatusView | undefined> {
+  async status(planes: RunHostPlanes, req: { endpoint: string; runId: string; takeoverId: string; journal?: { offset: number } }, context?: RunJournalPageContext): Promise<RunStatusView | undefined> {
     const record = await readRunRecord(planes.kv, req.endpoint, req.runId);
     if (record === undefined) return undefined;
     // The replay durable is named by the caller's takeover id (its credential's row); the read
@@ -375,7 +397,7 @@ export const cotalLangRunHost: RunHost = {
     } catch (error) {
       revocation = { revocationUnreadable: (error as Error).message };
     }
-    return {
+    const view: RunStatusView = {
       runId: req.runId,
       endpoint: req.endpoint,
       ...revocation,
@@ -383,6 +405,7 @@ export const cotalLangRunHost: RunHost = {
       ...(record.status !== undefined ? { status: record.status.value } : {}),
       journal: await journalRows(planes.kv, req.endpoint, replay.records),
     };
+    return req.journal === undefined ? view : journalPage(view, req.journal.offset, context);
   },
 
   listPage: listRunPage,

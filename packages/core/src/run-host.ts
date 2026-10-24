@@ -286,6 +286,19 @@ export interface RunStatusView {
   /** A failed marker read is unknown, not an absent marker or a resumable run. */
   readonly revocationUnreadable?: string;
   readonly journal: RunJournalRow[];
+  /** On a paged read, the journal's row count; `journal` then holds the rows from the requested
+   *  offset that fit in one reply. */
+  readonly journalTotal?: number;
+}
+
+/** A paged journal read: the rows from `offset` that fit in one reply. */
+export interface RunJournalPageRequest {
+  readonly offset: number;
+}
+
+/** What a paged journal read measures its reply against. */
+export interface RunJournalPageContext {
+  readonly replyFits: (data: unknown, ceiling: number) => boolean;
 }
 
 export type RunValidation =
@@ -318,8 +331,9 @@ export interface RunHost extends Extension {
    *  answering one for `req.accepted.token`; nothing is presented and the pause stays settled. */
   amend(planes: RunHostPlanes, req: RunHostAmendRequest): Promise<unknown>;
   /** The run's record plus its journal view, or undefined when no run record exists. The replay
-   *  rides a durable named by `takeoverId`, the one the caller's credential row pins. */
-  status(planes: RunHostPlanes, req: { readonly endpoint: string; readonly runId: string; readonly takeoverId: string }): Promise<RunStatusView | undefined>;
+   *  rides a durable named by `takeoverId`, the one the caller's credential row pins. With
+   *  `journal`, the view holds one page of the journal, measured by `context`. */
+  status(planes: RunHostPlanes, req: { readonly endpoint: string; readonly runId: string; readonly takeoverId: string; readonly journal?: RunJournalPageRequest }, context?: RunJournalPageContext): Promise<RunStatusView | undefined>;
   /** Every run recorded on `endpoint`, or on every endpoint when none is named. */
   list(planes: RunHostPlanes, req: { readonly endpoint?: string }): Promise<RunListRow[]>;
   /** Bounded diagnostic pages, when supported. Never emulate with a full list followed by slicing. */

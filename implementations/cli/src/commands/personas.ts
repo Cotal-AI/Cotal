@@ -9,7 +9,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
-import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, serializePersona } from "../lib/persona-files.js";
+import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -210,6 +210,11 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
     process.exit(1);
   }
   assertValidName(name); // shared reserved-character guard (also rejects "/")
+  const reserved = reservedPersonaName(name);
+  if (reserved) {
+    console.error(c.red(reserved));
+    process.exit(1);
+  }
 
   const path = agentFilePath(targetRoot(v), name);
   const expected = readPersonaSource(path);
