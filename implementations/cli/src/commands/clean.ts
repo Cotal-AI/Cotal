@@ -84,7 +84,12 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const dryRun = values["dry-run"] === true;
   if (dryRun && target !== "store" && target !== "all")
     throw new CommandFailure("refused", "USAGE_INVALID", `--dry-run previews clean store and clean all only, not clean ${target}`);
-  if (!values.force && !dryRun) throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target} --force` });
+  if (!values.force && !dryRun) {
+    // The restore verbs act on one attempt, so the command to run names it, as given or as a placeholder.
+    const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
+    const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt} --force${discard}` });
+  }
   if (target === "history") return purgeHistory(values);
 
   // Everything below acts on the SHARED broker, never one space: `store`/`all` delete the single
@@ -120,7 +125,17 @@ export async function clean(args: ParsedArgs): Promise<void> {
     try {
       // A restore that left something out set its old store aside as the only copy of it.
       const journal = readMaintenanceJournal(root);
-      const active = journal?.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
+      // A completed fallback cleanup retires the journal, so a repeat finds no record of its attempt.
+      if (!journal || !("restore" in journal) || journal.restore.attemptId !== values.attempt) {
+        const recorded = journal ? maintenanceNextStep(root, journal) : undefined;
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was deleted`, {
+          target: { root, attemptId: values.attempt },
+          remedy: journal && recorded
+            ? `this root's maintenance record names attempt ${recorded.attemptId} (state ${journal.state})${recorded.next ? `; ${recorded.next}` : ""}`
+            : "this root holds no restore attempt: a completed restore-fallback retires its journal, so the restore has settled and a repeat has nothing to remove; `cotal status` shows the root's maintenance state",
+        });
+      }
+      const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
       const leftOut = active ? restoreLeftOut(active) : undefined;
       const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
       if (onlyCopy && !values["discard-history"])

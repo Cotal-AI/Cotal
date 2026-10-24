@@ -205,7 +205,9 @@ before full backups held workflow runs, holds none ([CLI reference](cli.md#backu
 restore from one of them, or a registry-only restore, the store the restore set aside holds the only
 copy of the runs, and `cotal backup cleanup-fallback` deletes it only with `--discard-history`.
 After a full restore of a backup made before the space last ran, that store holds the only copy of
-what the runs did after the backup, under the same rule.
+what the runs did after the backup, under the same rule. The restore names each run it rolled back
+and each checkpoint answered after the backup that is open again, and that checkpoint accepts an
+answer again.
 
 ## From an agent session
 
@@ -279,6 +281,12 @@ and the run keeps the answer it acted on. A step that is still open, or that set
 refuses an amend. So does a step whose answer was just accepted and is not in the run's journal
 yet, and that refusal says so. The manager records the amender from the credential, as for an answer, and a
 spawned seat may amend only an answer recorded under its own name.
+
+A program's `log(...)` lines are not journalled, so `journal` and `show` do not print them. A run
+the manager hosts writes each line to the manager's log as `run <run-id>: log <text>`, which
+`cotal service logs stack-manager --space <space>` reads. A run driven with `--local` prints them in
+that terminal, and `run simulate` lists them under `Log`. A resumed run replays its program, so it
+writes the lines before the resume point again.
 
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed

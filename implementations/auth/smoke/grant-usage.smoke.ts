@@ -155,6 +155,13 @@ try {
     const other = await failureOf("run", authCommand, bare, {}, ["handle", "inspect", text]);
     assert.equal(other.code, "SCHEMA_INVALID", `auth handle inspect on a text file: code (${other.message})`);
     assert.match(other.message, /^this file is not a capability handle: a handle is a signed JSON grant/, "auth handle inspect on a text file: says what a handle is");
+    // A path that names nothing is named, in its own folder or in one that does not exist.
+    for (const missing of [join(bare, "missing.json"), join(bare, "no-such-folder", "missing.json")]) {
+      const absent = await failureOf("run", authCommand, bare, {}, ["handle", "inspect", missing]);
+      assert.equal(absent.code, "TARGET_NOT_FOUND", `auth handle inspect on a missing file: code (${absent.message})`);
+      assert.equal(absent.message, `the handle file ${missing} does not exist; nothing was read`, "auth handle inspect on a missing file: names the path");
+      assert.deepEqual(absent.target, { path: missing }, "auth handle inspect on a missing file: its target is the path");
+    }
   }
 
   // 6. retire names the lifecycle UID format and where to find one.

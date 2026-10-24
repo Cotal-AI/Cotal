@@ -58,6 +58,11 @@ const KINDS = 4;
 const realStart = Date.now();
 const report = await dryRun(PROGRAM, SCRIPT);
 const realMs = Date.now() - realStart;
+{
+  // The language does not journal a log line, so the report is where a dry run's lines are read.
+  const logged = await dryRun('log("plan", 2, { k: "v" });\n', {});
+  ok("a log line reaches the report with its values", JSON.stringify(logged.log) === JSON.stringify([{ scope: "", values: ["plan", 2, { k: "v" }] }]), logged.log);
+}
 
 {
   ok("it lists the agents that would be spawned", report.agents.length === 2, report.agents.map((a) => a.persona));

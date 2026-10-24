@@ -1,4 +1,4 @@
-/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
+/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the runs a restore of an older backup rolled back, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -263,8 +263,8 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const attemptArtifact = join(root, ".cotal", "maintenance", "attempts", "nested-artifact");
     cpSync(artifact, attemptArtifact, { recursive: true });
     const nestedArtifact = run("up", "--restore", attemptArtifact, "--detach", "--server", server, "--space", space);
-    assert.notEqual(nestedArtifact.status, 0);
-    assert.match(nestedArtifact.stderr, /artifact must not overlap the maintenance attempt directory/);
+    assert.equal(nestedArtifact.status, 1, `an artifact in the maintenance folder is a usage refusal\n${nestedArtifact.stderr}`);
+    assert.ok(nestedArtifact.stderr.includes(`the restore artifact ${realpathSync(attemptArtifact)} is inside this root's maintenance folder ${realpathSync(join(root, ".cotal", "maintenance"))}, where it stages its attempt; nothing was restored`), `it names the artifact and the folder\n${nestedArtifact.stderr}`);
     rmSync(attemptArtifact, { recursive: true });
     const nestedTarget = run(
       "up", "--restore", artifact, "--store-dir", join(artifact, "target"), "--detach",
@@ -343,7 +343,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const running = run("up", "-f", "cotal.yaml");
     assert.equal(running.status, 2, `${mode} up -f while the restored stack runs refuses, exit 2\n${running.stdout}\n${running.stderr}`);
     assert.match(running.stderr, /Code: +CONFLICT/);
-    assert.ok(running.stderr.includes(`stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes, then run cotal up -f cotal.yaml again`), `${mode} up -f names the way out\n${running.stderr}`);
+    assert.ok(running.stderr.includes(`stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history, which deletes the previous store and the ${leftOut} only it holds, then run cotal up -f cotal.yaml again`), `${mode} up -f names the way out\n${running.stderr}`);
     // Any other `up` over the restored broker refuses before it touches the journal, which stays active.
     for (const args of [["up"], ["up", "--server", server]]) {
       const again = run(...args);
@@ -359,7 +359,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const stopped = run("up", "-f", "cotal.yaml");
     assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
     assert.match(stopped.stderr, /Code: +LIFECYCLE_BLOCKED/);
-    assert.ok(stopped.stderr.includes(`retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes, then run cotal up -f cotal.yaml again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
+    assert.ok(stopped.stderr.includes(`retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history, which deletes the previous store and the ${leftOut} only it holds, then run cotal up -f cotal.yaml again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
     rmSync(manifest);
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the
@@ -387,6 +387,11 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const keptPlain = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes");
       assert.ok(keptPlain.status === 1 && keptPlain.stderr.includes(`only copy of the ${leftOut} it left out, and cleanup deletes it only with --discard-history; nothing was deleted`) && !keptPlain.stderr.includes("Usage"), `${mode} the refusal names --discard-history without the command help\n${keptPlain.stderr}`);
       assert.ok(existsSync(previous), `${mode} cleanup-fallback without --discard-history keeps the previous store`);
+      // Without --force, each restore verb names the command to run with its attempt.
+      const unforced = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--discard-history");
+      assert.ok(unforced.status === 1 && unforced.stderr.includes(`cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history`), `${mode} clean restore-fallback without --force names the command with its attempt\n${unforced.stderr}`);
+      const unnamed = run("clean", "restore-attempt");
+      assert.ok(unnamed.status === 1 && unnamed.stderr.includes("cotal clean restore-attempt --attempt <id> --force"), `${mode} clean restore-attempt without --force or an attempt names --attempt <id>\n${unnamed.stderr}`);
       const keptByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
       assert.ok(keptByClean.status === 1 && keptByClean.stderr.includes(`holds the only copy of the ${leftOut} it left out; nothing was deleted`) && keptByClean.stderr.includes(`cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history`) && !keptByClean.stderr.includes("Usage"), `${mode} clean restore-fallback without --discard-history refuses, naming the flag without the command help\n${keptByClean.stdout}\n${keptByClean.stderr}`);
       assert.ok(existsSync(previous), `${mode} clean restore-fallback without --discard-history keeps the previous store`);
@@ -394,6 +399,10 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.equal(existsSync(previous), false, `${mode} --discard-history deletes the previous store`);
     }
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "fallback cleanup retires the restore journal");
+    // A repeat finds no record of the attempt, because the cleanup retired it, and says so by name.
+    const repeated = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history");
+    assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`) &&
+      repeated.stderr.includes("a completed restore-fallback retires its journal, so the restore has settled"), `${mode} a repeated clean restore-fallback says the restore settled\n${repeated.stderr}`);
   } finally {
     run("down");
     rmSync(root, { recursive: true, force: true });
@@ -948,6 +957,63 @@ async function backupRestoreCycleScenario(): Promise<void> {
   }
 }
 
+/** A full restore of a backup made before a run's checkpoint was answered rolls the run back. It names
+ *  the run and the reopened step in its receipt, in `status` and in the cleanup preview, reads the
+ *  set-aside store only from a clone it removes, and the step accepts an answer again. */
+async function rolledBackRunsScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-rolled-back-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-rolled-back-home-")));
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "backup_rolled_back";
+  const { run } = sandboxRun(root, home);
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `rolled back ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    return result;
+  };
+  const opens = async (runId: string, step: RegExp): Promise<void> => {
+    for (const until = Date.now() + 60_000; Date.now() < until; await new Promise((done) => setTimeout(done, 250)))
+      if (step.test(run("run", "show", runId, "--space", space).stdout)) return;
+    assert.fail(`run ${runId} never opened ${step}\n${run("run", "show", runId, "--space", space).stdout}`);
+  };
+  try {
+    must("up", run("up", "--detach", "--server", server, "--space", space));
+    writeFileSync(join(root, "zahlung.js"), 'const z = await checkpoint("zahlung", "Bezahlen?");\nconst v = await checkpoint("versand", "Versenden?");\n');
+    const runId = (JSON.parse(must("start", run("run", "start", "zahlung.js", "--space", space, "--json")).stdout) as { result?: { result?: { runId?: string } } }).result?.result?.runId ?? "";
+    assert.match(runId, /^run-/);
+    await opens(runId, /\/checkpoint:zahlung#0\s+Bezahlen\?/);
+    must("preserve before the answer", run("down", "--preserve-state"));
+    const artifact = join(root, "before-answer");
+    must("backup", run("backup", "create", artifact));
+    must("resume", run("up", "--detach", "--server", server, "--space", space));
+    must("answer", run("run", "answer", runId, "/checkpoint:zahlung#0", "--value", '"ja"', "--space", space));
+    await opens(runId, /\/checkpoint:versand#0\s+Versenden\?/);
+    must("preserve after the answer", run("down", "--preserve-state"));
+    const restored = must("restore", run("backup", "restore", artifact, "--json"));
+    const note = `Run ${runId} went back to where this backup left it: /checkpoint:zahlung#0 was answered after that and is open again. That answer is only in the previous store.`;
+    const rows = [{ run: runId, reopened: ["/checkpoint:zahlung#0"] }];
+    const warning = (JSON.parse(restored.stdout) as { warnings: { code: string; message: string; target: { rolledBackRuns?: unknown } }[] }).warnings.find((entry) => entry.code === "NEWER_HISTORY_NOT_RESTORED");
+    assert.ok(warning?.message.includes(note), `the receipt names the rolled-back run and its reopened step\n${restored.stdout}`);
+    assert.deepEqual(warning?.target.rolledBackRuns, rows);
+    const journal = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { restore: { attemptId: string }; launch: { rolledBackRuns?: unknown } };
+    assert.deepEqual(journal.launch.rolledBackRuns, rows, "the restore journals the run it rolled back");
+    const attemptId = journal.restore.attemptId;
+    assert.ok(!readdirSync(join(root, ".cotal", "maintenance", "attempts")).some((name) => name.startsWith(`${attemptId}-clone`)), "the clone of the set-aside store is removed");
+    const status = must("status", run("status", "--space", space));
+    assert.ok(status.stdout.includes(note), `status names the rolled-back run\n${status.stdout}`);
+    const preview = must("cleanup preview", run("backup", "cleanup-fallback", attemptId, "--dry-run"));
+    assert.ok(preview.stdout.includes(note), `the cleanup preview names the rolled-back run\n${preview.stdout}`);
+    // The reopened step is open again and accepts an answer.
+    await opens(runId, /\/checkpoint:zahlung#0\s+Bezahlen\?/);
+    must("answer again", run("run", "answer", runId, "/checkpoint:zahlung#0", "--value", '"nein"', "--space", space));
+    must("down", run("down"));
+  } finally {
+    run("down");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 /** A store moved behind a link, `.cotal/nats` -> another disk, and an artifact written through a
  *  linked folder. The cut records the store by its real path, so a default restore is a same-path
  *  restore there, not an alternate target equal to the source, and verify reads the linked artifact
@@ -999,6 +1065,7 @@ await preservationCommitCrashScenario();
 await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();
 await backupRestoreCycleScenario();
+await rolledBackRunsScenario();
 await scenario("open");
 await scenario("auth");
 await occupiedRestoreScenario();

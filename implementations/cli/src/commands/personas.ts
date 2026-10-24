@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   agentFilePath,
   assertValidName,
@@ -9,9 +9,9 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
-import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona } from "../lib/persona-files.js";
+import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { listPersonas, listPersonaNames } from "../lib/personas.js";
+import { catalogFolderProblem, listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -128,6 +128,9 @@ export function personasComplete(argv: string[]): CompletionResult {
 
 async function list(verbose: boolean, running: boolean, values: ConnectValues): Promise<void> {
   const root = targetRoot(values);
+  // A catalog folder that is a file or a looping link is not an empty catalog.
+  const folder = catalogFolderProblem(personaDir(root));
+  if (folder) throw folder;
   const entries = listPersonas(root);
   if (!entries.length) {
     console.log(
@@ -161,9 +164,11 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       .filter(Boolean)
       .join("  ");
     console.log(`${c.bold(name)}  ${meta}`.trimEnd());
+    if (e.link !== undefined) console.log(c.yellow(`  ! ${oneLine(e.path)} is a link to ${oneLine(e.link)}; persona show, edit and remove refuse a link`));
     const desc = d.description ?? firstLine(d.persona);
-    // The preview wraps under its indent at the terminal's width, so none of it is cut off.
-    if (desc) for (const line of wrapWords(oneLine(desc), terminalWidth(process.stdout) - 2)) console.log(c.dim(`  ${line}`));
+    // The preview wraps under its indent at the terminal's width, so none of it is cut off. Verbose
+    // prints the whole body next, so a summary that is its first line is not printed twice.
+    if (desc && !(verbose && desc.trim() === firstLine(d.persona))) for (const line of wrapWords(oneLine(desc), terminalWidth(process.stdout) - 2)) console.log(c.dim(`  ${line}`));
     if (verbose && d.persona) console.log(d.persona.split(/\r?\n/).map((line) => `    ${oneLine(line)}`).join("\n") + "\n");
   }
 }
@@ -182,12 +187,13 @@ async function presentNames(values: ConnectValues): Promise<{ space: string; nam
 
 function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
-  if (!existsSync(path)) return notFound(name, path);
+  // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
+  const path = personaPath(targetRoot(values), name);
+  const bytes = requirePersonaSource(path).bytes;
+  validatePersona(bytes, path);
   // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
   // byte and nothing else, so `show p > p.md` copies it. A catalog travels with a cloned repo, so on
   // a terminal its control characters are escaped, as `persona show` shows them, under its path.
-  const bytes = readFileSync(path);
   if (!process.stdout.isTTY) {
     process.stdout.write(bytes);
     return;
@@ -198,14 +204,16 @@ function show(name: string | undefined, values: { space?: string; server?: strin
 
 /** `cotal personas edit <name>` — open the card in the `editor` preference ($VISUAL, then $EDITOR,
  *  then the saved one), validate a private draft, then compare and commit through the shared local writer. */
-function edit(name: string | undefined, values: { space?: string; server?: string }): void {
+async function edit(name: string | undefined, values: { space?: string; server?: string }): Promise<void> {
   if (!name) return usage();
   const catalog = personaCatalog(values);
-  editPersona(personaPath(catalog.root, name), name, catalog);
-  console.log(c.green(`✓ saved "${name}"`));
+  const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
+  if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
+  else if (edit.action === "unchanged") console.log(c.dim(`"${name}" is unchanged, so nothing was saved`));
+  else console.log(c.yellow(`edit cancelled: the editor exited with status ${edit.status}, so nothing was saved${edit.draft ? `; your draft is kept in ${edit.draft}` : ""}`));
 }
 
-function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean; space?: string; server?: string }): void {
+async function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean; space?: string; server?: string }): Promise<void> {
   if (!name) return usage();
   if (!NAME_RE.test(name)) {
     console.error(c.red(`invalid persona name "${name}": use letters, digits, "_" or "-"`));
@@ -250,7 +258,7 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
   }
   const subscribe = v.subscribe.split(",").map((s) => s.trim()).filter(Boolean);
 
-  const bytes = serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
+  const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
   commitPersona(path, expected, bytes);
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}`));
@@ -271,12 +279,6 @@ function remove(name: string | undefined, force: boolean, values: { space?: stri
 
 function firstLine(s?: string): string | undefined {
   return s?.split("\n").find((l) => l.trim())?.trim();
-}
-
-function notFound(name: string, path: string): never {
-  console.error(c.red(`no persona "${name}"`));
-  console.error(c.dim(path));
-  process.exit(1);
 }
 
 function usage(): never {

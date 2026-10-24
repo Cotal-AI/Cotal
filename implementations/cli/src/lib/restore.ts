@@ -42,6 +42,7 @@ import {
   createEndpointStreams,
   ensureArtifactStore,
   hardenedAuthorityStreamNames,
+  wfjStreamName,
 } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -59,7 +60,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
-  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut, restoreReplacedNewerCut,
+  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut, restoreReplacedNewerCut, restoreRolledBackRuns,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
   recordRestoreManagerCommit,
@@ -81,12 +82,14 @@ import {
   type RestoreDegradedRecord,
   type RestoreListenerProof,
   type RestoreManagerCommittedRecord,
+  type RestoreReadyRecord,
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, missingBackupPath, missingBackupPathText, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
+import { readPreviousRunJournals, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
@@ -790,13 +793,28 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
  *  includes what was written after its artifact ({@link restoreReplacedNewerCut}), and that store, as
  *  the root's journal records them. Undefined when it left nothing out or the journal no longer names
  *  the attempt. */
-export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; previousStore?: string } | undefined {
+export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; rolledBack: ReturnType<typeof restoreRolledBackRuns>; previousStore?: string } | undefined {
   try {
     const journal = readMaintenanceJournal(root);
     if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return undefined;
     const leftOut = restoreLeftOut(journal);
-    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
+    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
   } catch { return undefined; }
+}
+
+/** What a restore over a newer cut says about each run it rolled back ({@link restoreRolledBackRuns}):
+ *  the steps settled after the artifact that are open again, and that the previous store holds the
+ *  only copy of how they settled. Answering a reopened step again is allowed. */
+export function rolledBackNotes(rolledBack: ReturnType<typeof restoreRolledBackRuns>): string[] {
+  const lines = rolledBack.runs.map((row) => {
+    if (row.missing) return `Run ${row.run} started after this backup, so the restore removed it; only the previous store holds it.`;
+    if (!row.reopened.length) return `Run ${row.run} went back to where this backup left it; what it recorded after that is only in the previous store.`;
+    const one = row.reopened.length === 1;
+    const answered = row.reopened.every((key) => /^(checkpoint|ask)\b/.test(key.slice(key.lastIndexOf("/") + 1)));
+    const kept = answered ? (one ? "That answer is" : "Those answers are") : (one ? "Its outcome is" : "Their outcomes are");
+    return `Run ${row.run} went back to where this backup left it: ${row.reopened.join(", ")} ${one ? "was" : "were"} ${answered ? "answered" : "settled"} after that and ${one ? "is" : "are"} open again. ${kept} only in the previous store.`;
+  });
+  return rolledBack.more ? [...lines, `${rolledBack.more} more runs went back as well.`] : lines;
 }
 
 /** What a restore's receipt says about what it left out. A registry-only restore brings back channel
@@ -807,7 +825,7 @@ export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: str
 export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>): string[] {
   if (!onlyCopy) return [];
   const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" ? "them" : `the ${onlyCopy.leftOut}`}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
-  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored."] : []), ...(kept ? [kept] : [])];
+  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...(kept ? [kept] : [])];
   return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", kept ?? "No previous store was retained."];
 }
 
@@ -840,11 +858,25 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   const deadline = new Date(Date.now() + RESTORE_TIMEOUT_MS);
   // With no journal there is no cut to restore into. Refuse before the lock creates the maintenance
   // directory, so a refused restore leaves the folder as it found it and `up` there sees no state.
-  if (!readMaintenanceJournal(root)) throw notRestorable(root, undefined);
+  const recorded = readMaintenanceJournal(root);
+  if (!recorded) throw notRestorable(root, undefined);
   // A path that names nothing is refused here too, saying whether its folder or the artifact is missing.
   const named = resolve(flags.restore);
   const missing = missingBackupPath(named);
   if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; cotal backup verify <dir> checks one before a restore" });
+  // So is a path that cannot be an artifact, saying what it is: one that is, holds or sits inside
+  // the store the restore replaces or the folder it stages in, a file, or a folder no create wrote.
+  const namedPath = realpathSync.native(named);
+  for (const [path, what, why] of [
+    [recorded.source.path, "the preserved store", " it would replace"],
+    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
+  ] as const) {
+    if (!contains(path, namedPath) && !contains(namedPath, path)) continue;
+    const relation = namedPath === path ? "is" : contains(path, namedPath) ? "is inside" : "holds";
+    throw new CommandFailure("refused", "USAGE_INVALID", `the restore artifact ${namedPath} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}${why}; nothing was restored`, { target: { root, directory: namedPath, overlaps: path }, remedy: `name a backup artifact folder outside ${path}`, selfContained: true });
+  }
+  const notArtifact = notAnArtifactRefusal(root, namedPath, "nothing was restored", { root });
+  if (notArtifact) throw notArtifact;
   let lock = acquireStackOperationLock(root, "restore");
   let staged: StagedArtifact | undefined;
   let transitioned = false;
@@ -1076,8 +1108,17 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     releaseMaintenanceLock(lock);
     lock = undefined as never;
     await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true);
+    // A cut preserved after this artifact was made holds history the artifact lacks, and the store
+    // this restore sets aside keeps its only copy. The runs it rolled back are named from the step
+    // journals of both stores: the restored one here, the set-aside one from a private clone.
+    const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
+    const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
     await broker.stop();
     broker = undefined;
+    const previousStore = restoredRuns ? (readMaintenanceJournal(root) as RestoreReadyRecord | undefined)?.restore.previousSource?.identity.path : undefined;
+    const rolledBack = restoredRuns && previousStore
+      ? rolledBackRuns(await readPreviousRunJournals({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, ...(auth ? { auth } : {}), deadline, record: recordResources }), restoredRuns)
+      : undefined;
 
     // The seats this restore is about to resume owe the same admission and the same restore as an
     // ordinary one: the retained inventory here is this root's own preserved cut, and the manager
@@ -1113,9 +1154,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       restoreOnly: flags["restore-only"] ?? artifact.manifest.selection,
       restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
-      // A cut preserved after this artifact was made holds history the artifact lacks, and the store
-      // this restore sets aside keeps its only copy.
-      ...(sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt) ? { previousCutNewer: true } : {}),
+      ...(previousCutNewer ? { previousCutNewer: true } : {}),
+      ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
       serverNonce,
       // Durable evidence of consent, as the ordinary resume journals it: an operator asking later

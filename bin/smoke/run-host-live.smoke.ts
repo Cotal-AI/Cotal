@@ -506,10 +506,12 @@ try {
     await mgrB.stop();
     mgrB = undefined;
     // The host on its own, as the manager composes it, so the window between "serving" and
-    // "reconciled" is held open by hand rather than raced.
+    // "reconciled" is held open by hand rather than raced. Its log is kept: a program's log lines go
+    // nowhere else.
+    const hostLog: string[] = [];
     const hosting = new RunHosting({
       space: spaceA, servers: brokerA.servers, endpoint: "manager", instanceId: mintLifecycleUid(),
-      holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: () => undefined,
+      holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: (line: string) => void hostLog.push(line),
     });
     const code = (e: unknown) => (e as { code?: string })?.code;
     // A refusal at the admission cap gives the slot back. The parked run is the subject while no host
@@ -553,6 +555,7 @@ try {
     c("an answer through the host lands", typeof (answered as { answerId?: unknown })?.answerId === "string", answered);
     const done = await until(async () => { const v = await hosting.status({ runId }).catch(() => undefined); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and the run completes there", stateOf(done) === "completed", done?.status);
+    c("the program's log line is written to the hosting manager's log", hostLog.includes(`run ${runId}: log resolved resolved`), hostLog.filter((line) => line.startsWith(`run ${runId}`)));
     // Revocation through the host (SPEC 14.8): the marker is written under a per-run admitter and a
     // hosted resume refuses by name, before any slot is spent on a drive.
     await hosting.revoke(runId, "operator", "withdrawn after review");
@@ -761,7 +764,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 75;
+const EXPECTED_CELLS = 76;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

@@ -174,6 +174,14 @@ try {
     ].join("\n"),
     usageOf(send.all),
   );
+  // A docs page on a terminal is drawn: headings are titles, a table too wide is one record per row,
+  // and it wraps to 80 columns. Only a line that is one word stays wider.
+  const page = await helpAt(["docs", "cli"], 80);
+  check("cotal docs cli on an 80-column terminal is drawn, with no heading marks or table rules",
+    page.exitCode === 0 && page.all.includes("`cotal` CLI reference") && !page.all.some((line) => /^#{1,6} /.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) && page.all.some((line) => /^ {2}field: +`schemaVersion`$/.test(line)), page.all.slice(0, 12));
+  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.length > 1000 && fit(page.all.join("\n"), 80).every((line) => !/\S \S/.test(line.trim())), fit(page.all.join("\n"), 80));
+  const setup80 = await helpAt(["help", "setup"], 80);
+  check("cotal help setup on an 80-column terminal fits every line, its examples included", setup80.exitCode === 0 && fit(setup80.all.join("\n"), 80).length === 0 && setup80.all.includes("Examples"), fit(setup80.all.join("\n"), 80));
   const setup = await helpAt(["help", "setup"], 40);
   check("cotal help setup on a 40-column terminal fits every line before its examples", setup.exitCode === 0 && fit(setup.shown, 40).length === 0 && lines(setup.shown).length > 10, fit(setup.shown, 40));
   check(
@@ -290,6 +298,26 @@ try {
   await until(() => shownCard.exitCode !== undefined);
   check("personas show on a terminal escapes the file's control characters",
     shownCard.exitCode === 0 && !/\x1b\]0;|\x07|\x1b\[2J/.test(shownCard.raw) && shownCard.raw.includes("body \\u001b]0;PWN\\u0007\\u001b[2JB"), JSON.stringify(shownCard.raw.slice(-300)));
+
+  // A cancelled `persona remove` says once that it was cancelled, and its warning says what that
+  // left, whether Enter takes the default or `--plain` takes the numbered choice.
+  const spacePty = cotalPty(["space", "create", "ptyspace", "--root", catalog, "--plain"], { cwd: catalog, env });
+  ptys.push(spacePty);
+  const created = session(spacePty);
+  await until(() => created.exitCode !== undefined);
+  check("control: a space is created over the catalog", created.exitCode === 0, created.text());
+  for (const [label, argv, ready, answer] of [["Enter", [], "Remove 'evb'", "\r"], ["--plain choice 1", ["--plain"], "Choice [1]", "1\r"]] as const) {
+    const removePty = cotalPty(["persona", "remove", "evb", ...argv], { cwd: catalog, env });
+    ptys.push(removePty);
+    const r = session(removePty);
+    const asked = await until(() => r.text().includes(ready));
+    removePty.write(answer);
+    await until(() => r.exitCode !== undefined);
+    const shown = await screen(r.raw, 80, 24);
+    check(`persona remove cancelled by ${label} says so once and keeps the file`,
+      asked && r.exitCode === 0 && shown.split("Removal cancelled: evb is kept at ").length === 2 && shown.includes("nothing was removed") && !shown.includes("persona removal cancelled")
+        && readFileSync(join(catalog, ".cotal", "agents", "evb.md"), "utf8").startsWith("---\nname: evb\n"), shown);
+  }
 } catch (err) {
   check(`suite ran without throwing: ${err instanceof Error ? err.message : String(err)}`, false, err instanceof Error ? err.stack : err);
 } finally {

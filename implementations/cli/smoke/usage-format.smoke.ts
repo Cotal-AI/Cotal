@@ -159,6 +159,17 @@ for (const [args, message] of [
 const far = run(["frobnicate"]);
 check("control: a word near nothing gets no suggestion", far.status === 1 && /unknown command: frobnicate - run `cotal help` to list commands/.test(far.stderr) && !/did you mean/.test(far.stderr), shown(far));
 
+// A word that is no subcommand is refused naming the subcommands the command takes, as telemetry
+// names its levels, and a hidden subcommand is not offered.
+const level = run(["telemetry", "bogus"]);
+check("telemetry with a word that is no level is refused naming the levels", usageShape(level, /cotal telemetry has no subcommand "bogus"; it takes off, minimal or regular - run `cotal help telemetry`/), shown(level));
+const levelHelp = run(["help", "telemetry", "bogus"]);
+check("help telemetry with the same word names the same levels", usageShape(levelHelp, /cotal telemetry has no subcommand "bogus"; it takes off, minimal or regular/), shown(levelHelp));
+const levelJson = run(["telemetry", "bogus", "--json"]);
+check("the --json refusal names the levels in its message", (() => { try { return (JSON.parse(levelJson.stdout) as { error?: { message?: string } }).error?.message?.includes("it takes off, minimal or regular") === true; } catch { return false; } })(), shown(levelJson));
+const hiddenSub = run(["ext", "bogus"]);
+check("the refusal lists the visible subcommands only", /cotal ext has no subcommand "bogus"; it takes \w/.test(hiddenSub.stderr) && !/__/.test(hiddenSub.stderr.split("\n")[0] ?? ""), shown(hiddenSub));
+
 const json = run(["clean", "--json"]);
 check("control: a command without JSON output still refuses --json as an unknown option", json.status === 1 && /Unknown option '--json'/.test(json.stderr), shown(json));
 

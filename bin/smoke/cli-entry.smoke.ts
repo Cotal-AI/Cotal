@@ -8,10 +8,11 @@
  * with a typographic dash, naming the dash and the flag; after `--`, or naming no flag, such a word is
  * an argument. A usage refusal escapes the control bytes of each word it quotes. `version --json`
  * writes one envelope, and a usage error under `--json` is one refusal envelope. A `--server` with a
- * user and password is refused by every command that takes one, without repeating it. `--no-color` and
+ * user and password is refused by every command that takes one, and a `COTAL_SERVER` with one by the
+ * manager, without repeating it. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`, once each. A command an
  * official extension adds, run or asked for help before that extension is added, names the package
- * to add.
+ * to add. FORCE_COLOR with NO_COLOR prints no Node warning about the pair.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -22,7 +23,7 @@
  * Run: pnpm smoke:cli-entry
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -203,6 +204,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("version prints the binary version", /^cotal-ai \d+\.\d+\.\d+/.test(version.stdout), shown(version));
   check("--version and -V print the same", same(version, cotal(["--version"])) && same(version, cotal(["-V"])));
   refused("-v is not the version flag", cotal(["-v"]), /-v is not the version flag - run `cotal version` or `cotal -V`/);
+  // Node warns once about FORCE_COLOR with NO_COLOR. The entry drops that warning and keeps the rest:
+  // a probe that warns once the CLI is running still prints.
+  const probeDir = mkdtempSync(join(tmpdir(), "cotal-entry-probe-"));
+  cleanup.push(probeDir);
+  writeFileSync(join(probeDir, "probe.mjs"), 'setTimeout(() => process.emitWarning("probe-warning"), 100);\n');
+  const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
+  check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",
+    both.status === 0 && !both.stderr.includes("'NO_COLOR' env is ignored") && both.stderr.includes("Warning: probe-warning"), shown(both));
 }
 
 // ── Structured output: one envelope on stdout, the usage refusal included ────────────────────────
@@ -276,6 +285,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const upUserinfo = cotal(["up", "--server", "nats://u:pw0rdX@127.0.0.1:1"], undefined, noSeed);
   refused("control: up keeps its own --server credential refusal", upUserinfo, /--server must not embed credentials; nothing was started or written/);
   check("control: up's refusal is its own, and does not repeat the value", !upUserinfo.stderr.includes(userinfo) && !`${upUserinfo.stdout}${upUserinfo.stderr}`.includes("pw0rdX"), shown(upUserinfo));
+  // COTAL_SERVER stands in for the manager's --server, so it is refused the same way and never dialed.
+  const envServer = { ...noSeed, COTAL_SERVER: "nats://u:pw0rdX@127.0.0.1:1" };
+  for (const argv of [["__daemon-manager"], ["supervise"]]) {
+    const r = cotal(argv, undefined, envServer);
+    refused(`cotal ${argv[0]} refuses a COTAL_SERVER with a user and password`, r, /^✗ COTAL_SERVER must not embed credentials; the command did not run$/m);
+    check(`cotal ${argv[0]} prints no part of that COTAL_SERVER`, !`${r.stdout}${r.stderr}`.includes("pw0rdX") && !r.stderr.includes("127.0.0.1"), shown(r));
+  }
+  const flagWins = cotal(["__daemon-manager", "--server", "nats://127.0.0.1:1"], undefined, envServer);
+  check("control: an explicit --server is used in place of COTAL_SERVER, so that is not refused", !flagWins.stderr.includes("COTAL_SERVER must not embed") && !`${flagWins.stdout}${flagWins.stderr}`.includes("pw0rdX"), shown(flagWins));
 }
 
 // ── Global flags: accepted by every command, before or after its words, and text after -- ─────────
@@ -329,9 +347,22 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   };
   const editor = { ...noSeed, VISUAL: 'node -e ""', EDITOR: 'node -e ""' };
   const edited = cotal(["personas", "edit", "x"], persona, editor);
-  check("control: personas edit runs the editor", edited.status === 0 && edited.stdout.includes('saved "x"'), shown(edited));
+  check("control: personas edit runs the editor, and a draft left as it was saves nothing", edited.status === 0 && edited.stdout.includes('"x" is unchanged, so nothing was saved'), shown(edited));
   const forbidden = cotal(["personas", "edit", "x", "--no-input"], persona, editor);
   check("personas edit --no-input refuses to open an editor", forbidden.status === 1 && /--no-input forbids one/.test(forbidden.stderr) && !forbidden.stdout.includes("saved"), shown(forbidden));
+  // A refusal only a terminal could lift gives its fix, not the command's help.
+  for (const argv of [["persona", "edit", "x", "--no-input"], ["persona", "remove", "x", "--no-input"]]) {
+    const r = cotal(argv, persona, editor);
+    check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && /^✗ .*\n {2}(edit interactively|confirm with cotal persona remove x --yes)/.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
+  }
+  // An editor setting that is the path of an existing file runs as that program, spaces and all.
+  const spacedDir = mkdtempSync(join(tmpdir(), "cotal entry editor "));
+  cleanup.push(spacedDir);
+  const spacedEditor = join(spacedDir, "ed.sh");
+  writeFileSync(spacedEditor, '#!/bin/sh\nprintf "edit-B\\n" >> "$1"\n', { mode: 0o755 });
+  let spacedFile = "";
+  const spaced = cotal(["persona", "edit", "x"], (home) => { persona(home); spacedFile = join(home, "..", ".cotal", "agents", "x.md"); }, { ...noSeed, VISUAL: spacedEditor, EDITOR: spacedEditor });
+  check("persona edit runs an editor whose path holds a space", spaced.status === 0 && spaced.stdout.includes("Persona saved") && readFileSync(spacedFile, "utf8").includes("edit-B") && !spaced.stderr.includes("not found"), shown(spaced));
   // An edit refused because the persona changed or was removed while the editor was open keeps the
   // draft and names it. The editors write to the draft, then change the catalog file behind it.
   for (const [what, behind, next] of [["changed", "printf B >> .cotal/agents/x.md", /compare it with `cotal persona show x`/], ["was removed", "rm .cotal/agents/x.md", /restore it with `cotal persona create x --file /]] as const) {
@@ -350,8 +381,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   };
   const shownDefault = cotal(["persona", "show", "default", "--json"], seeded, noSeed);
   check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
-  const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
+  const appending = `sh -c 'printf "more\\n" >> "$1"' sh`;
+  const editedDefault = cotal(["persona", "edit", "default"], seeded, { ...noSeed, VISUAL: appending, EDITOR: appending });
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
+  const unchanged = cotal(["persona", "edit", "default"], seeded, editor);
+  check("persona edit of a draft left as it was says the persona is unchanged and saves nothing", unchanged.status === 0 && unchanged.stdout.includes("default is unchanged, so nothing was saved") && !unchanged.stdout.includes("Persona saved"), shown(unchanged));
   // A catalog file saved as UTF-16 is named by its encoding, with the step to save it as UTF-8.
   const utf16 = (home: string) => {
     seeded(home);
@@ -377,6 +411,34 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check("persona lists a FIFO in its catalog as unreadable, naming it, without waiting on it",
       listed.status === 4 && doc.result?.items?.some((item) => item.name === "x" && !item.valid) === true && doc.result.items.some((item) => item.name === "default" && item.valid) &&
         doc.warnings?.some((w) => w.code === "PERMISSION_DENIED" && /^persona is not a regular file: \S+\/x\.md; it was not read$/.test(w.message)) === true, shown(listed));
+  }
+  // A signal to the CLI while the editor is open reaches the editor. These editors signal the CLI,
+  // their parent, themselves. SIGTERM, or a Ctrl-C that ends the editor, saves nothing and reports it;
+  // an editor that takes Ctrl-C as a key keeps the edit going.
+  if (process.platform !== "win32") {
+    const interrupted = (name: string, script: string) => {
+      const drafts = mkdtempSync(join(tmpdir(), "cotal-entry-drafts-"));
+      cleanup.push(drafts);
+      const path = join(drafts, "..", `${name}-${process.pid}.sh`);
+      writeFileSync(path, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+      cleanup.push(path);
+      let file = "";
+      const r = cotal(["persona", "edit", "x"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, { ...noSeed, VISUAL: path, EDITOR: path, TMPDIR: drafts });
+      return { r, drafts: readdirSync(drafts), saved: readFileSync(file, "utf8") };
+    };
+    const term = interrupted("term", 'kill -TERM "$PPID"; exec sleep 30');
+    check("persona edit on SIGTERM stops the editor, exits 143, saves nothing and removes the unchanged draft",
+      term.r.status === 143 && term.r.stderr.includes("Interrupted while the editor was open, so nothing was saved and x is unchanged.") && term.drafts.length === 0 && term.saved === "---\nname: x\n---\nhi\n", { ...shown(term.r), drafts: term.drafts });
+    const half = interrupted("half", 'printf "half\\n" >> "$1"; kill -TERM "$PPID"; exec sleep 30');
+    const kept = /Your draft is kept in (\S+\.md);/.exec(half.r.stderr)?.[1];
+    check("persona edit on SIGTERM keeps a changed draft and names it",
+      half.r.status === 143 && kept !== undefined && readFileSync(kept, "utf8").endsWith("half\n") && half.drafts.length === 1 && !half.saved.includes("half"), { ...shown(half.r), drafts: half.drafts });
+    const ctrlC = interrupted("int", 'kill -INT "$PPID"; exec sleep 30');
+    check("persona edit on a Ctrl-C that ends the editor exits 130 and saves nothing",
+      ctrlC.r.status === 130 && ctrlC.r.stderr.includes("Interrupted while the editor was open, so nothing was saved and x is unchanged.") && ctrlC.drafts.length === 0, { ...shown(ctrlC.r), drafts: ctrlC.drafts });
+    const key = interrupted("key", 'got=; trap "got=1" INT; kill -INT "$PPID"; i=0\nwhile [ -z "$got" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done\n[ -n "$got" ] && printf "more\\n" >> "$1"');
+    check("persona edit keeps going when the editor takes Ctrl-C as a key, and saves its edit",
+      key.r.status === 0 && key.r.stdout.includes("Persona saved") && key.saved.endsWith("more\n") && key.drafts.length === 0, { ...shown(key.r), drafts: key.drafts });
   }
   for (const sub of ["list", "show", "edit", "new", "rm"]) {
     const help = cotal(["help", "personas", sub]);
@@ -455,10 +517,106 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
   const piped = cotal(["personas", "show", "h"], hostile, noSeed);
   check("personas show piped writes the file byte for byte and nothing else", piped.status === 0 && piped.stdout === card, shown(piped));
+  // Legacy `personas show` refuses as `persona show` does: a missing persona, an invalid definition and
+  // a name no persona can have.
+  const malformed = (home: string) => {
+    persona(home);
+    writeFileSync(join(home, "..", ".cotal", "agents", "bad.md"), "---\nname: bad\nsubscribe: [\n---\nbody\n");
+  };
+  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a.b", 1, "persona names use letters"]] as const) {
+    const legacy = cotal(["personas", "show", name], malformed, noSeed);
+    const current = cotal(["persona", "show", name], malformed, noSeed);
+    check(`personas show refuses a ${what} persona as persona show does`,
+      legacy.status === status && current.status === status && legacy.stderr.includes(reason) && current.stderr.includes(reason) && legacy.stdout === "", { legacy: shown(legacy), current: shown(current) });
+  }
   for (const argv of [["persona", "create", "q", "--role"], ["persona", "create", "q", "--model"], ["personas", "new", "q", "--role"]]) {
     const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
+  }
+  // A channel refusal quotes the value with its control characters escaped.
+  for (const flag of ["--subscribe", "--allow-subscribe", "--allow-publish"]) {
+    const r = cotal(["persona", "create", "q", "--prompt", "body", ...(flag === "--subscribe" ? [] : ["--subscribe", ""]), flag, `v${E}`], persona, noSeed);
+    check(`cotal persona create q ${flag} escapes control characters in its refusal`,
+      r.status === 1 && r.stderr.includes(`${flag}: invalid channel "v\\u001b]0;PWN\\u0007`) && !raw.test(r.stdout + r.stderr), shown(r));
+  }
+  // A name that differs from an existing persona's only in case is refused, and nothing is written.
+  for (const argv of [["persona", "create", "X", "--prompt", "body", "--subscribe", ""], ["personas", "new", "X", "--prompt", "body", "--subscribe", "", "--force"]]) {
+    let agents = "";
+    const r = cotal(argv, (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
+    check(`${argv.slice(0, 3).join(" ")} refuses a name that differs from x only in case`,
+      r.status === 2 && r.stderr.includes("persona 'X' differs from the existing 'x' only in case") && r.stderr.includes("CONFLICT") && readdirSync(agents).join() === "x.md", { ...shown(r), files: readdirSync(agents) });
+  }
+  // `personas list -v` prints each body once: a summary that is the body's first line is skipped.
+  const verbose = cotal(["personas", "list", "-v"], (home) => {
+    persona(home);
+    writeFileSync(join(home, "..", ".cotal", "agents", "d.md"), "---\nname: d\ndescription: Reviews pull requests.\n---\nReviews pull requests.\nThen it reports.\n");
+  }, noSeed);
+  check("personas list -v prints a body's first line once, with or without a matching description",
+    verbose.status === 0 && verbose.stdout.split("Reviews pull requests.").length === 2 && verbose.stdout.includes("    Then it reports.") && verbose.stdout.split(/^ +hi$/m).length === 2, shown(verbose));
+  // A persona file that is a link lists with a warning naming the file it links to, and show, edit
+  // and remove refuse it with that file as the next step, leaving the link in place.
+  {
+    const outside = mkdtempSync(join(tmpdir(), "cotal-entry-link-"));
+    cleanup.push(outside);
+    const target = join(outside, "linked.md");
+    writeFileSync(target, "---\nname: linked\nsubscribe: []\n---\nI am linked.\n");
+    const real = realpathSync(target);
+    let link = "";
+    const linked = (home: string) => { persona(home); link = join(home, "..", ".cotal", "agents", "linked.md"); symlinkSync(target, link); };
+    const listed = cotal(["persona", "--json"], linked, noSeed);
+    const envelope = (() => { try { return JSON.parse(listed.stdout) as { completeness?: string; warnings?: { code: string; target: { name?: string; link?: string }; message: string }[] }; } catch { return undefined; } })();
+    const warned = envelope?.warnings?.find((w) => w.target.name === "linked");
+    check("persona --json warns on a linked persona, naming the file it links to, and the listing stays complete",
+      listed.status === 0 && envelope?.completeness === "complete" && warned?.code === "PERMISSION_DENIED" && warned.target.link === real && warned.message.includes(`is a link to ${real}; persona show, edit and remove refuse a link`), shown(listed));
+    const plain = cotal(["persona", "--plain"], linked, noSeed);
+    const legacy = cotal(["personas", "list"], linked, noSeed);
+    check("persona and personas list name the link and its file in their text listings",
+      plain.status === 0 && plain.stderr.includes(`is a link to ${real}`) && legacy.status === 0 && legacy.stdout.includes(`linked.md is a link to ${real}; persona show, edit and remove refuse a link`), { plain: shown(plain), legacy: shown(legacy) });
+    for (const argv of [["persona", "show", "linked"], ["personas", "show", "linked"], ["persona", "edit", "linked"], ["persona", "remove", "linked", "--yes"]]) {
+      const r = cotal(argv, linked, argv[1] === "edit" ? editor : noSeed);
+      check(`${argv.join(" ")} refuses a linked persona with the file it links to as Next`,
+        r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${real}; replace the link with a copy of that file`) && lstatSync(link).isSymbolicLink(), shown(r));
+    }
+  }
+  // A catalog folder that is a file or a link to itself holds no personas: every catalog command
+  // refuses CONFLICT naming it and what it is, and the listing is not shown as empty.
+  for (const [shape, what] of [["a file", "is a file, not a folder"], ["a link to itself", "is a link that loops back on itself"]] as const) {
+    const broken = (home: string) => {
+      const agents = join(home, "..", ".cotal", "agents");
+      mkdirSync(join(home, "..", ".cotal"), { recursive: true });
+      if (shape === "a file") writeFileSync(agents, "not a catalog\n");
+      else symlinkSync("agents", agents);
+    };
+    for (const argv of [["persona", "--json"], ["personas", "list"], ["persona", "show", "x"], ["persona", "create", "y", "--prompt", "Y.", "--subscribe", ""]]) {
+      const r = cotal(argv, broken, noSeed);
+      const said = r.stdout + r.stderr;
+      check(`${argv.slice(0, 2).join(" ")} refuses a .cotal/agents that is ${shape} with CONFLICT, naming it`,
+        r.status === 2 && said.includes("CONFLICT") && said.includes(`.cotal/agents ${what}, so it holds no personas`) && said.includes("out of the way") && !said.includes("no personas in"), shown(r));
+    }
+  }
+  // A definition over 1 MiB is refused by create and edit with one refusal, and nothing is saved.
+  {
+    const big = mkdtempSync(join(tmpdir(), "cotal-entry-big-"));
+    cleanup.push(big);
+    const body = join(big, "body.txt");
+    writeFileSync(body, "x".repeat(1024 * 1024));
+    const grow = join(big, "grow.sh");
+    writeFileSync(grow, `#!/bin/sh\ncat '${body}' >> "$1"\n`, { mode: 0o755 });
+    const over = /the persona definition is \d+ bytes, over the 1 MiB limit, so it was not saved/;
+    let agents = "";
+    const created = cotal(["persona", "create", "big", "--from", body, "--subscribe", ""], (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
+    check("persona create refuses a definition over 1 MiB and writes nothing", created.status === 1 && over.test(created.stderr) && created.stderr.includes("SCHEMA_INVALID") && readdirSync(agents).join() === "x.md", shown(created));
+    let file = "";
+    const edited = cotal(["persona", "edit", "x"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, { ...noSeed, VISUAL: grow, EDITOR: grow, TMPDIR: big });
+    const kept = /your edit is kept in (\S+\.md);/.exec(edited.stderr)?.[1];
+    check("persona edit refuses a definition over 1 MiB the same way and keeps the draft", edited.status === 1 && over.test(edited.stderr) && kept !== undefined && statSync(kept).size > 1024 * 1024 && readFileSync(file, "utf8") === "---\nname: x\n---\nhi\n", shown(edited));
+  }
+  // An empty --model is refused by name.
+  for (const [argv, model] of [[["persona", "create", "q"], ""], [["persona", "create", "q"], " "], [["personas", "new", "q"], ""]] as const) {
+    const r = cotal([...argv, "--model", model, "--prompt", "body", "--subscribe", ""], persona, noSeed);
+    check(`cotal ${argv.join(" ")} --model ${JSON.stringify(model)} is refused naming --model`,
+      r.status === 1 && r.stderr.includes("--model is empty") && !r.stderr.includes("invalid persona fields"), shown(r));
   }
   // A name refusal says which rule it broke.
   for (const [name, reason] of [["a".repeat(200), "persona names are at most 128 characters; this one has 200"], ["a.b", "persona names use letters, digits, '_' or '-', up to 128 characters"]]) {
@@ -491,7 +649,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   };
   const cases: [string, string, string[]][] = [
     ["a tab indent", `${head}channels:\n\tops: {}\n`, ["m.yaml:6:1: Tabs are not allowed as indentation at line 6, column 1"]],
-    ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'Unrecognized key: "chanels"']],
+    ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'unknown key "chanels": did you mean "channels", which is required?', "has a problem,"]],
     ["an alias bomb", `${head}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, ["m.yaml: Excessive alias count indicates a resource exhaustion attack"]],
     ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ['m.yaml:7:16: "ghost" is not declared in agents: (at channels.ops.subscribe)']],
     ["a persona with invalid frontmatter", `${head}agents:\n  sec: agents/sec.md\nchannels:\n  ops:\n    subscribe: [sec]\n`, ["m.yaml: agent file ", "sec.md: invalid YAML frontmatter; Flow sequence in block collection must be sufficiently indented and end with a ] at line 2, column 24 (at agents.sec)"]],

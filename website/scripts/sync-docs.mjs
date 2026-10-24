@@ -145,7 +145,10 @@ function rewriteTarget(target, rel) {
     return url.href.slice(GITHUB_BLOB.length);
   }
   if (repoPath === 'docs/README.md') return `/${suffix}`;
-  if (knownSlugs.has(repoPath)) return `/${knownSlugs.get(repoPath)}/${suffix}`;
+  if (knownSlugs.has(repoPath)) {
+    if (url.hash) fragmentLinks.push([rel, repoPath, url.hash]);
+    return `/${knownSlugs.get(repoPath)}/${suffix}`;
+  }
   if (isSitePage(repoPath)) throw new Error(`link to unpublished doc: ${target}`);
   if (!existsSync(join(repoRoot, repoPath))) throw new Error(`link to missing file: ${target}`);
   // Anything else in the repo (design notes, sources, examples, extension READMEs) → GitHub.
@@ -216,6 +219,7 @@ function rewriteLinks(md, rel, extensions) {
     if (kind !== 'enter') continue;
     if (type === 'resourceDestinationString' || type === 'definitionDestinationString') {
       const target = normalizeUri(decodeString(context.sliceSerialize(token)));
+      if (target.startsWith('#')) fragmentLinks.push([rel, rel, target]);
       if (!isRepoRelative(target)) continue;
       edits.set(start.offset, [end.offset, rewriteTarget(target, rel).replace(/[&()]/g, '\\$&')]);
     } else if (type === 'htmlFlow' || type === 'htmlText') {
@@ -252,6 +256,34 @@ function splitH1(md, rel) {
 // A hard line break renders as a br with no text, but it separates the words on either side.
 const textOf = (node) =>
   node.nodeName === '#text' ? node.value : node.nodeName === 'br' ? ' ' : (node.childNodes ?? []).map(textOf).join('');
+
+// Every `#fragment` a published page links to, as [source, target page, fragment], and the ids
+// each published page has. A link to a section that does not exist fails the sync.
+const fragmentLinks = [];
+const anchors = new Map();
+
+// A page's ids: each heading's, as GitHub and the site both make it (the rendered text in lower
+// case, punctuation dropped, each space a `-`, and a repeat numbered `-1`, `-2`), and each
+// explicit `<a id>`.
+function anchorsOf(md) {
+  const ids = new Set();
+  const seen = new Map();
+  const walk = (tokens) => {
+    for (const token of tokens ?? []) {
+      if (token.type === 'heading') {
+        const base = textOf(parseFragment(marked.parseInline(token.text))).toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\- ]/gu, '').replace(/ /g, '-');
+        const n = seen.get(base) ?? 0;
+        seen.set(base, n + 1);
+        ids.add(n ? `${base}-${n}` : base);
+      }
+      walk(token.tokens);
+      walk(token.items);
+    }
+  };
+  walk(marked.lexer(md));
+  for (const [, id] of md.matchAll(/<a\s+(?:id|name)="([^"]+)"/g)) ids.add(id);
+  return ids;
+}
 
 const graphemes = new Intl.Segmenter();
 
@@ -326,6 +358,7 @@ for (const group of groups) {
     const name = basename(rel).replace(/\.md$/, '');
     const slug = slugFor(name);
     const { title, body } = splitH1(readFileSync(src, 'utf8'), rel);
+    anchors.set(rel, anchorsOf(body));
     const description = firstParagraph(body, rel);
     // The Quickstart is emitted as MDX, which has no indented code and reads braces and tags as JavaScript.
     let md = rewriteLinks(body, rel, rel === QUICKSTART_SRC ? [mdxjs(), gfm()] : [gfm()]);
@@ -346,6 +379,10 @@ for (const group of groups) {
 }
 
 writeFileSync(join(genDir, 'sidebar.json'), JSON.stringify(sidebar, null, 2) + '\n');
+
+const deadAnchors = fragmentLinks.filter(([, page, hash]) => !anchors.get(page)?.has(decodeURIComponent(hash.slice(1))));
+if (deadAnchors.length)
+  throw new Error(`link to a missing anchor:\n${deadAnchors.map(([from, page, hash]) => `  ${from}: ${page === from ? '' : page}${hash}`).join('\n')}`);
 
 // Copy every image the pages reference into public/. copyFileSync throws on a
 // missing source, so a dead image link fails the sync instead of 404ing live.

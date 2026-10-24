@@ -101,6 +101,8 @@ export interface DryRunReport {
    * silently stops testing.
    */
   readonly unusedScript: readonly string[];
+  /** Each `log(...)` line the run wrote, in order, with the scope it was written from. */
+  readonly log: readonly { readonly scope: string; readonly values: readonly unknown[] }[];
   readonly journal: Journal;
 }
 
@@ -231,6 +233,7 @@ export async function dryRunOutcome(
   const recorder = new RecordingHandler(sim);
   const runId = options.runId ?? "dry-run";
   const journal = options.journal ?? new Journal({ run: runId });
+  const log: { scope: string; values: readonly unknown[] }[] = [];
 
   let steps: number | undefined;
   let fault: DryRunFailure["fault"] | undefined;
@@ -239,6 +242,7 @@ export async function dryRunOutcome(
       runId,
       handler: recorder,
       journal,
+      onLog: (line) => log.push({ scope: line.scope, values: [...line.values] }),
       ...(options.seed !== undefined ? { seed: options.seed } : {}),
       ...(options.file !== undefined ? { file: options.file } : {}),
       ...(options.stepBudget !== undefined ? { stepBudget: options.stepBudget } : {}),
@@ -285,7 +289,7 @@ export async function dryRunOutcome(
     deadline: req.deadline,
   }));
 
-  const report = { effects, agents, checkpoints, waits, elapsedMs: sim.now() - startedAt, unusedScript: sim.unusedScript(), journal };
+  const report = { effects, agents, checkpoints, waits, elapsedMs: sim.now() - startedAt, unusedScript: sim.unusedScript(), log, journal };
   return fault !== undefined ? { ...report, fault } : { ...report, steps: steps! };
 }
 

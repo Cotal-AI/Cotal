@@ -56,8 +56,12 @@ export function unknownCommandMessage(commands: readonly Command[], word: string
   return `unknown command: ${oneLine(word)} - ${suggestThen(word, commandWords(commands, word), "run `cotal help` to list commands")}`;
 }
 
-/** The usage line for a first word that names none of `surface`'s subcommands, with the nearest. */
+/** The usage line for a first word that names none of `surface`'s subcommands: the nearest, or the
+ *  subcommands it takes when none is near, as `telemetry bogus` names the levels. */
 export function unknownSubcommandMessage(path: string, surface: Pick<Command, "subcommands">, word: string): string {
-  const words = (surface.subcommands ?? []).filter((sub) => !sub.hidden).flatMap((sub) => [sub.name, ...(sub.aliases ?? [])]);
-  return `cotal ${path} has no subcommand "${oneLine(word)}" - ${suggestThen(word, words, `run \`cotal help ${path}\``)}`;
+  const visible = (surface.subcommands ?? []).filter((sub) => !sub.hidden);
+  const words = visible.flatMap((sub) => [sub.name, ...(sub.aliases ?? [])]);
+  const names = visible.map((sub) => sub.name);
+  const takes = didYouMean(word, words) || !names.length ? "" : `; it takes ${names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : names[0]}`;
+  return `cotal ${path} has no subcommand "${oneLine(word)}"${takes} - ${suggestThen(word, words, `run \`cotal help ${path}\``)}`;
 }

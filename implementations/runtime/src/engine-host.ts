@@ -88,6 +88,7 @@ export interface EngineHostRequest {
   readonly seed?: string;
   readonly effectCeiling?: number;
   readonly stepBudget?: number;
+  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
 }
 
 /**
@@ -197,7 +198,7 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
       ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
       ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
     },
-    { entry, bridge: { handler: req.handler, store } },
+    { entry, bridge: { handler: req.handler, store }, ...(req.onLog !== undefined ? { onLog: req.onLog } : {}) },
   );
   publish = (reason) => worker.stop(reason);
   const unsubscribe = req.cancellation?.subscribe((reason) => worker.cancel(reason));

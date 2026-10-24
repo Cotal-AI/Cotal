@@ -54,4 +54,13 @@ if (!Number.isInteger(nodeMajor) || nodeMajor < MIN_NODE_MAJOR) {
   process.exit(1);
 }
 
+// Node warns once, as it loads its own color helpers, when FORCE_COLOR and NO_COLOR are both set.
+// The CLI resolves that pair itself (`cotal config` shows FORCE_COLOR winning and NO_COLOR
+// outranked), so that one runtime warning is dropped before anything loads. Every other warning
+// still prints.
+const emitWarning = process.emitWarning.bind(process) as (...args: unknown[]) => void;
+process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
+  if (warning !== "The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.") emitWarning(warning, ...rest);
+}) as typeof process.emitWarning;
+
 await import("./run.js");

@@ -238,6 +238,12 @@ for (const { level, extra, name } of [
   const malformed = await s.run(["version"]);
   await settled();
   check("a malformed telemetry.json refuses SCHEMA_INVALID, sends nothing, and is left as it was", malformed.status === 1 && malformed.sent.length === 0 && /telemetry settings file .* is invalid/.test(malformed.stderr) && readFileSync(s.settingsPath, "utf8") === '{"v":1,"level":"loud"}', shown(malformed));
+  // An environment opt-out reads no settings file, so the malformed one stops nothing there.
+  for (const extra of [{ DO_NOT_TRACK: "1" }, { COTAL_TELEMETRY: "off" }]) {
+    const optedOut = await s.run(["version"], extra);
+    await settled();
+    check(`under ${Object.keys(extra)[0]} a malformed telemetry.json stops nothing, and is left as it was`, optedOut.status === 0 && optedOut.sent.length === 0 && readFileSync(s.settingsPath, "utf8") === '{"v":1,"level":"loud"}', shown(optedOut));
+  }
 }
 
 // ---- an intake that never answers, and one that is not there ----

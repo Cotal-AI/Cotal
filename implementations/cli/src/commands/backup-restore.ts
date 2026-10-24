@@ -79,7 +79,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     completeness: data.seatResume === "requested" ? "partial" : "complete",
     warnings: [
       ...(data.seatResume === "requested" ? [{ code: "AGENT_READINESS_NOT_CHECKED", target: { space: result.space }, message: "Retained seats were offered to the manager's resume; whether each one joined is not checked." }] : []),
-      ...(leftOutLines.length ? [{ code: registryOnly ? "HISTORY_NOT_RESTORED" : onlyCopy?.newer ? "NEWER_HISTORY_NOT_RESTORED" : "RUNS_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}) }, message: leftOutLines.join(" ") }] : []),
+      ...(leftOutLines.length ? [{ code: registryOnly ? "HISTORY_NOT_RESTORED" : onlyCopy?.newer ? "NEWER_HISTORY_NOT_RESTORED" : "RUNS_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}), ...(onlyCopy?.rolledBack.runs.length ? { rolledBackRuns: onlyCopy.rolledBack.runs } : {}) }, message: leftOutLines.join(" ") }] : []),
     ],
   }, (row): Report => ({ sections: [
     { title: "Backup restored", blocks: [
