@@ -17,6 +17,9 @@ export interface ServiceDefinitionInput {
     | { readonly type: "adapter"; readonly timeoutMs: number };
   readonly envRefs?: Readonly<Record<string, string>>;
   readonly credentialRef?: { readonly kind: "file"; readonly path: string };
+  /** The space root `service add` saved the definition in. A definition an earlier release saved has
+   *  none. */
+  readonly root?: string;
 }
 
 /** Byte cap applied to JSON content. A file reader must impose the same cap while reading, before
@@ -126,6 +129,8 @@ export function parseServiceDefinitionInput(raw: string, selectedSpace: string):
   }
   if (input.credentialRef && (!isAbsolute(input.credentialRef.path) || !nativeString(input.credentialRef.path)))
     return refuse("the credential reference must name an absolute local path");
+  if (input.root !== undefined && (!isAbsolute(input.root) || !nativeString(input.root)))
+    return refuse("the recorded root must be an absolute local path");
   if (input.readiness.type === "http") {
     let url: URL;
     try { url = new URL(input.readiness.url); } catch { return refuse("the HTTP readiness URL is invalid"); }

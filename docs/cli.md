@@ -2412,7 +2412,8 @@ names `cotal down --yes` in the root and then `space forget` again. When the sta
 gone, it names `cotal down --space <space> --yes`, which stops the stack and removes them.
 Forget keeps the other services saved under the name, such as one `cotal service add` saved, with
 their instance records. The result names them as `keptServices`, and a later space with the same
-name inherits them: its `cotal service` lists them and its `up` names them. `cotal service remove
+name inherits them: its `cotal service` lists them and its `up` names them. A later space in another
+folder does not start one, as [Running a service](#running-a-service) describes. `cotal service remove
 <name> --space <space> --yes` in that space forgets one. While no space has the name, `cotal service`
 finds no space for it, so remove a service before you forget its space to drop it at once.
 `status` in a forgotten space's root then selects no space and probes no broker. When nothing left
@@ -4465,7 +4466,9 @@ loopback health URL answers 200:
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
 
 A `space` that names another space is refused `SCHEMA_INVALID`, exit 1, before `add` checks whether
-the selected space already has a service of that name. No other field is accepted. The file is at
+the selected space already has a service of that name. No other field is accepted. `add` saves the
+definition with the space's root, which `show` lists as `Added in`; a file that sets `root` itself
+is refused `SCHEMA_INVALID`, exit 1, and nothing is saved. The file is at
 most 256 KiB. A `readiness` value that breaks these rules refuses `SCHEMA_INVALID`, exit 1, naming
 the field and its rule, such as a `timeoutMs` outside 1 to 120000, a field the chosen type does not
 take, or a `url` that is not on loopback. A launch argument over 8192 characters refuses
@@ -4492,6 +4495,15 @@ remove it and add it again.
 before its process exists records the instance as failed. Its refusal names the cause, such as a
 space that is prepared but not started. `start` can then try again on the same instance, and
 `stop`, `remove` and `cotal down` find nothing to stop.
+
+A definition starts only in the root it was added in. One a forgotten space of the same name left in
+another folder refuses `start`, `restart` and `install` `CONFLICT` (exit 2) before anything launches.
+The refusal names the root it was added in and `cotal service remove <name> --space <space> --yes`,
+which forgets it so you can add it again for this project. Bare `service` marks it `inherited from
+<root>` in its `Added in` column, and `--json` gives each definition its `root` and a `rootMatch` of
+`this-root`, `inherited` or `not-recorded`. A definition an earlier release saved has no recorded
+root: it starts as before and is listed as `root not recorded`, as are a controller stack's own
+member definitions.
 
 A `start` or `restart` whose environment does not set a variable that `envRefs` reads refuses
 `DEPENDENCY_UNAVAILABLE` (exit 2) before anything launches or stops. It names each missing variable
