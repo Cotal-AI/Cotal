@@ -1386,7 +1386,8 @@ reason. `cotal status` lists the tenants on such a root. Personas
 store location for `up`'s own repair, but `clean` still takes `--store-dir` itself; `clean` does
 not read the record. Custom cleanup targets must contain either the Cotal store-generation marker or a
 real `jetstream/` store directory; filesystem roots, project roots, and Cotal auth/maintenance trees
-are always refused.
+are always refused. Its contents are not checked, so a directory that holds only a `jetstream/`
+directory is removed as a store, whatever that directory holds.
 
 `--dry-run` runs the same checks as `store` or `all` and prints `would remove <path>` for each
 store, credential, record and registration the command would remove, then removes nothing and takes
