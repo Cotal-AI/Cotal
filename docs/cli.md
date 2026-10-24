@@ -1932,7 +1932,7 @@ cotal space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root 
 cotal space create <name> [--root <dir>]
 cotal space forget <name>
 cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]
-cotal use [<space>] [--json|--plain]
+cotal use [<space> | --clear] [--json|--plain]
 ```
 
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
@@ -2103,6 +2103,9 @@ the command that targets it reports that. Selecting the selected space again is 
 registered is refused with `TARGET_NOT_FOUND`, exit 2, and the selection stays. Bare `use` reports
 the selection. A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
+`use --clear` removes the selection, so a command targets its folder's space again. Its receipt
+names the space that was selected, and `--json` gives `current: null` with that `previous`. With
+nothing selected it is a `no-op`, exit 0. It takes no space name.
 
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
@@ -5313,8 +5316,10 @@ cotal config unset <key> [--user | --space <name>] [--json | --plain]
 Your [preferences](config.md#preferences): `harness`, `persona`, `detach-key`, `color` and `editor`.
 Bare `config` lists every key with the value a command uses, where it came from (a variable, your
 value for the space, your own value, or the default) and the values it outranks. `get` shows one
-key. A read looks through `--space`, else the space selected with `cotal use`, else your defaults;
-`--user` reads your defaults alone.
+key. A read looks through `--space`, else the space a launch here uses: the space selected with
+`cotal use`, or with nothing selected the space `spawn` resolves from this folder, which is this
+folder's space or the only running one. With none of those it reads your defaults. `--user` reads
+your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
@@ -5322,8 +5327,9 @@ machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the kno
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
 a space you removed can be read and removed, and refuse any other name the same way. A write that
 another value outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming
-that value: a variable, or your value for the selected space when you write your defaults without
-`--user`. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
+that value: a variable, or your value for the space a command here uses when you write your
+defaults, with or without `--user`. The receipt's effective value is the one a command here uses,
+read through `--space`, else that space. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
 warning naming the catalog. A variable whose value `config set` would refuse still wins, and
 `config`, `config get` and `status` name it in a `PREFERENCE_INVALID` warning with the reason.
 Setting a value that is already saved, or
