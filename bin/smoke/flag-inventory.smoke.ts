@@ -105,19 +105,20 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `space` (2026-10): the registered spaces and one in full, on the structured output contract.
   // `space add` (2026-10) registers a space that runs elsewhere, from `--server` or a user-auth bundle;
   // `space delete` previews with `--dry-run`.
-  space: { flags: ["allow-unencrypted-overlay:boolean", "dry-run:boolean", "file:string:f", "force:boolean", "from:string", "json:boolean:j", "mode:string", "plain:boolean", "root:string", "server:string", "tls:boolean", "yes:boolean:y"], positionals: true },
+  space: { flags: ["adopt:boolean", "allow-unencrypted-overlay:boolean", "dry-run:boolean", "file:string:f", "force:boolean", "from:string", "json:boolean:j", "mode:string", "plain:boolean", "root:string", "server:string", "tls:boolean", "yes:boolean:y"], positionals: true },
   // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
   // `--json` and `--plain` (2026-10): the refresh on the structured output contract.
   sync: { flags: ["idp:string", "json:boolean:j", "plain:boolean"], positionals: false },
   // `--json` and `--plain` (2026-10): `use` reports or changes the selection on the structured output contract.
-  use: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  // `--clear` (2026-10) removes the selection, so a command targets its folder's space again.
+  use: { flags: ["clear:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // Bare status is the infrastructure inventory; `status <agent> [--on]` inspects one incarnation.
   // `--components` (2026-08) is the historical health pass the bare service inventory replaces.
   status: { flags: ["all:boolean", "components:boolean", "creds:string", "json:boolean:j", "on:string", "plain:boolean", "server:string", "space:string:s", "verbose:boolean:v"], positionals: true },
   doctor: { flags: ["fix:boolean", "json:boolean:j", "plain:boolean", "space:string"], positionals: true },
   // `who` and `whoami` (2026-10): the roster and the CLI's own identity, on the structured output contract.
   who: { flags: [...TARGET, "all:boolean", "waiting:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
-  whoami: { flags: ["space:string:s", "server:string", "json:boolean:j", "plain:boolean"], positionals: false },
+  whoami: { flags: ["space:string:s", "server:string", "creds:string", "json:boolean:j", "plain:boolean"], positionals: false },
   // Stage 2a: spawn absorbs the detached mode: the full launch grammar (launchFlags) + --detach,
   // and gains --model/--cwd (parity) + --creds (control-caller, --detach only, guarded in run).
   // The shared short forms are -n/-m/-C/-p/-H. `--harness` picks the application, `--foreground`
@@ -460,8 +461,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Per-user auth (D4c): the actor-ledger operator surface.
   actor: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "full:boolean", "label:string", "owner:string",
-      "parent:string", "role:string", "scope:string", "space:string", "sub:string",
+      "allow-publish:string", "allow-subscribe:string", "full:boolean", "json:boolean:j", "label:string", "owner:string",
+      "parent:string", "plain:boolean", "role:string", "scope:string", "space:string", "sub:string",
     ],
     positionals: true,
   },

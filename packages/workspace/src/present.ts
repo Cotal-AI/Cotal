@@ -1,6 +1,6 @@
 import { c } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
-import { CommandFailure, exitCode, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
 import { displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
 
 // Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
@@ -176,6 +176,7 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
 }
 
 /** Each value starts after its padded label; a value too long for the line continues under itself.
+ *  A value with a word too wide for the room beside its label starts on the line under the label.
  *  Below 48 columns each label takes a line of its own, with its value on the lines under it. */
 function renderFields(fields: Fields, style: Style, indent: string, width: number): string[] {
   if (width < 48) {
@@ -188,6 +189,8 @@ function renderFields(fields: Fields, style: Style, indent: string, width: numbe
   const start = indent.length + pad + 1;
   return fields.rows.flatMap(([name, value]) => {
     const [first, ...rest] = drawWrapped(value, style, width - start);
+    if ([first!, ...rest].some((line) => displayWidth(line) > width - start))
+      return [indent + draw({ text: `${name}:`, tone: "label" }, style).shown, ...drawWrapped(value, style, width - indent.length - 2).map((line) => indent + "  " + line)];
     return [`${indent}${drawPadded({ text: `${name}:`, tone: "label" }, style, pad)} ${first}`, ...rest.map((line) => " ".repeat(start) + line)];
   });
 }
@@ -214,7 +217,9 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
 /** A report as lines of text, fitted to `width` columns (unbounded when output is not a terminal):
  *  tables fit or become records, and long values and lines wrap at spaces. */
 export function renderReport(report: Report, style: Style, width = Number.POSITIVE_INFINITY): string {
+  const note = report.space ? operationSpaceNote(report.space) : undefined;
   const out: string[] = report.space ? drawWrapped({ text: `Mesh: ${report.space}`, tone: "selected" }, style, width) : [];
+  if (note) out.push(...drawWrapped({ text: note, tone: "hint" }, style, width - 2).map((line) => `  ${line}`));
   for (const section of report.sections) {
     if (out.length) out.push("");
     const indent = section.title === undefined ? "" : "  ";

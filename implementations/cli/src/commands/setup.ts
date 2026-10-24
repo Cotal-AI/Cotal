@@ -8,6 +8,7 @@ import {
   OFFICIAL_CONNECTORS,
   isCommandFailure,
   renderReport,
+  assertPreferencesFolderProtected,
   canonicalRoot,
   checkUserBundle,
   extensionPackageDir,
@@ -509,8 +510,9 @@ interface SetupPlan {
   readonly space: { readonly kind: "local"; readonly state: LocalSpaceState } | SelfHostedSpace;
 }
 
-/** Every check setup makes before it writes: the space name, the application, the space at the
- *  destination, and for a local space the NATS server `cotal up` will run. */
+/** Every check setup makes before it writes: the space name, the application, the preferences
+ *  folder it saves the harness in, the space at the destination, and for a local space the NATS
+ *  server `cotal up` will run. */
 async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
@@ -518,6 +520,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`);
+  assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
   const state = checkLocalSpace(inputs.space, inputs.project, "--project", true);

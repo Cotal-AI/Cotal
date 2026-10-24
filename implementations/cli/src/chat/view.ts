@@ -323,14 +323,16 @@ export const slashHelp = `commands: ${SLASH_COMMANDS.join(", ")}. Start a messag
 const HISTORY_DEFAULT = 50;
 const HISTORY_MAX = 1000;
 
-/** Parse one slash line. Channel names are checked by the session against native policy, not here. */
+/** Parse one slash line. A channel may be written with its `#`, as the view prints it. Channel names
+ *  are checked by the session against native policy, not here. */
 export function parseSlash(line: string): { ok: true; command: SlashCommand } | { ok: false; error: string } {
   const [head, ...rest] = line.trim().split(/\s+/);
   const arg = rest[0];
+  const channel = arg?.replace(/^#/, "");
   const one = (name: "join" | "leave" | "info"): { ok: true; command: SlashCommand } | { ok: false; error: string } =>
-    arg && rest.length === 1 ? { ok: true, command: { name, channel: arg } } : { ok: false, error: `usage: /${name} <channel>` };
+    channel && rest.length === 1 ? { ok: true, command: { name, channel } } : { ok: false, error: `usage: /${name} <channel>` };
   const mode = (cmd: "quiet" | "mute" | "normal", m: ChannelMode | "normal"): { ok: true; command: SlashCommand } | { ok: false; error: string } =>
-    arg && rest.length === 1 ? { ok: true, command: { name: "channel-mode", channel: arg, mode: m } } : { ok: false, error: `usage: /${cmd} <channel>` };
+    channel && rest.length === 1 ? { ok: true, command: { name: "channel-mode", channel, mode: m } } : { ok: false, error: `usage: /${cmd} <channel>` };
   switch (head) {
     case "/who":
     case "/whoami":
@@ -388,8 +390,8 @@ export interface Row {
 
 const shortUid = (uid: string): string => uid.slice(-6);
 
-export function recipientLabel(r: Recipient | undefined): string {
-  if (!r) return "no recipient (Tab)";
+export function recipientLabel(r: Recipient | undefined, choose = "Tab"): string {
+  if (!r) return `no recipient (${choose})`;
   if (r.kind === "channel") return `#${oneLine(r.channel)}`;
   if (r.kind === "role") return `role ${oneLine(r.role)}`;
   if (r.kind === "peer") return `DM ${oneLine(r.name)} (${oneLine(r.principal)})${r.replyTo ? " (reply)" : ""}`;
@@ -439,8 +441,8 @@ export function endingNotice(identity: SessionIdentity): { readonly at: number; 
 }
 
 /** The header: the mesh first, as every command's report opens, then who this session is and under
- *  which mode's guarantees. Never a credential. */
-export function headerRows(state: ChatState): Row[] {
+ *  which mode's guarantees. Never a credential. `choose` names how a recipient is chosen. */
+export function headerRows(state: ChatState, choose = "Tab"): Row[] {
   const id = state.identity;
   const until = id.expiresAt === undefined ? undefined : shownTime(id.expiresAt);
   const mode =
@@ -455,7 +457,7 @@ export function headerRows(state: ChatState): Row[] {
     { text: `Mesh: ${oneLine(id.space)}`, tone: "label" },
     { text: `${oneLine(id.label)} · ${oneLine(id.principal)} · session …${shortUid(id.lifecycleUid)} · ${mode}`, tone: "label" },
     conn,
-    { text: `to ${recipientLabel(state.recipient)} · attention ${state.attention}`, tone: "selected" },
+    { text: `to ${recipientLabel(state.recipient, choose)} · attention ${state.attention}`, tone: "selected" },
   ];
 }
 

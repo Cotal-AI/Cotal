@@ -40,6 +40,7 @@ export const spaceFlags = [
   { name: "force", type: "boolean", description: "add: replace a registration added by hand, and add a --server space without checking its broker" },
   { name: "yes", short: "y", type: "boolean", description: "confirm without the terminal question; a delete must name the exact space, and an add still confirms fetched pins" },
   { name: "dry-run", type: "boolean", description: "delete: read native first-party impact without deleting anything" },
+  { name: "adopt", type: "boolean", description: "create: take over the stack journal a copied or moved project folder holds, so the space starts from this folder" },
 ] as const satisfies readonly FlagSpec[];
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
@@ -112,6 +113,7 @@ export async function space(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof spaceFlags>;
   const presentation = presentationOf(values);
   const [sub, ...rest] = args.positionals;
+  if (values.adopt !== undefined && sub !== "create") throw usage("--adopt belongs to space create");
   if (sub === "delete") {
     const invalid = ADD_FLAGS.find((flag) => flag !== "yes" && values[flag] !== undefined);
     if (invalid) throw usage(`--${invalid} belongs to space add, not delete`);
@@ -122,7 +124,7 @@ export async function space(args: ParsedArgs): Promise<void> {
   const addOnly = ADD_FLAGS.find((flag) => values[flag] !== undefined && !(sub === "create" && flag === "root"));
   if (addOnly) throw usage(`--${addOnly} is taken by \`cotal space add\` only`);
   if (sub === "forget") return spaceForget(rest, presentation);
-  if (sub === "create") return spaceCreate(rest, values.root, presentation);
+  if (sub === "create") return spaceCreate(rest, values.root, values.adopt === true, presentation);
   if (sub !== undefined && sub !== "show") throw usage(`cotal space has no subcommand "${sub}" - run \`cotal help space\``);
   // Listing and show read the registry before anything else and write nothing, so a record that
   // cannot be read refuses them.
@@ -220,14 +222,15 @@ function spacesView(result: SpacesResult): Report {
     blocks: [
       {
         kind: "table",
-        columns: [{ key: "space", label: "SPACE" }, { key: "root", label: "Project" }],
+        columns: [{ key: "space", label: "Space" }, { key: "root", label: "Project" }],
         rows: result.prepared.map((p) => ({ space: nameCell(p), root: { text: p.root, tone: "hint" } })),
       },
       { kind: "commands", items: [{ command: "cotal up", description: "Start a prepared space from its project folder" }] },
     ],
   }];
+  // A prepared space is listed below, so the empty line names what is missing without denying it.
   if (result.items.length === 0)
-    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: ["No spaces registered.", { text: "Prepare a local space or connect to one you already run.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
+    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? ["No space has been started or registered yet."] : ["No spaces registered.", { text: "Prepare a local space or connect to one you already run.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
   return {
     sections: [{
       title: "Spaces",
@@ -239,7 +242,7 @@ function spacesView(result: SpacesResult): Report {
           { key: "server", label: "Broker" },
           { key: "mode", label: "Access" },
           { key: "origin", label: "Source" },
-          { key: "root", label: "ROOT" },
+          { key: "root", label: "Project" },
         ],
         rows: result.items.map((s) => ({
           space: nameCell(s),

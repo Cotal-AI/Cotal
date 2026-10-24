@@ -1,12 +1,13 @@
 import * as prompts from "../lib/prompts.js";
 import { contractDigest, mintCreds, newIdentity, type ChannelConfig, type ChannelDefaults } from "@cotal-ai/core";
-import { brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { listAdditiveTeamAttempts, removedAdditiveDeploymentIds, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { CARD_TERMINAL_PHASES, openChannelCardRegistry, readChannelMemberImpact, writeChannelRemovalAttempt, writeChannelRemovalReceipt, writeChannelRemovalStep, type CardObservation, type CardReceipt, type ChannelRemovalAttempt, type ChannelRemovalStep, type RemovedChannel } from "../lib/team-channel-removal.js";
 import { classifyCard, removedCard, type CardSettlement } from "../lib/team-removal-reconcile.js";
 import { listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
+import { authModeText } from "../lib/team-text.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { TeamValues } from "./team.js";
 
@@ -259,8 +260,8 @@ async function reconcileChannelTeam(input: { root: string; space: string; deploy
   try {
     const preview = { kind: "channel-team-removal-reconcile-preview" as const, deploymentId, cards: phase.settlements, recordable: phase.settlements.filter((row) => row.state === "record").length, unattempted: phase.settlements.filter((row) => row.state === "unattempted").length, unknown: phase.settlements.filter((row) => row.state === "unknown").length, effectAttempted: false as const, continuationOffered: false as const };
     if (values["dry-run"] || !values.yes && (!canPrompt() || values.json)) {
-      if (!values["dry-run"]) throw new CommandFailure("refused", "USAGE_INVALID", "scripted reconciliation needs --yes after reviewing which observations it records", { target });
-      writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "Card revisions were read from the intent's registry stream. Nothing was recorded, deleted or retried." } }, reconcileView);
+      if (!values["dry-run"]) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
+      writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...reconcileView(data).sections, { blocks: [{ kind: "lines", lines: ["Card revisions were read from the intent's registry stream. Nothing was recorded, deleted or retried."] }] }] }));
       return;
     }
     if (!values.yes) {
@@ -314,9 +315,9 @@ export async function removeChannelTeam(deploymentId: string, values: TeamValues
   let run: CardRemovalRun | undefined, lockFailure: CommandFailure | undefined;
   try {
     const preview = phase.preview;
-    if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "Current card revisions were compared with the returned create revisions. The membership feed is display-only. Nothing was deleted." } }, previewView); return; }
+    if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...previewView(data).sections, { blocks: [{ kind: "lines", lines: ["Current card revisions were compared with the returned create revisions. The membership feed is display-only. Nothing was deleted."] }] }] })); return; }
     if (!values.yes) {
-      if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted card removal needs --yes after reviewing its policy fallback and impact", { target });
+      if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted card removal needs --yes after reviewing its policy fallback and impact", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
       const answer = await prompts.confirm({ message: `Remove ${receipt.createdChannels.length} recorded channel card(s) from ${oneLine(space)}? The space defaults then apply (delivery ${preview.defaults.deliveryClass}). History, grants and readers are not changed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "channel-team-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Channel cards kept", blocks: [{ kind: "lines", lines: ["No removal intent or card delete was submitted."] }] }] })); return; }
     }
@@ -328,7 +329,7 @@ export async function removeChannelTeam(deploymentId: string, values: TeamValues
   if (!run!.intentAttempted && run!.failure) throw run!.failure;
   const done = run!, failure = done.failure ?? lockFailure;
   writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "channel-team-removal", deploymentId, server: brokerAddressForDisplay(original.server) ?? "not displayable", authMode: original.authMode, returnedReceipt: done.returned, channels: done.outcomes, impact: phase.preview, retainedIntent: done.intentAttempted, historyPurged: false, grantsChanged: false, readersStopped: false, readerExclusivity: "not-established", completeCleanup: false, retryAuthorized: false }, warnings: phase.closeUnconfirmed() ? [{ code: "WRITER_CLOSE_UNCONFIRMED", target, message: "Closing the scoped registry writer was not confirmed; recorded outcomes stand." }] : [], ...(failure ? { failure } : {}) }, (data): Report => ({ sections: [{ title: data.returnedReceipt ? "Channel cards removed" : "Channel card removal incomplete", blocks: [
-    { kind: "fields", rows: [["Deployment", deploymentId], ["Auth mode", data.authMode], ["Removed or already absent", `${data.channels.filter((row) => row.outcome === "deleted" || row.outcome === "absent").length} of ${receipt.createdChannels.length}`], ["Full removal receipt", data.returnedReceipt ? "recorded" : "not confirmed"], ["Retained history", "kept"], ["Grants and readers", "unchanged"]] },
+    { kind: "fields", rows: [["Deployment", deploymentId], ["Auth mode", authModeText(data.authMode)], ["Removed or already absent", `${data.channels.filter((row) => row.outcome === "deleted" || row.outcome === "absent").length} of ${receipt.createdChannels.length}`], ["Full removal receipt", data.returnedReceipt ? "recorded" : "not confirmed"], ["Retained history", "kept"], ["Grants and readers", "unchanged"]] },
     { kind: "table", columns: [{ key: "channel", label: "Channel" }, { key: "created", label: "Create revision" }, { key: "outcome", label: "Outcome" }], rows: cardOutcomeRows(receipt, data.channels) },
     { kind: "lines", lines: [CARD_SCOPE_NOTE] },
   ] }] }));
@@ -359,6 +360,6 @@ export function cardImpactBlocks(data: CardImpact): Report["sections"][number]["
 
 function previewView(data: CardImpact): Report {
   return { sections: [
-    { title: "Channel card removal impact", blocks: [{ kind: "fields", rows: [["Deployment", data.deploymentId], ["Space", data.space], ["Broker", data.server], ["Auth mode", data.authMode]] }, ...cardImpactBlocks(data)] },
+    { title: "Channel card removal impact", blocks: [{ kind: "fields", rows: [["Deployment", data.deploymentId], ["Space", data.space], ["Broker", data.server], ["Auth mode", authModeText(data.authMode)]] }, ...cardImpactBlocks(data)] },
   ] };
 }

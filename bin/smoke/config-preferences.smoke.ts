@@ -4,10 +4,13 @@
  * and for one space, the refusals (a read, set or unset for a space this machine does not know among
  * them), a value left for a removed space, the named environment tiers, the selected space, an invalid
  * file stopping every command but help and completion without being reset, a linked file stopping
- * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a stale write
- * refused, a persona the space's catalog does not hold saved with a warning that names the catalog,
- * two concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
- * editor and the detach key.
+ * them the same way, a FIFO stopping them without being opened, a `COTAL_HOME` that is not a directory
+ * stopping them the same way, a config folder that is a file stopping every command but help, version,
+ * docs and completion, a folder other accounts can write refusing a write and warning on a read, a
+ * relative `COTAL_HOME` refused, a home other accounts can write taking no write and one they can only
+ * read made private on the write, a stale write refused, a persona the space's catalog does not hold
+ * saved with a warning that names the catalog, two concurrent writers both landing, and the consumers
+ * outside `spawn`: color, the `personas edit` editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -209,9 +212,45 @@ const ansi = /\x1b\[/;
   check("--user ignores the selection", settingOf(run(["config", "--user", "--json"]), "persona")?.value === "default");
   const write = run(["config", "set", "persona", "mine", "--json"]);
   check("a write without --space goes to your defaults, and reports the selected space's value still winning here", saved().defaults.persona === "mine" && (write.envelope?.result as { effective?: Setting } | null)?.effective?.value === "demo-lead" && write.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED" && /your preference for space demo \(demo-lead\)/.test(w.message)) === true, shown(write));
+  // --user chooses where the value is saved, not what a command here uses: the receipt used to give
+  // your defaults' value while spawn took the selected space's.
+  const userWrite = run(["config", "set", "persona", "solo", "--user", "--json"]);
+  check("a write with --user reports the selected space's value still winning here, and warns",
+    saved().defaults.persona === "solo" && (userWrite.envelope?.result as { effective?: Setting } | null)?.effective?.value === "demo-lead" && userWrite.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, userWrite.envelope);
   rmSync(join(cotalHome, "current-mesh"));
+  const folderWrite = run(["config", "set", "harness", "claude", "--user", "--json"], {}, join(home, "demo"));
+  run(["config", "set", "harness", "opencode", "--space", "demo"]);
+  const folderAgain = run(["config", "set", "harness", "codex", "--user", "--json"], {}, join(home, "demo"));
+  check("with nothing selected, a --user write in a prepared folder reports that folder's value",
+    folderWrite.status === 0 && (folderAgain.envelope?.result as { effective?: Setting } | null)?.effective?.value === "opencode" && folderAgain.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, folderAgain.envelope);
+  run(["config", "unset", "harness"]);
+  run(["config", "unset", "harness", "--space", "demo"]);
   run(["config", "unset", "persona"]);
   run(["config", "unset", "persona", "--space", "demo"]);
+}
+
+// ── with nothing selected, a read goes through the space spawn uses from this folder ──────────────
+// It used to read your defaults while spawn took the folder's value.
+{
+  const demoRoot = join(home, "demo");
+  run(["config", "set", "harness", "opencode", "--space", "demo"]);
+  run(["config", "set", "harness", "claude"]);
+  const here = run(["config", "get", "harness", "--json"], {}, demoRoot);
+  const res = here.envelope?.result as { scope?: { space: string; from: string }; setting?: Setting } | null;
+  check("in a prepared folder with nothing selected, get reads through that folder's space",
+    here.status === 0 && res?.scope?.space === "demo" && res.scope.from === "folder" && res.setting?.value === "opencode" && JSON.stringify(here.envelope?.target) === JSON.stringify({ space: "demo" }), here.envelope);
+  const plain = run(["config", "--plain"], {}, demoRoot);
+  check("the plain view says the scope is this folder's space", /^Preferences\n {2}space demo \(this folder's\)$/m.test(plain.stdout), shown(plain));
+  const preview = run(["spawn", "--dry-run", "--json"], {}, demoRoot);
+  check("spawn there takes the same value", preview.status === 0 && (preview.envelope?.result as { harness?: string } | null)?.harness === "opencode", shown(preview));
+  const ghost = run(["config", "set", "persona", "ghost", "--json"], {}, demoRoot);
+  check("a persona that folder's catalog does not hold is saved with PERSONA_NOT_FOUND",
+    ghost.status === 0 && saved().defaults.persona === "ghost" && ghost.envelope?.warnings.some((w) => w.code === "PERSONA_NOT_FOUND" && w.message.startsWith('no persona "ghost" in space demo\'s catalog')) === true, ghost.envelope);
+  const away = run(["config", "get", "harness", "--json"]);
+  check("outside a project, with nothing running, a read is your defaults", (away.envelope?.result as { scope?: { space: unknown } } | null)?.scope?.space === null && (away.envelope?.result as { setting?: Setting } | null)?.setting?.value === "claude", away.envelope);
+  run(["config", "unset", "persona"]);
+  run(["config", "unset", "harness"]);
+  run(["config", "unset", "harness", "--space", "demo"]);
 }
 
 // ── a persona the space's catalog does not hold is saved, with a warning naming the catalog ──────
@@ -317,6 +356,19 @@ const ansi = /\x1b\[/;
   run(["config", "unset", "editor"]);
 }
 
+// ── a write replaces a file whose mode is not 0600, and says so ──────────────────────────────────
+// A read-only 0400 file used to come back at 0600 without a word.
+if (process.platform !== "win32") {
+  run(["config", "set", "color", "always"]);
+  chmodSync(file, 0o400);
+  const r = run(["config", "set", "color", "never", "--json"]);
+  check("a write over a 0400 file names the old mode in PREFERENCES_MODE_CHANGED and leaves a 0600 file",
+    r.status === 0 && r.envelope?.warnings.some((w) => w.code === "PREFERENCES_MODE_CHANGED" && w.message === `${file} was mode 0400, and this write replaced it with a new file at mode 0600; a file's mode does not stop config set or unset`) === true && (statSync(file).mode & 0o777) === 0o600 && saved().defaults.color === "never", r.envelope);
+  const text = run(["config", "set", "color", "always"]);
+  check("a write over a 0600 file says nothing about its mode", text.status === 0 && !/was mode/.test(text.stderr), shown(text));
+  run(["config", "unset", "color"]);
+}
+
 // ── a preferences folder you cannot write is refused, naming it, and nothing changes ─────────────
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const dir = join(xdg, "cotal");
@@ -330,6 +382,45 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   } finally {
     chmodSync(dir, 0o700);
   }
+}
+
+// ── a preferences folder other local accounts can write: a read warns, a write is refused ─────────
+// World write is refused on every host; group write depends on whether the host proves a private group.
+if (process.platform !== "win32") {
+  const dir = join(xdg, "cotal");
+  run(["config", "set", "editor", "vi"]);
+  const before = fileText();
+  const unprotected = (w: { code: string; message: string; target?: unknown }) =>
+    w.code === "PREFERENCES_FOLDER_UNPROTECTED" && (w.target as { path?: string } | undefined)?.path === dir && w.message.includes(`${dir} is writable by every local account`) && w.message.endsWith(`chmod o-w ${dir}`);
+  chmodSync(dir, 0o757);
+  try {
+    const write = run(["config", "set", "editor", "ed", "--json"]);
+    check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod",
+      write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}`, shown(write));
+    check("and the file is left as it was", fileText() === before);
+    const read = run(["config", "--json"]);
+    check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod",
+      read.status === 0 && read.envelope?.outcome === "ok" && settingOf(read, "editor")?.value === "vi" && read.envelope.warnings.filter(unprotected).length === 1 && read.stderr.includes("! the preferences folder is not protected"), shown(read));
+    const status = run(["status", "--json"]);
+    const hints = ((status.envelope?.result as { hints?: string[] } | null)?.hints ?? []);
+    check("status warns too, and its Next protects the folder", status.status === 0 && (status.envelope?.warnings ?? []).some(unprotected) && hints.includes(`protect the preferences folder: chmod o-w ${dir}`), shown(status));
+    const other = run(["ext", "root"]);
+    check("every command that uses the preferences warns", other.status === 0 && other.stderr.includes(`! the preferences folder is not protected against other local writers: ${dir}`), shown(other));
+    const version = run(["version"]);
+    check("version, which uses no preference, does not warn", version.status === 0 && !version.stderr.includes("not protected"), shown(version));
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  const quiet = run(["config", "--json"]);
+  check("a protected folder gives no warning", quiet.status === 0 && quiet.envelope?.warnings.every((w) => w.code !== "PREFERENCES_FOLDER_UNPROTECTED") === true && !quiet.stderr.includes("not protected"), shown(quiet));
+  run(["config", "unset", "editor"]);
+  // A folder not made yet is checked from the nearest folder above it, and nothing is created.
+  const open = mkdtempSync(join(home, "open-config-"));
+  chmodSync(open, 0o757);
+  const fresh = run(["config", "set", "color", "never", "--json"], { XDG_CONFIG_HOME: open });
+  check("a write whose folder would be made in a world-writable parent is refused, and nothing is created",
+    fresh.status === 2 && fresh.envelope?.error?.code === "PERMISSION_DENIED" && fresh.envelope.error.remedy === `chmod o-w ${open}` && readdirSync(open).length === 0, shown(fresh));
+  chmodSync(open, 0o700);
 }
 
 // ── a linked preferences file is refused as a private record's link is, and never replaced ──────────
@@ -415,6 +506,89 @@ if (process.platform !== "win32") {
   const help = run(["help"], { COTAL_HOME: notHome });
   check("help still works", help.status === 0 && help.stdout !== "", shown(help));
   check("and the file is left as it was", readFileSync(notHome, "utf8") === "a file\n");
+}
+
+// ── a preferences.json that is a FIFO stops them by its file type, without waiting on it ─────────
+if (process.platform !== "win32") {
+  rmSync(file, { force: true });
+  spawnSync("mkfifo", ["-m", "0600", file]);
+  for (const args of [["config", "get", "harness", "--json"], ["config", "set", "harness", "claude", "--json"]]) {
+    const r = run(args);
+    check(`\`${args.join(" ")}\` refuses a FIFO preferences.json with PERMISSION_DENIED, naming it, without waiting on it`,
+      r.status === 2 && r.envelope?.error?.code === "PERMISSION_DENIED" &&
+        r.envelope.error.message === `the preferences file ${file} is not a regular file, such as a FIFO or a device; preferences are kept only in a regular file, so nothing was read or changed` &&
+        r.envelope.error.remedy === `remove ${file}, or replace it with a regular file`, shown(r));
+  }
+  const status = run(["status"]);
+  check("status reports the FIFO as a part it could not read, exit 4", status.status === 4 && status.stderr.includes(`the preferences file ${file} is not a regular file`), shown(status));
+  check("and the FIFO is left as it was", lstatSync(file).isFIFO());
+  rmSync(file);
+}
+
+// ── a config folder that is a file stops every command but help, version, docs and completion ────
+{
+  const fileXdg = join(home, "xdg-file");
+  const folder = join(fileXdg, "cotal");
+  mkdirSync(fileXdg);
+  writeFileSync(folder, "a file\n");
+  const env = { XDG_CONFIG_HOME: fileXdg };
+  for (const args of [["config", "--json"], ["status", "--json"], ["ext", "list", "--json"], ["config", "set", "harness", "claude", "--json"]]) {
+    const r = run(args, env);
+    check(`\`${args.join(" ")}\` is refused with SCHEMA_INVALID naming the folder that is a file, with moving it as Next`,
+      r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "SCHEMA_INVALID" &&
+        r.envelope.error.message.startsWith(`the Cotal config folder ${folder} is a file, not a folder;`) &&
+        r.envelope.error.remedy?.startsWith(`move ${folder} aside, for example \`mv ${folder} ${folder}.old\``) === true, shown(r));
+  }
+  const status = run(["status"], env);
+  check("the text refusal names the folder, not a corrupt extensions manifest or ENOTDIR",
+    status.status === 1 && status.stderr.includes(`the Cotal config folder ${folder} is a file`) && !/ENOTDIR|corrupt extensions manifest/.test(status.stdout + status.stderr), shown(status));
+  const seed = run(["ext", "seed"], env);
+  check("`ext seed` is refused the same way before it reads the seed state",
+    seed.status === 1 && seed.stderr.includes(`the Cotal config folder ${folder} is a file`) && !/ENOTDIR/.test(seed.stderr), shown(seed));
+  for (const args of [["help"], [], ["config", "--help"], ["version"], ["docs"]]) {
+    const r = run(args, env);
+    check(`\`cotal ${args.join(" ")}\` still runs`, r.status === 0 && r.stdout !== "" && !/ENOTDIR|corrupt extensions manifest/.test(r.stderr), shown(r));
+  }
+  const version = run(["version", "--json"], env);
+  check("`version --json` is complete with no installed extensions, since that folder can hold none",
+    version.status === 0 && version.envelope?.outcome === "ok" && version.envelope.completeness === "complete" && JSON.stringify(version.envelope.result?.extensions) === "[]", shown(version));
+  check("and the file is left as it was", readFileSync(folder, "utf8") === "a file\n");
+  const r = run(["config", "--json"], { XDG_CONFIG_HOME: folder });
+  check("a config home that is itself a file names that file",
+    r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && r.envelope.error.message.startsWith(`the Cotal config folder ${join(folder, "cotal")} cannot be made: ${folder} is a file, not a folder;`), shown(r));
+}
+
+// ── a relative COTAL_HOME stops them too, and a home other accounts can write takes no write ─────
+{
+  for (const value of ["rel-home", "./rel-home"]) {
+    const r = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: value });
+    check(`a relative COTAL_HOME ${value} is refused with USAGE_INVALID, naming it, and nothing is made`,
+      r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID" && r.envelope.error.message.startsWith(`COTAL_HOME ${JSON.stringify(value)} is a relative path`) &&
+        /^set COTAL_HOME to an absolute path/.test(r.envelope.error.remedy ?? "") && !existsSync(join(home, "rel-home")), shown(r));
+  }
+  check("help still works with a relative COTAL_HOME", run(["help"], { COTAL_HOME: "rel-home" }).status === 0);
+  const open = join(home, "open-home");
+  mkdirSync(open);
+  chmodSync(open, 0o757);
+  const refused = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: open });
+  check("a COTAL_HOME every account can write takes no write: space create is refused naming it, with chmod o-w as Next",
+    refused.status === 2 && refused.envelope?.error?.code === "PERMISSION_DENIED" && refused.envelope.error.message.includes(`${open} is writable by every local account; nothing was written`) &&
+      refused.envelope.error.remedy === `chmod o-w ${open}` && readdirSync(open).length === 0 && (statSync(open).mode & 0o777) === 0o757, shown(refused));
+  const linked = join(home, "linked-home");
+  symlinkSync(open, linked);
+  const viaLink = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: linked });
+  check("a COTAL_HOME that is a symbolic link is refused the same way",
+    viaLink.status === 2 && viaLink.envelope?.error?.message.includes(`${linked} is a symbolic link`) === true && readdirSync(open).length === 0, shown(viaLink));
+  chmodSync(open, 0o755);
+  const made = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: open });
+  check("a COTAL_HOME others can only read is written, and made private as the record store requires",
+    made.status === 0 && existsSync(join(open, "prepared")) && (statSync(open).mode & 0o777) === 0o700, shown(made));
+  chmodSync(open, 0o755);
+  const records = run(["service", "--space", "x", "--json"], { COTAL_HOME: open });
+  check("reading service records from a home others can read names it, with chmod go-rwx as Next",
+    records.status === 2 && records.envelope?.error?.code === "PERMISSION_DENIED" && records.envelope.error.message.includes(`${open} is not private to you (mode 0755)`) &&
+      records.envelope.error.remedy === `chmod go-rwx ${open}`, shown(records));
+  chmodSync(open, 0o700);
 }
 
 finish();

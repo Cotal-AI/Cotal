@@ -4,6 +4,6 @@ import { CommandFailure } from "@cotal-ai/workspace";
  *  its remedy is the scripted form, so the dispatcher prints them without the command's help. */
 export class MissingFlags extends CommandFailure {
   constructor(message: string, remedy: string, target?: unknown) {
-    super("refused", "USAGE_INVALID", message, { remedy, target });
+    super("refused", "USAGE_INVALID", message, { remedy, target, selfContained: true });
   }
 }

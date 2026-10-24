@@ -4,7 +4,8 @@
  * binary reads the records a real `up`, `meshes add` or catalog sync leaves. A real broker answers
  * for one space; another points at a port nothing listens on; a discovered one points at a listener
  * that counts connections, so the suite can show a read never dials it.
- * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID.
+ * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID, and so does
+ * every other command that reads the registry, changing nothing.
  *
  * Needs `nats-server` on PATH.
  *
@@ -140,6 +141,17 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("the listing marks the selected space", itemOf(listed.env, "alpha")?.current === true && itemOf(listed.env, "beta")?.current === false && listed.env?.result.current === "alpha", listed.env?.result);
   const human = run(["use", "beta"], { FORCE_COLOR: "1" });
   check("use names the space it selected and the one it replaced", human.status === 0 && /selected beta \(was alpha\)/.test(human.stdout.replace(/\x1b\[[0-9;]*m/g, "")), shown(human));
+  // --clear removes the selection; nothing else could, so a folder's space could not apply again.
+  const cleared = json(["use", "--clear"]);
+  check("use --clear removes the selection and names the one it removed", cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "beta" && cleared.env.target === null && getCurrent() === undefined, shown(cleared));
+  const clearedAgain = json(["use", "--clear"]);
+  check("use --clear with nothing selected is a no-op", clearedAgain.status === 0 && clearedAgain.env?.outcome === "no-op" && clearedAgain.env.result.previous === null, shown(clearedAgain));
+  const named = json(["use", "alpha", "--clear"]);
+  check("use --clear with a name is a usage error and selects nothing", named.status === 1 && named.env?.error?.code === "USAGE_INVALID" && getCurrent() === undefined, shown(named));
+  const clearText = run(["use", "beta"]) && run(["use", "--clear"]);
+  check("its receipt says what was cleared", clearText.status === 0 && /cleared the selection \(was beta\)/.test(clearText.stdout), shown(clearText));
+  const none = json(["use", "none"]);
+  check("an unknown name's refusal names --clear", none.status === 2 && /cotal use --clear/.test(none.env?.error?.remedy ?? ""), shown(none));
   run(["use", "alpha"]);
 }
 
@@ -201,7 +213,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const help = run(["help", "space"]);
   check("help space lists show and its structured output", help.status === 0 && /^\s+show\s/m.test(help.stdout) && /Structured output: json, plain/.test(help.stdout), shown(help));
   const useHelp = run(["help", "use"]);
-  check("help use gives the optional space", useHelp.status === 0 && /cotal use \[<space>\]/.test(useHelp.stdout), shown(useHelp));
+  check("help use gives the optional space and --clear", useHelp.status === 0 && /cotal use \[<space> \| --clear\]/.test(useHelp.stdout), shown(useHelp));
   const subs = run(["__complete", "space", ""]);
   check("completion offers show after space", /^show(\t|$)/m.test(subs.stdout), shown(subs));
   const names = run(["__complete", "space", "show", ""]);
@@ -214,11 +226,14 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
 {
   const file = join(meshesDir(), "space.6f6d656761.json");
   writeFileSync(file, '{"space":"omega"');
-  for (const args of [["space"], ["space", "show", "alpha"]]) {
+  const selected = getCurrent();
+  const elsewhere = mkdtempSync(join(home, "create-root-"));
+  for (const args of [["space"], ["space", "show", "alpha"], ["use"], ["use", "alpha"], ["space", "forget", "alpha"], ["space", "create", "zeta", "--root", elsewhere], ["send", "-c", "general", "hi"], ["persona"]]) {
     const r = json(args);
     check(`cotal ${args.join(" ")} refuses a record that does not parse with SCHEMA_INVALID, exit 1, naming the file`, r.status === 1 && r.env?.outcome === "refused" && r.env.error?.code === "SCHEMA_INVALID" && String(r.env.error.message).includes(file), shown(r));
   }
   rmSync(file);
+  check("those refusals changed nothing: alpha is registered, the selection is kept and zeta was not prepared", findMesh("alpha") !== undefined && getCurrent() === selected && !existsSync(join(elsewhere, ".cotal")), { selected, now: getCurrent() });
 }
 
 // The broker and the listener would keep the process alive past the last cell.

@@ -497,7 +497,10 @@ async function completionOut(positionals: string[]): Promise<string> {
   const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
   const refused: [string[], RegExp, string?][] = [
     [["--server", "nats://127.0.0.1"], /^--server names no port/],
-    [["--server", "nats://[::1]:4222"], /^--server names an IPv6 address/],
+    // The example keeps the scheme and port the person chose, and never the host or a credential.
+    [["--server", "nats://[::1]:29888"], /^--server names an IPv6 address/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:29888"],
+    [["--server", "tls://[::1]:29888"], /^--server names an IPv6 address/, "pass the IP address the local broker listens on, for example --server tls://127.0.0.1:29888"],
+    [["--server", "nats://u:p@127.0.0.1:29888"], /^--server must not embed credentials/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:29888"],
     [["--server", "nats://localhost:4222"], /^--server names the host localhost/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:4222"],
     [["--host", "::1"], /^--host names an IPv6 address/],
     [["--host", "[::1]"], /^--host names an IPv6 address/],

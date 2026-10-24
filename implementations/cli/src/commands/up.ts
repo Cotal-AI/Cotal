@@ -17,6 +17,7 @@ import {
   lstatSync,
   realpathSync,
   readdirSync,
+  unlinkSync,
   type Stats,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -43,6 +44,7 @@ import {
   requireBrokerFloor,
   parseServerVersion,
   presenceBucket,
+  MEMBERSHIP_MAX_BYTES,
   spaceDeletionStreams,
   isJetStreamMissing,
   seedChannelRegistry,
@@ -56,6 +58,7 @@ import {
   openPrivateAppend,
   realDirNoSymlink,
   writeSecretFile,
+  writeSecretFileAtomic,
   type AuthPrepared,
   type SpaceAuth,
   type ChannelConfig,
@@ -71,6 +74,10 @@ import {
   assertManagerName,
   readManagerName,
   recordManagerName,
+  assertRecordIdentity,
+  formatRecord,
+  identityRecord,
+  parseRecord,
   CommandFailure,
   commandFailureReport,
   isCommandFailure,
@@ -91,6 +98,7 @@ import {
   preloadSpaceAccounts,
   putSpaceAuth,
   canonicalRoot,
+  rootPathProblem,
   clearCurrent,
   findMesh,
   findPreparedSpace,
@@ -194,7 +202,7 @@ import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { cleanedManifestStart } from "../lib/legacy-start.js";
-import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import { bindReaches, controllerStackApplies, keptOnUp, recheckExistingStore, requestedStackMode, selectedOnUp, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
@@ -202,13 +210,13 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut } from "../lib/stack-journal.js";
-import { serviceInstances } from "../lib/service-instances.js";
+import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
+import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { assertStoreDirArgument, configuredStoreDir, warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -376,7 +384,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
-  parsePositiveIntegerFlag("--max-file-store", args.values["max-file-store"] as string | undefined);
+  parseMaxFileStore(args.values["max-file-store"] as string | undefined);
   if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot());
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
@@ -393,14 +401,21 @@ export function validateUpArguments(args: ParsedArgs): void {
       throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
-  if (!(args.values.file && args.values["dry-run"] === true)) assertUpRootWritable(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot());
+  if (!(args.values.file && args.values["dry-run"] === true)) {
+    const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot();
+    // A path with a control character or a bidirectional formatting mark is refused before any write.
+    const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
+    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
+    assertUpRootWritable(root);
+  }
 }
 
 /** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder
  *  this account cannot write is refused here, by name, instead of as the raw error of whichever
  *  write came first. */
 function assertUpRootWritable(root: string): void {
-  const path = existsSync(join(root, ".cotal")) ? join(root, ".cotal") : root;
+  // A `.cotal` that is a file is refused by name before any command runs, so only a directory is tested here.
+  const path = statSync(join(root, ".cotal"), { throwIfNoEntry: false })?.isDirectory() ? join(root, ".cotal") : root;
   try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -567,6 +582,12 @@ function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promis
  *  sets the exit code: 0 when another command completed the stop or preserve, 130 or 143 after a
  *  signal, whatever the start receipt set. */
 export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
+  claimForegroundHold(root);
+  try { await holdStack(root, start); }
+  finally { releaseForegroundHold(root); }
+}
+
+async function holdStack(root: string, start?: () => Promise<void>): Promise<void> {
   if (start) {
     let requested: "SIGINT" | "SIGTERM" | undefined;
     const request = (signal: "SIGINT" | "SIGTERM") => {
@@ -612,6 +633,33 @@ export async function holdForegroundStack(root: string, start?: () => Promise<vo
     const terminate = () => stop("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
   });
+}
+
+/** Where a foreground `up` records the process that holds its stack's lifetime. */
+const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
+
+/** The process of another foreground `up` that holds `root`'s stack, while that exact process runs. */
+export function foregroundHolder(root: string): number | undefined {
+  let raw: string;
+  try { raw = readFileSync(foregroundHoldPath(root), "utf8"); } catch { return undefined; }
+  const read = parseRecord(raw);
+  if (read.kind !== "record" || read.record.pid === process.pid) return undefined;
+  return assertRecordIdentity(read.record).kind === "match" ? read.record.pid : undefined;
+}
+
+/** Record this process as the foreground holder of `root`'s stack. A host that cannot pin a process
+ *  start records nothing, so no later `up` refuses on a pid that may have been reused. */
+function claimForegroundHold(root: string): void {
+  const record = identityRecord(process.pid);
+  if ("token" in record) writeSecretFileAtomic(foregroundHoldPath(root), `${formatRecord(record)}\n`);
+}
+
+/** Remove this process's foreground hold record, and leave one another process wrote. */
+function releaseForegroundHold(root: string): void {
+  try {
+    const read = parseRecord(readFileSync(foregroundHoldPath(root), "utf8"));
+    if (read.kind === "record" && read.record.pid === process.pid) unlinkSync(foregroundHoldPath(root));
+  } catch { /* nothing recorded */ }
 }
 
 /** The registered `up` command. When a background run is the main process of a systemd unit, it
@@ -869,7 +917,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // The cap is part of the preserved launch, like the store: a resume re-renders it, and a
         // different --max-file-store is refused rather than silently resizing the preserved broker.
         const resumeMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
-        const requestedMaxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+        const requestedMaxFileStore = parseMaxFileStore(values["max-file-store"]);
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore)
           throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${resumeMaxFileStore ?? "unset"}); ordinary up resumes exactly the preserved cap - omit --max-file-store`);
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
@@ -923,7 +971,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         };
         const attemptId = journal.ordinaryResume.attemptId;
         const recoveredMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
-        const requestedMaxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+        const requestedMaxFileStore = parseMaxFileStore(values["max-file-store"]);
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== recoveredMaxFileStore)
           throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${recoveredMaxFileStore ?? "unset"}); resume attempt ${attemptId} re-renders exactly the preserved cap - omit --max-file-store`);
         // Recovery re-asserts the source identity rather than trusting the journaled spelling.
@@ -1057,7 +1105,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const noManager = Boolean(values["no-manager"]);
   const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
-  const maxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+  const maxFileStore = parseMaxFileStore(values["max-file-store"]);
   // The manifest path renders its broker from the manifest, which has no store fields, so the flag
   // would be accepted and never rendered. Refuse it rather than drop it.
   if (maxFileStore !== undefined && values.file)
@@ -1160,13 +1208,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
+    // A foreground up holds a stack only one terminal holds. Over a stack that already runs without
+    // one, it takes that stack's lifetime over and says so before it blocks.
+    const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
+    if (holder !== undefined)
+      throw new CommandFailure("refused", "CONFLICT", `a foreground cotal up in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with cotal down --yes from ${meshRoot} and run cotal up --foreground again` });
+    const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
     const stackLock = acquireStackOperationLock(meshRoot);
     const native = controllerStackNative();
     // A foreground terminal holds the start as well, so a signal during it stops what it started.
     const start = async () => {
       try {
-        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
-        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), foreground: values.foreground === true, presentation }, native);
+        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
+        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
       } finally { releaseMaintenanceLock(stackLock); }
     };
     if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -1809,7 +1863,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
   // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
   // before signalling the broker. Keep the child referenced and its output in this terminal.
-  const child = spawn(bin, natsArgs, { stdio: "inherit", detached: process.platform !== "win32" });
+  // The configuration names a store inside the root relative to it, so the broker runs from the root.
+  const child = spawn(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
@@ -3615,7 +3670,7 @@ export async function startMeshDetached(
   const fd = openBrokerLog(logPath);
   const startOffset = fstatSync(fd).size;
   const listenerStartedAt = new Date().toISOString();
-  const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
+  const child = spawn(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
@@ -3931,8 +3986,8 @@ export const recordOurMeshForTest = (m: MeshEntry, provenance: Provenance): void
 
 /** Record this mesh in the registry, and set it as the `current` default when there's no usable one
  *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
- *  ghost pointer is not a default). Never silently redirect a `current` that still resolves to a live
- *  mesh; just say another is the default and how to switch. */
+ *  ghost pointer is not a default), and say so. Never silently redirect a `current` that still resolves
+ *  to a live mesh; just say another is the default and how to switch. */
 function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false): void {
   const cur = getCurrent();
   const usableCurrent = cur && (findMesh(cur) || findPreparedSpace(cur)) ? cur : undefined; // compute before recording m
@@ -3950,10 +4005,11 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setCurrent(m.space);
+    if (!quietBoot) console.log(c.dim(selectedOnUp(m.space)));
     return;
   }
   if (usableCurrent !== m.space && !quietBoot)
-    console.log(c.dim(`"${m.space}" up; current is still "${usableCurrent}" - \`cotal use ${m.space}\` to switch`));
+    console.log(c.dim(keptOnUp(m.space, usableCurrent)));
 }
 
 /** Write the default persona into the root this `up` started or refreshed when it has none, and
@@ -4280,6 +4336,15 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
   return true;
 }
 
+/** `--max-file-store`, refused below the bytes the space's membership bucket reserves from the
+ *  broker's file store: a smaller cap cannot create the space's streams. */
+function parseMaxFileStore(raw: string | undefined): number | undefined {
+  const cap = parsePositiveIntegerFlag("--max-file-store", raw);
+  if (cap !== undefined && cap < MEMBERSHIP_MAX_BYTES)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB), which the space's membership bucket reserves from the broker's file store; nothing was started`, { remedy: `pass --max-file-store ${MEMBERSHIP_MAX_BYTES} or more, leaving room for messages, or omit it` });
+  return cap;
+}
+
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`
  *  path that's missing is a hard error; the default `.cotal/channels.json` is optional (absent
  *  ⇒ nothing to seed). */
@@ -4314,6 +4379,9 @@ function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   if (read) return read;
   const remedy = explicit ? "fix the file, or omit --channels" : `fix or remove ${path}`;
   let text: string;
+  // A default file that is a FIFO or a device would block the read with no writer, so only a regular
+  // default file is opened. An explicit path may name a pipe such as `<(…)`, read once (see `channelsReads`).
+  if (!explicit && statSync(path, { throwIfNoEntry: false })?.isFile() === false) throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not a regular file, such as a FIFO; it was not read`, { remedy });
   try { text = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
   let value: unknown;
@@ -4563,7 +4631,7 @@ function lastServedStore(storeDir: string): string | undefined {
     if (!existsSync(conf)) continue;
     // The core renderer writes the path as a JSON string.
     const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
-    const last = named === undefined ? undefined : resolve(JSON.parse(named) as string);
+    const last = named === undefined ? undefined : resolve(cotalRoot(), JSON.parse(named) as string);
     if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream"))) return last;
   }
   return undefined;
@@ -4602,7 +4670,7 @@ function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: strin
   const confPath = cotalPath("server-open.conf");
   writeSecretFile(
     confPath,
-    openServerConfig({ port: opts.port, host: opts.host, storeDir, maxFileStore: opts.maxFileStore, transport: opts.transport }),
+    openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, transport: opts.transport }),
   );
   return confPath;
 }
@@ -4750,7 +4818,7 @@ async function authSetup(
   }
   // Owner-private regardless of umask, as `writeOpenBrokerConf` writes the open configuration: the
   // broker preset refuses a configuration that other local users can write.
-  writeSecretFile(confPath, serverConfig(auth, spaces, { transport, port, storeDir, maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
+  writeSecretFile(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.

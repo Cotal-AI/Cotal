@@ -9,8 +9,8 @@
  *   - an error from a write made while owned still reaches the owner when the release is called
  *     between that write's callback and its error event;
  *   - after the release settles, a closed pipe exits through the binary's listener again;
- *   - owned, an EIO reaches the owner; unowned, an EIO is reported in one stderr line with no stack
- *     trace and exits 3, or with the non-zero status the command already set;
+ *   - an EIO, owned or not, is reported in one stderr line with no stack trace and exits 3, or with
+ *     the non-zero status the command already set; owned, it also reaches the owner;
  *   - the views that must finish their own shutdown, and `down`, which must finish its stops, own
  *     stdout's errors and attach no listener of their own to process.stdout.
  * The views themselves (chat, watch, service logs, the service journal) and `down` are not driven here.
@@ -84,9 +84,20 @@ const children: Record<string, () => Promise<void> | void> = {
   "owned-eio": () => {
     const release = ownStdoutErrors((e) => {
       process.stderr.write(`owner saw ${(e as NodeJS.ErrnoException).code}\n`);
-      process.exitCode = 3;
       release();
     });
+    process.stdout.emit("error", eio());
+    process.stdout.emit("error", eio());
+  },
+  "owned-eio-then-ok": () => {
+    const release = ownStdoutErrors(() => {});
+    process.stdout.emit("error", eio());
+    // A result written after the loss sets exit 0, as writeResult does for an ok outcome.
+    setTimeout(() => { process.exitCode = 0; release(); }, 10);
+  },
+  "owned-eio-status": () => {
+    process.exitCode = 2;
+    const release = ownStdoutErrors(() => release());
     process.stdout.emit("error", eio());
   },
   "unowned-eio": () => {
@@ -141,8 +152,14 @@ if (mode !== undefined) {
 
   console.log("3. an error other than EPIPE");
   {
+    // An owner used to end quietly with 0 on any error, so a full disk lost its output unreported.
     const owned = await run("owned-eio", false);
-    check("owned, an EIO reaches the owner and is not rethrown", owned.code === 3 && owned.stderr.includes("owner saw EIO") && !owned.stderr.includes("synthetic EIO"), owned);
+    check("owned, an EIO is reported in one stderr line, once, exits 3 and still reaches the owner",
+      owned.code === 3 && owned.stderr.startsWith("✗ could not write to stdout: synthetic EIO\n") && owned.stderr.split("could not write").length === 2 && owned.stderr.includes("owner saw EIO") && !owned.stderr.includes("    at "), owned);
+    const thenOk = await run("owned-eio-then-ok", false);
+    check("...and a result that sets exit 0 after the loss still exits 3", thenOk.code === 3 && thenOk.stderr.includes("could not write to stdout"), thenOk);
+    const ownedStatus = await run("owned-eio-status", false);
+    check("...and keeps a non-zero exit status the command already set", ownedStatus.code === 2 && ownedStatus.stderr.includes("could not write to stdout"), ownedStatus);
     const unowned = await run("unowned-eio", false);
     check("unowned, an EIO is one stderr line with no stack trace and exits 3",
       unowned.code === 3 && unowned.stderr === "✗ could not write to stdout: synthetic EIO\n", unowned);

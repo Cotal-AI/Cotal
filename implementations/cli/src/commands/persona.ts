@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
 import { assertValidChannel, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
+  ConfirmationRequired,
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   writeResult, type Presentation, type Report,
   recordOperationSpace,
@@ -85,7 +86,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (sub === "remove") {
     const expected = requirePersonaSource(path);
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw usage(`removing '${name}' at ${path} requires --yes without an interactive terminal`);
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`removing '${name}' at ${path} requires --yes without an interactive terminal`, { remedy: `confirm with cotal persona remove ${name} --yes` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`Remove '${name}' at ${path}?\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
@@ -147,7 +148,9 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
   const malformed = entries.filter(entry => entry.error);
   writeResult(presentation, {
     command: "persona", target: catalog, result: { kind: "personas", items }, completeness: malformed.length ? "partial" : "complete",
-    warnings: malformed.map(entry => ({ code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}` })),
+    warnings: malformed.map(entry => entry.notRegular
+      ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
+      : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}` }),
     ...(malformed.length ? { partial: { message: "some persona definitions could not be read" } } : {}),
   }, result => ({ sections: [
     { title: "Personas", blocks: [
