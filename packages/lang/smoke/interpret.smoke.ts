@@ -589,6 +589,27 @@ if (c.status === "expired") { await sleep("1s", { name: "continued" }); }
   ok("editing onExpiry to fail makes the resume throw", (threw as { code?: string })?.code === "L4007", String(threw).slice(0, 60));
 }
 
+// ---- 14a) L4007 says where the expired deadline came from --------------------------------------
+//
+// The same expiry under the checkpoint's own `timeout` and under the run's default printed the same
+// sentence, so a reader could not tell which deadline to raise.
+{
+  const expire = async (opts: string) => {
+    try {
+      await run(`await checkpoint("gate", "ok?"${opts});`, { runId: "r-14a", handler: new SimHandler({ checkpoints: { gate: { status: "expired" } } }) });
+    } catch (e) { return e as { code?: string; message?: string }; }
+    return undefined;
+  };
+  const own = await expire(', { timeout: "3s" }');
+  ok("an expiry under the checkpoint's own timeout names that timeout in L4007",
+    own?.code === "L4007" && (own.message ?? "").includes('The deadline came from its own timeout of "3s".') && (own.message ?? "").includes("raise its timeout")
+      && !(own.message ?? "").includes("run's default"), own?.message);
+  const dflt = await expire("");
+  ok("an expiry with no timeout of its own names the run's default in L4007",
+    dflt?.code === "L4007" && (dflt.message ?? "").includes("It sets no timeout of its own, so the deadline came from the run's default.")
+      && (dflt.message ?? "").includes("give it a timeout of its own, or start the run with a longer default"), dflt?.message);
+}
+
 // ---- 14b) the record EVERY non-escalating checkpoint writes ------------------------------------
 //
 // Three sites write an `attempts` array: the live escalation, the recovery of an open hop, and this

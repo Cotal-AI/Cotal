@@ -1018,6 +1018,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         frame,
         )) as CheckpointRaw,
         onExpiry,
+        cpTimeout,
       );
     }
     case "sleep": {
