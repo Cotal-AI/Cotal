@@ -66,7 +66,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { CommandFailure, commandFailureReport, failureEnvelope, presentationOf, recordOperationSpace, renderReport, terminalWidth, writeEnvelope, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, commandFailureReport, failureEnvelope, presentationOf, recordOperationSpace, renderReport, terminalWidth, writeEnvelope, connectOrThrow, controlCaller, isConnectRefusal, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -134,7 +134,7 @@ interface Planes {
  *  it drives; a read or an answer rides a one-shot `run-operator` credential for that call. An
  *  open mesh connects bare either way. */
 async function openPlanes(values: RunValues, role: "run-driver" | "run-operator", mint: NonNullable<ConnectOpts["mint"]>): Promise<Planes> {
-  const conn = await connectOrExit(values, role, { mint });
+  const conn = await connectOrThrow(values, role, { mint });
   const nc = await dialerFor(conn.server)({
     servers: conn.server,
     ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }),
@@ -322,7 +322,7 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     process.exit(1);
   }
   const endpoint = values.endpoint ?? "manager";
-  const conn = await connectOrExit(values, "run-admitter", { mint: { runAdmitter: { endpoint, runId } } });
+  const conn = await connectOrThrow(values, "run-admitter", { mint: { runAdmitter: { endpoint, runId } } });
   refuseSingleCredential(conn);
   if (conn.auth === undefined) {
     console.error("run revoke: an open mesh keeps no admission store, so there is nothing to revoke there");
@@ -762,7 +762,7 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string): Prom
 async function resolveRunControlTarget(values: RunValues): Promise<{ target: ControlTarget; seat: boolean }> {
   const on = values.on;
   const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
-  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
+  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on, { onRefusal: "throw" });
   recordOperationSpace(target.space);
   const resolved = { target, seat: target === seat };
   if (on === undefined) return resolved;
@@ -865,6 +865,16 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;
  *  `--local` drives in this process over one connection per invocation. */
 export async function runWorkflow(args: ParsedArgs): Promise<void> {
+  // A mesh the verb cannot resolve or connect to is refused under the refusal's own code, before
+  // any request.
+  try {
+    await workflow(args);
+  } catch (e) {
+    throw isConnectRefusal(e) ? e.failure() : e;
+  }
+}
+
+async function workflow(args: ParsedArgs): Promise<void> {
   const { values, verb, a, b } = workflowArguments(args);
   if (verb === "validate" || verb === "plan" || verb === "simulate") return offlineWorkflow(verb, a!, values);
   if (verb === "turns" || verb === "yield") return seatTurnCommand(verb, a, values);

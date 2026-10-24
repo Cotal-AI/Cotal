@@ -5748,6 +5748,10 @@ lists no live manager, as after `cotal down stack-manager`, the verb refuses `TA
 (exit 2) at once, as `ps` does, and names bare `cotal up` as the next step, instead of waiting out
 the manager's answer deadline.
 
+A mesh a run verb cannot resolve or connect to is refused before any request under the refusal's
+own code, hosted or `--local`, as `ps` refuses it. With no mesh running that is `TARGET_NOT_FOUND`,
+exit 2, and with `--json` one refusal envelope on stdout.
+
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
 run is recorded; a program that does not validate is refused with every problem listed. A program
