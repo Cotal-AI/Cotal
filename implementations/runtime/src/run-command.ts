@@ -40,6 +40,7 @@ import {
   issuedUserCaller,
   openRecordsBucket,
   admissionBucket,
+  admissionKey,
   createRunAdmission,
   readRunAdmission,
   revokeRunAdmission,
@@ -363,6 +364,10 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
   const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(nc).open(admissionBucket(conn.space));
+    // The marker sits beside the run's admission. With no admission there is no run here to revoke,
+    // so refuse before anything is written.
+    if (await kv.get(admissionKey(endpoint, runId)) === null)
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, { target: { space: conn.space, endpoint, run: runId }, remedy: "list the recorded runs with cotal run" });
     await revokeRunAdmission(kv, endpoint, { version: 1, runId, reason: values.reason, by: values.by, revokedAt: Date.now() });
     const view = await readRunAdmission(await jetstreamManager(nc), conn.space, endpoint, runId);
     console.log(`run ${runId} on ${endpoint}: revoked by ${view.revoked!.by} (${view.revoked!.reason}); its hosts refuse the next channel effect, and it is not resumed or taken back`);
@@ -1161,6 +1166,13 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     try { assertLifecycleToken(values.on, "instanceId"); }
     catch { usage("--on requires the full manager instance id as cotal ps prints it"); }
   }
-  if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) usage("the local drive does not implement structured or plain receipts; use the hosted form");
+  // A local drive, a revoke and a check print text only. Name the manager's form where one takes the
+  // flag, and the same command without it where none does.
+  if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) {
+    const flag = values.json ? "--json" : "--plain";
+    if (verb === "start" || verb === "resume")
+      usage(`run ${raw} --local prints no ${flag} output`, `drop --local to ${raw} it on the manager, which takes ${flag}: cotal run ${verb === "start" ? "start <file>" : `resume ${a}`} ${flag}`);
+    usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${verb === "revoke" ? `cotal run revoke ${a} --local --by <who> --reason <text>` : `cotal run check ${a} <program>`}`);
+  }
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };
 }

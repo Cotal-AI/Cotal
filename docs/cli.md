@@ -6612,7 +6612,10 @@ journal does not record is absent: a checkpoint opened before `onExpiry` was rec
 An unreadable revocation marker makes the result partial, exit 4, with a `REVOCATION_NOT_CHECKED`
 warning naming the run. A `run --endpoint <endpoint>` that matches no run lists nothing and says so,
 naming the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning. The text view is presentation and is not a stable parsing target. With
-`--local`, only the list, `show`, `answer` and `amend` take `--json` or `--plain`.
+`--local`, only the list, `show`, `answer` and `amend` take `--json` or `--plain`. Any other local form
+refuses either flag `USAGE_INVALID`, exit 1: `start --local` and `resume --local` name the
+manager's form, which takes it, and `revoke` and `check`, which have no other form, name the same
+command without it.
 `run --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
 diagnostic JSON page instead of the full list:
 `--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
