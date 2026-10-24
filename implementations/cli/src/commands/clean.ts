@@ -41,6 +41,7 @@ import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { maintenanceNextStep } from "../lib/restore.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { foreignStoreEntries, lastServedStore, listEntries, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
@@ -121,7 +122,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
       const leftOut = active ? restoreLeftOut(active) : undefined;
       const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
       if (onlyCopy && !values["discard-history"])
-        throw new CommandFailure("refused", "USAGE_INVALID", `${values.attempt}: ${restoreLeftOutReason(active!)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out; nothing was deleted`, { remedy: `keep that store, or delete it and the ${leftOut} it holds with cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history` });
+        throw new MissingFlags(`${values.attempt}: ${restoreLeftOutReason(active!)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history`);
       const record = cleanupRestoreFallback(lock, values.attempt, { discardHistory: values["discard-history"] === true });
       console.log(c.green(record.restore.method === "disaster" ? `✓ retired restore ${record.restore.attemptId}; it replaced a missing source, so no old store was removed` : `✓ removed retained source for restore ${record.restore.attemptId}`));
     } finally {

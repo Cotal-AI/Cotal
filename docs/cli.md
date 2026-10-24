@@ -1613,8 +1613,8 @@ stopped, the clean runs. After a healthy committed restore,
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
 completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a
 restore that left history or workflow runs out it also requires `--discard-history`, as
-`backup cleanup-fallback` does. After an
-`--accept-missing-source` restore there is no old store, so it only retires the journal.
+`backup cleanup-fallback` does, and its refusal names the flag without printing the command help.
+After an `--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
 
