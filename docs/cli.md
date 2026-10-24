@@ -2259,6 +2259,12 @@ For a stopped stack it names `cotal reset store <space> --yes`, which removes th
 `space forget`, which removes only its local record. For a space that never ran it names only
 `space forget`, because no streams were stored.
 
+The dry run also reads the space's workflow runs from its records bucket and lists each run that
+has not finished, with its recorded state. Deleting the streams removes those runs, and a run still
+waiting for an answer cannot be answered or resumed afterwards. To read a run's open request first,
+run `cotal up`, then `cotal run show <run>`. The typed confirmation says how many unfinished runs go
+with the space, and the receipt lists the runs it removed.
+
 On a space this machine started, the apply refuses `LIFECYCLE_BLOCKED` while the space's own stack
 still runs here, before any broker connection. On a controller root that is any service instance of
 the space other than its broker, and on a legacy root any recorded daemon other than the broker.

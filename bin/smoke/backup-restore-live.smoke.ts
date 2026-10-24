@@ -342,6 +342,10 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.ok(/Code: +CONFLICT/.test(again.stderr) && again.stderr.includes("stop the restored stack with cotal down, then run cotal up again"), `${mode} ${args.join(" ")} names the way out\n${again.stderr}`);
       assert.equal((JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string }).state, "active", `${mode} ${args.join(" ")} leaves the restore journal active`);
     }
+    // `status` names the same cleanup for the attempt it shows under Maintenance.
+    const status = run("status", "--space", space);
+    const statusNext = status.stdout.split("\n").find((line) => line.includes(`cotal backup cleanup-fallback ${active.restore.attemptId}`)) ?? "";
+    assert.ok(statusNext !== "" && statusNext.includes("--discard-history") === (restoreArtifact === registryArtifact), `${mode} status names the cleanup that retires the restore\n${status.stdout}`);
     must("down", run("down"));
     const stopped = run("up", "-f", "cotal.yaml");
     assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);

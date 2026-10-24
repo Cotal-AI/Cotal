@@ -6493,7 +6493,9 @@ single-function profiles, each granting only the verbs its function needs and no
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
   human-CLI and maintenance surfaces, each scoped to its verbs. `teardown` also lists stream names,
   so space deletion finds the transfer buckets (§8), and holds `STREAM.INFO` and `STREAM.DELETE` on
-  each transfer stream named at its mint. The ephemeral teardown connection may read only its own
+  each transfer stream named at its mint. It also holds one non-fencing direct get on the records
+  bucket, `DIRECT.GET.KV_cotal_records_<space>.$KV.cotal_records_<space>.run.*.*.status`, and no
+  other read or write of it, so space deletion names the workflow runs it removes. The ephemeral teardown connection may read only its own
   broker user/account identity before native impact or deletion; this grants no other principal lookup.
 - `issuer`: one issuance window (§13.15), minted per mint or per lifecycle terminal by the party
   holding the space signer; the issued and accepted stores plus one auth-store liveness read.
