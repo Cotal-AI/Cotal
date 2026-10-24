@@ -76,20 +76,24 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
     case "unreadable-auth":
       return parts(`space "${d.space}"'s trust material under ${d.root} will not load (${err.message})`, "repair or remove the account record, then re-run `cotal up`");
     case "not-started": {
-      // A prepared space names itself. A root whose stack journal recorded a broker names that broker,
-      // and `up` there refuses until `space create` prepares the journal's space at that root again. A
-      // stack running under another Cotal home names the home in use, because `up` there refuses. A
-      // root whose last start configured a broker names that broker, and `up` there starts it again.
+      // A prepared space names itself, and the stack operation its root records with no outcome,
+      // which `up` may refuse to settle while `status` names the step that does. A root whose stack
+      // journal recorded a broker names that broker, and `up` there refuses until `space create`
+      // prepares the journal's space at that root again. A stack running under another Cotal home
+      // names the home in use, because `up` there refuses. A root whose last start configured a
+      // broker names that broker, and `up` there starts it again.
       // A folder moved from a prepared space's missing root, or holding a journal another folder
       // recorded, names the next step `up` and `down` name there.
       if (d.space !== undefined) return d.rootMissing
         ? d.stackRemedy !== undefined
           ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
           : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
-        : d.stopped !== undefined
-          ? parts(`"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, d.stopped.storeCap !== undefined && d.stopped.storeCap < MIN_FILE_STORE
-            ? `start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in ${d.root}: its recorded store cap of ${d.stopped.storeCap} bytes is below the least the space's streams start on`
-            : `start it again with \`cotal up\` in ${d.root}`)
+        : d.unsettled !== undefined
+          ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
+          : d.stopped !== undefined
+            ? parts(`"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, d.stopped.storeCap !== undefined && d.stopped.storeCap < MIN_FILE_STORE
+              ? `start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in ${d.root}: its recorded store cap of ${d.stopped.storeCap} bytes is below the least the space's streams start on`
+              : `start it again with \`cotal up\` in ${d.root}`)
           : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
       if (d.home === undefined && d.recordedRoot !== undefined && d.stackRemedy !== undefined)

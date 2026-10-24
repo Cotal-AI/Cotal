@@ -2411,7 +2411,10 @@ A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. Its Next names
 `cotal up --root <root> --space <name>`, which starts it in that root from where you are, and
-`cotal space forget <name>`, which lets you start it in the current folder. `cotal up --space <name>` in a folder
+`cotal space forget <name>`, which lets you start it in the current folder. When that root's last `up` or `down`
+was cut off before it recorded an outcome, as an `up` interrupted before it registered the space
+leaves it, the refusal says so and names `cotal status` in that root, which names the step that
+finishes or settles it. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
 name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
 names the space. A bare `cotal up` in a folder that names no space, while the selected space is
@@ -2715,7 +2718,12 @@ interrupted before it recorded an outcome, and left some members running and oth
 named under the selected space as `Half started` or `Half stopped`, with the members on each side.
 Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, or
 `cotal down --yes` for a `down`, followed by `cotal up --root <root>` to restart instead. `--json`
-carries it as `folder.stackUnfinished`, with `kind`, `id`, `running` and `stopped`. The next bare
+carries it as `folder.stackUnfinished`, with `kind`, `id`, `running` and `stopped`. An `up` cut off
+before it registered the space leaves the selected space prepared and not started, and `status`
+names its stack's block or unfinished operation and the same Next under it. When that `up` left
+members running, the next `up` cannot finish it, so Next offers `cotal down --yes` and then
+`cotal up --root <root>`. While the stack is blocked, the `Delivery responder` row says that `up`
+refuses until the block is cleared. The next bare
 `up` or `down` settles the interrupted operation with an `OPERATION_SETTLED` warning. When the
 stack reached that operation's end anyway, every member running after an `up` or stopped after a
 `down`, the warning says it was interrupted and where the stack stands, without calling it failed.
@@ -2918,7 +2926,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `extensions` | `root` and `items`, each `{package, label, version}` |
 | `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`), `storedState` and `noManager` (whether this root's controller stack was started with `--no-manager`) |
 | `meshes` | `current`, `unreadable` (the registry directory, a record, the current-mesh pointer, or the prepared spaces folder or a record in it, that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
-| `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
+| `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
 | `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause` and `path`; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
