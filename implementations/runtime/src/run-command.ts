@@ -55,6 +55,7 @@ import {
   runDriverCaller,
   RUN_LAUNCH_DEADLINE_MS,
   standaloneConnectOpts,
+  oneLine,
   unansweredRail,
   unansweredRequest,
   type EpError,
@@ -95,7 +96,7 @@ import {
 } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
-import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
+import { openRequestKeys, printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
 import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
@@ -648,8 +649,8 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
   const detail = `${e.code}: ${e.message}`;
   const rail = unansweredRail(e);
   if (rail === undefined || rail === "ep")
-    return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
-  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
+    return `the manager registered for this space did not answer on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
+  return `the manager registered for this space did not answer on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
 }
 
 /** The manager's refusal codes that say it acted on nothing. */
@@ -663,15 +664,19 @@ const localJournal = (args: Record<string, unknown> | undefined): string => `cot
 
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
- *  recorded it. */
-function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined): CommandFailure {
+ *  recorded it. `on` is the caller's explicit manager pin, which a suggested command keeps. */
+export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, on?: string): CommandFailure {
   const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
   const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
   // A manager at its launch limit refuses `resource-exhausted` before writing anything, and says
   // so with `not-executed`.
   const busy = err?.code === "resource-exhausted" && err.outcome === "not-executed";
   const code = err?.code === undefined ? undefined : busy ? "LIFECYCLE_BLOCKED" : REFUSED_BEFORE_EFFECT[err.code];
+  // A resume refused as a precondition, such as of a completed or failed run, appended nothing, so
+  // the run's recorded state is what to read next.
+  const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run ps lists a run once it has` }
+    : resumeBlocked ? { remedy: `read the run's recorded state with cotal run show ${args.runId}${on ? ` --on ${on}` : ""}` }
     : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
   // A reply too large for the broker changed nothing; the local read takes no reply.
@@ -763,7 +768,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
       for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
-      throw managerRefusal(command, t.space, args, err);
+      throw managerRefusal(command, t.space, args, err, values.on);
     }
     return r.reply.data;
   } catch (e) {
@@ -835,10 +840,13 @@ async function resolveRunControlTarget(values: RunValues): Promise<{ target: Con
   return { ...resolved, target: { ...target, auth: { ...target.auth, managerInstanceId: on } } };
 }
 
-function renderLangProblem(d: EpErrorDetail): string {
+/** A validation problem the manager returned, as `run validate` prints one. Each value can quote the
+ *  program, such as a step name, so its control characters are escaped before the terminal sees them. */
+export function renderLangProblem(d: EpErrorDetail): string {
   const where = d.where as { file?: string; line?: number; column?: number } | undefined;
   const at = where ? `${where.file ?? "<program>"}:${where.line ?? "?"}:${where.column ?? "?"}` : "<program>";
-  return `  ${String(d.code ?? "L????")} ${String(d.title ?? "")} (${at})\n    ${String(d.cause ?? "")}\n    fix: ${String(d.fix ?? "")}`;
+  const text = (value: unknown) => oneLine(String(value ?? ""));
+  return `  ${text(d.code ?? "L????")} ${text(d.title)} (${text(at)})\n    ${text(d.cause)}\n    fix: ${text(d.fix)}`;
 }
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
@@ -932,8 +940,28 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     ...(values.value !== undefined ? { value } : {}),
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
     ...(verb === "amend" ? { amend: true } : {}),
+  }).catch(async (error: unknown) => {
+    throw verb === "answer" ? await withMatchingKeys(error, a, b, values, () => ask("run-status", { runId: a, ...endpoint }) as Promise<RunStatusView>) : error;
   });
   runReceipt(verb, space, result, values, a, { step: b, ...(values.value !== undefined ? { value } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
+}
+
+/** A step key the run has no open request at, answered with the open keys whose step name it matches,
+ *  as `frage` matches `/checkpoint:frage#0`. A run that cannot be read leaves the refusal as it was. */
+export async function withMatchingKeys(error: unknown, runId: string, stepKey: string, values: RunValues, read: () => Promise<RunStatusView>): Promise<unknown> {
+  if (!(error instanceof CommandFailure) || error.code !== "TARGET_NOT_FOUND") return error;
+  let open: string[];
+  try { open = openRequestKeys(await read()); } catch { return error; }
+  const stepName = (key: string) => /:([^:/#]*)#\d+$/.exec(key)?.[1] ?? key;
+  const word = stepName(stepKey);
+  const matches = open.filter((key) => key !== stepKey && (stepName(key) === word || (word !== "" && (stepName(key).includes(word) || word.includes(stepName(key))))));
+  if (!matches.length) return error;
+  // A step name comes from the program, so it is escaped and quoted before the terminal shows it.
+  const quoted = (key: string) => `'${oneLine(key).replaceAll("'", `'\\''`)}'`;
+  const remedy = matches.length === 1
+    ? `the open request ${quoted(matches[0]!)} matches; answer it with cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.on ? ` --on ${values.on}` : ""}`
+    : `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
+  return new CommandFailure(error.outcome, error.code, error.message, { remedy, target: error.target, ...(error.native ? { native: error.native } : {}) });
 }
 
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;

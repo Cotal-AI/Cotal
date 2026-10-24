@@ -13,10 +13,10 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EpEnvelopeError, EP_UNANSWERED, registry, type Command, type RunStatusView } from "@cotal-ai/core";
-import { exitCode, isCommandFailure } from "@cotal-ai/workspace";
+import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
+import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
-import { unansweredManagerRefusal, workflowArguments } from "../src/run-command.js";
+import { managerRefusal, renderLangProblem, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
 
 let ok = 0, fail = 0;
@@ -165,10 +165,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const mark = (rail?: string) => [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", ...(rail !== undefined ? { rail } : {}) }];
   const legacy = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep rail", mark("ep")));
   c("legacy rail: the question and the --local remedy stand (one rail, and nothing answered on it)",
-    legacy.startsWith("no manager answered on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
+    legacy.startsWith("the manager registered for this space did not answer on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
   const v1 = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail", mark("ep.v1")));
   c("versioned rail: the refusal names ep.v1 and states what the silence does not establish",
-    v1.startsWith("no manager answered on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
+    v1.startsWith("the manager registered for this space did not answer on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
     && v1.includes("does not tell no manager running apart from one older than ep.v1"), v1);
   c("versioned rail: neither the false question nor the --local remedy that follows from it is printed",
     !v1.includes("is a manager running for this mesh?") && !v1.includes("--local"), v1);
@@ -311,6 +311,70 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     c(`a hosted start refuses a source file that ${says} the same way, before any connect`, isCommandFailure(started) && started.code === "SCHEMA_INVALID" && started.message.includes(says), started);
   }
   rmSync(dir, { recursive: true, force: true });
+}
+
+// An open checkpoint with a `to` shows beside its question whom it escalates to, and once it has
+// escalated, until when that attempt is open. The escalation's attempt is armed with `proceed`.
+{
+  const detail = (journal: object[]) => {
+    const out: string[] = [];
+    const log = console.log, error = console.error;
+    console.log = console.error = (...args: unknown[]) => { out.push(args.map(String).join(" ")); };
+    try { printRunDetail("s", { runId: "run-1", endpoint: "manager", status: { state: "running" }, journal } as unknown as RunStatusView, {}); }
+    finally { console.log = log; console.error = error; }
+    return out.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  };
+  const open = (name: string, more: object) => ({ n: 1, kind: "step", step: `/checkpoint:${name}#0`, effect: "checkpoint", name, state: "pending", outcome: "pending", startedAt: 0, asks: `${name}?`, ...more });
+  const shown = detail([
+    open("first", { addressee: "dana", deadlineAt: 0, onExpiry: "escalate" }),
+    open("second", { addressee: "erik", deadlineAt: Date.UTC(2026, 9, 24, 6, 0, 0), onExpiry: "proceed" }),
+    open("third", { onExpiry: "fail" }),
+  ]);
+  c("an open checkpoint names whom it escalates to, and an escalated one its addressee and deadline",
+    /Step\s+Request\s+Escalation/.test(shown) && /first\?\s+to dana if it expires/.test(shown) && shown.includes("second?  escalated to erik, open until 2026-10-24T06:00:00.000Z"), shown);
+  c("with no checkpoint addressed, the table has no Escalation column", !detail([open("third", { onExpiry: "fail" })]).includes("Escalation"));
+}
+
+// An answer refused for a step key the run holds no open request at names the open keys whose step
+// name matches what was typed, as `frage` names `/checkpoint:frage#0`.
+{
+  const notFound = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "the run has no open checkpoint at frage", { remedy: "read the run's open requests with cotal run show run-1" });
+  const row = (step: string, state: string, asks?: string) => ({ kind: "step", step, state, ...(asks ? { asks } : {}) });
+  const view = (...journal: object[]) => async () => ({ journal }) as unknown as RunStatusView;
+  const one = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "Proceed?"), row("/checkpoint:done#0", "pending", "Done?")));
+  c("an answer to a checkpoint's name names its open key and the command, with the code and message kept",
+    one instanceof CommandFailure && one.code === "TARGET_NOT_FOUND" && one.message === "the run has no open checkpoint at frage"
+    && one.remedy === "the open request '/checkpoint:frage#0' matches; answer it with cotal run answer run-1 '/checkpoint:frage#0' --value '<json>'", one);
+  const pinned = await withMatchingKeys(notFound(), "run-1", "frage", { on: "mgr-1" }, view(row("/checkpoint:frage#0", "pending", "Proceed?")));
+  c("the suggested command keeps an explicit --on", pinned instanceof CommandFailure && pinned.remedy?.endsWith(" --on mgr-1") === true, pinned);
+  const two = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"), row("/fanOut:x#0/checkpoint:frage#1", "pending", "B?")));
+  c("several matching open keys are listed to pick from", two instanceof CommandFailure && two.remedy === "the open requests that match are '/checkpoint:frage#0', '/fanOut:x#0/checkpoint:frage#1'; pass one of them as the step", two);
+  const settled = notFound();
+  c("a settled step with that name is not offered", await withMatchingKeys(settled, "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"), row("/checkpoint:frage#0", "settled"))) === settled);
+  const unread = notFound();
+  c("a run view that cannot be read leaves the refusal as it was", await withMatchingKeys(unread, "run-1", "frage", {}, async () => { throw new Error("no answer"); }) === unread);
+  const other = new CommandFailure("refused", "LIFECYCLE_BLOCKED", "revoked");
+  c("a refusal other than TARGET_NOT_FOUND is left as it was", await withMatchingKeys(other, "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"))) === other);
+  const escaped = await withMatchingKeys(notFound(), "run-1", "fr\x1b[2Jage", {}, view(row("/checkpoint:fr\x1b[2Jage#0", "pending", "A?")));
+  c("a step name from the program is escaped before the terminal shows it", escaped instanceof CommandFailure && !escaped.remedy?.includes("\x1b") && escaped.remedy?.includes("\\u001b") === true, escaped instanceof CommandFailure ? escaped.remedy : escaped);
+}
+
+// A resume the manager refuses as a precondition, as of a completed run, appended nothing, so the
+// next step reads the run's recorded state, keeping an explicit pin.
+{
+  const finished = { code: "failed-precondition", message: "run run-1 is already completed, so there is nothing to resume; a resume continues a run that is running or released" };
+  const blocked = managerRefusal("run-resume", "s", { runId: "run-1" }, finished);
+  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with cotal run show run-1", blocked);
+  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with cotal run show run-1 --on mgr-1");
+  c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
+}
+
+// A validation problem a hosted start prints quotes the program, so a step name's control characters
+// reach the terminal escaped, as run validate shows them.
+{
+  const name = "\u001b]52;c;SGFsbG8=\u0007\u001b]0;FENSTER\u0007";
+  const shown = renderLangProblem({ kind: LANG_PROBLEM_DETAIL_KIND, code: "L3014", title: "Malformed step name", where: { file: "osc.cotal.js", line: 1, column: 28 }, cause: `"${name}" is not a well-formed step name.`, fix: "Use kebab-case." });
+  c("a hosted start's problem line escapes a step name's control characters", !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(shown) && shown.includes("\\u001b]52;c;SGFsbG8=\\u0007") && shown.startsWith("  L3014 Malformed step name (osc.cotal.js:1:28)\n    "), shown);
 }
 
 restore();

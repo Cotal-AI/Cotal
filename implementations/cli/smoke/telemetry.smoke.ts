@@ -225,6 +225,14 @@ for (const { level, extra, name } of [
   check("COTAL_TELEMETRY=bogus refuses USAGE_INVALID before the command runs, sending nothing", bogus.status === 1 && bogus.sent.length === 0 && bogus.envelope?.outcome === "refused" && (bogus.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && /COTAL_TELEMETRY must be off, minimal or regular/.test(bogus.stderr), shown(bogus));
   const bogusTelemetry = await s.run(["telemetry"], { COTAL_TELEMETRY: "bogus" });
   check("…and cotal telemetry itself refuses it the same way", bogusTelemetry.status === 1 && /COTAL_TELEMETRY must be off, minimal or regular/.test(bogusTelemetry.stderr), shown(bogusTelemetry));
+  for (const intakeUrl of ["not-a-url", "ftp://127.0.0.1/v1/telemetry"]) {
+    const badUrl = await s.run(["version", "--json"], { COTAL_TELEMETRY_URL: intakeUrl });
+    check(`COTAL_TELEMETRY_URL=${intakeUrl} refuses USAGE_INVALID before the command runs`, badUrl.status === 1 && badUrl.envelope?.outcome === "refused" && (badUrl.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && /COTAL_TELEMETRY_URL must be an http or https URL/.test(JSON.stringify(badUrl.envelope)), shown(badUrl));
+  }
+  const badUrlOff = await s.run(["telemetry"], { COTAL_TELEMETRY_URL: "not-a-url", DO_NOT_TRACK: "1" });
+  check("…cotal telemetry refuses it even while the environment keeps telemetry off", badUrlOff.status === 1 && /COTAL_TELEMETRY_URL must be an http or https URL/.test(badUrlOff.stderr), shown(badUrlOff));
+  const unusedUrl = await s.run(["version"], { COTAL_TELEMETRY_URL: "not-a-url", DO_NOT_TRACK: "1" });
+  check("…and another command runs, since nothing is sent to it", unusedUrl.status === 0, shown(unusedUrl));
   mkdirSync(join(s.home, ".cotal"), { recursive: true });
   writeFileSync(s.settingsPath, '{"v":1,"level":"loud"}');
   const malformed = await s.run(["version"]);

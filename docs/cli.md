@@ -551,8 +551,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
 | `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
-| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
-| `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
+| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs. A root whose first `up` recorded another mode refuses it |
+| `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger. A root whose first `up` recorded another mode refuses it |
 | `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. A later run may omit it or pass any spelling that normalizes to the pinned URL, such as one with a trailing slash; a different IdP is refused. With `-f`, overrides the manifest's `broker.idp` under the same rules: https (or http on a loopback IP literal), with no credentials, query or fragment |
 | `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
 | `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
@@ -681,7 +681,9 @@ keeps its mode. A `.cotal`, or a root without one, that this account cannot writ
 broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
 or the store itself before a broker has made one, and `chmod -R u+w`. Without that check the broker
 exited and named the cause only in its log. `status` names the same step for a stopped space whose
-store `up` would refuse. The broker log `.cotal/nats.log` and the auth service,
+store `up` would refuse. A service record folder of the space, under `services/` in the Cotal home,
+that this account cannot write refuses `up` the same way, naming the folder and `chmod u+w`, before
+any member starts. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
@@ -722,7 +724,12 @@ whole-stack failure shows that sentence as its native detail.
 
 A fresh prepared static-auth, open or plain-loopback user-auth root starts through the service
 controller. It records its mode, definitions and full instance IDs in the private
-`.cotal/stack-controller.json` journal. Static-auth startup prepares trust and configuration, starts
+`.cotal/stack-controller.json` journal. The root keeps the mode its first `up` recorded: a later `--open` or
+`--user-auth` that names another mode refuses `CONFLICT`, exit 2, whether the stack runs or not.
+`reset store`, `reset space`, `clean all` and `space forget` all keep the journal, so none of them
+changes the mode. To run another mode, run `cotal space create <space>` in another folder, then
+`cotal up --open` or `cotal up --user-auth` there.
+Static-auth startup prepares trust and configuration, starts
 the broker, initializes native streams, then starts delivery and the optional manager. Open startup
 prepares an unauthenticated broker and streams, then the optional manager; it creates no delivery
 service or credential. Each member reports its own readiness; the result does not prove agent or
@@ -762,7 +769,8 @@ they name that project; otherwise the next step is to remove the link and prepar
 `space create`. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
 naming where it leads. `status` there does not read the folder's boot and additive attempt
 inventories through the link. It warns `COTAL_DIR_LINKED`, or `COTAL_DIR_DANGLING` for a link that
-leads nowhere, with the same next step, and exits 4. `space create` in a copy whose records name
+leads nowhere, with the same next step, and exits 4. For a linked folder, its selected space names
+the same refusal, and Next gives that step in place of starting the space with `cotal up`. `space create` in a copy whose records name
 another root says so and names that root, and in a linked folder it names the link.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
@@ -913,6 +921,10 @@ says to run `cotal down` from the root, because `down` stops only the stack of t
 and it offers `cotal up --root <root>` to add the manager. When another space stays selected, the
 receipt says so and names `cotal use <space>`, as a legacy `up` does. When no registered or prepared space is
 selected, `up` selects the space it started and says so.
+The receipt also names each service saved for the space that `up` does not start, such as one
+`cotal service add` saved, and `--json` carries their names as `result.savedServices`. Saved
+services belong to the space name, so a space forgotten under that name leaves its services to the
+next one; `cotal service show <name>` shows what one runs.
 
 On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
 every stack mode. It refuses while validating its arguments, before the confirmation and before any
@@ -1202,8 +1214,10 @@ preservation and manifest flags rather than switching to the legacy launcher. Ou
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help. A stop records each step in the stack journal in the root's
 `.cotal`. When this account cannot write that folder, `down` refuses `PERMISSION_DENIED`, exit 2,
-before the plan, names the folder and the `chmod u+w` that fixes it, and stops nothing. A dry run
-names it as a refusal the real stop would hit.
+before the plan, names the folder and the `chmod u+w` that fixes it, and stops nothing. Each
+member's stop is also recorded in the space's service instance records, under `services/` in the
+Cotal home, and a folder there this account cannot write refuses the same way. A dry run names
+either as a refusal the real stop would hit.
 
 A controller stack's members are stopped through the registration `cotal up` wrote for it. When an
 older `meshes rm --force` dropped it, or an older `meshes add --force` replaced it with one added by
@@ -1625,8 +1639,8 @@ stopped, the clean runs. After a healthy committed restore,
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
 completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a
 restore that left history or workflow runs out it also requires `--discard-history`, as
-`backup cleanup-fallback` does. After an
-`--accept-missing-source` restore there is no old store, so it only retires the journal.
+`backup cleanup-fallback` does, and its refusal names the flag without printing the command help.
+After an `--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
 
@@ -1638,7 +1652,8 @@ cotal reset space <space> [--dry-run] [-y|--yes] [--json|--plain]
 Both routes select a space this machine started. A space with a locally started registration is
 selected by it. A controller stack that a completed `down` stopped has no registration; its
 prepared record and stack journal at the same root name its broker address, store and mode, and a
-reset keeps both, so a later `up` starts it again. After `reset space` of a user-auth space, that
+reset keeps both, so a later `up` starts it again in the same mode. No reset changes a stack's mode;
+[up](#up) names the way to run another one. After `reset space` of a user-auth space, that
 `up` needs `--user-auth --idp <auth base URL>`, as described below. A stack none of whose members ever started has
 no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
@@ -1792,7 +1807,11 @@ preserved source, or the maintenance attempt tree.
 
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
 A root with no preserved cut refuses and names `cotal down --preserve-state`. A cut in another state
-refuses and names that state and its space. A destination that already exists is a `CONFLICT`
+refuses and names that state and its space. A create during a restore that still runs refuses
+`LIFECYCLE_BLOCKED` (exit 2), names that restore attempt, its process and when it started, and says
+to wait for it. A create that finds the root's maintenance lock held, such as by another
+`backup create`, names the operation that holds it, its pid and since when it has held the lock.
+Neither refusal journaled anything, so it names no attempt of its own. A destination that already exists is a `CONFLICT`
 refusal, because create writes only a new directory. A destination whose folder does not exist
 refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
 folder. A destination inside the preserved store refuses `USAGE_INVALID` (exit 1), and one in a
@@ -1864,8 +1883,9 @@ removes only its unchanged retained old-store identity; it never removes the res
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
 starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
-and workflow runs included, and a full restore of an artifact with no workflow runs leaves the runs
-out, so its old store holds the only copy of them. Its `--dry-run` warns with
+and workflow runs included. A full restore of an artifact with no workflow runs leaves the runs out,
+and a full restore of an artifact made before the state it replaced was preserved leaves out what
+was written after the artifact. In each case its old store holds the only copy of them. Its `--dry-run` warns with
 `HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, and the cleanup refuses
 `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 That refusal names the flag and does not print the command help.
@@ -1899,7 +1919,11 @@ confirm that any seat joined. Its `restored` and `recreatedEmpty` fields name th
 restore brought back and the ones it recreated empty. A registry restore brings back channel settings only, so chat and DM
 history and workflow runs start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
 names the store the restore set aside, which holds the only copy of them. Its next step says
-that `backup cleanup-fallback` deletes that store only with `--discard-history`.
+that `backup cleanup-fallback` deletes that store only with `--discard-history`. A full restore of
+an artifact made before the state it replaced was preserved, such as a backup taken before a later
+`cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
+after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
+store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
 `up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
@@ -1969,8 +1993,9 @@ It requires the same space. A full restore also requires the trust state the art
 under; a registry restore, `--only registry` of a full artifact included, does not check it. The
 whole pre-commit window holds a journaled
 liveness claim (coordinator, watchdogs, brokers, and a deadline 30 minutes after the restore
-began). While the claim is live, ordinary `up`, a repeated restore and `backup recover` refuse
-`LIFECYCLE_BLOCKED` (exit 2) and name the restore process and the deadline. A command that finds
+began). While the claim is live, ordinary `up`, a repeated restore, `backup create` and
+`backup recover` refuse `LIFECYCLE_BLOCKED` (exit 2) and name the restore process, when it started
+and the deadline. A command that finds
 the root's maintenance lock held refuses the same way and names the pid that holds it. The attempt
 is stale once the restore process and every recorded owner are proven dead on this host, and
 either the deadline has passed or every broker the root started is proven gone. A broker's
@@ -2316,6 +2341,11 @@ them. While a member was not stopped cleanly, or the root holds preserved state,
 result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
 names `cotal down --yes` in the root and then `space forget` again. When the stack's folder is
 gone, it names `cotal down --space <space> --yes`, which stops the stack and removes them.
+Forget keeps the other services saved under the name, such as one `cotal service add` saved, with
+their instance records. The result names them as `keptServices`, and a later space with the same
+name inherits them: its `cotal service` lists them and its `up` names them. `cotal service remove
+<name> --space <space> --yes` in that space forgets one. While no space has the name, `cotal service`
+finds no space for it, so remove a service before you forget its space to drop it at once.
 `status` in a forgotten space's root then selects no space and probes no broker. When nothing left
 in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
 because a bare `cotal up` there would start the default space `main` in that folder. A command run
@@ -2415,6 +2445,12 @@ targets the selection. Before it acts, it warns on stderr and in its JSON `warni
 An empty `--space` value, such as `--space "$S"` with `S` unset, is refused with `USAGE_INVALID`,
 exit 1, by every command that takes `--space`, before anything is read or written. It never falls
 back to the selection.
+A `--server` URL with a user name or password in it, such as `nats://<user>:<password>@<host>:<port>`,
+is refused with `USAGE_INVALID`, exit 1, by every command that takes `--server`, before anything is
+read, written or dialed. The refusal does not repeat the value. The NATS client uses only the host
+and port of that URL, so the command would otherwise connect with the credential it resolves. Pass
+that credential with `--creds`, a login or the space's own trust instead. `up` refuses such a URL
+with its own message.
 
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
@@ -2528,6 +2564,8 @@ there. Prepare the intended folder first with
 `space create <space> --root .`; `up --root .` then names it.
 
 Owned services use the saved controller definitions and instance records for the selected space.
+Instances are listed by definition name, then instance ID, in the text and in
+`result.services.instances`, so their order holds from one start to the next.
 Full instance IDs and execution hosts stay visible. Process observations and historical readiness
 are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
 endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
@@ -3587,8 +3625,9 @@ apart, because the service registry records no package version, so check whether
 running and, if it is, its version. The same scoping applies to `cotal run`'s hosted verbs, which
 drop the `--local` suggestion there, since `--local` drives the run from the calling process and
 names the caller as its answerer. A hosted verb that no manager answered refuses
-`TARGET_UNAVAILABLE`, exit 2, and its Next is `cotal status`, which names a stack manager that runs
-but does not answer, with its pid.
+`TARGET_UNAVAILABLE`, exit 2, leading with `the manager registered for this space did not answer`,
+and its Next is `cotal status`, which names a stack manager that runs but does not answer, with its
+pid.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
@@ -3800,6 +3839,13 @@ its output already goes: the mesh, its transcript, or an `attach`.
 A write the manager cannot confirm, such as a terminal write that failed partway, exits 3 with
 `Outcome unconfirmed` and is not typed again. Part of the text may already be at the prompt, so check
 the seat before you send it again.
+
+With no manager running, as after `cotal service stop stack-manager`, `input` refuses
+`TARGET_UNAVAILABLE` (exit 2) before it sends anything and names bare `cotal up`, as `ps` does.
+`stop` and `attach` find their seat the same way and refuse the same. A manager that stays
+registered but does not answer, such as one that crashed, leaves `input` and `stop` waiting out its
+answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was sent, with
+`cotal status` as the next step.
 
 **This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
 anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
@@ -4286,7 +4332,7 @@ loopback health URL answers 200:
 |---|---|
 | `schemaVersion` | `1` |
 | `space` | The selected space's name. Another name is refused |
-| `launch` | `{type: "process", executable, args, cwd}`: an executable on `PATH` or by path, its arguments, and an absolute working directory. Or `{type: "adapter", adapter, options}` for an installed adapter, which a preset writes for you |
+| `launch` | `{type: "process", executable, args, cwd}`: an executable by absolute path, by a path relative to `cwd`, or by a bare name that `add` finds on `PATH`, its arguments, and an absolute working directory. Or `{type: "adapter", adapter, options}` for an installed adapter, which a preset writes for you |
 | `readiness` | `{type: "process", timeoutMs}`: ready once the process runs. `{type: "http", url, expectedStatus, timeoutMs}`: ready when a loopback `http://127.0.0.1` or `http://[::1]` URL answers that status. An adapter definition uses `{type: "adapter", timeoutMs}`. `timeoutMs` is 1 to 120000 |
 | `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
@@ -4303,6 +4349,14 @@ points, every folder above that, and the folder a link is in must be writable on
 `add` checks this before it saves, and `start`, `restart` and an installed unit check it again
 before anything launches or stops. An unsafe path refuses `PERMISSION_DENIED` (exit 2), and the
 refusal names each unsafe path and one remedy such as `chmod g-w <paths>`.
+
+`add` looks a bare executable name up on its own `PATH` once and saves the absolute path it finds,
+which its receipt shows as `Executable` and `--json` as `result.executable`. Every later `start`
+runs that file, whatever its own `PATH` is. A `PATH` with a relative or empty entry refuses that
+lookup `UNSUPPORTED` (exit 2), as a unit install does, because the entry would resolve against
+whichever folder `add` runs in. A name not on `PATH` refuses `DEPENDENCY_UNAVAILABLE` (exit 2). A
+definition an earlier release saved with a bare name refuses to start `SCHEMA_INVALID` (exit 1);
+remove it and add it again.
 
 ### Running a service
 
@@ -6054,9 +6108,9 @@ run-token shape. Keep the pin on later status, answer and resume calls.
 A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
 on every verb that takes one, before anything is contacted.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
-`--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
-denied credential, a step in the wrong state or a program that does not validate, is refused, exit
-2. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
+`--json` as one refusal envelope on stdout. A refusal the manager makes before acting is refused: a
+denied credential or a step in the wrong state exits 2, and a program that does not validate is
+`SCHEMA_INVALID`, exit 1, like other invalid input. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
 `cotal run show <runId>` as the next step. A manager activates at most 8 runs at once, counting
 each `start` or `resume` until its run is recorded. One more is refused `LIFECYCLE_BLOCKED`, exit 2,
 before anything is written; the refusal names the runs still activating, and the next step is to
@@ -6074,14 +6128,16 @@ exit 2, and with `--json` one refusal envelope on stdout.
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
-run is recorded; a program that does not validate is refused with every problem listed. A program
+run is recorded; a program that does not validate is refused with every problem listed, each
+control character in it shown as its `\uXXXX` escape. A program
 file that cannot be read is refused with `TARGET_NOT_FOUND`, exit 2, by every verb that takes one.
 A `start` interrupted with Ctrl-C or `SIGTERM` after its request went out reports outcome `unknown`,
 because the manager may already have recorded the run, and exits 130 or 143. List the runs with
 `cotal run ps` before starting it again.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the
 source is the recorded program, so no `--file` is taken. A run recorded `completed` or `failed` is
-refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue. Neither takes `--endpoint`: the manager records
+refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue;
+the next step is `cotal run show <runId>`. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. `show` and `journal` read the
 journal from the manager in pages, each one reply, so a journal larger than the broker's payload
@@ -6089,7 +6145,8 @@ limit stays readable. A record or a journal row too large for one reply refuses 
 exit 2, and names `cotal run journal <run-id> --local`, which reads the run's stream from its
 project folder with no reply. A manager from release 0.99.3 or earlier reads no journal page, so
 through it both refuse `UNSUPPORTED` and name the same local read. An open pause prints its question
-under `Needs an answer`, and only then does Next offer `answer`. A pause counts as open while its
+under `Needs an answer`, and only then does Next offer `answer`. A checkpoint with a `to` prints
+beside its question whom it escalates to, and once it has escalated, until when that attempt is open. A pause counts as open while its
 last journal row is pending, so a settled or expired one is not listed there.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
@@ -6105,6 +6162,8 @@ that step and the message stays under `Step errors`. A run that failed before it
 cause shows only `failed`. A failure raised by program code outside any step is recorded in no
 journal row. The view says so under `Failure` and names
 `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
+The failure records no line or column in the program: a source position belongs to a problem
+`run validate` reports before the program runs.
 `--json` on `ps` or `journal` writes one envelope on stdout, as other commands do, and nothing on
 stderr, whether the manager answers or `--local` reads. `ps` lists its rows under `result.items`.
 `journal` puts the run under `result.view`: its `runId`, `endpoint`, recorded `spec` and `status`,
@@ -6115,8 +6174,10 @@ with its `code` and `message`, and `revoked` or `revocationUnreadable` when the 
 step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
 `status` and `errorCode` once settled, the recorded `errorMessage` of a failed or refused step,
 and `startedAt` and `endedAt` in epoch milliseconds. An open
-pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
-settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
+pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with and
+the `addressee` its `to` names. A checkpoint's escalation is armed with `proceed`, so it never
+escalates again. A settled pause adds its `answer` and its `amendments`, as the text view prints
+them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
 An unreadable revocation marker makes the result partial, exit 4, with a `REVOCATION_NOT_CHECKED`
 warning naming the run. The text view is presentation and is not a stable parsing target. With
@@ -6132,7 +6193,10 @@ required ([workflows](workflows.md)).
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
 `answer` with `TARGET_NOT_FOUND`, also when it is sent before the run records the first, and a
-revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. An
+revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. A step the run holds no
+open request at is also `TARGET_NOT_FOUND`; when an open checkpoint or `ask` has the name you typed,
+as `frage` names `/checkpoint:frage#0`, the next step gives its full key, and several matches are
+listed for you to pick from. An
 answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
@@ -7617,6 +7681,12 @@ status. When the last check got no answer, such as a refused connection, it exit
 saw, and its Next also names `cotal service show <name>`, which shows the readiness deadline. Either
 way the process is left running, and the Next names the `service logs` and `service stop` for that
 exact instance.
+
+A Ctrl-C or `SIGTERM` while a background `service start` waits does not reach the service, which
+keeps running. The start exits 130 or 143 and names the instance it left. Its Next is
+`cotal service start <name>` to wait for that instance's readiness again, or the `service stop` for
+it. Until a later command settles that start, `service status` and `cotal status` say the start was
+interrupted.
 
 Stop and restart default to cancellation in a terminal and need `--yes` in scripts. The selected
 record revision and creation identity are checked before signals, including escalation. A reused

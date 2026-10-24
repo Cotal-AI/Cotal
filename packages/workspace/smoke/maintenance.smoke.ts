@@ -30,6 +30,7 @@ import {
   readPreservationCommitIntent,
   writePreservationCommitIntent,
   readMaintenanceJournal,
+  readMaintenanceLockHolder,
   readMaintenanceResumeDocument,
   readPreservationPrepareIntent,
   readStoreIdentity,
@@ -61,6 +62,7 @@ import {
   type RestoreListenerProof,
   type RestoreReadyRecord,
   restoreLeftOut,
+  restoreLeftOutReason,
 } from "../src/maintenance.js";
 import { wfjStreamName } from "@cotal-ai/core";
 
@@ -368,9 +370,13 @@ if (process.platform !== "win32") {
 // An active owner excludes a second writer. A dead owner may be reaped, while ambiguous death may not.
 {
   const p = project("lock-race");
-  const first = acquireMaintenanceLock(p.root);
+  const first = acquireMaintenanceLock(p.root, { operation: "backup create" });
   expectCode("live lock excludes a concurrent writer", "lock-held", () => acquireMaintenanceLock(p.root));
+  const holder = readMaintenanceLockHolder(p.root);
+  check("the refused writer can read the holder's process, start and operation",
+    holder?.owner.pid === process.pid && holder.owner.startedAt === first.owner.startedAt && holder.operation === "backup create");
   releaseMaintenanceLock(first);
+  check("no holder is read once the lock is released", readMaintenanceLockHolder(p.root) === undefined);
 
   const stale = acquireMaintenanceLock(p.root, { owner: owner("stale") });
   expectCode("unknown stale owner fails closed", "lock-owner-ambiguous", () =>
@@ -1214,6 +1220,13 @@ if (process.platform !== "win32") {
   check("a full restore with no workflow journal left out the workflow runs", restoreLeftOut(active) === "workflow runs");
   check("a full restore with its workflow journal left out nothing", restoreLeftOut({ ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")] } }) === undefined);
   check("a registry restore left out the history and the runs", restoreLeftOut({ ...active, restore: { selection: "registry" } }) === "chat and DM history and workflow runs");
+  // A full restore that replaced a cut preserved after its artifact was made left out what was
+  // written since.
+  const newer = { ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")], previousCutNewer: true } };
+  check("a full restore that replaced a newer cut left out the newer history and runs", restoreLeftOut(newer) === "newer chat and DM history and workflow runs");
+  check("its reason names the older artifact", restoreLeftOutReason(newer) === "this restore's artifact was made before the state it replaced was preserved");
+  check("with no workflow journal it also left out every run", restoreLeftOut({ ...active, launch: { previousCutNewer: true } }) === "workflow runs and newer chat and DM history"
+    && restoreLeftOutReason({ ...active, launch: { previousCutNewer: true } }) === "this restore's artifact was made before the state it replaced was preserved and held no workflow runs");
   expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-runs"));
   check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
   cleanupRestoreFallback(p.lock, "restore-runs", { discardHistory: true });

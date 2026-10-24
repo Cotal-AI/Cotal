@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, resolveOnPath, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -244,9 +244,7 @@ function transition(row: ServiceInstanceSnapshot, change: Partial<ServiceInstanc
 function executable(definition: ServiceDefinitionInput): string {
   if (definition.launch.type !== "process") throw new CommandFailure("refused", "UNSUPPORTED", "this driver accepts process definitions, not adapter options");
   const source = definition.launch.executable;
-  const found = isAbsolute(source) ? source : /[\\/]/.test(source) ? resolve(definition.launch.cwd, source) : resolveOnPath(source);
-  if (!found) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the declared executable is unavailable; no instance was allocated");
-  return found;
+  return isAbsolute(source) ? source : resolve(definition.launch.cwd, source);
 }
 
 function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {

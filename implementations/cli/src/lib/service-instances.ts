@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
@@ -137,6 +137,23 @@ function validateInstance(input: unknown, space: string): ServiceInstance {
 
 export const serviceInstanceStore = (space: string) => new ProtectedRecordStore("services", space, (value) => validateInstance(value, space), "instances");
 
+/** The first of `space`'s service record folders in `families` that this account cannot write, or,
+ *  for one still to be made, the nearest existing folder above it; undefined when it can write them
+ *  all. A stack records each member's start and stop there, so `up` and `down` check before any effect
+ *  instead of failing at the first record with no cause named. */
+export function serviceRecordsWriteProblem(space: string, families: readonly ("definitions" | "instances")[]): string | undefined {
+  for (const family of families) {
+    let dir = join(homeCotalDir(), "services", spaceKey(space), family);
+    while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+    try { accessSync(dir, constants.W_OK | constants.X_OK); }
+    catch (error) {
+      if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      return dir;
+    }
+  }
+  return undefined;
+}
+
 export function serviceInstances(space: string, definition?: string): ServiceInstanceSnapshot[] {
   const rows = serviceInstanceStore(space).list();
   for (const row of rows) if (row.name !== row.record.value.instanceId) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance filename and full assigned ID disagree; the record was not adopted");
@@ -153,10 +170,21 @@ export function observeServiceProcess(value: ServiceInstance): ServiceProcessSta
   return observed.kind === "match" ? "running" : observed.kind === "gone" ? "gone" : observed.kind === "mismatch" ? "foreign-pid" : "unreadable";
 }
 
+/** Whether the command that started this instance ended before it settled the start, as a Ctrl-C
+ *  during the readiness wait leaves it: the record still says starting and its recorded launcher is
+ *  no longer running. Only a launcher on this host and boot can be observed. */
+export function startInterrupted(value: ServiceInstance): boolean {
+  if (value.state !== "starting" || value.launcher.pid === process.pid) return false;
+  const current = processServiceHost();
+  if (current.machine !== value.host.machine || current.uid !== value.host.uid || current.boot !== value.host.boot) return false;
+  const launcher = assertRecordIdentity(value.launcher);
+  return launcher.kind === "gone" || launcher.kind === "mismatch";
+}
+
 export function instanceProjection(row: ServiceInstanceSnapshot) {
   const value = row.record.value;
   const supervisorRecord = serviceSupervisorProjection(value, processServiceHost());
-  return { instanceId: value.instanceId, definition: value.definition, definitionRevision: value.definitionRevision, revision: row.record.revision, space: value.space, executionHost: value.host.name, observedProcess: observeServiceProcess(value), recordedState: value.state, pid: value.process?.pid ?? null, readinessObservation: value.readiness, readinessAsOf: value.updatedAt, servingResponse: value.adapterReadiness?.native ? value.adapterReadiness.evidence === "local-process-receipt" ? "child-local-receipt-as-of" : "adapter-checked-as-of" : "not-checked", nativeEvidence: value.adapterReadiness?.evidence ?? null, adapter: value.adapter ?? null, nativeEndpoint: value.adapterReadiness?.native ?? null, reportedListener: value.adapterReadiness?.listener ?? null, adapterObservedAt: value.adapterReadiness?.observedAt ?? null, nativeStop: value.nativeStop ?? null, kernelStop: value.kernelStop ?? null, processStop: value.processStop ?? null, stopPolicy: value.nativeStopRequired ? "native" as const : value.kernelStopRequired ? "kernel-exit" as const : "process" as const, supervisor: supervisorRecord.mechanism === "none-recorded" ? value.supervisor : supervisorRecord.mechanism, supervisorRecord, supervisorInvocationId: value.supervisorInvocationId ?? null, supervisorObservation: "not-checked" as const, requestId: value.requestId, launchRequestId: value.launchRequestId, foreground: value.foreground, exit: value.exit ?? null };
+  return { instanceId: value.instanceId, definition: value.definition, definitionRevision: value.definitionRevision, revision: row.record.revision, space: value.space, executionHost: value.host.name, observedProcess: observeServiceProcess(value), recordedState: value.state, startInterrupted: startInterrupted(value), pid: value.process?.pid ?? null, readinessObservation: value.readiness, readinessAsOf: value.updatedAt, servingResponse: value.adapterReadiness?.native ? value.adapterReadiness.evidence === "local-process-receipt" ? "child-local-receipt-as-of" : "adapter-checked-as-of" : "not-checked", nativeEvidence: value.adapterReadiness?.evidence ?? null, adapter: value.adapter ?? null, nativeEndpoint: value.adapterReadiness?.native ?? null, reportedListener: value.adapterReadiness?.listener ?? null, adapterObservedAt: value.adapterReadiness?.observedAt ?? null, nativeStop: value.nativeStop ?? null, kernelStop: value.kernelStop ?? null, processStop: value.processStop ?? null, stopPolicy: value.nativeStopRequired ? "native" as const : value.kernelStopRequired ? "kernel-exit" as const : "process" as const, supervisor: supervisorRecord.mechanism === "none-recorded" ? value.supervisor : supervisorRecord.mechanism, supervisorRecord, supervisorInvocationId: value.supervisorInvocationId ?? null, supervisorObservation: "not-checked" as const, requestId: value.requestId, launchRequestId: value.launchRequestId, foreground: value.foreground, exit: value.exit ?? null };
 }
 
 /** Called only while ext remove holds the extension writer lock. Enumerate the case-safe service
