@@ -10,7 +10,8 @@ import {
   type StreamConfig,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
-import { connect, credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
 import {
@@ -528,7 +529,7 @@ export async function reconcileSpaceTtls(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<TtlReconciled[]> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including reconnects.
@@ -676,7 +677,7 @@ export async function setupSpaceStreams(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including reconnects.
@@ -732,7 +733,7 @@ export async function clearSpaceHistory(opts: {
   sentinelCreds?: string;
   includeDms?: boolean;
 }): Promise<ClearSpaceHistoryResult> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
@@ -762,7 +763,7 @@ export async function clearChannel(opts: {
 }): Promise<{ channel: string; purged: number; removed: boolean }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
@@ -869,7 +870,7 @@ export async function deprovisionAgent(opts: {
   memberChannels?: readonly string[];
   creds?: string;
 }): Promise<DeprovisionResourceAccounting> {
-  const nc = await connect({
+  const nc = await dialerFor(opts.servers)({
     servers: opts.servers,
     ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     // This is a detached, fire-and-forget teardown — it must FAIL FAST, never hang, so the caller's
