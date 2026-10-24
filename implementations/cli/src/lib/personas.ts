@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
+import { CommandFailure } from "@cotal-ai/workspace";
 
 /**
  * The persona catalog: the local `.cotal/agents/*.md` files an operator manages with
@@ -41,6 +42,23 @@ export interface PersonaEntry {
   /** The file a persona that is a symbolic link names. `persona show`, `edit` and `remove` refuse
    *  a link, so a listing warns about it. */
   link?: string;
+}
+
+/** The refusal for a catalog folder `dir` that exists but is no folder, such as a file or a link that
+ *  loops, which holds no personas. Undefined for a folder, or when nothing is there. */
+export function catalogFolderProblem(dir: string): CommandFailure | undefined {
+  let what: string;
+  try {
+    if (statSync(dir).isDirectory()) return undefined;
+    const own = lstatSync(dir);
+    what = own.isSymbolicLink() ? "a link to something that is not a folder" : own.isFile() ? "a file, not a folder" : "not a folder";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ELOOP") return undefined;
+    what = "a link that loops back on itself";
+  }
+  return new CommandFailure("refused", "CONFLICT", `${dir} is ${what}, so it holds no personas`, {
+    remedy: `move ${dir} out of the way; cotal persona create <name> then makes the folder`,
+  });
 }
 
 /** The file `path` links to when it is a symbolic link: its resolved path, or the link's own text

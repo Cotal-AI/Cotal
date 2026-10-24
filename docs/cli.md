@@ -3899,6 +3899,9 @@ one only in case, since a case-insensitive file system holds the two as one file
 A persona file that is a symbolic link is listed with a `PERMISSION_DENIED` warning that names the
 file it links to. `spawn` reads that file, but `persona show`, `edit` and `remove` refuse the link
 with `PERMISSION_DENIED`, and the next step names the file to copy in its place.
+A `.cotal/agents` that is a file or a link that loops holds no personas, so the listings, `show`,
+`create`, `edit` and `remove` refuse it with `CONFLICT`, naming it and what it is, and the next step
+is to move it out of the way.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
 persona is one: its file is `default.md` and its agents launch as `default_agent`. That name is
 reserved, so a create under it is refused with `USAGE_INVALID`.

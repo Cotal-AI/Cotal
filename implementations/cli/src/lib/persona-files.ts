@@ -14,7 +14,7 @@ import {
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
 import { exitInterrupted, INTERRUPT_SIGNALS, type InterruptSignal } from "./interrupt-notice.js";
-import { linkTarget } from "./personas.js";
+import { catalogFolderProblem, linkTarget } from "./personas.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
@@ -85,8 +85,11 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
     }
     return { bytes: readFileSync(path), ino: stat.ino, dev: stat.dev, mtimeMs: stat.mtimeMs };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
     if (error instanceof CommandFailure) throw error;
+    const folder = code === "ENOTDIR" || code === "ELOOP" ? catalogFolderProblem(dirname(path)) : undefined;
+    if (folder) throw folder;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`);
   }
 }

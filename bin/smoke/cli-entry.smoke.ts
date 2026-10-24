@@ -546,6 +546,22 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
         r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${real}; replace the link with a copy of that file`) && lstatSync(link).isSymbolicLink(), shown(r));
     }
   }
+  // A catalog folder that is a file or a link to itself holds no personas: every catalog command
+  // refuses CONFLICT naming it and what it is, and the listing is not shown as empty.
+  for (const [shape, what] of [["a file", "is a file, not a folder"], ["a link to itself", "is a link that loops back on itself"]] as const) {
+    const broken = (home: string) => {
+      const agents = join(home, "..", ".cotal", "agents");
+      mkdirSync(join(home, "..", ".cotal"), { recursive: true });
+      if (shape === "a file") writeFileSync(agents, "not a catalog\n");
+      else symlinkSync("agents", agents);
+    };
+    for (const argv of [["persona", "--json"], ["personas", "list"], ["persona", "show", "x"], ["persona", "create", "y", "--prompt", "Y.", "--subscribe", ""]]) {
+      const r = cotal(argv, broken, noSeed);
+      const said = r.stdout + r.stderr;
+      check(`${argv.slice(0, 2).join(" ")} refuses a .cotal/agents that is ${shape} with CONFLICT, naming it`,
+        r.status === 2 && said.includes("CONFLICT") && said.includes(`.cotal/agents ${what}, so it holds no personas`) && said.includes("out of the way") && !said.includes("no personas in"), shown(r));
+    }
+  }
   // A definition over 1 MiB is refused by create and edit with one refusal, and nothing is saved.
   {
     const big = mkdtempSync(join(tmpdir(), "cotal-entry-big-"));

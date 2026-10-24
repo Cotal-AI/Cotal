@@ -11,7 +11,7 @@ import {
 import { renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { listPersonas, listPersonaNames } from "../lib/personas.js";
+import { catalogFolderProblem, listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -126,6 +126,9 @@ export function personasComplete(argv: string[]): CompletionResult {
 
 async function list(verbose: boolean, running: boolean, values: ConnectValues): Promise<void> {
   const root = targetRoot(values);
+  // A catalog folder that is a file or a looping link is not an empty catalog.
+  const folder = catalogFolderProblem(personaDir(root));
+  if (folder) throw folder;
   const entries = listPersonas(root);
   if (!entries.length) {
     console.log(
