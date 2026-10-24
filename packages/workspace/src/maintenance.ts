@@ -13,6 +13,7 @@ import {
   readSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -23,6 +24,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { createHash, randomUUID } from "node:crypto";
 import { hardenPrivate, wfjStreamName } from "@cotal-ai/core";
 import { recordOperationWarning } from "./output.js";
+import { foreignStoreEntries, STORE_ENTRY_NAMES } from "./store-entries.js";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
 export const MAINTENANCE_JOURNAL_VERSION = 1 as const;
@@ -74,6 +76,7 @@ export type MaintenanceErrorCode =
   | "cleanup-incomplete"
   | "rollback-forbidden"
   | "cleanup-forbidden"
+  | "store-holds-foreign-entries"
   | "cleanup-complete"
   | "resume-missing"
   | "resume-mismatch"
@@ -3929,7 +3932,8 @@ function continueCleanup(
         attemptId: record.restore.attemptId, expected: expectedTomb, actual: moved, paths: [cleanup.tombPath],
       });
     if (record.state === "active") assertStoreIdentity(record.restore.target);
-    rmSync(cleanup.tombPath, { recursive: true });
+    if (cleanup.kind === "previous-source") removeStoreTomb(lock, record, cleanup);
+    else rmSync(cleanup.tombPath, { recursive: true });
     fsyncDirectory(dirname(cleanup.tombPath));
   }
   const restore = { ...record.restore, cleanup: { ...cleanup, status: "complete" as const } };
@@ -3943,6 +3947,32 @@ function continueCleanup(
     managerCommittedAt: record.managerCommittedAt, managerCommit: record.managerCommit,
     activeAt: record.activeAt, details: record.details,
   }) as RestoreActiveRecord;
+}
+
+/** Remove an old store's tomb by its store entries, then the folder once it is empty. An entry no
+ *  Cotal store writes, there before the removal or put there since, moves the folder back to where it
+ *  was and refuses, so the old source loses nothing but its store. */
+function removeStoreTomb(lock: MaintenanceLock, record: RestoreReadyRecord | RestoreActiveRecord, cleanup: CleanupProgress): void {
+  const refuse = (entries: readonly string[]): never => {
+    const back = !existsSync(cleanup.originalPath);
+    if (back) {
+      renameSync(cleanup.tombPath, cleanup.originalPath);
+      fsyncDirectory(dirname(cleanup.originalPath));
+    }
+    const path = back ? cleanup.originalPath : cleanup.tombPath;
+    return maintenanceError("store-holds-foreign-entries", `the restore's old source ${path} also holds ${entries.join(", ")}, which no Cotal store writes`, {
+      root: lock.root, attemptId: record.restore.attemptId, paths: [path],
+      recourse: [{ action: "inspect", description: "Move those entries out of the old source, then run the cleanup again.", paths: [path] }],
+    });
+  };
+  const foreign = foreignStoreEntries(cleanup.tombPath);
+  if (foreign.length) refuse(foreign);
+  for (const entry of STORE_ENTRY_NAMES) rmSync(join(cleanup.tombPath, entry), { recursive: true, force: true });
+  try { rmdirSync(cleanup.tombPath); }
+  catch (error) {
+    if (errno(error) !== "ENOTEMPTY" && errno(error) !== "EEXIST") throw error;
+    refuse(foreignStoreEntries(cleanup.tombPath));
+  }
 }
 
 function cleanupAttemptTarget(lock: MaintenanceLock, record: RestoreReadyRecord): RestoreReadyRecord {
@@ -4140,7 +4170,8 @@ export function restoreLeftOutReason(record: LeftOutRecord): string | undefined 
 
 /** Delete the old store a healthy active restore set aside, then retire its journal. When the
  *  restore left something out ({@link restoreLeftOut}), that store holds its only copy and is
- *  deleted only with `discardHistory`. */
+ *  deleted only with `discardHistory`. A store that also holds an entry no Cotal store writes
+ *  ({@link foreignStoreEntries}) is not deleted at all. */
 export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string, options: { readonly discardHistory?: boolean } = {}): RestoreActiveRecord {
   let record = currentJournal(lock);
   if (record.state !== "active" || record.restore.attemptId !== attemptId)
@@ -4172,6 +4203,15 @@ export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string,
       root: lock.root, attemptId, paths: [previous.identity.path],
       recourse: [{ action: "cleanup", description: "Keep the old source, or repeat the cleanup with explicit consent to discard that history.", paths: [previous.identity.path] }],
     });
+  // A file in the old source that no Cotal store writes is someone's, so nothing there is deleted.
+  if (!record.restore.cleanup && existsSync(previous.identity.path)) {
+    const foreign = foreignStoreEntries(previous.identity.path);
+    if (foreign.length)
+      maintenanceError("store-holds-foreign-entries", `the restore's old source ${previous.identity.path} also holds ${foreign.join(", ")}, which no Cotal store writes`, {
+        root: lock.root, attemptId, paths: [previous.identity.path],
+        recourse: [{ action: "inspect", description: "Move those entries out of the old source, then run the cleanup again.", paths: [previous.identity.path] }],
+      });
+  }
   if (!record.restore.cleanup)
     record = startCleanup(lock, record, "previous-source", previous.identity) as RestoreActiveRecord;
   if (record.restore.cleanup?.kind !== "previous-source")

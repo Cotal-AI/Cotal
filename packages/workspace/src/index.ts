@@ -16,6 +16,7 @@ export * from "./local-process.js";
 export * from "./local-stop.js";
 export * from "./web-session.js";
 export * from "./maintenance.js";
+export * from "./store-entries.js";
 export * from "./manager-shutdown.js";
 export * from "./manager-name.js";
 export * from "./flags.js";

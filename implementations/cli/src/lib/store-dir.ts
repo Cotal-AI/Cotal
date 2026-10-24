@@ -1,25 +1,8 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
-import { authDir, c, CommandFailure, homeCotalDir, loadMeshes, loadPreparedSpaces, protectedLocalDirectory } from "@cotal-ai/workspace";
+import { authDir, c, CommandFailure, foreignStoreEntries, homeCotalDir, loadMeshes, loadPreparedSpaces, protectedLocalDirectory } from "@cotal-ai/workspace";
 import { readStackJournal } from "./stack-journal.js";
-
-/** What a store directory holds: the broker's `jetstream` tree, Cotal's generation marker, and the
- *  `ocsp` folder nats-server makes in its store directory on every configuration reload. */
-const STORE_ENTRIES = new Map<string, (stat: Stats) => boolean>([
-  ["jetstream", (stat) => stat.isDirectory()],
-  [".cotal-store-id", (stat) => stat.isFile()],
-  ["ocsp", (stat) => stat.isDirectory()],
-]);
-
-/** The entries of the directory `dir` that are not part of a store, sorted. A store entry of the
- *  wrong kind, such as a `jetstream` link or file, is not part of it either. */
-export function foreignStoreEntries(dir: string): string[] {
-  return readdirSync(dir).filter((entry) => !STORE_ENTRIES.get(entry)?.(lstatSync(join(dir, entry)))).sort();
-}
-
-/** The names of the store entries, the only entries a store cleanup removes. */
-export const STORE_ENTRY_NAMES: readonly string[] = [...STORE_ENTRIES.keys()];
 
 /** The stores the broker configurations `root`'s starts rendered name. */
 function renderedStores(root: string, resolveFrom?: string): string[] {
@@ -131,6 +114,21 @@ export function refuseSharedStoreRemoval(path: string, space: string): void {
     throw new CommandFailure("refused", "CONFLICT", `the store ${path} also belongs to ${storeTenantsText(tenants)}, and removing it would delete that data too; nothing was removed`, { target: { space, storeDir: path, otherSpaces: tenants }, remedy: `keep it while either space needs its history; once neither does, stop both with cotal down and remove ${path} by hand` });
 }
 
+/** The entries of a restore's old store that no Cotal store writes, which no cleanup deletes: none
+ *  when that store is gone or is not a folder. */
+export function oldStoreForeignEntries(path: string | undefined): string[] {
+  return path !== undefined && statIfPresent(path, lstatSync)?.isDirectory() ? foreignStoreEntries(path) : [];
+}
+
+/** The refusal for a store that holds `entries` no Cotal store writes. `held` says why that matters,
+ *  `outcome` what did not happen, and `retry` is the command to run once they are moved out. */
+export function foreignEntriesRefusal(path: string, entries: readonly string[], held: string, outcome: string, retry: string, target: Readonly<Record<string, unknown>> = {}): CommandFailure {
+  return new CommandFailure("refused", "CONFLICT", `${held} ${path} also holds ${listEntries(entries)}, which no Cotal store writes; ${outcome}`, {
+    target: { ...target, storeDir: path, entries: [...entries] },
+    remedy: `move ${entries.length === 1 ? "it" : "them"} out of ${path}, then run ${retry} again`,
+  });
+}
+
 /** Up to five entry names, then how many more there are. */
 export function listEntries(entries: readonly string[]): string {
   return entries.length > 5 ? `${entries.slice(0, 5).join(", ")} and ${entries.length - 5} more` : entries.join(", ");
@@ -219,5 +217,5 @@ export function warnForeignStoreEntries(value: string): void {
   if (!statIfPresent(path)?.isDirectory()) return;
   const foreign = foreignStoreEntries(path);
   if (foreign.length)
-    console.error(c.yellow(`! the --store-dir ${path} also holds ${listEntries(foreign)}; the broker writes its store beside them, and cotal clean store and cotal reset store will refuse this directory while they are there`));
+    console.error(c.yellow(`! the --store-dir ${path} also holds ${listEntries(foreign)}; the broker writes its store beside them, and cotal clean store, cotal reset store, cotal backup cleanup-fallback and a restore into this directory refuse it while they are there`));
 }
