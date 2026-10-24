@@ -204,6 +204,7 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
+import { checkSpaceName } from "./meshes-add.js";
 import { cleanedManifestStart } from "../lib/legacy-start.js";
 import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, stackUpInterruptNotice, keptOnUp, selectedOnUp, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
@@ -382,6 +383,9 @@ export function validateUpArguments(args: ParsedArgs): void {
   // Only a manifest launch has a plan to print; without -f every route would start the stack.
   if (args.values["dry-run"] === true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; cotal status shows what this folder records" });
+  // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
+  const named = typeof args.values.space === "string" ? checkSpaceName(args.values.space) : undefined;
+  if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
   if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server))}`);
@@ -703,7 +707,9 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     // Path flags still mean paths relative to the invoking directory, not the selected root.
     // The recursive restore/resume re-entries inherit absolute paths and the same absolute root.
     const paths = root ? Object.fromEntries(["file", "restore", "channels", "tls-cert", "tls-key", "store-dir"].filter((key) => typeof args.values[key] === "string" && args.values[key] !== "").map((key) => [key, resolve(String(args.values[key]))])) : {};
-    const invocation: ParsedArgs = { ...args, values: { ...args.values, ...paths, ...(root ? { root } : {}), detach: args.values.foreground !== true } };
+    // The receipt's Next must run from the folder up was invoked in, which a re-entry inherits.
+    const invokedRoot = root && args.values.__invokedRoot === undefined ? { __invokedRoot: canonicalRoot(cotalRoot()) } : {};
+    const invocation: ParsedArgs = { ...args, values: { ...args.values, ...paths, ...(root ? { root } : {}), ...invokedRoot, detach: args.values.foreground !== true } };
     if (root) {
       try { process.chdir(root); }
       catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the prepared --root became inaccessible before startup; no alternate directory was selected", { target: { root } }); }
@@ -740,6 +746,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     json?: boolean; plain?: boolean;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
+    __invokedRoot?: string;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
   if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
@@ -1249,7 +1256,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const start = async () => {
       try {
         if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
+        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
       } finally { releaseMaintenanceLock(stackLock); }
     };
     if (values.foreground) await holdForegroundStack(meshRoot, start);

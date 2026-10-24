@@ -297,7 +297,8 @@ export async function status(args: ParsedArgs): Promise<void> {
   const maintenance = readMaintenance(root, gaps);
   const store = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
   const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints };
+  // Two readers can name the same unreadable record, so each hint is listed once.
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: [...new Set(hints)] };
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
   // An unreadable preferences file is already a gap, so the variables are checked without it.
@@ -888,10 +889,18 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
       catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
     })),
   );
+  // The prepared spaces folder, or a record in it, that cannot be read is named the same way.
+  let currentPrepared = false;
+  try {
+    currentPrepared = current !== null && !entries.some((m) => m.space === current) && findPreparedSpace(current) !== undefined;
+  } catch (e) {
+    if (!isMeshRegistryError(e)) throw e;
+    unread(e.file, e.message);
+  }
   return {
     current,
     currentRecorded: current === null || entries.some((m) => m.space === current),
-    currentPrepared: current !== null && !entries.some((m) => m.space === current) && findPreparedSpace(current) !== undefined,
+    currentPrepared,
     unreadable,
     items,
     catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),

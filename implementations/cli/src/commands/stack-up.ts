@@ -102,6 +102,8 @@ export interface StackUpRequest {
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
+  /** The root of the folder `up --root` was run from, when it is not this stack's root. */
+  invokedRoot?: string;
   /** A fresh team boot's frozen manifest inputs. `seed` replaces `channels` for the broker's native
    *  channel registry seed. `launchSpec` runs once, after broker (and user auth-service)
    *  preparation and immediately before the manager member is defined, and returns the private
@@ -337,7 +339,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const exposed = result.listeners && exposedPlaintext(result.listeners);
     const listening: Report["sections"] = [{ title: "Listeners", blocks: [
@@ -345,10 +347,12 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
       ...(exposed ? [{ kind: "lines" as const, lines: [{ text: exposed, tone: "waiting" as const }] }] : []),
     ] }];
     const view: Report = { ...members, sections: [...members.sections, ...listening, ...(result.written.length ? [{ blocks: [{ kind: "fields" as const, rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] : [])] };
+    // `down` stops only the stack of the folder it runs in, so from another folder the Next says where.
+    const elsewhere = request.invokedRoot !== undefined && request.invokedRoot !== canonicalRoot(root);
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
-      managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: "cotal up", description: "Add the manager to this stack" },
-      { command: "cotal down", description: "Stop every recorded member" },
+      managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: elsewhere ? `cotal up --root ${root}` : "cotal up", description: "Add the manager to this stack" },
+      { command: "cotal down", description: elsewhere ? `Stop every recorded member; run it from ${root}` : "Stop every recorded member" },
     ] }] }];
     const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
     const kept: Report["sections"] = selection ? [{ blocks: [{ kind: "lines", lines: [{ text: selection, tone: "hint" }] }] }] : [];
