@@ -307,7 +307,7 @@ type EntryStat = Pick<Stats, "uid" | "gid" | "mode" | "isDirectory" | "isSymboli
 export const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
 
 /** One entry another local account could replace or write, and the kind of change that fixes it. */
-type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "g-w-or-acl" };
+type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "go-w" | "g-w-or-acl" };
 
 /** Why an existing entry is not protected against other local writers, or nothing when it is. Root
  *  or the caller must own it. Group write needs the caller's proven user private group and no
@@ -318,7 +318,9 @@ function protectionGap(path: string, stat: EntryStat, options: { ancestor?: bool
   if (stat.isSymbolicLink()) return gap("is a symbolic link", "physical");
   if (stat.uid !== 0 && stat.uid !== (options.policy?.uid ?? process.getuid!())) return gap("is owned by another account", "physical");
   if (options.ancestor && stat.isDirectory() && stat.uid === 0 && (stat.mode & 0o1000) !== 0) return undefined;
-  if ((stat.mode & 0o002) !== 0) return gap("is writable by every local account", "o-w");
+  // An entry its group can write too would be refused again for that after `chmod o-w`, so its one
+  // step removes both.
+  if ((stat.mode & 0o002) !== 0) return gap("is writable by every local account", (stat.mode & 0o020) !== 0 ? "go-w" : "o-w");
   if ((stat.mode & 0o020) === 0) return undefined;
   const policy = options.policy ?? systemPolicy();
   const group = stat.uid === policy.uid ? policy.privateGroupGap(stat.gid) : "it is not owned by you";
@@ -337,9 +339,12 @@ function protectionRefusal(what: string, gaps: readonly ProtectionGap[], checked
     const paths = gaps.filter((gap) => gap.reason === reason).map((gap) => gap.path);
     return paths.length === 1 ? `${paths[0]} ${reason}` : `${paths.slice(0, -1).join(", ")} and ${paths.at(-1)} ${reason.replace(/^is /, "are ")}`;
   });
-  const remedies = [...new Set(gaps.map((gap) => gap.fix))].map((fix) => {
-    const paths = gaps.filter((gap) => gap.fix === fix).map((gap) => shellPath(gap.path)).join(" ");
-    return fix === "physical" ? physicalRemedy(gaps, checked) : fix === "o-w" ? `chmod o-w ${paths}` : fix === "g-w" ? `chmod g-w ${paths}` : `chmod g-w ${paths}, or install acl`;
+  // Once one entry needs `chmod go-w`, the other group and world gaps join that command, so the
+  // refusal names one chmod.
+  const fixOf = (gap: ProtectionGap): ProtectionGap["fix"] => gaps.some((other) => other.fix === "go-w") && (gap.fix === "o-w" || gap.fix === "g-w") ? "go-w" : gap.fix;
+  const remedies = [...new Set(gaps.map(fixOf))].map((fix) => {
+    const paths = gaps.filter((gap) => fixOf(gap) === fix).map((gap) => shellPath(gap.path)).join(" ");
+    return fix === "physical" ? physicalRemedy(gaps, checked) : fix === "g-w-or-acl" ? `chmod g-w ${paths}, or install acl` : `chmod ${fix} ${paths}`;
   });
   const path = gaps[0]!.path;
   return new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${reasons.join("; ")}`, { remedy: remedies.join("; "), target: gaps.length === 1 ? { path } : { path, paths: gaps.map((gap) => gap.path) } });

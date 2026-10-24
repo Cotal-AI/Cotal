@@ -524,7 +524,7 @@ setCurrent("keep");
   const up = await json(["up", "--open", "--server", LIVE], folder);
   check("up in a folder other accounts can write is PERMISSION_DENIED, exit 2, naming it and its parent with one remedy, and writes nothing",
     refused(up, 2, "PERMISSION_DENIED") && (up.env?.error?.message ?? "").includes(`${folder} and ${parent} are writable by every local account`) &&
-      up.env?.error?.remedy === `chmod o-w ${folder} ${parent}` && readdirSync(join(folder, ".cotal")).length === 0 && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(up));
+      up.env?.error?.remedy === `chmod go-w ${folder} ${parent}` && readdirSync(join(folder, ".cotal")).length === 0 && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(up));
   rmSync(exposed, { recursive: true, force: true });
 }
 
@@ -1319,7 +1319,7 @@ if (process.platform === "linux") {
   const writable = await json(["up", "--server", DEAD, "--store-dir", join(exposed, "store")], storeRoot);
   check("up --store-dir in a directory every account can write is PERMISSION_DENIED, exit 2, naming it with its chmod",
     refused(writable, 2, "PERMISSION_DENIED") && (writable.env?.error?.message ?? "").includes(`${exposed} is writable by every local account`) &&
-      writable.env?.error?.remedy === `chmod o-w ${exposed}` && !existsSync(join(exposed, "store")), shown(writable));
+      writable.env?.error?.remedy === `chmod go-w ${exposed}` && !existsSync(join(exposed, "store")), shown(writable));
   // A control directory, or a path in one, refuses as usage, other than the root's own default store.
   const control = join(storeRoot, ".cotal");
   const asControl = await json(["up", "--server", DEAD, "--store-dir", control], storeRoot);

@@ -417,7 +417,7 @@ try {
     await wait(400);
     check("a creds file in a folder every account can write is refused PERMISSION_DENIED, exit 2, naming the folder and its chmod, and nothing is sent",
       refused.code === 2 && refused.stderr.includes("PERMISSION_DENIED") && refused.stderr.includes(`creds file ${looseCreds} cannot be used: its path is not protected against other local writers: ${loose} is writable by every local account`)
-        && refused.stderr.includes(`chmod o-w ${loose}`) && !got.some((m) => m.text === looseText), refused.stderr);
+        && refused.stderr.includes(`chmod go-w ${loose}`) && !got.some((m) => m.text === looseText), refused.stderr);
     chmodSync(loose, 0o700);
     const fixedText = `fixed-${randomUUID().slice(0, 6)}`;
     const fixed = await run(["send", "-t", "bob", fixedText, "--space", space, "--server", servers, "--creds", looseCreds]);

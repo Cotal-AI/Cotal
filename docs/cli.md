@@ -2424,6 +2424,8 @@ allowed. New control directories, the persona catalog `.cotal/agents` included, 
 even with a group-writable umask. An unsafe existing path refuses before the
 prepared record is written, without changing its permissions. The refusal names every unsafe path
 in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that lists each path.
+A path that its group and every account can write gets `chmod go-w`, since `chmod o-w` alone would
+leave the group write that refuses next, and the other group and world gaps join that one command.
 When a symlink is the gap, the remedy names the physical path the folder resolves to.
 It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
 it starts in, before it writes anything, so it never starts a stack that `down` would refuse to
@@ -2675,7 +2677,7 @@ refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A director
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
 no seed block, an invalid seed, or Windows (CRLF) line endings. A file in a folder that another
 account can write, or below one, is refused `PERMISSION_DENIED`, exit 2, as `auth mint` refuses to
-write one there: the refusal names the folder, and its Next is the `chmod`, such as `chmod o-w <dir>`.
+write one there: the refusal names the folder, and its Next is one `chmod`, such as `chmod go-w <dir>`.
 A file that other accounts can read is still used, with a warning on stderr that gives the
 `chmod 600` command. `join --creds` reads its file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
 credential's own permissions name one other space, the refusal names that space, such as
