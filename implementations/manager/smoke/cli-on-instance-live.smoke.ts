@@ -156,7 +156,7 @@ const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 type PsEnvelope = {
   outcome: string; completeness: string; target: { scope?: string; managerInstanceId?: string | null } | null;
-  result: { items: { name?: string }[]; managers: { instanceId: string; state: string }[] } | null;
+  result: { items: { name?: string }[]; managers: { instanceId: string; state: string; reportedHost?: string }[] } | null;
   warnings: { code: string; target: { managerInstanceId?: string } }[]; error?: { code: string };
 };
 /** stdout as the one envelope `--json` promises, or undefined when it is anything else. */
@@ -215,6 +215,12 @@ try {
       JSON.stringify(census.result?.managers.map((m) => m.instanceId).sort()) === JSON.stringify([IID1, IID2].sort()) &&
       census.result?.managers.every((m) => m.state === "answered") === true && census.warnings.length === 0,
     { status: unpinnedJson.status, stdout: unpinnedJson.stdout.slice(-600) });
+  // Each answering manager's header carries the host it reports in its own status reply, for
+  // reading only. The label sits after the full id, so the id check above still holds.
+  check("...and each answering manager's header and JSON row carry the host it reports",
+    [IID1, IID2].every((iid) => unpinnedOut.includes(`manager ${iid} · reports host ${hostname()}`)) &&
+      census?.result?.managers.every((m) => m.reportedHost === hostname()) === true,
+    { host: hostname(), out: unpinnedOut.slice(-400), managers: census?.result?.managers });
 
   // An unpinned `models` goes to the one manager the class queue picks. It names the other as not
   // asked, and an empty catalog list says the answering manager has no application installed.

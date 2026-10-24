@@ -3795,6 +3795,13 @@ manager is listed under `Manager` as its `instance`, and with several each gets 
 header. With no agents its Next is `cotal spawn`, or `cotal setup` when no agent application is set
 up here, as `status` reports it.
 
+When `ps` asks every manager, it then asks each manager that answered for the host name in its own
+status reply. The host shows as `· reports host <host>` after the id, or as a `reported host` row
+under `Manager`. It is that manager's own claim, and `ps` does not check it. Two managers on one
+host report the same name, and `--on` never takes it on a static or open mesh. These asks share one
+2-second limit. A manager that has not answered by then is listed without a host, and the read
+stays as complete as the census found it. `ps` does not show a manager's name.
+
 The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
 one envelope whose `result` is:
 
@@ -3802,7 +3809,7 @@ one envelope whose `result` is:
 |---|---|
 | `kind` | `seats`, or `slots` with `--slots` |
 | `items` | Each seat (or slot) row as its manager returned it, unchanged |
-| `managers` | Each manager instance asked: `{instanceId, state}`, where `state` is `answered`, `silent` (registered, no answer within the deadline, with the `liveness` this command established), `refused` (with its `error` and `code`) or `contract-mismatch` |
+| `managers` | Each manager instance asked: `{instanceId, state}`, where `state` is `answered`, `silent` (registered, no answer within the deadline, with the `liveness` this command established), `refused` (with its `error` and `code`) or `contract-mismatch`. An `answered` manager that gave a host name in time also has `reportedHost` |
 
 `target` is `{space, scope: "all-managers"}` for the class scatter, and
 `{space, scope: "manager", managerInstanceId}` for `--on` or a user-auth mesh. A manager that is not
