@@ -40,7 +40,7 @@ export async function use(args: ParsedArgs): Promise<void> {
   }
   const m = findMesh(name);
   const p = m ? undefined : findPreparedSpace(name);
-  if (!m && !p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { remedy: "see the registered spaces with `cotal space`" });
+  if (!m && !p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
   const changed = previous !== name;
   if (changed) setCurrent(name);
   const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null };

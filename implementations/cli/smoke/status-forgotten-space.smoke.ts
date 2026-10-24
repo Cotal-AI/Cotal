@@ -68,7 +68,8 @@ check("status --components refuses the unregistered root and probes no default b
 const fresh = mkdtempSync(join(home, "fresh-"));
 mkdirSync(join(fresh, ".cotal"));
 const freshPlain = run(["status", "--plain"], fresh);
-check("control: an empty project still names a bare up", read(freshPlain) && /cotal up` there to start one/.test(freshPlain.stdout) && !freshPlain.stdout.includes("space create <name>"), shown(freshPlain));
+check("control: an empty project still names a bare up", read(freshPlain) && freshPlain.stdout.includes(`cotal up\` in ${realpathSync.native(fresh)} to start one`) && !freshPlain.stdout.includes("space create <name>"), shown(freshPlain));
+check("its selection is stated once, with the step only under Next", (freshPlain.stdout.match(/no space is registered or prepared here/g) ?? []).length === 1 && /Selected space\n\s+no space is registered or prepared here for \S+\n/.test(freshPlain.stdout), shown(freshPlain));
 
 finish();
 process.exit(process.exitCode ?? 0);

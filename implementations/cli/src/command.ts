@@ -46,6 +46,7 @@ import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.
 import { servicePresetCommand } from "./lib/service-presets.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
+import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
@@ -129,8 +130,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes or a missing scripted input is not a grammar mistake, and its remedy says the
-  // whole fix. A file the command cannot use is reported like one that does not exist.
-  if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile)) {
+  // whole fix. A file the command cannot use is reported like one that does not exist, and a refused
+  // flag value names its corrected value, so it gets the classified report.
+  if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
     stderrLine("✗ ", failure.message, c.red);
     if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
     if (!failure.selfContained) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));

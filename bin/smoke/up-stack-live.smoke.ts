@@ -168,6 +168,10 @@ try {
     up.stdout,
   );
   ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
+  const upText = plain(up.stdout);
+  ok("the receipt begins with the mesh it started", upText.startsWith("Mesh: main\n\n"), up.stdout);
+  ok("it says up started the default space because this folder names none", upText.includes('This folder names no space, so up started the default space "main"'), up.stdout);
+  ok("it ends with a Next that launches an agent and stops the stack", /\nNext\n\s+cotal spawn --space main\s+Launch your default agent\n\s+cotal down\s+Stop the stack\s*$/.test(upText), up.stdout);
   for (const [file, label] of [["nats.pid", "nats-server"], [recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
     const pid = pidOf(file);
     pids.push(pid);
@@ -293,6 +297,7 @@ try {
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
+  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith("Mesh: main\n\n✓ stopped") && /\nNext\n\s+cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
   let dead = false;
 
   for (let i = 0; i < 24 && !dead; i++) {
@@ -313,6 +318,7 @@ try {
     open.stdout,
   );
   ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
+  ok("a folder that now names its space gets no default-space note", !/names no space/.test(open.stdout), open.stdout);
   const openDown = cli("down");
   ok("open down exits 0", openDown.status === 0, openDown.stdout + openDown.stderr);
 
