@@ -5,11 +5,13 @@ import {
   brokerAnswers,
   findMesh,
   findPreparedSpace,
+  folderSpaceOverSelection,
   getCurrent,
   isMeshRegistryError,
   jsonFlag,
   loadMeshes,
   loadPreparedSpaces,
+  noteFolderSpace,
   plainFlag,
   presentationOf,
   pruneStaleMeshes,
@@ -76,6 +78,8 @@ interface SpacesResult {
   /** The space `cotal use` selected, or null. It can name a space that is no longer registered. */
   readonly current: string | null;
   readonly currentRecorded: boolean;
+  /** This folder's space when a command without `--space` targets it here instead of `current`, or null. */
+  readonly folder: string | null;
   readonly items: readonly SpaceRow[];
   /** Spaces `cotal space create` prepared and no `cotal up` has started. They have no broker yet. */
   readonly prepared: readonly PreparedRow[];
@@ -127,7 +131,7 @@ export async function space(args: ParsedArgs): Promise<void> {
   if (values["dry-run"] !== undefined) throw usage("--dry-run belongs to space delete");
   if (sub === "add") return spaceAdd(rest, values, presentation);
   const addOnly = ADD_FLAGS.find((flag) => values[flag] !== undefined && !(sub === "create" && flag === "root"));
-  if (addOnly) throw usage(`--${addOnly} is taken by \`cotal space add\` only`);
+  if (addOnly) throw usage(addOnly === "yes" ? "--yes is taken by `cotal space add` and `cotal space delete` only" : `--${addOnly} is taken by \`cotal space add\` only`);
   if (sub === "forget") return spaceForget(rest, presentation);
   if (sub === "create") return spaceCreate(rest, values.root, values.adopt === true, presentation);
   if (sub !== undefined && sub !== "show") throw usage(`cotal space has no subcommand "${sub}" - run \`cotal help space\``);
@@ -144,14 +148,18 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     const offline = new Set(sweep.offline);
     const items = loadMeshes().map((m) => row(m, current, m.origin === "catalog" ? "not-checked" : offline.has(m.space) ? "unreachable" : "reachable"));
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));
-    const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), items, prepared };
+    const folder = folderSpaceOverSelection(process.cwd(), current) ?? null;
+    const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
     writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, spacesView);
     return;
   }
   if (sub === "show") {
     if (rest.length > 1) throw usage("usage: cotal space show [<name>]");
     const current = getCurrent() ?? null;
-    const name = rest[0] ?? current;
+    // Without a name it shows the space a command without --space targets here.
+    const folder = rest[0] === undefined ? folderSpaceOverSelection(process.cwd(), current) : undefined;
+    if (folder !== undefined && current !== null) noteFolderSpace(folder, current);
+    const name = rest[0] ?? folder ?? current;
     if (name === null)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
     const m = findMesh(name);
@@ -220,7 +228,8 @@ function checkCell(s: Pick<SpaceRow, "check">): Cell {
   return { text: "not checked", tone: "hint", mark: "○" };
 }
 
-const nameCell = (s: Pick<SpaceRow, "space" | "current">): Cell => (s.current ? { text: `${s.space} (selected)`, tone: "selected" } : s.space);
+const nameCell = (s: Pick<SpaceRow, "space" | "current">, folder: string | null = null): Cell =>
+  s.current ? { text: `${s.space} (selected)`, tone: "selected" } : s.space === folder ? { text: `${s.space} (this folder's)`, tone: "selected" } : s.space;
 
 function spacesView(result: SpacesResult): Report {
   const prepared: Section[] = result.prepared.length === 0 ? [] : [{
@@ -229,7 +238,7 @@ function spacesView(result: SpacesResult): Report {
       {
         kind: "table",
         columns: [{ key: "space", label: "Space" }, { key: "root", label: "Project" }],
-        rows: result.prepared.map((p) => ({ space: nameCell(p), root: { text: p.root, tone: "hint" } })),
+        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), root: { text: p.root, tone: "hint" } })),
       },
       { kind: "commands", items: [{ command: "cotal up", description: "Start a prepared space from its project folder" }] },
     ],
@@ -251,7 +260,7 @@ function spacesView(result: SpacesResult): Report {
           { key: "root", label: "Project" },
         ],
         rows: result.items.map((s) => ({
-          space: nameCell(s),
+          space: nameCell(s, result.folder),
           broker: checkCell(s),
           server: s.server,
           mode: s.modeChecked ? s.mode : { text: `${s.mode}, not checked`, tone: "waiting" },

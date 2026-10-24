@@ -79,8 +79,8 @@ const observedHost: RunHost = { ...realHost, drive: (planes, request, mediator) 
     };
   }
   return realHost.drive(planes, request, mediator);
-}, status: async (planes, request) => {
-  if (!failStatusMarkerRead) return realHost.status(planes, request);
+}, status: async (planes, request, context) => {
+  if (!failStatusMarkerRead) return realHost.status(planes, request, context);
   const read = planes.jsm.streams.getMessage.bind(planes.jsm.streams);
   const bucket = admissionBucket(planes.space);
   const subject = `$KV.${bucket}.${revocationKey(request.endpoint, request.runId)}`;
@@ -91,7 +91,7 @@ const observedHost: RunHost = { ...realHost, drive: (planes, request, mediator) 
     }
     return read(stream, query);
   };
-  try { return await realHost.status(planes, request); }
+  try { return await realHost.status(planes, request, context); }
   finally { planes.jsm.streams.getMessage = read; }
 } };
 registry.register(observedHost);

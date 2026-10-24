@@ -11,13 +11,11 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, localProcessPath, oneLine, presentationOf,
+  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf,
   renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type MeshEntry, type Report,
 } from "@cotal-ai/workspace";
-import { pidfileState } from "./down.js";
-import { localProcessSurface } from "../ext-loader.js";
-import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { processGone, readStackJournal, STACK_ADAPTER } from "../lib/stack-journal.js";
+import { runningStackMembers } from "../lib/stack-members.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 
 interface DeletionStream { name: string; kind: "stream" | "bucket" | "object-store"; state: "present" | "absent"; messages: number | null }
 interface PresenceImpact { id: string; name: string | null; status: string | null; lastHeartbeat: number | null }
@@ -31,14 +29,11 @@ function liveStackRefusal(entry: MeshEntry, space: string, preview = false): Com
   if (entry.origin !== "up") return undefined;
   let controller: boolean, users: string[];
   try {
-    controller = readStackJournal(entry.root)?.journal.space === space;
-    users = controller
-      ? serviceInstances(space).filter((row) => row.record.value.adapter?.name !== STACK_ADAPTER.broker && !processGone(observeServiceProcess(row.record.value))).map((row) => row.record.value.definition)
-      : localProcessSurface().filter((component) => !component.stopLast && pidfileState(localProcessPath(component.pidFile, { root: entry.root, space })).liveness !== "dead").map((component) => component.label);
+    ({ controller, members: users } = runningStackMembers(entry.root, space));
   } catch { return new CommandFailure("refused", "TARGET_UNAVAILABLE", "this space's local service and process records could not be read, so a running stack was not ruled out; no broker was contacted", { target: { space, root: entry.root } }); }
   if (!users.length) return undefined;
   // A preview reads the broker before it reports this, so only the apply says no broker was contacted.
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${[...new Set(users)].join(", ")}) and uses these streams${preview ? "" : "; no broker was contacted and nothing was deleted"}`, { target: { space, root: entry.root, running: [...new Set(users)] }, remedy: controller
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${users.join(", ")}) and uses these streams${preview ? "" : "; no broker was contacted and nothing was deleted"}`, { target: { space, root: entry.root, running: users }, remedy: controller
     ? `stop it with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
     : `stop it with cotal down from ${entry.root}, then remove its stored streams with cotal clean store --force there` });
 }

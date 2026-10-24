@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { lstatSync, realpathSync } from "node:fs";
+import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
@@ -38,7 +38,7 @@ import {
   type MaintenanceReadyRecord,
   type ProcessOwner,
 } from "@cotal-ai/workspace";
-import { createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
+import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
 import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
 import { refuseControllerCut } from "../lib/stack-journal.js";
@@ -109,15 +109,25 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   });
 }
 
-function requireReady(root: string, storeDir: string): MaintenanceReadyRecord {
+/** Refuse a `--store-dir` that is not the cut's preserved store, naming both, with the native reason
+ *  when the named folder holds no readable store identity. */
+function assertNamedStore(root: string, record: MaintenanceReadyRecord, storeDir: string): void {
+  const mismatch = (reason?: string) => new CommandFailure("refused", "CONFLICT", `--store-dir ${storeDir} is not this cut's preserved store ${record.source.path}${reason ? ` (${reason})` : ""}; nothing was backed up`, { target: { root, space: record.space, storeDir, preservedStore: record.source.path }, remedy: `omit --store-dir to back up ${record.source.path}, or name that store` });
+  let actual: ReturnType<typeof readStoreIdentity>;
+  try { actual = readStoreIdentity(storeDir); }
+  catch (error) { if (isMaintenanceError(error)) throw mismatch(error.message); throw error; }
+  if (!sameStoreIdentity(record.source, actual)) throw mismatch();
+}
+
+function requireReady(root: string, storeDir: string, named: boolean): MaintenanceReadyRecord {
   const record = readMaintenanceJournal(root);
   if (!record || record.state !== "ready") throw notReady(root, record);
   const source = preservedSourceState(root, record.source);
   if (source.state === "moved") throw movedFolderRefusal(root, record.space, record.source.path, source, "create the backup");
   if (source.state === "missing")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${record.source.path} is missing; nothing was backed up`, { target: { root, space: record.space, recordedStore: record.source.path }, remedy: "if this folder was moved, move it back so that path exists again" });
-  const actual = readStoreIdentity(storeDir);
-  if (!sameStoreIdentity(record.source, actual))
+  if (named) assertNamedStore(root, record, storeDir);
+  else if (!sameStoreIdentity(record.source, readStoreIdentity(storeDir)))
     throw new CommandFailure("refused", "CONFLICT", `--store-dir does not match the preserved source ${record.source.path}`, { target: { root, space: record.space }, remedy: "omit --store-dir, or name the preserved store" });
   assertStoreIdentity(record.source);
   // Backup coupling: a controller cut is backed up only while every member is the
@@ -135,7 +145,7 @@ async function inspectionConnection(broker: IsolatedBroker): Promise<NatsConnect
   return connectIsolatedBroker(broker, broker.initialLogin);
 }
 
-async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection): Promise<{
+async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[]): Promise<{
   checkpoints: PersistentConsumerCheckpoint[];
 }> {
   const requestPage = async <T>(subject: string, offset: number): Promise<T & { total: number; offset: number; limit: number }> => {
@@ -163,7 +173,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
   // The clone is a stopped store on a fresh broker, so the memory-backed presence bucket is gone.
   validateSpaceBackupInventory(space, streamNames, { atRest: true });
   const inventory = spaceBackupInventory(space);
-  const expected = inventory[selected];
+  const expected = held;
   const consumersByStream: Record<string, ConsumerInfo[]> = {};
   const statesByStream: Record<string, BackupStreamState> = {};
   for (const stream of expected) {
@@ -197,14 +207,14 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
       throw new Error(`${registry} has an unsupported consumer`);
     return { checkpoints: [] };
   }
-  const backedConsumers = Object.fromEntries(inventory.full.map((stream) => {
+  const backedConsumers = Object.fromEntries(held.map((stream) => {
     const consumers = consumersByStream[stream] ?? [];
     for (const consumer of consumers)
       if (stream.startsWith("KV_") && consumer.name.startsWith("oc_") && !isStoppedKvWatcher(stream, consumer))
         throw new Error(`${stream}/${consumer.name} has an unsupported stopped KV watcher config: ${JSON.stringify(consumer.config)}`);
     return [stream, consumers.filter((consumer) => !isStoppedKvWatcher(stream, consumer))];
   }));
-  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream) };
+  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held) };
 }
 
 export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): boolean {
@@ -222,7 +232,8 @@ export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): bool
   );
   // The public KV watcher (`keys`/ordinary watch) uses LastPerSubject; the core-owned whole-bucket
   // scanner uses All so concurrent tombstones can collapse correctly. Both are stopped ephemeral
-  // readers when every other field below matches the pinned client's ordered-consumer shape.
+  // readers when every other field below matches the pinned client's ordered-consumer shape. A
+  // watcher may read one subtree of its bucket, as the manager's goal index does on the records store.
   return consumer.push_bound !== true &&
     config.name === consumer.name &&
     !config.durable_name &&
@@ -230,10 +241,12 @@ export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): bool
     (config.deliver_policy === "last_per_subject" || config.deliver_policy === "all") &&
     config.ack_policy === "none" &&
     (config.max_deliver === undefined || config.max_deliver === -1 || config.max_deliver === 1) &&
-    config.filter_subject === `$KV.${stream.slice(3)}.>` &&
+    typeof config.filter_subject === "string" && config.filter_subject.startsWith(`$KV.${stream.slice(3)}.`) &&
     config.replay_policy === "instant" &&
     config.flow_control === true &&
-    typeof config.deliver_subject === "string" && config.deliver_subject.startsWith("_INBOX_") &&
+    // A connection with its own inbox prefix delivers to `_INBOX_<id>`, one without it, as on an open
+    // mesh, to the client's default `_INBOX.`.
+    typeof config.deliver_subject === "string" && (config.deliver_subject.startsWith("_INBOX_") || config.deliver_subject.startsWith("_INBOX.")) &&
     (config.idle_heartbeat === 5_000_000_000 || config.idle_heartbeat === 30_000_000_000) &&
     (config.inactive_threshold === undefined || config.inactive_threshold === 300_000_000_000) &&
     (config.num_replicas === 0 || config.num_replicas === 1) &&
@@ -500,6 +513,16 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   }
   if (missingBackupPath(destinationPath) === "folder")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${dirname(destinationPath)} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath), missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
+  // A destination the preserved store holds, or one in a folder this account cannot write, is refused
+  // here, before the lock, so it leaves no attempt behind.
+  const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
+  if (preserved && overlaps(canonicalFuturePath(destinationPath), preserved))
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destinationPath, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
+  try { accessSync(dirname(destinationPath), constants.W_OK | constants.X_OK); }
+  catch {
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dirname(destinationPath)}, so the backup cannot be created in it; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, remedy: `make that folder writable with chmod u+w ${dirname(destinationPath)}, or name a destination in a folder this account can write` });
+  }
+  if (values["store-dir"] !== undefined && journal.state === "ready") assertNamedStore(root, journal, resolve(values["store-dir"]));
   // Omitted, the store is the cut's own source, which a restore into --store-dir put outside
   // .cotal/nats. An interrupted create's claim keeps that source, and this create recovers the claim
   // first. A named store is still checked against it.
@@ -529,7 +552,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       }
       observed.mutationAttempted = true;
     }
-    ready = requireReady(root, storeDir);
+    ready = requireReady(root, storeDir, values["store-dir"] !== undefined);
     assertBackupPaths(root, ready.source.path, destination);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
@@ -590,10 +613,11 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     releaseMaintenanceLock(lock);
     lock = undefined as never;
 
+    const held = artifactStreams({ format: BACKUP_MANIFEST_FORMAT, space: ready.space, selection: selected, mode: ready.mode });
     const inspect = await inspectionConnection(broker);
     let checkpoints;
     try {
-      ({ checkpoints } = await collectInventory(inspect, ready.space, selected));
+      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held));
     } finally {
       await inspect.drain().catch(() => {});
     }
@@ -601,7 +625,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       throw new Error("smoke-injected failure at snapshot initiation");
     const files: BackupFileRecord[] = [];
     const streams: BackupStreamRecord[] = [];
-    for (const stream of spaceBackupInventory(ready.space)[selected]) {
+    for (const stream of held) {
       const snapshot = await snapshotStream(writer, broker, ready.space, stream);
       files.push(snapshot.file);
       streams.push(snapshot.stream);

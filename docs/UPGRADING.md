@@ -75,6 +75,18 @@ runs a launch only with `--detach` (`-d`), which returns once the agent joins, o
   agent-provisioning endpoint the mesh advertises. A mesh that advertises none refuses it and names
   `-d` among the remedies.
 
+## Space selection inside a project folder after 0.100.2
+
+A command run without `--space` inside a project folder whose root has one registered or prepared
+space now targets that space, even when another space is selected. The note under its `Mesh:`
+heading says the selection applies outside the folder. Everywhere else the selection is the target,
+as before. Nothing on a running mesh changes.
+
+- A script that runs in one space's folder and means the selected space names it with `--space`.
+- `SELECTION_NOT_FOLDER_SPACE` is reported only in a folder whose root has several spaces, none of
+  them the selection.
+- `cotal up` says when it selects the space it started.
+
 ## Endpoint caller files after 0.99.0
 
 `cotal auth mint <name> --endpoint <class> --out <file>` from 0.91.0 through 0.99.0 recorded the

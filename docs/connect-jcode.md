@@ -314,7 +314,7 @@ errno. Fix the directory's permissions on the seat's private state and start aga
 never repairs or widens them itself. A missing `sessions/` directory is a first launch and is left
 alone.
 
-`cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
+`cotal models --harness jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
 and any declared `reasoning_efforts`. This is the same config Jcode copies into a private managed
 instance. The command fails loud when the file is unreadable, malformed, or enables a catalog

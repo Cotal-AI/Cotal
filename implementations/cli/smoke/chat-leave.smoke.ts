@@ -151,8 +151,8 @@ try {
     run.child.kill(sig);
     const exited = await exitOf(run);
     const end = lastRecord(run.out);
-    check(`${sig} exits ${code} after one close and the end record`,
-      run.ready && exited && run.exit?.code === code && run.err.includes("closed 1 sends 0") && end?.type === "end" && end.reason === "input closed", report(run));
+    check(`${sig} exits ${code} after one close and the end record that names it`,
+      run.ready && exited && run.exit?.code === code && run.err.includes("closed 1 sends 0") && end?.type === "end" && end.reason === ({ SIGINT: "interrupted", SIGTERM: "terminated", SIGHUP: "hangup" } as Record<string, string>)[sig], report(run));
   }
   {
     const run = await lineChild("stdio");

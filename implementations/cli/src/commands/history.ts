@@ -21,6 +21,7 @@ import {
   type OutputWarning,
   type Report,
   recordOperationSpace,
+  spaceStreamsExpected,
 } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
 import { shownTime } from "../lib/shown-time.js";
@@ -45,7 +46,7 @@ const followFlag = { name: "follow", type: "boolean", description: "keep listeni
 export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 export const historySubcommands = [
-  { name: "clear", summary: "confirm and purge all retained channel history in the selected space", usage: "clear [--dms] [--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+  { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the selected space", usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete `clear` and the channels the target space's personas declare, as `send -c` offers, then
@@ -62,6 +63,19 @@ const MAX_LIMIT = 1000;
 /** How many message ids a follow remembers to drop duplicates: a re-tap after a reconnect and the
  *  snapshot both overlap the live feed. */
 const SEEN_IDS = 10_000;
+/** How many characters of a message a text or plain row shows. */
+const ROW_TEXT = 500;
+
+/** A message's text as a row shows it: whole up to `ROW_TEXT` characters, else cut there and marked
+ *  with its size, since `--limit` bounds messages and one message can be close to a megabyte. */
+function rowText(text: string): string {
+  let head = "", count = 0;
+  for (const char of text) {
+    if (count++ === ROW_TEXT) return `${head}… (cut from ${Buffer.byteLength(text)} bytes; --json carries the whole text)`;
+    head += char;
+  }
+  return text;
+}
 /** How long a `--dms` read waits for the roster that names DM recipients before it shows principals. */
 const ROSTER_MS = 2_000;
 
@@ -416,9 +430,8 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     warnings.push({ code: "RETENTION_UNREAD", target: req.target, message: `the chat stream's retention could not be read, so gaps it left are unknown: ${(e as Error).message}` });
   }
 
-  // `cotal up` creates the streams of a recorded auth or user space, so a missing chat stream there
-  // means they were removed. An open space creates them on first use.
-  if (chat === false && (conn.mode === "auth" || conn.mode === "user")) throw streamsAbsent(conn);
+  // A missing chat stream means they were removed from a space whose streams `cotal up` created.
+  if (chat === false && spaceStreamsExpected(conn.space, conn.mode)) throw streamsAbsent(conn);
   // A bare number past the newest sequence names no message; it is most often a year.
   if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq)
     throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${yearShaped(req.since.input) ? req.since.input : new Date().getFullYear()}-01-01` });
@@ -561,6 +574,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
         process.exitCode = exitCode(failure.outcome, failure.code);
       }
       if (presentation === "json") writeStreamRecord(streamRecord("history", "end", target, { reason: refusal ? "refused" : ended ?? "stopped" }));
+      if (!refusal && ended) process.exitCode = ended === "interrupted" ? 130 : 143;
     },
   };
 }
@@ -611,7 +625,7 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],
-                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: item.text })),
+                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: rowText(item.text) })),
               }]
             : []),
           { kind: "lines" as const, lines: notes },

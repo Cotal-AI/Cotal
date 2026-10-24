@@ -195,6 +195,12 @@ journal, without a live effect handler or durable store. Inspection stops before
 step or any effect that needs new work. Program catch and finally blocks cannot extend the cut.
 The recorded pins are preserved.
 
+**Restore** brings a run back from a full backup (`cotal backup create`) of a static-auth or open
+mesh, which holds each run's journal, records and admission. A run that waited at a checkpoint or a
+timer when the backup was made is back after a full restore, and the manager takes it over as after
+a restart. What the run did after the backup is not in its record. A user-mode backup, and one made
+before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)).
+
 ## From an agent session
 
 Fresh `cotal setup` defaults declare `capabilities: [spawn, run]`. On an authenticated mesh,
@@ -268,7 +274,7 @@ spawned seat may amend only an answer recorded under its own name.
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
-cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
+cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position

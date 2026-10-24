@@ -40,7 +40,7 @@ import { maintenanceNextStep } from "../lib/restore.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { foreignStoreEntries, listEntries, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
+import { foreignStoreEntries, lastServedStore, listEntries, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
 /** How a removed trust record is labeled. A full backup is bound to the trust it was taken under,
@@ -143,7 +143,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
       if (await isReachable(mesh.server))
         throw new Error(`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`);
     }
-    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir: values["store-dir"], dryRun });
+    // With no --store-dir, read the record a start reads: while the default store holds no data, the
+    // store the last broker served is this root's store, and a bare `up` refuses and names it.
+    const defaultStore = join(root, ".cotal", "nats");
+    const storeDir = values["store-dir"] ?? (existsSync(join(defaultStore, "jetstream")) ? undefined : lastServedStore(root, defaultStore));
+    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun });
     // Keep registry/current-pointer cleanup in the same lock transaction as local identity removal.
     if (target === "all" && dryRun) removed.push(...localMeshesForRoot(root).map((mesh) => `the registration of space ${mesh.space}`));
     else if (target === "all") removeMeshesByRoot(root);
@@ -158,12 +162,12 @@ export async function clean(args: ParsedArgs): Promise<void> {
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
     console.log(c.dim(`dry run - nothing was removed; cotal clean ${target}${values["store-dir"] ? ` --store-dir ${values["store-dir"]}` : ""} --force removes these`));
-    if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes"));
+    if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;
   }
   for (const path of removed) console.log(c.green(`✓ removed ${path}`));
   if (target === "all") console.log(c.dim("a fresh space identity is minted on the next `cotal up`"));
-  if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Take a new full backup after the next `cotal up`"));
+  if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
 }
 
 /** The live-purge half, shared with the `cotal history clear` alias. Resolves the running mesh (from
@@ -502,8 +506,9 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
   return { path: target, identity: { dev: stat.dev, ino: stat.ino } };
 }
 
-/** A store directory holds only the broker's `jetstream` tree and the generation marker, so a
- *  directory that holds anything else may be someone's folder; nothing in it is removed. */
+/** A store directory holds only the broker's `jetstream` tree, the generation marker and the
+ *  broker's `ocsp` folder, so a directory that holds anything else may be someone's folder; nothing
+ *  in it is removed. */
 function refuseForeignStoreEntries(path: string, foreign: readonly string[]): void {
   if (foreign.length)
     throw new CommandFailure("refused", "CONFLICT", `the store directory ${path} also holds ${listEntries(foreign)}, which no Cotal store writes; nothing was removed`, { target: { storeDir: path, entries: [...foreign] }, remedy: `move ${foreign.length === 1 ? "it" : "them"} out of ${path}, then run this command again` });

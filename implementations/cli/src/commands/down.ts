@@ -80,7 +80,7 @@ import {
 } from "@cotal-ai/core";
 import { localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
-import { cotalRoot } from "../lib/paths.js";
+import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
@@ -99,7 +99,9 @@ import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js"
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
+import { restoreNextStep } from "../lib/restore.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
@@ -144,10 +146,15 @@ export function validateDownArguments(args: ParsedArgs): void {
     for (const name of args.positionals) validateServiceArguments({ ...args, positionals: ["stop", name] });
     return;
   }
+  // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
+  const linked = linkedCotalRefusal("down");
+  if (linked) throw linked;
   if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
+  if (goneRootDown(args.values)) return validateGoneRootDownArguments(args.values);
   if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(cotalRoot(), args.values);
   refuseStackElsewhere(args.values);
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
+  if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && stoppedLegacyStack())) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview or a stack that is already stopped; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
@@ -409,6 +416,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   validateDownArguments(args);
   if (args.positionals.length > 1) return stopNamedServiceSet(args);
   if (args.positionals.length) return service(namedStopArguments(args), "down");
+  // A stack whose folder is gone stops from this machine's records, wherever down runs.
+  const gone = goneRootDown(args.values);
+  if (gone) return goneRootStackDown(gone.space, gone.root, args.values);
   // A root whose stack the service controller owns stops only through its recorded members.
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
@@ -619,6 +629,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
     const all = localProcessSurface();
     const context: LocalProcessContext = { root, space: mesh.space };
     const existing = readMaintenanceJournal(root);
+    // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
+    if (existing && "restore" in existing && existing.state === "active")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, existing.restore.selection) });
     if (existing && existing.state !== "cut-intent" && existing.state !== "cut-committed" && existing.state !== "ready")
       throw new Error(`cannot preserve while maintenance state is ${existing.state}`);
     if (existing && (existing.space !== mesh.space || existing.mode !== mesh.mode ||
