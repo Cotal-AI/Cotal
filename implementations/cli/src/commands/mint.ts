@@ -16,10 +16,13 @@ import {
 } from "@cotal-ai/workspace";
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
+import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
 export { resolveMintTarget } from "../lib/credential-authority.js";
 
 const csv = (value: string | undefined): string[] | undefined => value === undefined ? undefined : value.split(",").map((item) => item.trim()).filter(Boolean);
+/** A fixed-profile credential's lifetime when no lifetime flag names one: 24 hours. */
+const DEFAULT_LIFETIME_SECONDS = 86_400;
 const expiry = (seconds: number | undefined): string => {
   if (seconds === undefined) return "no expiry claim in the native result";
   const date = new Date(seconds * 1000);
@@ -82,7 +85,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
     }
     identity ??= newIdentity();
     target = { ...target, identity: identity.id, ...(lifecycleUid === undefined ? {} : { lifecycleUid }) };
-    const options = { allowSubscribe, allowPublish, role, lifecycleUid, expiresInSeconds: values["expires-in"] === undefined ? undefined : Number(values["expires-in"]), expiresAt: values["expires-at"] === undefined ? undefined : Number(values["expires-at"]) };
+    // With no lifetime flag the credential gets the default lifetime; only --no-expiry leaves it unbounded.
+    const defaultLifetime = values["expires-in"] === undefined && values["expires-at"] === undefined && !values["no-expiry"];
+    const options = { allowSubscribe, allowPublish, role, lifecycleUid, expiresInSeconds: values["expires-in"] !== undefined ? Number(values["expires-in"]) : defaultLifetime ? DEFAULT_LIFETIME_SECONDS : undefined, expiresAt: values["expires-at"] === undefined ? undefined : Number(values["expires-at"]) };
     const creds = await mintCreds(auth, identity, profile, options);
     if (values.provision) {
       if (!resolvedTarget.auth || resolvedTarget.auth.account.pub !== auth.account.pub) throw new CommandFailure("refused", "CONFLICT", "the broker target and credential signer do not share one account authority", { target });
@@ -112,17 +117,25 @@ export async function mint(args: ParsedArgs): Promise<void> {
     changed.push({ kind: "private-credential-file", path: out, acknowledged: true });
     const exported = readLocalRecordSource(out, 1024 * 1024, true);
     if (!exported?.equals(Buffer.from(creds, "utf8"))) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "credential publication was acknowledged but the current private output could not be confirmed as this result; no issuance was retried", { target, changed });
+    // The request sits beside the file, so doctor auth reports this unbounded credential as one asked for.
+    let noExpiryRecord: string | null = null;
+    if (values["no-expiry"]) {
+      noExpiryRecord = noExpiryRecordPath(out);
+      try { writeSecretFileAtomic(noExpiryRecord, noExpiryRecordText(creds)); }
+      catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", `the credential was written, but its no-expiry record ${noExpiryRecord} was not, so doctor auth reports it as an unbounded finding`, { target, remedy: `once nothing uses ${out}, remove it and mint it again with --no-expiry` }); }
+      changed.push({ kind: "no-expiry-record", path: noExpiryRecord, acknowledged: true });
+    }
     const claims = credsClaims(creds);
-    const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, lifecycleReused: false, expiresAt: claims.exp ?? null, secretOnStdout: false, changed };
+    const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, lifecycleReused: false, expiresAt: claims.exp ?? null, defaultLifetime, noExpiryRecord, secretOnStdout: false, changed };
     const warnings = result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : [];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
-      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ["Private file", data.output], ["Expiry", expiry(data.expiresAt ?? undefined)], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
+      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ["Private file", data.output], ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
     ] }));
   } catch (error) {
     if (isCommandFailure(error)) {
       const confirmed = [...changed, ...(error.changed ?? [])];
       if (error.outcome === "unknown") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", error.message, { target, changed: confirmed, remedy: error.remedy });
-      if (confirmed.length) throw new CommandFailure("partial", "OPERATION_PARTIAL", error.message, { target, changed: confirmed, remedy: "inspect the named identity, lifecycle and private output before another mint" });
+      if (confirmed.length) throw new CommandFailure("partial", "OPERATION_PARTIAL", error.message, { target, changed: confirmed, remedy: error.outcome === "partial" && error.remedy ? error.remedy : "inspect the named identity, lifecycle and private output before another mint" });
       throw error;
     }
     if (mayHaveProvisioned || publicationStarted) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "provisioning or private publication started, but the final credential outcome is unconfirmed; no mint was retried", { target, changed, remedy: "inspect the original identity/lifecycle and output; do not allocate another identity blindly" });

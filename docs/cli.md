@@ -4785,7 +4785,7 @@ presence watch on `<name>` entirely, so `<name>` is required but only echoed in 
 ```bash
 cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] [--json|--plain]
 cotal auth mint <name> --provision [--role <role>] [--space <space>] [--server <url>]
-cotal auth mint <name> [--expires-in <seconds> | --expires-at <unix-seconds>]
+cotal auth mint <name> [--expires-in <seconds> | --expires-at <unix-seconds> | --no-expiry]
 cotal auth mint <name> --identity <private-creds> --out <private-file>
 cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>] [--expires-in <seconds>]
 ```
@@ -4824,24 +4824,27 @@ pruning a registration. An acknowledgement proves neither a joined agent nor tas
 A partial or unknown result retains the allocated public identity and lifecycle for diagnosis
 and does not retry the mint.
 
-Lifetime inputs use native seconds. The receipt reports the resulting JWT expiry, rather than
-promising a default lifetime. `--expires-in` and `--expires-at` are mutually exclusive, and an
-`--expires-at` that is not in the future refuses before anything is written. So does an expiry
+A fixed-profile credential expires 24 hours after it is minted unless `--expires-in` or
+`--expires-at` sets another time, in native seconds. `--no-expiry` issues one with no expiry claim and
+records that request beside the file, in `<file>.no-expiry.json`, so `doctor auth` reports it as a
+warning rather than a finding. The receipt reports the resulting JWT expiry. The three flags are
+mutually exclusive, and an `--expires-at` that is not in the future refuses before anything is written. So does an expiry
 after the last date Cotal can represent, in the year 275760. JSON is
 one finite document; plain output uses the same public receipt. Signing material is exported by
 [auth signer](#account-signer-export), not a signer flag on mint. The old top-level `mint` spelling
 is refused with the literal namespace replacement.
 
-A minted credential cannot be revoked on its own, and `auth retire` refuses. A credential without an
-expiry stays valid until the space identity rotates: `cotal down`, then `cotal reset space <space>`
-(or `cotal clean all --force` from the root when `down` left no registration), then `cotal up`. That
-stops every credential the space issued. `--expires-in` or `--expires-at` bounds one instead.
+A minted credential cannot be revoked on its own, and `auth retire` refuses. It stays valid until it
+expires, and one minted with `--no-expiry` until the space identity rotates: `cotal down`, then
+`cotal reset space <space>` (or `cotal clean all --force` from the root when `down` left no
+registration), then `cotal up`. That stops every credential the space issued.
 
 ### Endpoint caller credentials
 
 `--endpoint` is a separate closed mode, not an ACL override on an observer or admin profile. It
 requires a private `--out` in an existing protected physical parent outside managed state. Only
-`--channels`, `--expires-in`, space/server and presentation flags combine with it. An empty or
+`--channels`, `--expires-in`, space/server and presentation flags combine with it. It has no default
+lifetime: without `--expires-in` the caller carries no expiry claim. An empty or
 omitted channel list grants no explicit read/post channels. Supplied channels deliberately enter
 both ACLs, as in the native standalone Linear caller form. No persona ACL or role is inferred.
 
@@ -5005,12 +5008,15 @@ still checked. Each file is also parsed the way `--creds` checks one, so a file 
 client cannot parse is a finding even when its claims are legible, such as one with Windows (CRLF)
 line endings.
 A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
-signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential,
-such as one `auth mint` wrote without `--expires-in` or `--expires-at`, stays a finding until its file
-is gone. Its guidance names both ways out. Rotating the space identity (`cotal down`, `cotal reset
-space <space>`, then `cotal up`) retires it with every other credential the space issued and removes
-the file. Removing the file once nothing uses it, and minting a replacement with `--expires-in` or
-`--expires-at`, bounds it from then on; a copy made before stays valid until that rotation.
+signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential
+stays a finding until its file is gone. The exception is one `auth mint --no-expiry` wrote, whose
+record beside it still names the file's bytes: someone asked for it, so it is a
+`CREDENTIAL_UNBOUNDED_BY_REQUEST` warning instead, and the run ends ok, exit 0. Both get guidance that
+names both ways out. Rotating the space identity (`cotal down`, `cotal reset space <space>`, then
+`cotal up`) retires it with every other credential the space issued and removes the file. Removing
+the file and its record once nothing uses it, and minting a replacement without `--no-expiry`, bounds
+it from then on; a copy made before stays valid until that rotation. `doctor auth` reads only the
+space's credential store, so a credential minted with `--out` is not listed, whatever its expiry.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.
