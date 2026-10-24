@@ -209,7 +209,7 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
-import { checkSpaceName } from "./meshes-add.js";
+import { checkSpaceFlagValue } from "./meshes-add.js";
 import { cleanedManifestStart, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
   bindReaches,
@@ -404,7 +404,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values["dry-run"] === true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; cotal status shows what this folder records" });
   // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
-  const named = typeof args.values.space === "string" ? checkSpaceName(args.values.space) : undefined;
+  const named = typeof args.values.space === "string" ? checkSpaceFlagValue(args.values.space) : undefined;
   if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;

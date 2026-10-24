@@ -192,7 +192,8 @@ async function review(prompt: boolean, skip: boolean, rows: readonly (readonly [
 export async function spaceAdd(rest: readonly string[], v: AddValues, presentation: Presentation): Promise<void> {
   if (rest.length > 1) throw usage("usage: cotal space add [<name>] --server <url> | --file <bundle.json> | --from <https url>");
   const name = rest[0];
-  if (name !== undefined) take(checkSpaceName(name), { space: name });
+  // A name no space can have resolves to nothing, so its refusal is not headed with it.
+  if (name !== undefined) take(checkSpaceName(name), { requested: name });
   if (v.file !== undefined && v.from !== undefined) throw usage("pass --file or --from, not both: they are two sources for the same pinned trust");
   const bundled = v.file !== undefined || v.from !== undefined;
   if (bundled && v.mode !== undefined && v.mode !== "user") throw usage(`--file and --from add a user-auth space, so they do not take --mode ${v.mode}`);
@@ -299,7 +300,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   const space = name ?? bundle.space;
   const spaceTarget = { space };
   if (name !== undefined && bundle.space !== name) throw refuse("CONFLICT", `the bundle is for "${bundle.space}", not "${name}": a bundle adds the space it was exported for`, spaceTarget);
-  take(checkSpaceName(space), spaceTarget);
+  take(checkSpaceName(space), { requested: space });
   const server = take(v.server === undefined ? checkServer(bundle.server, "the bundle's server") : checkServer(v.server, "--server"), spaceTarget);
   const tlsRequired = bundle.tlsRequired || tlsIntent(server, v.tls === true);
   const dial = take(checkDialPolicy(server, { tlsRequired, allowUnencryptedOverlay: v["allow-unencrypted-overlay"] === true }), spaceTarget);
@@ -354,7 +355,7 @@ export function checkSelfHostedSpace(space: string, project: string, connectionF
   if (entry?.origin === "up") throw refuse("CONFLICT", `"${space}" is a space this machine starts`, target, "set it up with --destination local");
   if (!entry) {
     if (connectionFile === undefined)
-      throw refuse("TARGET_NOT_FOUND", `no space named "${space}" is registered here`, target, "register it with `cotal space add`, or pass --connection-file <bundle.json>");
+      throw refuse("TARGET_NOT_FOUND", `no space named "${space}" is registered here`, { requested: space }, "register it with `cotal space add`, or pass --connection-file <bundle.json>");
     return { kind: "add", file: connectionFile };
   }
   if (canonicalRoot(entry.root) !== canonicalRoot(project))
@@ -426,12 +427,11 @@ export type LocalSpaceState = "created" | "prepared" | "started";
 export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean, adopting = false): LocalSpaceState {
   const target = { space: name };
   // `cotal up` starts a space only under a name that is one native routing token, short enough for
-  // the file names that carry it.
+  // the file names that carry it. A name it refuses names no space, so its refusal is not headed with it.
+  const requested = { requested: name };
   const tooLong = spaceNameTooLong(name);
-  if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, target, `choose a name of at most ${SPACE_NAME_MAX} characters`);
-  if (token(name) !== name)
-    throw refuse("USAGE_INVALID", `a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, target, "choose a name of only letters, digits, underscores and hyphens");
-  take(checkSpaceName(name), target);
+  if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, requested, `choose a name of at most ${SPACE_NAME_MAX} characters`);
+  take(checkSpaceName(name), requested);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
   // Such a space could be prepared but never started: its first `up` would refuse to record the root.
@@ -573,7 +573,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       removePreparedSpace(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
     }
-    if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, target, "see the registered spaces with `cotal space`");
+    if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { requested: name }, "see the registered spaces with `cotal space`");
     const release = releaseStackDefinitions(p.root, name), keptServices = savedServicesLeft(name, release.kept);
     removePreparedSpace(name);
     return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared", releasedDefinitions: release.released, keptServices }, preferencesRevision, keptWarnings(name, release.kept));
