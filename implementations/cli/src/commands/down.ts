@@ -305,7 +305,11 @@ function noOwnedStack(root: string): CommandFailure {
 function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
   const root = canonicalRoot(cotalRoot());
   const target = { root };
-  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
+  if (root === canonicalRoot(homedir())) {
+    // `up` starts no stack in the home, so one that records none has nothing to stop.
+    if (!existsSync(join(root, ".cotal")) || !localMeshesForRoot(root).length && !pidRecordsUnder(root)) throw noOwnedStack(root);
+    throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
+  }
   let mesh: NonNullable<ReturnType<typeof findMesh>>;
   try {
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");

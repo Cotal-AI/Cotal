@@ -4,7 +4,9 @@
  * "Outcome unconfirmed", which tells a script the run may have had an effect.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from an empty
- * folder outside them. Nothing is started; each refusal comes from validation.
+ * folder outside them. Nothing is started; each refusal comes from validation. In the home folder,
+ * whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing there,
+ * and `down` there finds no stack to stop.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -29,8 +31,8 @@ process.on("exit", () => { rmSync(home, { recursive: true, force: true }); rmSyn
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: folder, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], cwd = folder) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -52,6 +54,14 @@ for (const { args, message } of cases) {
 }
 
 check("nothing was written in the folder", readdirSync(folder).length === 0, readdirSync(folder));
+
+// Port 1 cannot be bound, so a regression here starts no usable broker.
+const homeUp = run(["up", "--server", "nats://127.0.0.1:1", "--json"], home);
+check("up in the home folder is one CONFLICT refusal, exit 2, naming a project folder", homeUp.status === 2 && homeUp.envelope?.error?.code === "CONFLICT" && /is your home folder/.test(homeUp.envelope.error.message ?? "") && /space create <space> --root <dir>/.test(homeUp.stdout), shown(homeUp));
+check("it wrote no persona, pidfile or store in the home's .cotal", !existsSync(join(home, ".cotal", "agents")) && !existsSync(join(home, ".cotal", "nats.pid")) && !existsSync(join(home, ".cotal", "nats")), existsSync(join(home, ".cotal")) ? readdirSync(join(home, ".cotal")) : []);
+// With no stack there, down says there is nothing to stop.
+const homeDown = run(["down", "--yes"], home);
+check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop", homeDown.status === 2 && /there is no stack at this folder's root, so there is nothing to stop/.test(homeDown.stderr), shown(homeDown));
 
 finish();
 process.exit(process.exitCode ?? 0);

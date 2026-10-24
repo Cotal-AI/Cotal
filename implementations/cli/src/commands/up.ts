@@ -377,10 +377,13 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
   if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: cotal down, then cotal up --rotate-sys" });
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
-  else {
+  else if (!(args.values.file && args.values["dry-run"] === true)) {
     const inheritedRoot = inheritedMachineHomeRoot();
-    if (inheritedRoot && !(args.values.file && args.values["dry-run"] === true))
-      throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then use cotal up --root .; to start the home stack, run up from home itself" });
+    if (inheritedRoot)
+      throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then use cotal up --root ." });
+    const home = machineHomeRoot();
+    if (home && !homeHoldsStack(home))
+      throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
   if (!(args.values.file && args.values["dry-run"] === true)) assertUpRootWritable(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot());
@@ -444,9 +447,20 @@ function upHostProblem(host: string | undefined, server: string | undefined): { 
 }
 
 function inheritedMachineHomeRoot(): string | undefined {
+  const root = machineHomeRoot();
+  return root !== undefined && canonicalRoot(process.cwd()) !== canonicalRoot(root) ? root : undefined;
+}
+
+/** The root this `up` resolves when it is the machine home, whose `.cotal` holds this machine's own records. */
+function machineHomeRoot(): string | undefined {
   const root = cotalRoot();
-  const machineHome = canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir());
-  return machineHome && canonicalRoot(process.cwd()) !== canonicalRoot(root) ? root : undefined;
+  return canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()) ? root : undefined;
+}
+
+/** Whether the machine home already holds a stack an earlier release started there: a registration,
+ *  a maintenance attempt, or a space account. Such a stack still starts, resumes and stops in place. */
+function homeHoldsStack(root: string): boolean {
+  return localMeshesForRoot(root).length > 0 || readMaintenanceJournal(root) !== undefined || soleSpaceOf(authDir(root)) !== undefined;
 }
 
 /** An explicit root is an existing local workspace, not a hint to find another ancestor or

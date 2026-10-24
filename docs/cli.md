@@ -516,8 +516,11 @@ per-agent ACLs. It runs in the background by default and records the mesh so `co
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
 native stack in this terminal. A contradictory mode pair refuses before setup or seed work. An
 unqualified `up` from a folder that inherits the machine's home `.cotal` refuses before seeding:
-prepare that folder with `space create <space> --root .`, then run `up --root .`, or move to the
-home folder if the home stack was intended. When `--root` names another prepared project, run bare
+prepare that folder with `space create <space> --root .`, then run `up --root .`. In the home folder
+itself, whose `.cotal` holds this machine's own records, `up` refuses `CONFLICT` and names a project
+folder, as `space create` does there. A home that already holds a stack an earlier release started
+there keeps starting it in place, and `up --root <dir>` from the home starts that prepared project.
+When `--root` names another prepared project, run bare
 `cotal down` from that project folder: bare down
 stops the folder's stack, and `down --space` is not a remote replacement for that scope. With no
 `--space`, `up` runs the folder's space: the one its auth account names, else the one its stack or
@@ -540,8 +543,8 @@ host and run [`supervise`](#supervise) against the remote broker; see
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
 only what actually started. Its receipt begins with `Mesh: <space>` and ends with a Next that names
 `cotal spawn` when a manager runs, and the stop. With no `--space`, in a folder that names no space,
-it also says that `up` started the default space `main`. Started from the machine home, the line
-names `cotal down --preserve-state`,
+it also says that `up` started the default space `main`. For a stack an earlier release started in
+the machine home, the line names `cotal down --preserve-state`,
 because bare `down` refuses the home stack. With `--no-manager` it names `cotal up` first, because
 `--preserve-state` needs a manager. On POSIX, a foreground broker has its own session and process group.
 Terminal Ctrl-C reaches the CLI owner, which stops the manager through the same stop as bare
