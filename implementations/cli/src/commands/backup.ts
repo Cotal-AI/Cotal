@@ -610,8 +610,12 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
         throw new Error("current trust state changed before backup cloning");
     }
     // This is intentionally the final await before the claim: pidfiles are only hints, while a
-    // listener at the recorded endpoint can still mutate the source or disprove the offline cut.
-    await assertEndpointUnreachable(recordedServer);
+    // listener at the recorded endpoint can still mutate the source or disprove the offline cut. It
+    // is refused naming that listener, as restore and resume refuse it.
+    const space = ready.space;
+    await assertEndpointUnreachable(recordedServer).catch((error: Error) => {
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; a process there may still be changing the preserved store, so nothing was copied`, { target: { root, space, server: recordedServer }, remedy: `stop the process that listens on ${recordedServer}, then run ${retryCreate(args)} again` });
+    });
     // Ownership precedes existence: the claim is journaled with pending slots for every path this
     // attempt may create, so a crash at any later instant leaves a journal owner to recover from.
     observed.mutationAttempted = true;

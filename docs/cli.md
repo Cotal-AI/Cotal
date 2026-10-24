@@ -1905,8 +1905,10 @@ refusal, because create writes only a new directory. A destination whose folder 
 refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
 folder. A destination inside the preserved store refuses `USAGE_INVALID` (exit 1), and one in a
 folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
-refuses `CONFLICT` (exit 2) and names both stores. Any other refusal or failure shows the check's
-own sentence as its native detail, such as a broker still listening at the cut's recorded endpoint.
+refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
+address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
+says to stop the process that listens there and run the same `backup create` again. Any other
+refusal or failure shows the check's own sentence as its native detail.
 A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
 `backup create` to run again once that cause is fixed.
 A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes

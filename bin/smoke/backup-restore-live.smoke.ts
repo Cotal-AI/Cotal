@@ -735,8 +735,10 @@ async function missingPidfileListenerScenario(): Promise<void> {
 
     foreign = await occupy(port);
     const refusedBackup = run("backup", "create", artifact, "--only", "registry");
-    assert.notEqual(refusedBackup.status, 0, "backup refuses a pidless listener immediately before cloning");
-    assert.match(refusedBackup.stderr, /recorded NATS endpoint .* no listener/);
+    assert.equal(refusedBackup.status, 2, "backup refuses a pidless listener immediately before cloning, exit 2");
+    assert.match(refusedBackup.stderr, /recorded NATS endpoint .* no listener; a process there may still be changing the preserved store, so nothing was copied/);
+    assert.match(refusedBackup.stderr, /CONFLICT/, "it is a CONFLICT, as restore and resume refuse it");
+    assert.ok(refusedBackup.stderr.includes(`stop the process that listens on ${server}, then run cotal backup create ${artifact} --only registry again`), `its Next says to stop that process and names the same create\n${refusedBackup.stderr}`);
     assert.equal(existsSync(artifact), false, "listener refusal happens before artifact creation");
     await closeServer(foreign);
     foreign = undefined;
