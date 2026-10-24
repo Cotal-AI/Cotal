@@ -317,6 +317,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("control: personas edit runs the editor", edited.status === 0 && edited.stdout.includes('saved "x"'), shown(edited));
   const forbidden = cotal(["personas", "edit", "x", "--no-input"], persona, editor);
   check("personas edit --no-input refuses to open an editor", forbidden.status === 1 && /--no-input forbids one/.test(forbidden.stderr) && !forbidden.stdout.includes("saved"), shown(forbidden));
+  // An editor setting that is the path of an existing file runs as that program, spaces and all.
+  const spacedDir = mkdtempSync(join(tmpdir(), "cotal entry editor "));
+  cleanup.push(spacedDir);
+  const spacedEditor = join(spacedDir, "ed.sh");
+  writeFileSync(spacedEditor, '#!/bin/sh\nprintf "edit-B\\n" >> "$1"\n', { mode: 0o755 });
+  let spacedFile = "";
+  const spaced = cotal(["persona", "edit", "x"], (home) => { persona(home); spacedFile = join(home, "..", ".cotal", "agents", "x.md"); }, { ...noSeed, VISUAL: spacedEditor, EDITOR: spacedEditor });
+  check("persona edit runs an editor whose path holds a space", spaced.status === 0 && spaced.stdout.includes("Persona saved") && readFileSync(spacedFile, "utf8").includes("edit-B") && !spaced.stderr.includes("not found"), shown(spaced));
   // An edit refused because the persona changed or was removed while the editor was open keeps the
   // draft and names it. The editors write to the draft, then change the catalog file behind it.
   for (const [what, behind, next] of [["changed", "printf B >> .cotal/agents/x.md", /compare it with `cotal persona show x`/], ["was removed", "rm .cotal/agents/x.md", /restore it with `cotal persona create x --file /]] as const) {

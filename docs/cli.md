@@ -3894,8 +3894,9 @@ persona is one: its file is `default.md` and its agents launch as `default_agent
 reserved, so a create under it is refused with `USAGE_INVALID`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
-preferences). The value runs as a shell command, so quote a path that holds spaces. With no editor
-set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
+preferences). A value that is the path of an existing file runs as that program, spaces and all.
+Any other value runs as a shell command. With no editor set, or one that cannot be found or run,
+editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
 and names the setting to fix. The draft's private folder is made in the temporary directory
 (`TMPDIR`). One this account cannot write refuses with `PERMISSION_DENIED`, and one that is missing
 or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made. A

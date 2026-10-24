@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import {
   acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
   parseAgentFileSource, saveAgentFile, utf16Problem, writeSecretFile, writeSecretFileAtomic,
@@ -194,6 +194,14 @@ export function serializePersona(def: AgentDef): Buffer {
   });
 }
 
+/** The editor value as a program, when it names an existing file by path: it runs with no shell, so a
+ *  path that holds spaces needs no quoting. Any other value runs as a shell command. */
+function editorProgram(editor: string): string | undefined {
+  if (!editor.includes("/") && !editor.includes(sep)) return undefined;
+  try { return statSync(editor).isFile() ? editor : undefined; }
+  catch { return undefined; }
+}
+
 /** Never expose the catalog file to an editor. Validate successful draft bytes, then compare under lock. */
 export function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): void {
   if (json || inputDisabledByFlag())
@@ -207,13 +215,17 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
   let keep = false;
   withDraft(name, draft => {
     writeSecretFile(draft, source.bytes);
+    const program = editorProgram(editor);
     const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
-    const result = spawnSync(`${editor} ${quoted}`, { shell: true, stdio: "inherit" });
+    const result = program ? spawnSync(program, [draft], { stdio: "inherit" }) : spawnSync(`${editor} ${quoted}`, { shell: true, stdio: "inherit" });
     // A POSIX shell exits 127 when it finds no such command and 126 when it cannot run it: the editor
-    // is missing, as it is when none is set, and nothing was edited.
+    // is missing, as it is when none is set, and nothing was edited. A program that cannot be run is
+    // refused the same way.
+    if (program && (result.error as NodeJS.ErrnoException | undefined)?.code === "EACCES")
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} could not be run - not saved`, { remedy: `make ${editor} executable, or set VISUAL or EDITOR to an installed editor` });
     if (process.platform !== "win32" && !result.error && (result.status === 127 || result.status === 126))
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} ${result.status === 127 ? "was not found" : "could not be run"} - not saved`, {
-        remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; the value runs as a shell command, so quote a path that holds spaces",
+        remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; a value that is not the path of an existing file runs as a shell command, so quote a path that holds spaces",
       });
     if (result.error) throw new CommandFailure("failed", "OPERATION_FAILED", "the editor could not be started - not saved");
     if (result.status !== 0) {
