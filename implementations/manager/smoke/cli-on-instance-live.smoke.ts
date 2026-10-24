@@ -406,12 +406,13 @@ try {
     // --on is a `--detach` flag on spawn (foreground runs in this process, not on a manager). The
     // persona ref is deliberately nonexistent so that a dropped pin cannot start anything: the
     // worst case is a manager refusal, which is a DIFFERENT message and still fails this cell.
-    // spawn, stop and models read the registry first, so an absent instance is refused naming the
-    // running ones, before any describe; a dropped pin would reach the class queue instead.
+    // spawn, stop, models, attach and input read the registry first, so an absent instance is refused
+    // naming the running ones, before any describe; a dropped pin would reach the class queue instead.
     { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space], deadline: unregistered },
     { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space], deadline: unregistered },
     { what: "models", argv: ["models", "--on", absent, "--space", space], deadline: unregistered },
-    { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
+    { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space], deadline: unregistered },
+    { what: "input", argv: ["input", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--text", "x", "--on", absent, "--space", space], deadline: unregistered },
     // describe reports the read as a failed request that names the pinned instance and the native deadline.
     { what: "describe", argv: ["describe", "manager", "--on", absent, "--space", space], deadline: new RegExp(`^ +Requested instance: +${absent}\n +Native code: +deadline-exceeded$`, "m") },
   ];

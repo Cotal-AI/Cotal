@@ -1637,6 +1637,11 @@ export async function attach(args: ParsedArgs): Promise<void> {
   const v = { ...args.values, name: name ?? selection!.name, ...(selection ? { on: selection.on } : {}) } as FlagValues<typeof attachFlags> & { name: string };
   const reconnecting = v["no-reconnect"] !== true;
   const on = v.on !== undefined ? await pinForTarget(v as never, "cotal attach") : undefined;
+  // A typed pin the registry does not list is refused at once, as stop refuses it.
+  if (selection === undefined && on !== undefined) {
+    const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+    if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
+  }
   const verdict = await attachSeat({ space: v.space, server: v.server, creds: v.creds, name: v.name, ...(selection ? { expectedTarget: selection.expectedTarget } : {}) }, { reconnect: reconnecting, onRefusal: "exit", on });
   if (verdict.kind === "failed") throw new CommandFailure("failed", "OPERATION_FAILED", verdict.message);
   const detached = verdict.kind === "ended" && verdict.reason === "detached";
@@ -1675,6 +1680,11 @@ export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
   const on = await pinForTarget(v as never, "cotal input");
+  // A typed pin the registry does not list is refused at once, as stop refuses it.
+  if (v.on !== undefined && on !== undefined) {
+    const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+    if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
+  }
   const t = await resolveControlTarget(v, "control-caller-admin", on);
   recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";

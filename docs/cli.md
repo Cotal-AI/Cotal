@@ -3963,8 +3963,9 @@ as Next. When an instance did not answer for itself, the seat may run there, so 
 `TARGET_UNAVAILABLE` (exit 2) and name that instance. `--json` carries either refusal.
 
 `--on <instance>` remains the override, for when you already know where the seat lives or the
-lookup itself is degraded. On a static or open mesh, `stop --on` with an id the registry lists for
-no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on` is.
+lookup itself is degraded. On a static or open mesh, `stop --on`, `attach --on` and `input --on`
+with an id the registry lists for no manager are refused `TARGET_NOT_FOUND` at once, naming the
+managers that run, as `spawn --on` is.
 On a **user-auth mesh**, the exchange selects one authorized manager
 for a short-lived `manager-caller` view. `--on` requests a specific instance. Without it, a command
 run from a managed seat's shell selects the manager that launched the seat (`COTAL_MANAGER_INSTANCE`),
