@@ -309,7 +309,7 @@ const baseCommands: Command[] = [
       { name: "dms", type: "boolean", description: "history: also clear DM history" },
       { name: "store-dir", type: "string", value: "<dir>", description: "store/all: JetStream store directory (default .cotal/nats)" },
       { name: "attempt", type: "string", value: "<id>", description: "restore-fallback: matching committed restore attempt" },
-      { name: "discard-history", type: "boolean", description: "restore-fallback: also delete a registry-only restore's previous store, the only copy of the history it left out" },
+      { name: "discard-history", type: "boolean", description: "restore-fallback: also delete a previous store that holds the only copy of the history or workflow runs the restore left out" },
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
       { name: "dry-run", type: "boolean", description: "store/all: list what would be removed and remove nothing" },
     ],
