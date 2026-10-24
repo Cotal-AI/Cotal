@@ -13,13 +13,16 @@
  *   - resolveDmTarget (native-session.ts) over plain roster data and a real ParticipantEngine, with
  *     senders heard on a DM and on a channel;
  *   - grantRefusal (native-session.ts): the pre-effect refusal for a channel outside the grant;
- *   - transcript times, shown in local time as `history` shows them.
+ *   - transcript times, shown in local time as `history` shows them;
+ *   - the inbox bound (engine.ts MAX_BUFFER): a replay past it keeps the newest, and docs/cli.md
+ *     states the same number.
  * It constructs plain data values (SessionIdentity, SessionMessage, PublishResult, CloseReport,
  * Presence) and NEVER an AdmittedChatSession: no fake session, no factory, no authority claim.
  * runStdio (EPIPE, backpressure), StdioParticipant and the controller's publish routing need an
  * admitted session and are deliberately NOT covered here. Nothing here proves admission,
  * confinement, delivery or any native behavior.
  */
+import { readFileSync } from "node:fs";
 import { LineFramer } from "../src/chat/stdio-io.js";
 import { MAX_REQUEST_ID, MAX_REQUEST_LINE, MAX_MESSAGE_ID, INVOKE_DEFAULT_TIMEOUT_MS, INVOKE_MAX_TIMEOUT_MS, messageRecord, parseRequestLine, serializeRecord } from "../src/chat/stdio.js";
 import {
@@ -28,7 +31,7 @@ import {
 } from "../src/chat/view.js";
 import { listChoices, parseRecipient } from "../src/chat/picker.js";
 import { rosterLines, runSlash } from "../src/chat/controller.js";
-import { ParticipantEngine } from "../src/chat/engine.js";
+import { MAX_BUFFER, ParticipantEngine } from "../src/chat/engine.js";
 import { grantRefusal, resolveDmTarget } from "../src/chat/native-session.js";
 import type { Presence } from "@cotal-ai/core";
 import type { CloseReport, RosterView, SessionIdentity, SessionMessage } from "../src/chat/session.js";
@@ -497,6 +500,20 @@ console.log("9. transcript times are local, as history shows them");
     if (saved === undefined) delete process.env.TZ;
     else process.env.TZ = saved;
   }
+}
+
+console.log("10. a session's inbox keeps the newest MAX_BUFFER replayed channel messages, as the docs say");
+{
+  const engine = new ParticipantEngine(identity.principal);
+  for (let i = 1; i <= MAX_BUFFER + 100; i++)
+    engine.accept({ id: `r${i}`, ts: i, space: "selected-space", from: { id: "u_a.alice", name: "alice" }, channel: "general", parts: [{ kind: "text", text: `msg-${i}` }] },
+      { ack() {}, nak() {}, durable: false }, { historical: true, kind: "channel" }, false);
+  const held = engine.inbox();
+  check(`a replay of ${MAX_BUFFER + 100} channel messages leaves the newest ${MAX_BUFFER} in the inbox, the oldest dropped`,
+    held.length === MAX_BUFFER && held[0]?.text === "msg-101" && held.at(-1)?.text === `msg-${MAX_BUFFER + 100}`, { held: held.length, first: held[0]?.text, last: held.at(-1)?.text });
+  const doc = readFileSync(new URL("../../../docs/cli.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+  check(`docs/cli.md states the inbox bound as MAX_BUFFER (${MAX_BUFFER})`,
+    doc.includes(`The inbox keeps at most ${MAX_BUFFER} unread messages, so a channel that holds more replays only its newest ${MAX_BUFFER}`));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

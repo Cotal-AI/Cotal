@@ -4405,6 +4405,11 @@ mesh the way `send` does, under the same one-shot identity, and says on stderr w
 is registered, unregistered, or could not be read. The space's native policy decides whether a send
 is allowed, and nothing creates registry metadata.
 
+When the channel's replay is on, the session holds its retained messages in the replay window in
+its inbox. The inbox keeps at most 500 unread messages, so a channel that holds more replays only
+its newest 500 and the oldest are dropped. `cotal history <channel> --limit <n>` reads further
+back. `channel show` names the bound in its `Chat replay` row.
+
 The terminal view needs a terminal for input and output; without one, `chat` refuses and names
 `--plain` and `--stdio`. `--plain` is the line flow, with a separate confirmation for each send,
 and it writes its punctuation in ASCII as every plain report does.

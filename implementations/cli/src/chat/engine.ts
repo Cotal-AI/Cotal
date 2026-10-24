@@ -23,7 +23,8 @@ import type { AttentionMode, ChannelMode, CotalMessage, Delivery, MessageMeta } 
 import { partsToText } from "@cotal-ai/core";
 import type { SessionMessage } from "./session.js";
 
-/** Bound on buffered items. Provisional; set at review. */
+/** Bound on buffered items: a session's inbox, and so the newest channel messages its replay keeps.
+ *  docs/cli.md and the `channel show` card state it. Provisional; set at review. */
 export const MAX_BUFFER = 500;
 /** Bound on remembered handled ids for cross-path coalescing (two rotating windows of this size). */
 export const MAX_HANDLED_IDS = 4096;

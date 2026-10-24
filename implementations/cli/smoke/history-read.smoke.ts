@@ -41,6 +41,7 @@ import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurren
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
+import { MAX_BUFFER } from "../src/chat/engine.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -521,6 +522,10 @@ try {
   // ── channel remove says whether it removed a saved entry, and refuses a name the space lacks ──
   {
     const removedOf = (r: { envelope?: Envelope }) => (r.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
+    // The card names the inbox bound a chat session's replay keeps, from the constant that sets it.
+    const [onCard, offCard] = await Promise.all(["general", "ops"].map((channel) => run(["channel", "show", channel, "--space", space, "--plain"])));
+    check(`channel show names the newest ${MAX_BUFFER} a chat session replays, and only when replay is on`,
+      onCard.status === 0 && new RegExp(`^\\s+Chat replay:\\s+the newest ${MAX_BUFFER} messages in the window$`, "m").test(onCard.stdout) && offCard.status === 0 && !offCard.stdout.includes("Chat replay"), { on: shown(onCard), off: shown(offCard) });
     // The receipt used to print the stored values raw: `Replay: false` and `DeliveryClass: durable`.
     const saved = await run(["channel", "set", "general", "--no-replay", "--delivery", "durable", "--space", space, "--plain"]);
     check("a channel set receipt says replay on or off and labels the delivery class as channel show does",
