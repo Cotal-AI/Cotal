@@ -1020,7 +1020,8 @@ async function establishAttachSession(
   const t = seat ?? await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
   recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
-  if (first) console.error(renderReport({ space: t.space, sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", terminalWidth(process.stderr)));
+  // A refusal's report names the mesh in its heading, so this block names it once, in a field.
+  if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", terminalWidth(process.stderr)));
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget });
   if (!reply.ok) {
     if (first && (reply.preSubmitRefusal || reply.nativeOutcome === "not-executed"))

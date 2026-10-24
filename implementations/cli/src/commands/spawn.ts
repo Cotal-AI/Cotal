@@ -53,7 +53,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, writeResult, type OutputWarning, type RefusalCode, type Report,
+  CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
   agentActorTokenKey,
   agentCredsKey,
   agentSecretFilePaths,
@@ -597,7 +597,6 @@ export async function launchManagedPersona(
   if (eventsRequired && events === false) {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `space "${t.space}" requires the event plane by registration policy; no launch was submitted`);
   }
-  provenance.read("mesh", `${t.space} (${t.server})`);
   if (on === undefined && !t.auth.bearer) await refuseWithoutLiveManager(t.space, t.server, t.auth, { space: t.space, managerInstanceId: null, managerEpoch: null }, "launch an agent");
   // A pin the registry does not list is refused at once; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
@@ -612,8 +611,9 @@ export async function launchManagedPersona(
     resumeAgent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent });
     resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
   }
-  console.error(renderReport({ space: t.space, sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
-  console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
+  // The report that answers names the mesh in its heading, so this block names it once, in a field.
+  console.error(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
+  for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
   const reply = await askManager(t.space, t.server, "start", {
     name: ref,
     identity: values.name,
