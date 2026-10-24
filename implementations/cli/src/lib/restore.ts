@@ -324,6 +324,21 @@ function contains(parent: string, child: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${separator}`) && !isAbsolute(path));
 }
 
+/** The refusal for a restore artifact that is, holds or sits inside the store the restore replaces
+ *  or this root's maintenance folder, where it stages its attempt, or `undefined` when it is clear
+ *  of both. `artifact` and `store` are real paths. */
+function artifactOverlapRefusal(root: string, artifact: string, store: string): CommandFailure | undefined {
+  for (const [path, what, why] of [
+    [store, "the preserved store", " it would replace"],
+    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
+  ] as const) {
+    if (!contains(path, artifact) && !contains(artifact, path)) continue;
+    const relation = artifact === path ? "is" : contains(path, artifact) ? "is inside" : "holds";
+    return new CommandFailure("refused", "USAGE_INVALID", `the restore artifact ${artifact} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}${why}; nothing was restored`, { target: { root, directory: artifact, overlaps: path }, remedy: `name a backup artifact folder outside ${path}`, selfContained: true });
+  }
+  return undefined;
+}
+
 /** An explicit `--store-dir` names the directory a restore creates and owns for its rollback, so it
  *  must not exist yet and its parent must. Either mistake is a usage refusal before anything is
  *  staged. The preserved source itself is the same-path restore. */
@@ -867,14 +882,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   // So is a path that cannot be an artifact, saying what it is: one that is, holds or sits inside
   // the store the restore replaces or the folder it stages in, a file, or a folder no create wrote.
   const namedPath = realpathSync.native(named);
-  for (const [path, what, why] of [
-    [recorded.source.path, "the preserved store", " it would replace"],
-    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
-  ] as const) {
-    if (!contains(path, namedPath) && !contains(namedPath, path)) continue;
-    const relation = namedPath === path ? "is" : contains(path, namedPath) ? "is inside" : "holds";
-    throw new CommandFailure("refused", "USAGE_INVALID", `the restore artifact ${namedPath} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}${why}; nothing was restored`, { target: { root, directory: namedPath, overlaps: path }, remedy: `name a backup artifact folder outside ${path}`, selfContained: true });
-  }
+  const overlap = artifactOverlapRefusal(root, namedPath, recorded.source.path);
+  if (overlap) throw overlap;
   const notArtifact = notAnArtifactRefusal(root, namedPath, "nothing was restored", { root });
   if (notArtifact) throw notArtifact;
   let lock = acquireStackOperationLock(root, "restore");
@@ -932,10 +941,9 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     const currentAuthority = await authorityFingerprint(root, journal.space, journal.mode);
     const stageParent = ensurePrivateAttemptsDir(root).path;
     const artifactPath = realpathSync.native(resolve(flags.restore));
-    if (contains(journal.source.path, artifactPath) || contains(artifactPath, journal.source.path))
-      throw new Error("restore artifact must not overlap the preserved source store");
-    if (contains(stageParent, artifactPath) || contains(artifactPath, stageParent))
-      throw new Error("restore artifact must not overlap the maintenance attempt directory");
+    // Again under the lock: a link in the path may name another folder now, and the journal is reread.
+    const lockedOverlap = artifactOverlapRefusal(root, artifactPath, journal.source.path);
+    if (lockedOverlap) throw lockedOverlap;
     // The cut records its source by real path, so a default .cotal/nats that links there is that
     // source and is restored in place, not taken for an alternate target.
     const defaultStore = join(root, ".cotal", "nats");
