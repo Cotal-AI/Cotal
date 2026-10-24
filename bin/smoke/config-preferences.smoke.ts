@@ -6,10 +6,11 @@
  * file stopping every command but help and completion without being reset, a linked file stopping
  * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a config
  * folder that is a file stopping every command but help, version, docs and completion, a folder other
- * accounts can write refusing a write and warning on a read, a stale write refused, a persona the
- * space's catalog does not hold saved with a warning that names the catalog, two concurrent writers
- * both landing, and the consumers outside `spawn`: color, the `personas edit` editor and the detach
- * key.
+ * accounts can write refusing a write and warning on a read, a relative `COTAL_HOME` refused, a home
+ * other accounts can write taking no write and one they can only read made private on the write, a
+ * stale write refused, a persona the space's catalog does not hold saved with a warning that names the
+ * catalog, two concurrent writers both landing, and the consumers outside `spawn`: color, the
+ * `personas edit` editor and the detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -538,6 +539,39 @@ if (process.platform !== "win32") {
   const r = run(["config", "--json"], { XDG_CONFIG_HOME: folder });
   check("a config home that is itself a file names that file",
     r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && r.envelope.error.message.startsWith(`the Cotal config folder ${join(folder, "cotal")} cannot be made: ${folder} is a file, not a folder;`), shown(r));
+}
+
+// ── a relative COTAL_HOME stops them too, and a home other accounts can write takes no write ─────
+{
+  for (const value of ["rel-home", "./rel-home"]) {
+    const r = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: value });
+    check(`a relative COTAL_HOME ${value} is refused with USAGE_INVALID, naming it, and nothing is made`,
+      r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID" && r.envelope.error.message.startsWith(`COTAL_HOME ${JSON.stringify(value)} is a relative path`) &&
+        /^set COTAL_HOME to an absolute path/.test(r.envelope.error.remedy ?? "") && !existsSync(join(home, "rel-home")), shown(r));
+  }
+  check("help still works with a relative COTAL_HOME", run(["help"], { COTAL_HOME: "rel-home" }).status === 0);
+  const open = join(home, "open-home");
+  mkdirSync(open);
+  chmodSync(open, 0o757);
+  const refused = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: open });
+  check("a COTAL_HOME every account can write takes no write: space create is refused naming it, with chmod o-w as Next",
+    refused.status === 2 && refused.envelope?.error?.code === "PERMISSION_DENIED" && refused.envelope.error.message.includes(`${open} is writable by every local account; nothing was written`) &&
+      refused.envelope.error.remedy === `chmod o-w ${open}` && readdirSync(open).length === 0 && (statSync(open).mode & 0o777) === 0o757, shown(refused));
+  const linked = join(home, "linked-home");
+  symlinkSync(open, linked);
+  const viaLink = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: linked });
+  check("a COTAL_HOME that is a symbolic link is refused the same way",
+    viaLink.status === 2 && viaLink.envelope?.error?.message.includes(`${linked} is a symbolic link`) === true && readdirSync(open).length === 0, shown(viaLink));
+  chmodSync(open, 0o755);
+  const made = run(["space", "create", "x", "--root", project, "--json"], { COTAL_HOME: open });
+  check("a COTAL_HOME others can only read is written, and made private as the record store requires",
+    made.status === 0 && existsSync(join(open, "prepared")) && (statSync(open).mode & 0o777) === 0o700, shown(made));
+  chmodSync(open, 0o755);
+  const records = run(["service", "--space", "x", "--json"], { COTAL_HOME: open });
+  check("reading service records from a home others can read names it, with chmod go-rwx as Next",
+    records.status === 2 && records.envelope?.error?.code === "PERMISSION_DENIED" && records.envelope.error.message.includes(`${open} is not private to you (mode 0755)`) &&
+      records.envelope.error.remedy === `chmod go-rwx ${open}`, shown(records));
+  chmodSync(open, 0o700);
 }
 
 finish();

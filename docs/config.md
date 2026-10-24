@@ -237,7 +237,7 @@ other value when it starts, naming the variable.
 | `COTAL_MANAGED_HANDOFF_FILE` | `cotal` entry, foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; taken and deleted before anything else runs | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |
 | `COTAL_SERVE_HEADLESS` | OpenCode runtime | Run the OpenCode server without a foreground TUI (`1`). Stdout gets one `[cotal-serve]` line with the server's port and session and no password; a host that drives the server passes its own `OPENCODE_SERVER_PASSWORD` to the launcher | off |
-| `COTAL_HOME` | workspace | Override the machine-home dir: the mesh registry (`meshes/`, `current-mesh`, onboard marker) and records such as prepared spaces and service records. Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
+| `COTAL_HOME` | workspace | Override the machine-home dir with an absolute path: the mesh registry (`meshes/`, `current-mesh`, onboard marker) and records such as prepared spaces and service records. Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
 
 > `--console-port` is a `cotal supervise` flag, not an environment variable; there is no
 > `COTAL_CONSOLE_PORT`.
@@ -427,7 +427,15 @@ rather than read as absent. A process record's read error names the record's pat
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:
 `~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`. A `COTAL_HOME`
 that names a file, or a path under one, stops every command except help and shell completion with
-`SCHEMA_INVALID`, naming the variable: point it at a directory or unset it.
+`SCHEMA_INVALID`, naming the variable: point it at a directory or unset it. A relative `COTAL_HOME`
+stops them the same way with `USAGE_INVALID`: set an absolute path.
+
+On POSIX, a space, a registry entry, the current selection or a service record is written into the
+home only while no other account can replace or write the home or a folder above it. Otherwise the
+write is refused with `PERMISSION_DENIED`, naming each path and the `chmod` that fixes it, and nothing
+is written. A home other accounts can only read is made private (`0700`) on the write, because
+service records are read only from a private home; reading them from one others can read is refused
+with the `chmod` that fixes it.
 
 `COTAL_HOME` overrides **this tree only**: the registry, current pointer and onboard marker, and
 records such as prepared spaces and service records. It is not a full workstation sandbox. Broker launch policy, the JetStream
