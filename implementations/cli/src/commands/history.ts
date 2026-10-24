@@ -30,6 +30,7 @@ import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
+import { streamsAbsent } from "../lib/space-streams.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
@@ -346,8 +347,10 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   }
 
   let retention: HistoryResult["retention"] = null;
+  let chat: boolean | undefined;
   try {
     const held = await ep.chatRetention();
+    chat = held.stream;
     const names = new Map(read.map((item) => [item.from.id, item.from.name]));
     retention = {
       perSender: held.perSender,
@@ -361,6 +364,10 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   } catch (e) {
     warnings.push({ code: "RETENTION_UNREAD", target: req.target, message: `the chat stream's retention could not be read, so gaps it left are unknown: ${(e as Error).message}` });
   }
+
+  // `cotal up` creates the streams of a recorded auth or user space, so a missing chat stream there
+  // means they were removed. An open space creates them on first use.
+  if (chat === false && (conn.mode === "auth" || conn.mode === "user")) throw streamsAbsent(conn);
 
   // Each channel's replay policy, read from the registry: the endpoint's watch cache may not have
   // caught up this soon after start.

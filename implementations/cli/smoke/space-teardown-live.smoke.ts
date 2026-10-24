@@ -242,6 +242,11 @@ try {
     check("space delete applies with only the broker running", deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), shown(deleted));
     check("its receipt names the route back: cotal up there, or cotal down --yes and cotal space forget",
       /Next/.test(deleted.stdout) && deleted.stdout.includes("cotal up") && deleted.stdout.includes(`Run in ${root}: create the space's streams again`) && deleted.stdout.includes("cotal down --yes") && deleted.stdout.includes(`cotal space forget ${space}`), shown(deleted));
+    // Before that up, history used to read "0 messages" and send exited 3 with "no responders".
+    const [readGone, sendGone] = [cli(root, "history", "general", "--space", space, "--json"), cli(root, "send", "-c", "general", "before the up", "--space", space, "--json")];
+    check("before the up, history and send refuse TARGET_UNAVAILABLE: the streams are not on the broker, and cotal up there creates them",
+      [readGone, sendGone].every((r) => r.status === 2 && r.env?.error?.code === "TARGET_UNAVAILABLE" && r.env.error.message?.startsWith(`the streams of ${space} are not on its broker; a space delete removes them`) === true
+        && r.env.error.remedy === `run cotal up in ${root} to create them again, empty`), { history: shown(readGone), send: shown(sendGone) });
     const bare = cli(root, "up", "--json");
     const members = (bare.env?.result?.members as { role: string; state: string }[] | undefined) ?? [];
     check("a bare up creates the streams again on the running broker and starts delivery", bare.status === 0 && bare.env?.result?.streamsRecreated === true && members.some((row) => row.role === "broker" && row.state === "reused") && members.some((row) => row.role === "delivery" && row.state === "started"), shown(bare));

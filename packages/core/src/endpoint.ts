@@ -3198,9 +3198,10 @@ export class CotalEndpoint extends EventEmitter {
    * message on the channel is discarded. `maxAgeMs` is the stream's age limit. Each is `null` when
    * the stream sets none. `senders` counts each sender's retained messages per channel, so a sender
    * at the cap marks a channel whose retained history has lost that sender's older messages while
-   * other senders' messages from the same time remain.
+   * other senders' messages from the same time remain. `stream` is false when the chat stream does
+   * not exist, which holds nothing.
    */
-  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[] }> {
+  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[]; stream: boolean }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const mgr = await jetstreamManager(this.nc);
     let info;
@@ -3209,7 +3210,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch (e) {
       // As in listChannels: an absent CHAT stream holds nothing yet; any other failure stays loud.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
-      return { perSender: null, maxAgeMs: null, senders: [] };
+      return { perSender: null, maxAgeMs: null, senders: [], stream: false };
     }
     const senders: { channel: string; sender: string; messages: number }[] = [];
     for (const [subject, messages] of Object.entries(info.state.subjects ?? {})) {
@@ -3222,6 +3223,7 @@ export class CotalEndpoint extends EventEmitter {
       perSender: typeof cap === "number" && cap > 0 ? cap : null,
       maxAgeMs: typeof age === "number" && age > 0 ? Math.round(age / 1_000_000) : null,
       senders: senders.sort((a, b) => a.channel.localeCompare(b.channel) || a.sender.localeCompare(b.sender)),
+      stream: true,
     };
   }
 

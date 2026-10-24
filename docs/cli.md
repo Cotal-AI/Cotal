@@ -2073,7 +2073,9 @@ files. Open-mode impact and receipt label that any broker client can delete the 
 `space forget` is not a substitute for live deletion.
 
 The receipt's Next names the route back. On a space this machine started, the broker keeps running
-without the streams. On a controller stack, a bare `cotal up` in its root creates them again, empty,
+without the streams. Until they are created again, `cotal history` and `cotal send` on a recorded
+auth or user space refuse `TARGET_UNAVAILABLE`, exit 2: the streams are not on the broker, and the
+remedy names `cotal up` in the space's root. On a controller stack, a bare `cotal up` in its root creates them again, empty,
 on that broker, the way a broker start does, and starts the other members. Its receipt says
 `Space streams: created again, empty, on the running broker`, and `--json` sets
 `result.streamsRecreated`. It does so only when every one of the space's streams is gone. A broker
