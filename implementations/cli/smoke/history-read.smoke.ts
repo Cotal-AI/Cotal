@@ -54,7 +54,7 @@ type Item = { seq: number | null; id: string; ts: string; channel: string | null
 type Result = {
   kind: string;
   channels: string[];
-  window: { limit: number; read: number; olderRetained: boolean | null; reachesSince: boolean | null };
+  window: { limit: number; read: number; olderRetained: boolean | null; since: string | null; reachesSince: boolean | null };
   retention: { perSender: number | null; gaps: { channel: string; name: string | null; retained: number }[] } | null;
   replay: { channel: string; replay: boolean | null }[];
   items: Item[];
@@ -96,9 +96,9 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key ===
 // Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[], cwd = shell): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd, env: isolatedEnv, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -205,6 +205,12 @@ try {
   check("--since a sequence keeps only later messages", JSON.stringify(texts(bySeq)) === JSON.stringify(["looks good", "deploy finished"]) && bySeq.envelope?.result?.window.reachesSince === true, texts(bySeq));
   const byTime = await run(["history", "general", "--since", midpoint, "--json"]);
   check("--since a time keeps only messages after it", JSON.stringify(texts(byTime)) === JSON.stringify(["deploy finished"]), texts(byTime));
+  // A bare date is local midnight. ECMAScript reads it as UTC, so east of UTC it dropped the day's
+  // first hours. Etc/GMT-14 is UTC+14.
+  const east = { TZ: "Etc/GMT-14" };
+  const [dayJson, dayPlain] = await Promise.all([run(["history", "general", "--since", "2026-01-15", "--json"], shell, east), run(["history", "general", "--since", "2026-01-15", "--plain"], shell, east)]);
+  check("--since a bare date is local midnight, and the report names the instant it resolved to",
+    dayJson.envelope?.result?.window.since === "2026-01-14T10:00:00.000Z" && dayPlain.stdout.includes("--since 2026-01-15 is ") && dayPlain.stdout.includes("local time (2026-01-14T10:00:00.000Z); only messages after it are shown"), { json: dayJson.envelope?.result?.window, plain: shown(dayPlain) });
   const narrow = await run(["history", "general", "--limit", "1", "--since", String(items[0]?.seq), "--json"]);
   check("a window that does not reach back to --since says so", narrow.envelope?.result?.window.reachesSince === false, narrow.envelope?.result?.window);
   const fromBob = await run(["history", "--from", "bob", "--json"]);
@@ -236,6 +242,8 @@ try {
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
   check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
+  const notADay = await run(["history", "--since", "2026-02-30", "--server", unavailable, "--json"]);
+  check("a --since date that is not on the calendar is a usage error before connecting", notADay.status === 1 && notADay.envelope?.error?.message === "--since 2026-02-30 is not a calendar date", shown(notADay));
   const unsafeSequence = await run(["history", "--since", "9007199254740993", "--server", unavailable, "--json"]);
   check("an inexact --since sequence is a usage error before connecting", unsafeSequence.status === 1 && unsafeSequence.envelope?.error?.code === "USAGE_INVALID", shown(unsafeSequence));
 
@@ -543,7 +551,7 @@ try {
   check("a user naming a channel outside the grant is refused with PERMISSION_DENIED", refused === "PERMISSION_DENIED", refused);
   const dmRefused = await readWindow(ep, conn, { ...req, dms: true }).then(() => undefined, (e: { code?: string }) => e.code);
   check("a user asking for DMs is refused with PERMISSION_DENIED", dmRefused === "PERMISSION_DENIED", dmRefused);
-  const seqRefused = await readWindow(ep, conn, { ...req, since: { kind: "seq", seq: 3, text: "3" } }).then(() => undefined, (e: { code?: string }) => e.code);
+  const seqRefused = await readWindow(ep, conn, { ...req, since: { kind: "seq", seq: 3, text: "3", input: "3" } }).then(() => undefined, (e: { code?: string }) => e.code);
   check("a user asking for --since a sequence is refused with UNSUPPORTED", seqRefused === "UNSUPPORTED", seqRefused);
 }
 

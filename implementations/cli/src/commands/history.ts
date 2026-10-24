@@ -102,7 +102,8 @@ export interface HistoryResult {
   readonly items: HistoryItem[];
 }
 
-type Since = { kind: "seq"; seq: number; text: string } | { kind: "time"; ms: number; text: string };
+/** `input` is the value as given; `text` is the sequence, or the time it resolved to as ISO. */
+type Since = { kind: "seq"; seq: number; text: string; input: string } | { kind: "time"; ms: number; text: string; input: string };
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
 
@@ -120,16 +121,27 @@ function parseSince(raw: string | undefined, now: number): Since | undefined {
   if (/^\d+$/.test(raw)) {
     const seq = Number(raw);
     if (!Number.isSafeInteger(seq)) throw usage("--since sequence must be a whole number this client can represent without rounding");
-    return { kind: "seq", seq, text: raw };
+    return { kind: "seq", seq, text: raw, input: raw };
   }
   const age = /^(\d+)([smhd])$/.exec(raw);
   if (age) {
     const at = new Date(now - Number(age[1]) * UNIT_MS[age[2]!]!);
     if (!Number.isFinite(at.getTime())) throw usage("--since age is outside the supported date range");
-    return { kind: "time", ms: at.getTime(), text: at.toISOString() };
+    return { kind: "time", ms: at.getTime(), text: at.toISOString(), input: raw };
+  }
+  // A bare date is local midnight, as a date-time without an offset is local time. ECMAScript reads a
+  // bare date as UTC, so east of UTC it dropped the first hours of the day.
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (day) {
+    const [year, month, date] = [Number(day[1]), Number(day[2]) - 1, Number(day[3])];
+    const at = new Date(0);
+    at.setFullYear(year, month, date);
+    at.setHours(0, 0, 0, 0);
+    if (at.getFullYear() !== year || at.getMonth() !== month || at.getDate() !== date) throw usage(`--since ${raw} is not a calendar date`);
+    return { kind: "time", ms: at.getTime(), text: at.toISOString(), input: raw };
   }
   const at = Date.parse(raw);
-  if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString() };
+  if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString(), input: raw };
   throw usage(`--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "${raw}"`);
 }
 
@@ -235,7 +247,7 @@ export async function history(args: ParsedArgs): Promise<void> {
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
       process.exitCode = partial ? exitCode("partial", "OPERATION_PARTIAL") : exitCode("ok");
     } else {
-      writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names));
+      writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names, since));
     }
     if (!live) return;
     await live.follow(result.items, (item) => keep(item, undefined, v.from, v.grep), presentation, target, names, () => stopping);
@@ -486,11 +498,15 @@ function itemLine(item: HistoryItem, names: ReadonlyMap<string, string>): Cell {
   return `${shownTime(item.ts)}  ${where(item, names)}  ${item.from.name}: ${item.text}`;
 }
 
-function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>): Report {
+function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>, since: Since | undefined): Report {
   const scope = r.channels.length === 1 && !r.dms ? `#${r.channels[0]}` : r.dms ? "every channel and DMs" : "every channel";
   const notes: Cell[] = [];
   const filtered = r.window.since !== null || r.window.from !== null || r.window.grep !== null;
   notes.push({ text: `${r.items.length} ${r.items.length === 1 ? "message" : "messages"}${filtered ? ` of the ${r.window.read} read` : ""}: the newest retained in ${scope} of ${space}, up to --limit ${r.window.limit}`, tone: "hint" });
+  if (since?.kind === "time") {
+    const at = new Date(since.ms);
+    notes.push({ text: `--since ${since.input} is ${at.toLocaleDateString()} ${at.toLocaleTimeString()} local time (${since.text}); only messages after it are shown`, tone: "hint" });
+  }
   if (r.window.olderRetained === true) notes.push({ text: "older retained messages are not shown; raise --limit (up to 1000) to read further back", tone: "hint" });
   if (r.window.olderRetained === null) notes.push({ text: "whether older retained messages exist is unknown", tone: "waiting" });
   if (r.window.reachesSince === false) notes.push({ text: `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });

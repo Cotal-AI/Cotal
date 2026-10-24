@@ -4490,7 +4490,7 @@ cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
 | `--dms` | off | Also read DM history, which needs a DM read grant. With `clear`, also clear DM history |
-| `--since <time\|seq>` | none | Only messages after an ISO 8601 time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence |
+| `--since <time\|seq>` | none | Only messages after an ISO 8601 time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
 | `--limit <n>` | 50 | How many of the newest retained messages to read, 1 to 1000 |
 | `--from <name>` | none | Keep messages from this sender name or id |
 | `--grep <text>` | none | Keep messages whose text contains this, ignoring case |
@@ -4504,8 +4504,10 @@ Reads the newest retained messages in the selected space, newest last: one chann
 channel the identity may read. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
 filter that window on this machine. They do not search the whole stream. `result.window` says how
 many messages were read, whether older retained messages exist that the window did not reach, and
-whether the window goes back to `--since`. An age outside the supported date range or a sequence
-that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting.
+whether the window goes back to `--since`. The report names the local time and the ISO instant a
+time `--since` resolved to. An age outside the supported date range, a date that is not on the
+calendar, or a sequence that cannot be represented without rounding is a `USAGE_INVALID` refusal
+before connecting.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
 is the ISO time. A DM row shows its recipient's name when the roster carries that principal or a
 message in the window came from it, and the principal otherwise. `--dms` reads the roster for those
