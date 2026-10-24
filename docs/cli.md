@@ -2174,9 +2174,10 @@ nothing selected it is a `no-op`, exit 0. It takes no space name.
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh. Inside a project whose root has a
-registered space other than the selection, the command still targets the selection. Before it acts,
-it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming both spaces
-and the `--space` that targets the folder's space.
+registered space other than the selection, or a space prepared there and not started yet, the
+command still targets the selection. Before it acts, it warns on stderr and in its JSON `warnings`
+with `SELECTION_NOT_FOLDER_SPACE`, naming both spaces and the `--space` that targets the folder's
+space.
 An empty `--space` value, such as `--space "$S"` with `S` unset, is refused with `USAGE_INVALID`,
 exit 1, by every command that takes `--space`, before anything is read or written. It never falls
 back to the selection.

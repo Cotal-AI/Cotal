@@ -22,7 +22,7 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { getCurrent, recordMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
@@ -145,6 +145,17 @@ const QUESTION = "Which one?";
   check("control: no warning in the selected space's root, from a folder with no project, or with --space",
     [inAlpha, inBetaNamed, run(["who", "--json"])].every((r) => envelope(r)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") && !r.stderr.includes("SELECTION") && !/^! this targets/m.test(r.stderr)),
     [inAlpha, inBetaNamed].map(shown));
+  // A space prepared in a folder is that folder's space before its first `up` too, so a send there
+  // does not land in the selection unannounced.
+  const gamma = join(home, "gamma");
+  mkdirSync(join(gamma, ".cotal"), { recursive: true });
+  recordPreparedSpace({ space: "gamma", root: gamma, ts: new Date(0).toISOString() });
+  const GAMMA_NOTE = `this targets the selected space "alpha", not this folder's space "gamma"; pass --space gamma to target it`;
+  const inGamma = run(["who", "--json"], gamma);
+  check("in a prepared space's folder, before its first up, the selection warns the same way",
+    envelope(inGamma)?.target?.space === "alpha" && envelope(inGamma)?.warnings?.some((w: { code: string; message: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE" && w.message === GAMMA_NOTE) &&
+      inGamma.stderr.includes(`! ${GAMMA_NOTE}`), shown(inGamma));
+  removePreparedSpace("gamma");
   clearCurrent();
 }
 
