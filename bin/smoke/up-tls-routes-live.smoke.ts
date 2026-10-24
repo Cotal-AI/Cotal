@@ -389,8 +389,17 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     rememberSandbox(home, port, cwd);
-    writeFileSync(join(cwd, "cotal.yaml"),
-      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsmanifest\nbroker:\n  servers: nats://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+    const manifest = (scheme: string) => writeFileSync(join(cwd, "cotal.yaml"),
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsmanifest\nbroker:\n  servers: ${scheme}://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+    // A nats:// address under --tls-cert is refused before anything starts, naming the tls:// form.
+    manifest("nats");
+    const plain = cotal(["up", "-f", "cotal.yaml", "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(plain.status, 1, `-f with a nats:// broker and --tls-cert must refuse USAGE_INVALID:\n${plain.out}`);
+    assert.match(plain.out, /must be a tls:\/\/ address/, `the refusal must say the address must be tls://:\n${plain.out}`);
+    assert.ok(plain.out.includes(`set broker.servers to tls://127.0.0.1:${port} in cotal.yaml`), `the refusal must name the tls:// form:\n${plain.out}`);
+    assert.equal(await serverInfo(port), undefined, "the refused start must leave no listener");
+    assert.equal(existsSync(join(cwd, ".cotal", "broker-policy.json")), false, "the refused start must write no broker policy");
+    manifest("tls");
     const r = cotal(["up", "-f", "cotal.yaml", "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
 
     const info = await serverInfo(port);
@@ -401,7 +410,7 @@ async function main(): Promise<void> {
     const admitted = await admitOverTls(port, pkiFiles.ca, "localhost");
     assert.equal(admitted.ok, true, `ADMISSION FAILED (-f manifest): ${admitted.detail}`);
     assertCleartextRefused(await cleartextReply(port), "-f manifest");
-    console.log("  ✓ -f manifest: tls_required, verifying client ADMITTED, cleartext REFUSED");
+    console.log("  ✓ -f manifest: a nats:// broker REFUSED; tls_required, verifying client ADMITTED, cleartext REFUSED");
     cotal(["down"], home, cwd);
   });
 
@@ -612,7 +621,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     writeFileSync(join(cwd, "cotal.yaml"),
-      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdry\nbroker:\n  servers: nats://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdry\nbroker:\n  servers: tls://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
     const policy = join(cwd, ".cotal", "broker-policy.json");
 
     const dry = cotal(["up", "-f", "cotal.yaml", "--dry-run",
@@ -865,7 +874,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     writeFileSync(join(cwd, "cotal.yaml"),
-      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdryhost\nbroker:\n  servers: nats://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdryhost\nbroker:\n  servers: tls://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
     const policy = join(cwd, ".cotal", "broker-policy.json");
 
     const bad = cotal(["up", "-f", "cotal.yaml", "--dry-run",

@@ -2966,6 +2966,12 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, "broker.host", "broker.servers") : (m.broker?.servers ?? DEFAULT_SERVER);
   assertTlsIntentServed(server, opts.transport, opts.server !== undefined ? "--server" : "the manifest's broker.servers");
+  // A --tls-cert broker serves TLS only, so its address says tls://, as a bare up requires of --server.
+  if (opts.transport.kind === "tls-required" && server.split(",").some((url) => /^nats:\/\//i.test(url.trim())))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--tls-cert serves the broker over TLS, so ${opts.server !== undefined ? "--server" : "the manifest's broker.servers"} must be a tls:// address; nothing was started or written`, {
+      target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable" },
+      remedy: opts.server !== undefined ? `pass --server ${tlsAddress(server)}` : `set broker.servers to ${tlsAddress(server)} in ${file}`,
+    });
   const open = m.broker?.auth === false; // default is auth
   const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
   const runtime = m.runtime ?? "pty";
@@ -4392,8 +4398,8 @@ function commitTransportPolicy(root: string, transport: BrokerTransport, quietBo
   if (!quietBoot) announceTransport(transport, server);
 }
 
-/** The `tls://` form of a broker URL. */
-const tlsAddress = (server: string): string => server.replace(/^nats:/i, "tls:");
+/** The `tls://` form of a broker URL, or of each URL in a list. */
+const tlsAddress = (server: string): string => server.split(",").map((url) => url.trim().replace(/^nats:/i, "tls:")).join(",");
 
 function announceTransport(transport: BrokerTransport, server?: string): void {
   if (transport.kind !== "tls-required") return;
