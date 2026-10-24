@@ -1,5 +1,212 @@
 # @cotal-ai/manager
 
+## 0.101.0
+
+### Patch Changes
+
+- 7c8564e: A missing `--yes` outside an interactive terminal now refuses in two lines, the refusal and a
+  remedy that names `--yes`, as `down` does. `history clear`, `persona remove`, `channel remove`,
+  `space delete`, `reset store`, `reset space`, the service and team removals, and the other
+  confirmed commands printed the whole command help after the refusal, and several gave no remedy.
+- b8fa243: The manager refuses a `COTAL_SERVER` with a user name or password in it `USAGE_INVALID`, exit 1, before it reads, writes or dials anything, as every command refuses such a `--server`, and does not repeat the value. Before, `cotal supervise` and the manager entry printed the value, password included, in a line that blamed `--server`, or dialed it with those credentials dropped.
+- 9678c9d: On a user-auth stack, `cotal down` after `cotal login` refused with "ask the stack operator to stop this shared manager", even for the person who started the stack, because the signed-in `cli` grant had no `admin` scope. That refusal now names the whole-row `cotal actor grant` that adds `admin` to the current grant, with every other field the row holds today, as the auth plane prints it from the ledger. After that grant, `cotal down` stops the stack. No other caller is tried, and a grant that already holds `admin` keeps the manager's refusal as it was.
+- 71e91d8: The remote manager's goal-index scan checks each returned entry with core's goal-index entry parser instead of its own copy, so a refused entry names the field at fault and a field core accepts is never refused by the scan. Core's parser now also refuses an entry with an empty coordinate, which the scan copy already refused.
+- 82d32cd: A hung stack manager no longer reads as healthy and no longer leaves the stop commands without a
+  way out. `status` read a controller stack's manager only from its instance record, which stays
+  `running · endpoint serving` while the process lives, so a stopped or hung manager showed green.
+  A running `stack-manager` now gets one probe of its manager endpoint: the selected space's `Manager`
+  row reads `answering`, `not answering · stack-manager pid <pid>` or `endpoint not checked`, and the
+  JSON result carries it as `stackManager`. A manager that does not answer puts `kill -KILL <pid>`
+  first in Next. `down --yes`, `service stop` and `service restart` gave exit 3 with no Next and no
+  pid when the manager did not answer its describe. They now refuse `LIFECYCLE_BLOCKED` (exit 2),
+  name the manager's pid and say no stop was submitted, and their Next ends that process so the same
+  command finds it gone and goes on.
+- 71eeb1c: A managed spawn on a user-auth mesh whose enrollment the host refuses, for example for a role or a
+  channel beyond the caller's grant, is now reported as refused with `PERMISSION_DENIED` once the
+  manager has removed the secrets it staged for the agent. It used to be reported as
+  `OPERATION_UNKNOWN`, although nothing was launched. A host that fails or does not answer still
+  leaves the outcome unknown.
+- 3f19a67: When the host enrolls a managed agent with other read or post channels than its persona asked for,
+  as a host that narrows a request to the account's grant does, the spawn receipt now says so on one
+  line, listing what was granted beside what was asked. `--json` carries both lists as
+  `acl.requested` and `acl.effective`.
+- 00db0a6: A manager can be given a name when it starts: `cotal supervise --name <name>`, the `manager`
+  service preset's `name` option, or `cotal up --manager-name <name>`. The name rides the manager's
+  presence card and is recorded in its root, so a restart or repair keeps it. `who --all` and the
+  choice listed when several of your managers are live show each manager by its name, or by
+  `<host>/<runtime>` when it has none. On a user-auth mesh, `--on` takes a manager's name or host as
+  well as its instance id when only one of your live managers matches it, and otherwise refuses
+  and lists them with the command again on each. On a static or open mesh a name passed to `--on` is
+  refused with a Next that asks for the instance id.
+- 348aa96: A manager that a controller stack or `service start` runs now stops on a plain `SIGTERM`, such as
+  one from `kill`, a systemd stop or a system shutdown. It ignored any signal that carried no stop
+  request, so it kept running until `SIGKILL` and never ran its seat cleanup. It now runs the stop
+  with the default agent policy and exits, and the next `cotal down` records it as already gone. A
+  `SIGINT` without a stop request is still ignored, because Ctrl-C reaches the manager together with
+  the CLI that publishes the request.
+- 51b709e: `ps` no longer names the retired `deregister-instance` spelling for a manager whose host is gone. On an auth space it names `cotal endpoint deregister manager <id> --yes` from the space's own root, and on any other space it says to start that manager again and stop it cleanly if its host is still available, and that no supported command removes the record if the host is gone. The row is still listed and the read is still partial. `deregister-instance` still refuses and names `endpoint deregister`, without printing its old usage after the refusal, and a manager that cannot deregister at shutdown names the same two ways out.
+- 66af07b: `run show` names the branch a settled `race` took, and marks `not acted on` an answer whose step was in a losing branch, or whose pause was cancelled after accepting it. Such an answer used to be listed as acted on, or not at all. The journal rows carry the race's `winner` and each losing step's `lostRace` in `--json`.
+- ce09dfc: The retired `deregister-instance` spelling still refuses and names `cotal endpoint deregister`, and now also says that command needs a static space's signing authority and that an open or user-auth space has no command that removes a registration, rather than offering a replacement that refuses `UNSUPPORTED` there.
+- 1d2da78: The refusals a revoked run gets, on `cotal run resume` and on `cotal run answer`, no longer end in
+  a spec section reference.
+- a57e4d0: When the checkpoint lookup behind `run-answer` fails on a signerless manager, the caller now gets the
+  host's own rejection. A `run-operator` issuance that rejected with `null` or `undefined` surfaced as
+  the manager's own `TypeError: Cannot read properties of null (reading 'name')`. A missing open
+  checkpoint, and an unamendable one for an amendment, are still refused as `not-found`.
+- 720c959: The `run` command's usage line, receipts and next steps, and the run docs, now name the canonical
+  forms: bare `cotal run` to list runs, `run show` and `run check`. `ps` (or `list`), `journal` and
+  `migrate` still work, and the CLI reference lists them as compatibility aliases.
+- b3426bb: A failed workflow run now records why it failed. The run driver writes the error's language code, when it has one, and its message (bounded to 4000 characters) on the failed run status as `failure`. `cotal run ps` and `cotal run show` print the state as `failed (<code>)`, the run view prints the message under `Failure`, and the JSON status and `ps` rows carry `failure`. Before, a thrown error, an L4010 null access, an L4013 step budget or an L4023 deadline showed only "failed", and the cause was only in the manager's log. SPEC §13.7 adds the optional field.
+- cc023f7: `cotal run show` and `cotal run journal` read a run whose journal is larger than the broker's
+  payload limit. They read the journal from the manager in pages, each one reply, through a new
+  `journal: { offset }` input on `run-status` that answers the rows from that offset that fit, with
+  `journalTotal`. A record or a single row too large for one reply now refuses `UNSUPPORTED` and
+  names `cotal run journal <run-id> --local`, instead of failing with the broker's payload error.
+- fc38933: A `cotal run start` or `resume` past the manager's limit of 8 runs activating at once is now a clean refusal. The manager refuses before it writes the run's admission, marks the refusal `not-executed`, and names the runs still activating, and the CLI reports it as `LIFECYCLE_BLOCKED`, exit 2, with the next step to wait until one has activated and run it again. Before, the manager wrote the admission first, and the CLI reported the refusal as exit 3 "Outcome unconfirmed" with a "retry" hint it then told the caller not to follow. The limit is now in the run docs.
+- 3e09d27: A hosted `cotal run resume` of a run recorded `completed` or `failed` is now refused `LIFECYCLE_BLOCKED` (exit 2), naming the state. Before, it printed "Workflow resumed", exited 0 and drove the finished run again under a new epoch, adding a holder activation row to its journal each time.
+- 7fb38be: A managed spawn refused because the manager's catalog has no such persona now names that manager,
+  its host and the catalog file to create there, instead of pointing at `--config` and
+  `cotal personas list`, which act on your own machine. When another of your live managers has the
+  persona in its catalog, the Next gives the spawn again pinned to it, on every kind of mesh rather
+  than only for a missing `default` on a user-auth mesh.
+- b0edb0a: `cotal supervise` now prints its refusal and exits 1 when the auth provider's manager-service authority call rejects with `null` or `undefined`. Its refusals read `.message` off the caught value, so that rejection ended the command on `Cannot read properties of null (reading 'message')` without the "remote supervision for space ... was refused" line, and a rejected string printed `undefined` as the reason. Every refusal the command prints now takes its text from the caught value's `message`, or the value itself when it has none, and a value it cannot read reports as `an unreadable rejection`, as the manager's other handlers do.
+- d6f9f7a: The manager's static reconcile sweep now totals each terminal's broker teardown from the call that ran it. Before, it cleared a shared manager field, awaited the terminal and read the field back, so a despawn or retry teardown that finished during that wait was counted against the swept alias in place of the alias's own counts. The `lastDeprovisionResources` field is removed. A broker teardown whose membership inventory was incomplete now throws a `DeprovisionError` that carries its accounting, so a failed attempt still reports what it deleted. Core adds `addDeprovisionAccounting` to sum two `DeprovisionResourceAccounting` values.
+- 447b7eb: A turn's goal-index entry now records the seat's owner in its acceptance floor beside the seat's name, actor and uid, as a spawn's entry does, and the relay note no longer carries it. A restarted manager reads the whole seat from the floor. A turn an older manager accepted has no owner in its floor, so a restarted manager leaves it unadopted and logs it, and its run's turn ends at its deadline.
+- 78a2035: A workflow's `log(...)` lines are no longer discarded. A run the manager hosts writes each line to
+  the manager's log as `run <run-id>: log <text>`, a `--local` drive prints them, and `run simulate`
+  lists them under `Log`, with `result.log` in `--json`. The lines stay out of the journal, as the
+  language defines.
+- Updated dependencies [ff99364]
+- Updated dependencies [39e0c7a]
+- Updated dependencies [fc17f8f]
+- Updated dependencies [e7cb03f]
+- Updated dependencies [0d1dfc3]
+- Updated dependencies [c74a853]
+- Updated dependencies [fff2909]
+- Updated dependencies [b0257f2]
+- Updated dependencies [0c9e498]
+- Updated dependencies [1e75421]
+- Updated dependencies [b58bf37]
+- Updated dependencies [0af0377]
+- Updated dependencies [ea76a77]
+- Updated dependencies [9736397]
+- Updated dependencies [0282994]
+- Updated dependencies [dbbd7f5]
+- Updated dependencies [7d489d2]
+- Updated dependencies [cfeaddd]
+- Updated dependencies [afec9b6]
+- Updated dependencies [7c8564e]
+- Updated dependencies [66d2f93]
+- Updated dependencies [5cc55a7]
+- Updated dependencies [3a12438]
+- Updated dependencies [60cb005]
+- Updated dependencies [54f044f]
+- Updated dependencies [f0d97cd]
+- Updated dependencies [b8fa243]
+- Updated dependencies [09d905f]
+- Updated dependencies [286bccd]
+- Updated dependencies [4b2eb30]
+- Updated dependencies [855e595]
+- Updated dependencies [1c978f9]
+- Updated dependencies [f0d3143]
+- Updated dependencies [5703dfb]
+- Updated dependencies [a62d32d]
+- Updated dependencies [2ed3641]
+- Updated dependencies [9aa4be8]
+- Updated dependencies [35ec68e]
+- Updated dependencies [e5ea994]
+- Updated dependencies [0b638b8]
+- Updated dependencies [817f353]
+- Updated dependencies [b7d985d]
+- Updated dependencies [957b8d8]
+- Updated dependencies [77c915a]
+- Updated dependencies [2dcc119]
+- Updated dependencies [75476c5]
+- Updated dependencies [71e91d8]
+- Updated dependencies [5521d3f]
+- Updated dependencies [d4afe89]
+- Updated dependencies [b6cfff1]
+- Updated dependencies [332d20e]
+- Updated dependencies [9901303]
+- Updated dependencies [b8304ce]
+- Updated dependencies [e264d3c]
+- Updated dependencies [af0a0bc]
+- Updated dependencies [71eeb1c]
+- Updated dependencies [608f2d0]
+- Updated dependencies [00db0a6]
+- Updated dependencies [0decd7a]
+- Updated dependencies [240dbf4]
+- Updated dependencies [1de8abb]
+- Updated dependencies [62c4874]
+- Updated dependencies [b3f0edd]
+- Updated dependencies [b8ef19b]
+- Updated dependencies [788bf15]
+- Updated dependencies [2093a48]
+- Updated dependencies [7b97877]
+- Updated dependencies [2f7657c]
+- Updated dependencies [9323110]
+- Updated dependencies [101e4f1]
+- Updated dependencies [70e9a65]
+- Updated dependencies [ea1b582]
+- Updated dependencies [998477a]
+- Updated dependencies [062cdfd]
+- Updated dependencies [e3979fe]
+- Updated dependencies [b5017a7]
+- Updated dependencies [b1397f4]
+- Updated dependencies [3a3d489]
+- Updated dependencies [4f1ade7]
+- Updated dependencies [66af07b]
+- Updated dependencies [b77865a]
+- Updated dependencies [8c019ae]
+- Updated dependencies [985f634]
+- Updated dependencies [2f4f747]
+- Updated dependencies [0abbc55]
+- Updated dependencies [5e02acd]
+- Updated dependencies [3fc0d8e]
+- Updated dependencies [4725a7f]
+- Updated dependencies [4dcdc62]
+- Updated dependencies [d5e1e1f]
+- Updated dependencies [e5ddaed]
+- Updated dependencies [b3426bb]
+- Updated dependencies [cc023f7]
+- Updated dependencies [789de43]
+- Updated dependencies [6a9b881]
+- Updated dependencies [eabc54d]
+- Updated dependencies [440ce81]
+- Updated dependencies [aa3ff60]
+- Updated dependencies [9c86a40]
+- Updated dependencies [f2e0c06]
+- Updated dependencies [73930b2]
+- Updated dependencies [c63f6d8]
+- Updated dependencies [6682bcb]
+- Updated dependencies [d205ad2]
+- Updated dependencies [7aa9d14]
+- Updated dependencies [531b374]
+- Updated dependencies [88c64a0]
+- Updated dependencies [48431ca]
+- Updated dependencies [83c2b1b]
+- Updated dependencies [aef1cf1]
+- Updated dependencies [26f407a]
+- Updated dependencies [ff650ba]
+- Updated dependencies [a8c3461]
+- Updated dependencies [a923eaa]
+- Updated dependencies [b505ad6]
+- Updated dependencies [457d771]
+- Updated dependencies [d6f9f7a]
+- Updated dependencies [03858ae]
+- Updated dependencies [d0d885a]
+- Updated dependencies [447b7eb]
+- Updated dependencies [8e35b7c]
+- Updated dependencies [d74686f]
+- Updated dependencies [24769e9]
+- Updated dependencies [d407e4b]
+- Updated dependencies [89f14f2]
+- Updated dependencies [b6681bc]
+- Updated dependencies [78a2035]
+  - @cotal-ai/workspace@0.101.0
+  - @cotal-ai/core@0.101.0
+  - @cotal-ai/seat@0.101.0
+
 ## 0.100.2
 
 ### Patch Changes

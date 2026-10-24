@@ -1,5 +1,194 @@
 # @cotal-ai/auth
 
+## 0.101.0
+
+### Minor Changes
+
+- b18b9e1: `POST /exchange` now answers a `manager-caller` exchange with `token`, `owner` and `exp`, the fields `ExchangeResult` declares. The IdP bridge also returned `managerInstanceId` through a spread the type did not check, and the agent exchange sent it too, but no client read it. A `manager-caller` bearer's instance is its signed `act.managerInstanceId` claim, which the callout enforces and the CLI reads. Code that read the response field reads that claim instead.
+
+### Patch Changes
+
+- 8d5ba31: `cotal actor label <actor> (--sub <subject> | --owner <u_…>) <label>` changes only an interactive actor row's label. Until now a new label needed a re-grant, which rewrote the row and retired its lifecycle. The label is outside the authorization digest, so the row keeps its lifecycle, grant time and grant fields, and bearers issued under it keep working. A managed agent's row is refused.
+- cc959d8: `cotal actor list --sub <subject>` and `cotal auth grants --sub <subject>` list one IdP subject's rows. The ledger still stores no subject: the subject derives to its owner as `actor grant --sub` does, and the report is titled `Rows for <subject> (owner <u_…>)`. JSON adds `subject` and `owner` to the result.
+- cbb91e8: `cotal actor list` and `cotal auth grants` now show each row's role, label and parent in their
+  tables, and `--json` carries the parent too, so a re-grant can spell the whole row again. The grant
+  receipt names the role, label and parent it stored. `cotal actor list`, `actor grant` and `actor
+  revoke` take `--json` and `--plain` as the `auth` forms do.
+- d7b905d: `cotal actor` takes `grant`, `revoke` and `list`, but declared none of them, so `cotal help actor` had no Commands section and shell completion after `cotal actor` offered only options. It now declares the three, with their own help, and completion offers them.
+- 0d1dfc3: `cotal auth revoke-credential <public-key | creds-file>` stops one credential that `auth mint` wrote and keeps the space's store and every other credential. Until now the only way to stop a leaked minted credential was to rotate the space identity with `reset space`, which also removes the store and its history. The command records the key in the space's account JWT `revocations`, so the broker refuses it from its next start. It works on a stopped space, and on a running one it refuses and names the route: `cotal down`, the revocation, then `cotal up`. `auth mint --identity` refuses a revoked key. `auth retire`'s next step and doctor's guidance for an unbounded credential now name the revocation first and the identity rotation as the wider step.
+- b982770: `auth grant` and `actor grant` refuse a `--scope` name the ledger is never checked for, such as a
+  typo of `spawn`, with `USAGE_INVALID` naming each unknown name and the capabilities there are:
+  `admin`, `run`, `spawn`, `supervise` and `role:<role>`. Such a grant used to be stored as written.
+  An input that is not valid now names its field and why, every one in one refusal, where it used to
+  say only "invalid actor, owner, parent, role, scope or channel-pattern input".
+- 542d735: `cotal auth handle inspect` of a path that names nothing now refuses `TARGET_NOT_FOUND` and names
+  the path, where it used to refuse `DEPENDENCY_UNAVAILABLE` with no path.
+- 72b2dc2: `cotal logout --local` clears this machine's cached login, and that account's discovered registry entries, without contacting the provider. Before, a provider that was down or did not confirm sign-out left the login cached with no way to clear it here: `logout` refused `OPERATION_UNKNOWN` each time. That refusal now names `cotal logout --idp <url> --local` as its next step. The `--local` receipt says the provider session was not contacted and stays valid until it expires or is revoked at the provider.
+- 71eeb1c: A managed spawn on a user-auth mesh whose enrollment the host refuses, for example for a role or a
+  channel beyond the caller's grant, is now reported as refused with `PERMISSION_DENIED` once the
+  manager has removed the secrets it staged for the agent. It used to be reported as
+  `OPERATION_UNKNOWN`, although nothing was launched. A host that fails or does not answer still
+  leaves the outcome unknown.
+- 0abbc55: `auth retire`'s next step, `doctor`'s guidance for an unbounded credential and `reset space --dry-run` now say that rotating the space identity with `reset space` also removes the space's store, with its workflow runs, channel history and stored messages. The dry run and the apply's confirmation have the Store contents section `reset store --dry-run` has, and `--json` carries it as `storeContents`. Before, the next step named only the credentials it stops, and the dry run said only that it removes the stopped store.
+- 51ee7a4: `auth grant` and `auth revoke`, and their `actor` spellings, refuse a static or open space with
+  `UNSUPPORTED` before asking for `--sub`, `--owner` or the ACL flags. Such a space has no actor
+  ledger, so a subject could never make the grant apply; the refusal used to come only after an
+  invented `--sub` passed the usage check.
+- 58b025c: Every subcommand's help now gives its whole usage, from `cotal` through its arguments, such as
+  `cotal channel set <name>` and `cotal persona create <name>`, and lists only the options that
+  subcommand takes. `help history clear` no longer prints a usage without `cotal history`, and the
+  usages of `meshes`, `personas`, `spawn`, `backup`, `describe`, `invoke`, `actor`, `agent-bearer`
+  and `service-endpoint` now start with `cotal`.
+- d0d885a: A TLS stack whose certificate names its IP address now starts. Every TLS dial to an IP address checked the certificate against `localhost`, so `cotal up --server tls://127.0.0.1:<port>` with a valid certificate for that address waited out its readiness and failed `OPERATION_UNKNOWN` with no cause, even with the CA trusted. When this client refuses the certificate, `up` now stops at the first handshake, fails `OPERATION_FAILED` (exit 5) with the native error, and names `NODE_EXTRA_CA_CERTS` as the way to trust a self-signed certificate or a local CA. A `nats://` address with such a certificate names the `tls://` address to use instead.
+- b6681bc: `cotal whoami --creds <file>` reports what a credential file may do: the space its permissions
+  name, its profile, principal and agent lifecycle, when it was issued and when it expires, the
+  channels it may read and post to, and whether it may read every DM, only its own, or none. It
+  decodes the file's own claims and contacts no broker. No command showed this before: `whoami` had
+  no `--creds`, and `auth handle inspect` refuses a credential file, whose Next now names
+  `whoami --creds`.
+- Updated dependencies [ff99364]
+- Updated dependencies [71e8b88]
+- Updated dependencies [b3738e8]
+- Updated dependencies [c22bcff]
+- Updated dependencies [39e0c7a]
+- Updated dependencies [fc17f8f]
+- Updated dependencies [e7cb03f]
+- Updated dependencies [0d1dfc3]
+- Updated dependencies [c74a853]
+- Updated dependencies [fff2909]
+- Updated dependencies [b0257f2]
+- Updated dependencies [0c9e498]
+- Updated dependencies [1e75421]
+- Updated dependencies [b58bf37]
+- Updated dependencies [0af0377]
+- Updated dependencies [b926504]
+- Updated dependencies [ea76a77]
+- Updated dependencies [9736397]
+- Updated dependencies [0282994]
+- Updated dependencies [dbbd7f5]
+- Updated dependencies [7d489d2]
+- Updated dependencies [cfeaddd]
+- Updated dependencies [afec9b6]
+- Updated dependencies [7c8564e]
+- Updated dependencies [66d2f93]
+- Updated dependencies [5cc55a7]
+- Updated dependencies [3a12438]
+- Updated dependencies [60cb005]
+- Updated dependencies [54f044f]
+- Updated dependencies [f0d97cd]
+- Updated dependencies [b8fa243]
+- Updated dependencies [09d905f]
+- Updated dependencies [286bccd]
+- Updated dependencies [4b2eb30]
+- Updated dependencies [855e595]
+- Updated dependencies [1c978f9]
+- Updated dependencies [f0d3143]
+- Updated dependencies [5703dfb]
+- Updated dependencies [a62d32d]
+- Updated dependencies [2ed3641]
+- Updated dependencies [9aa4be8]
+- Updated dependencies [35ec68e]
+- Updated dependencies [9e0b1c5]
+- Updated dependencies [e5ea994]
+- Updated dependencies [e53c3a3]
+- Updated dependencies [0b638b8]
+- Updated dependencies [817f353]
+- Updated dependencies [b7d985d]
+- Updated dependencies [957b8d8]
+- Updated dependencies [77c915a]
+- Updated dependencies [2dcc119]
+- Updated dependencies [75476c5]
+- Updated dependencies [71e91d8]
+- Updated dependencies [5521d3f]
+- Updated dependencies [d4afe89]
+- Updated dependencies [b6cfff1]
+- Updated dependencies [332d20e]
+- Updated dependencies [9901303]
+- Updated dependencies [2895911]
+- Updated dependencies [b8304ce]
+- Updated dependencies [e264d3c]
+- Updated dependencies [af0a0bc]
+- Updated dependencies [71eeb1c]
+- Updated dependencies [608f2d0]
+- Updated dependencies [00db0a6]
+- Updated dependencies [0decd7a]
+- Updated dependencies [240dbf4]
+- Updated dependencies [1de8abb]
+- Updated dependencies [62c4874]
+- Updated dependencies [b3f0edd]
+- Updated dependencies [b8ef19b]
+- Updated dependencies [94207f0]
+- Updated dependencies [788bf15]
+- Updated dependencies [2093a48]
+- Updated dependencies [7b97877]
+- Updated dependencies [b2fcd9c]
+- Updated dependencies [2f7657c]
+- Updated dependencies [9323110]
+- Updated dependencies [101e4f1]
+- Updated dependencies [70e9a65]
+- Updated dependencies [ea1b582]
+- Updated dependencies [998477a]
+- Updated dependencies [062cdfd]
+- Updated dependencies [e3979fe]
+- Updated dependencies [b5017a7]
+- Updated dependencies [b1397f4]
+- Updated dependencies [3a3d489]
+- Updated dependencies [4f1ade7]
+- Updated dependencies [b432707]
+- Updated dependencies [66af07b]
+- Updated dependencies [b77865a]
+- Updated dependencies [8c019ae]
+- Updated dependencies [985f634]
+- Updated dependencies [2f4f747]
+- Updated dependencies [0abbc55]
+- Updated dependencies [5e02acd]
+- Updated dependencies [3fc0d8e]
+- Updated dependencies [4725a7f]
+- Updated dependencies [4dcdc62]
+- Updated dependencies [d5e1e1f]
+- Updated dependencies [e5ddaed]
+- Updated dependencies [b3426bb]
+- Updated dependencies [cc023f7]
+- Updated dependencies [789de43]
+- Updated dependencies [6a9b881]
+- Updated dependencies [eabc54d]
+- Updated dependencies [440ce81]
+- Updated dependencies [aa3ff60]
+- Updated dependencies [9c86a40]
+- Updated dependencies [761c861]
+- Updated dependencies [ce05dbf]
+- Updated dependencies [f2e0c06]
+- Updated dependencies [73930b2]
+- Updated dependencies [c63f6d8]
+- Updated dependencies [6682bcb]
+- Updated dependencies [d205ad2]
+- Updated dependencies [7aa9d14]
+- Updated dependencies [531b374]
+- Updated dependencies [88c64a0]
+- Updated dependencies [48431ca]
+- Updated dependencies [83c2b1b]
+- Updated dependencies [aef1cf1]
+- Updated dependencies [26f407a]
+- Updated dependencies [ff650ba]
+- Updated dependencies [a8c3461]
+- Updated dependencies [a923eaa]
+- Updated dependencies [b505ad6]
+- Updated dependencies [457d771]
+- Updated dependencies [d6f9f7a]
+- Updated dependencies [03858ae]
+- Updated dependencies [d0d885a]
+- Updated dependencies [447b7eb]
+- Updated dependencies [8e35b7c]
+- Updated dependencies [d74686f]
+- Updated dependencies [24769e9]
+- Updated dependencies [d407e4b]
+- Updated dependencies [89f14f2]
+- Updated dependencies [b6681bc]
+- Updated dependencies [78a2035]
+  - @cotal-ai/workspace@0.101.0
+  - @cotal-ai/lang@0.101.0
+  - @cotal-ai/core@0.101.0
+
 ## 0.100.2
 
 ### Patch Changes
