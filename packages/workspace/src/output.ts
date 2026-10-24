@@ -175,8 +175,9 @@ export interface OperationScope { space?: string; spaceNote?: { space: string; t
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
 
-/** Run one command inside `scope`, so the space it records there is readable after it throws. */
-export function runOperation<T>(scope: OperationScope, body: () => Promise<T>): Promise<T> {
+/** Run `body` inside `scope`: one command, so the space it records there is readable after it
+ *  throws, or the rendering of that command's failure, which then reads what the run recorded. */
+export function runOperation<T>(scope: OperationScope, body: () => T): T {
   return operationScope.run(scope, body);
 }
 

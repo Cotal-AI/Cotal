@@ -17,7 +17,7 @@ import {
   spaceBackupInventory,
   type SpaceBackupSelection,
 } from "@cotal-ai/core";
-import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, loadSoleSpaceAuth, releaseMaintenanceLock } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { BACKUP_MANIFEST_FORMAT, type BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 
@@ -48,7 +48,7 @@ const journalState = (root: string): string | undefined => {
 interface ClaimedJournal {
   state: string;
   restore?: { attemptId: string };
-  claim?: { attemptId?: string; deadline: string; owners: unknown[] };
+  claim?: { attemptId?: string; deadline: string; owners: unknown[]; coordinator: { startedAt: string } };
 }
 
 const readJournal = (root: string): ClaimedJournal | undefined => {
@@ -355,6 +355,18 @@ async function interruptedRestoreScenario(): Promise<void> {
     must("preserve cut", run("down", "--preserve-state"));
     must("full backup", run("backup", "create", artifact));
 
+    // A create that meets another operation's maintenance lock names that operation, its process and
+    // since when it holds the lock, waits for it, and names no attempt, because it journaled none.
+    const contender = acquireMaintenanceLock(root, { operation: "backup create" });
+    try {
+      const lost = run("backup", "create", join(root, "contended"), "--json");
+      const envelope = JSON.parse(lost.stdout) as { target?: { attemptId?: unknown; holderPid?: unknown; holderOperation?: unknown }; error?: { code?: string; message?: string; remedy?: string } };
+      assert.equal(lost.status, 2, `a create that meets the lock refuses\n${lost.stdout}${lost.stderr}`);
+      assert.ok(envelope.error?.code === "LIFECYCLE_BLOCKED" && envelope.error.message === `backup create is refused: a backup create, process ${process.pid}, has held this root's maintenance lock since ${contender.owner.startedAt}; nothing was changed`
+        && envelope.error.remedy?.startsWith(`wait for process ${process.pid} to finish, then run cotal backup create ${join(root, "contended")} again`)
+        && envelope.target?.holderPid === process.pid && envelope.target.holderOperation === "backup create" && !("attemptId" in envelope.target), `the losing create names the lock holder\n${lost.stdout}`);
+    } finally { releaseMaintenanceLock(contender); }
+
     // Its own process group, as a terminal runs it, so the SIGINT below is the one Ctrl-C sends.
     const child = spawn(process.execPath, ["--import", tsxImport, cliPath, "backup", "restore", artifact], { cwd: root, env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
@@ -367,11 +379,13 @@ async function interruptedRestoreScenario(): Promise<void> {
       ["backup restore", ["backup", "restore", artifact]],
       ["up", ["up", "--detach", "--open", "--server", server, "--space", space]],
       ["backup recover", ["backup", "recover", attemptId, "--yes"]],
+      ["backup create", ["backup", "create", join(root, "during-restore")]],
     ] as const) {
       const refused = run(...args);
       assert.equal(refused.status, 2, `${label} refuses while the restore process lives\n${refused.stderr}`);
       assert.match(refused.stderr, /LIFECYCLE_BLOCKED/, `${label} is a known refusal`);
-      assert.ok(refused.stderr.includes(`holds this root until ${deadline}, and its restore process ${child.pid} is still running`), `${label} names the restore process and the deadline\n${refused.stderr}`);
+      assert.ok(refused.stderr.includes(`holds this root until ${deadline}, and its restore process ${child.pid} is still running, started at ${held.claim!.coordinator.startedAt}`), `${label} names the restore process, its start and the deadline\n${refused.stderr}`);
+      assert.doesNotMatch(refused.stderr, /roll the pre-commit attempt back/, `${label} does not tell the operator to roll a live restore back`);
       assert.ok(refused.stderr.includes(recover), `${label} names the recovery\n${refused.stderr}`);
     }
 
@@ -384,6 +398,7 @@ async function interruptedRestoreScenario(): Promise<void> {
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
     must("recover the interrupted restore", recovered);
+    assert.ok(/Next\s+cotal up\s+Resume the space from its preserved state\s+cotal backup restore <directory>\s+Try the restore again/.test(recovered.stdout), `the recovery receipt names resume and a retried restore as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
@@ -459,6 +474,7 @@ async function interruptedCreateScenario(): Promise<void> {
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
     must("recover the interrupted create", recovered);
+    assert.ok(/Next\s+cotal backup create <directory>\s+Create a new backup from the preserved cut\s+cotal up\s+Resume the space/.test(recovered.stdout), `the release receipt names a new backup and resume as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
     assert.equal(existsSync(destination), false, "recovery removed the partial artifact");

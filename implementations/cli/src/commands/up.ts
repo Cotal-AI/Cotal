@@ -31,6 +31,7 @@ import {
   openServerConfig,
   validateTlsMaterial,
   type BrokerTransport,
+  credsProblem,
   mintCreds,
   mintLifecycleUid,
   DEV_OWNER,
@@ -178,6 +179,7 @@ import {
   recordOperationSpace,
   recordOperationWarning,
   retainSystemSigningSeed,
+  restoreLeftOut,
   SPACE_NAME_MAX,
   spaceNameTooLong,
 } from "@cotal-ai/workspace";
@@ -196,7 +198,8 @@ import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
-import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
+import { ManifestError, formatIssue, loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
+import { UnusableFile } from "../lib/unusable-file.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries, writeFreshTeamAttempt, writeFreshTeamSummary } from "../lib/team-fresh.js";
@@ -207,7 +210,20 @@ import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { checkSpaceName } from "./meshes-add.js";
 import { cleanedManifestStart, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
-import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, stackUpInterruptNotice, keptOnUp, selectedOnUp, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import {
+  bindReaches,
+  controllerStackApplies,
+  recheckExistingStore,
+  requestedStackMode,
+  stackUp,
+  stackUpForegroundNotice,
+  stackUpInterruptNotice,
+  keptOnUp,
+  selectedOnUp,
+  type ExistingStorePin,
+  type StackUpNative,
+  unparsableDaemonCredsNotice,
+} from "./stack-up.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
@@ -245,11 +261,11 @@ import {
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
   journaledRestoredStreams,
-  registryRestoreNotes,
+  leftOutNotes,
   replacePreparedDeadRestoreListener,
   restoreComposition,
   restoreNextStep,
-  retainedPreviousStore,
+  restoreOnlyCopy,
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
@@ -1287,7 +1303,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // A named space this machine runs from another folder is refused before anything is written here,
   // and in every presentation, since the launcher below has no structured receipt.
   if (!values.file && values.space !== undefined) await refuseRunningElsewhere(values.space, meshRoot);
-  if (values.json || values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
+  if (values.json || values.plain) {
+    // `up -f` always takes the retained launcher, so the controller route is no remedy there. Its
+    // manifest is checked first, so a manifest that does not validate gets its own refusal.
+    if (values.file) {
+      const path = resolve(values.file);
+      try { loadManifest(path); } catch (e) { throw manifestFileRefusal(e, path); }
+      throw new CommandFailure("refused", "UNSUPPORTED", "up -f starts its manifest on the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot, path }, remedy: `omit ${values.json ? "--json" : "--plain"}` });
+    }
+    throw new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
+  }
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; the additive team deploy route is separate.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
@@ -1861,11 +1886,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       const composition = restoreComposition(restored.space, restored.restoredStreams, restored.mode);
       console.log(c.dim(`restored: ${composition.restoredWords}; recreated empty: ${composition.emptyWords}`));
       if (composition.note) console.log(c.yellow(composition.note));
-      if (restored.selection === "registry")
-        for (const line of registryRestoreNotes(restored.attemptId, retainedPreviousStore(restored.root, restored.attemptId))) console.log(c.yellow(line));
+      for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId))) console.log(c.yellow(line));
       const journal = readMaintenanceJournal(restored.root);
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-        console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restored.selection)}`));
+        console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal))}`));
     }
     if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext(detached, receiptSpace) }] }] }, "rich", terminalWidth(process.stdout))}`);
     if (restored) restoreSinks.get(restored.attemptId)?.({
@@ -2503,7 +2527,7 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
     if (restoreSink) restoreSink(result);
     else writeResult(presentationOf(values), { command: "up", target: { root, space, server: launch.server }, result: { kind: "controller-stack-restore", root, space, server: launch.server, attemptId, targetPath, selection: result.selection, restored: composition.restored, recreatedEmpty: composition.recreatedEmpty, retiredBrokerRemoved: attempt.brokerRequired } }, (row) => ({ sections: [{ title: "Controller stack restored", blocks: [
       { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Broker", row.server], ["Attempt", row.attemptId], ["Store", row.targetPath], ["Selection", row.selection], ["Restored", composition.restoredWords], ["Recreated empty", composition.emptyWords]] },
-      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : [])] },
+      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : []), ...leftOutNotes(attemptId, result.selection, restoreOnlyCopy(root, attemptId))] },
     ] }] }));
     return values.foreground === true && !restoreSink;
   }
@@ -3066,6 +3090,18 @@ export function controllerStackNative(): StackUpNative {
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen) => commitTransportPolicy(root, chosen, true),
   };
+}
+
+/** The structured refusal for a manifest `up -f` cannot use: the located problems of one that does
+ *  not validate, or the read failure of one that cannot be read. Both exit 1, as the text path does. */
+function manifestFileRefusal(e: unknown, path: string): CommandFailure {
+  if (e instanceof ManifestError) {
+    // One line per problem: a parse error's code frame stays out of the sentence.
+    const issues = e.issues.map((issue) => ({ ...issue, message: issue.message.split("\n")[0]!.replace(/(at line \d+, column \d+):$/, "$1") }));
+    return new CommandFailure("refused", "SCHEMA_INVALID", `the manifest does not validate, so nothing was started: ${issues.map((issue) => formatIssue(e.file, issue)).join("; ")}`, { target: { path, issues }, remedy: "fix each named problem and run the command again" });
+  }
+  const code = (e as NodeJS.ErrnoException)?.code;
+  return new UnusableFile(code === "ENOENT" ? `manifest file not found: ${path}` : `the manifest ${path} could not be read (${code ?? (e as Error).message})`, { file: path });
 }
 
 /** `cotal up -f cotal.yaml` — bring up a FRESH mesh from a manifest (broker + channels + booted
@@ -3855,7 +3891,7 @@ function ensureRootForSpace(space: string): void {
     const gone = !existsSync(prepared.root);
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, {
       target: { space, root: prepared.root },
-      remedy: gone ? `forget it with \`cotal space forget ${space}\`, then start it here` : `start it with \`cotal up\` there, or \`cotal space forget ${space}\` to start it here`,
+      remedy: gone ? `forget it with \`cotal space forget ${space}\`, then start it here` : `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here`,
     });
   }
   // What spaces does this root already host? Prefer auth material; fall back to a live MeshEntry
@@ -5002,10 +5038,11 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: str
     const composition = { injected: false as const, root };
     const rwKey = membershipRwCredsKey(space, composition);
     const wrote: string[] = [];
-    if ((await store.get(rwKey)) === undefined) {
+    const rw = await store.get(rwKey);
+    if (rw === undefined) {
       await store.put(rwKey, await mintCreds(auth, newIdentity(), "membership-rw"));
       wrote.push(MEMBERSHIP_RW_CREDS_KIND); // the KIND is what an operator reads, never the segmented key
-    }
+    } else if (credsProblem(rw) !== undefined && !quietBoot) console.error(c.yellow(`! ${unparsableDaemonCredsNotice([MEMBERSHIP_RW_CREDS_KIND])}`));
     const configPath = membershipConfigPath(root, space);
     if (!existsSync(configPath)) {
       mkSecretDir(dirname(configPath)); // harden the per-space dir before the file lands, as the fresh path does

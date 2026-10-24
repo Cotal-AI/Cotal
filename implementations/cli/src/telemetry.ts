@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { findSubcommand, type Command, type Registry } from "@cotal-ai/core";
 import {
+  CommandFailure,
   effectiveTelemetry,
   extensionProvides,
   homeCotalDir,
@@ -81,9 +82,14 @@ function errorText(error: unknown): ErrorText {
   return { message: scrubErrorText(String(error)), stack: null };
 }
 
-/** The intake: the public one, or `COTAL_TELEMETRY_URL` for a self-hosted intake. */
+/** The intake: the public one, or `COTAL_TELEMETRY_URL` for a self-hosted intake. Throws the typed
+ *  refusal of a value that is not an http or https URL, since every send to it would fail unseen. */
 export function telemetryUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return env.COTAL_TELEMETRY_URL || TELEMETRY_URL;
+  const named = env.COTAL_TELEMETRY_URL;
+  if (!named) return TELEMETRY_URL;
+  const protocol = globalThis.URL.canParse(named) ? new globalThis.URL(named).protocol : undefined;
+  if (protocol !== "http:" && protocol !== "https:") throw new CommandFailure("refused", "USAGE_INVALID", "COTAL_TELEMETRY_URL must be an http or https URL", { remedy: "unset it, or set it to your intake's http or https URL", selfContained: true });
+  return named;
 }
 
 /** Commands that send nothing: `telemetry` itself, internal entries, hidden daemon runners, and the
@@ -168,13 +174,14 @@ export function recordTelemetryError(error: unknown): void {
 /**
  * Arm the exit hook for `cmd`, once: decide the level, print the one-time notice, and register the
  * send on `exit`, which fires for a normal return, a set exit code, `process.exit()` anywhere and an
- * uncaught failure. Throws the typed refusal of a bad `COTAL_TELEMETRY` or settings file; the kernel
- * reports it as it reports any refusal.
+ * uncaught failure. Throws the typed refusal of a bad `COTAL_TELEMETRY` or settings file, and of a
+ * bad `COTAL_TELEMETRY_URL` at a level that sends; the kernel reports it as it reports any refusal.
  */
 export function armTelemetry(registry: Registry, cmd: Command, words: readonly string[], startedAt: number): void {
   if (pending || silent(cmd)) return;
   const effective = effectiveTelemetry(process.env);
   if (effective.level === "off" || !effective.settings) return;
+  const url = telemetryUrl();
   let settings = effective.settings;
   if (effective.source === "file" && effective.level === "regular" && !settings.noticeShownAt && process.stderr.isTTY) {
     console.error(TELEMETRY_NOTICE);
@@ -193,7 +200,7 @@ export function armTelemetry(registry: Registry, cmd: Command, words: readonly s
   };
   process.once("exit", (code) => {
     try {
-      sendTelemetry(telemetryUrl(), eventsAtExit(registry, pending!, code, new Date()));
+      sendTelemetry(url, eventsAtExit(registry, pending!, code, new Date()));
     } catch {
       // Telemetry never changes a command's outcome.
     }

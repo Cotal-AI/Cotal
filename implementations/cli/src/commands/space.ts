@@ -64,6 +64,8 @@ export interface SpaceRow {
   readonly origin: MeshEntry["origin"] | null;
   readonly tlsRequired: boolean;
   readonly eventsRequired: boolean;
+  /** False when `space add --force` registered it unchecked, so its `mode` was never seen enforced. */
+  readonly modeChecked: boolean;
   /** Whether it is the space `cotal use` selected. */
   readonly current: boolean;
   readonly check: Check;
@@ -89,12 +91,12 @@ export interface PreparedRow {
   readonly root: string;
   readonly preparedAt: string;
   readonly current: boolean;
+  /** Its project folder no longer exists, so `up` cannot start it there. */
+  readonly rootMissing: boolean;
 }
 
 interface PreparedDetail extends PreparedRow {
   readonly kind: "prepared-space";
-  /** Its project folder no longer exists, so `up` cannot start it there. */
-  readonly rootMissing: boolean;
 }
 
 /** One registration in full. Pins and endpoints are public; credential paths are left out. */
@@ -164,7 +166,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     if (!m) {
       const p = findPreparedSpace(name);
       if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
-      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current), rootMissing: !existsSync(p.root) };
+      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current) };
       writeResult(presentation, { command: "space", target: { space: p.space }, result }, preparedView);
       return;
     }
@@ -175,7 +177,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
 }
 
 function preparedRow(p: PreparedSpace, current: string | null): PreparedRow {
-  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current };
+  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing: !existsSync(p.root) };
 }
 
 function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
@@ -187,6 +189,7 @@ function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
     origin: m.origin ?? null,
     tlsRequired: m.tlsRequired === true,
     eventsRequired: m.policy?.events === "required",
+    modeChecked: m.unchecked !== true,
     current: m.space === current,
     check,
     catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
@@ -235,9 +238,13 @@ function spacesView(result: SpacesResult): Report {
       {
         kind: "table",
         columns: [{ key: "space", label: "Space" }, { key: "root", label: "Project" }],
-        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), root: { text: p.root, tone: "hint" } })),
+        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), root: p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
       },
-      { kind: "commands", items: [{ command: "cotal up", description: "Start a prepared space from its project folder" }] },
+      // A folder that is gone cannot be started, so its space names the steps `space show` gives.
+      { kind: "commands", items: [
+        ...(result.prepared.some((p) => !p.rootMissing) ? [{ command: "cotal up", description: "Start a prepared space from its project folder" }] : []),
+        ...result.prepared.filter((p) => p.rootMissing).map((p) => ({ command: `cotal space forget ${p.space}`, description: `Its folder is gone: forget it, then prepare it again with \`cotal space create ${p.space} --root <dir>\`` })),
+      ] },
     ],
   }];
   // A prepared space is listed below, so the empty line names what is missing without denying it.
@@ -260,7 +267,7 @@ function spacesView(result: SpacesResult): Report {
           space: nameCell(s, result.folder),
           broker: checkCell(s),
           server: s.server,
-          mode: s.mode,
+          mode: s.modeChecked ? s.mode : { text: `${s.mode}, not checked`, tone: "waiting" },
           origin: s.catalog?.name ? `${originText(s.origin)} as ${s.catalog.name}` : originText(s.origin),
           root: { text: s.root, tone: "hint" },
         })),
@@ -295,7 +302,7 @@ function spaceView(s: SpaceDetail): Report {
     ["space", nameCell(s)],
     ["broker", checkCell(s)],
     ["server", s.server],
-    ["mode", s.mode],
+    ["mode", s.modeChecked ? s.mode : { text: `${s.mode}, not checked: added with --force`, tone: "waiting" }],
     ["origin", originText(s.origin)],
     ["root", s.root],
     ["recorded", s.recordedAt],
@@ -313,6 +320,7 @@ function spaceView(s: SpaceDetail): Report {
     if (s.catalog.error) fields.push(["catalog error", { text: s.catalog.error, tone: "failed" }]);
   }
   const hints: Cell[] = s.current ? [] : [{ text: `select it with \`cotal use ${s.space}\``, tone: "hint" }];
+  if (!s.modeChecked) hints.push({ text: `check its mode by adding it again without --force: \`cotal space forget ${s.space}\`, then \`cotal space add ${s.space} --server ${s.server} --root ${s.root}\``, tone: "hint" });
   return { sections: [{ title: `Space · ${s.space}`, blocks: [{ kind: "fields", rows: fields }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
 }
 

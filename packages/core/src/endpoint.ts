@@ -2975,7 +2975,11 @@ export class CotalEndpoint extends EventEmitter {
     await this.publishPresence();
   }
 
-  async setStatus(status: PresenceStatus): Promise<void> {
+  /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
+   *  the new activity beside the old status. */
+  async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
+    if (activity !== undefined) this.activity = activity;
     if (status !== this.status) this.statusSince = Date.now();
     this.status = status;
     await this.publishPresence();
