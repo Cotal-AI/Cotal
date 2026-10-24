@@ -161,8 +161,9 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 | `changed` | What a command that did not succeed changed anyway |
 
 Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope with code
-`USAGE_INVALID`, and the help it names stays off stdout. A command without a JSON output refuses
-`--json` as an unknown option.
+`USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
+subcommands and is near none of them is a usage error that lists the subcommands the command takes.
+A command without a JSON output refuses `--json` as an unknown option.
 
 A subcommand's help has its own `structured output` line, and only the forms that show one write a
 document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
@@ -6065,7 +6066,8 @@ the settings file. A level argument writes the file; `on` is an alias of `regula
 level the file already holds is a `no-op`. A level the environment forces still wins, and the
 report says so. Under `DO_NOT_TRACK`, `COTAL_TELEMETRY_DISABLED` or `COTAL_TELEMETRY=off` the file
 is neither read nor created, so a level argument saves nothing and is a `no-op` with an
-`ENVIRONMENT_OPT_OUT` warning. `cotal telemetry` itself sends nothing.
+`ENVIRONMENT_OPT_OUT` warning. Any other word is refused `USAGE_INVALID`, naming the levels.
+`cotal telemetry` itself sends nothing.
 
 The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEMETRY` set to
 anything but a level refuses `USAGE_INVALID`. A settings file that does not validate refuses
