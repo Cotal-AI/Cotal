@@ -14,9 +14,9 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, registry, type Command, type RunStatusView } from "@cotal-ai/core";
-import { exitCode, isCommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
-import { unansweredManagerRefusal, workflowArguments } from "../src/run-command.js";
+import { unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
 
 let ok = 0, fail = 0;
@@ -333,6 +333,30 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("an open checkpoint names whom it escalates to, and an escalated one its addressee and deadline",
     /Step\s+Request\s+Escalation/.test(shown) && /first\?\s+to dana if it expires/.test(shown) && shown.includes("second?  escalated to erik, open until 2026-10-24T06:00:00.000Z"), shown);
   c("with no checkpoint addressed, the table has no Escalation column", !detail([open("third", { onExpiry: "fail" })]).includes("Escalation"));
+}
+
+// An answer refused for a step key the run holds no open request at names the open keys whose step
+// name matches what was typed, as `frage` names `/checkpoint:frage#0`.
+{
+  const notFound = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "the run has no open checkpoint at frage", { remedy: "read the run's open requests with cotal run show run-1" });
+  const row = (step: string, state: string, asks?: string) => ({ kind: "step", step, state, ...(asks ? { asks } : {}) });
+  const view = (...journal: object[]) => async () => ({ journal }) as unknown as RunStatusView;
+  const one = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "Proceed?"), row("/checkpoint:done#0", "pending", "Done?")));
+  c("an answer to a checkpoint's name names its open key and the command, with the code and message kept",
+    one instanceof CommandFailure && one.code === "TARGET_NOT_FOUND" && one.message === "the run has no open checkpoint at frage"
+    && one.remedy === "the open request '/checkpoint:frage#0' matches; answer it with cotal run answer run-1 '/checkpoint:frage#0' --value '<json>'", one);
+  const pinned = await withMatchingKeys(notFound(), "run-1", "frage", { on: "mgr-1" }, view(row("/checkpoint:frage#0", "pending", "Proceed?")));
+  c("the suggested command keeps an explicit --on", pinned instanceof CommandFailure && pinned.remedy?.endsWith(" --on mgr-1") === true, pinned);
+  const two = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"), row("/fanOut:x#0/checkpoint:frage#1", "pending", "B?")));
+  c("several matching open keys are listed to pick from", two instanceof CommandFailure && two.remedy === "the open requests that match are '/checkpoint:frage#0', '/fanOut:x#0/checkpoint:frage#1'; pass one of them as the step", two);
+  const settled = notFound();
+  c("a settled step with that name is not offered", await withMatchingKeys(settled, "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"), row("/checkpoint:frage#0", "settled"))) === settled);
+  const unread = notFound();
+  c("a run view that cannot be read leaves the refusal as it was", await withMatchingKeys(unread, "run-1", "frage", {}, async () => { throw new Error("no answer"); }) === unread);
+  const other = new CommandFailure("refused", "LIFECYCLE_BLOCKED", "revoked");
+  c("a refusal other than TARGET_NOT_FOUND is left as it was", await withMatchingKeys(other, "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"))) === other);
+  const escaped = await withMatchingKeys(notFound(), "run-1", "fr\x1b[2Jage", {}, view(row("/checkpoint:fr\x1b[2Jage#0", "pending", "A?")));
+  c("a step name from the program is escaped before the terminal shows it", escaped instanceof CommandFailure && !escaped.remedy?.includes("\x1b") && escaped.remedy?.includes("\\u001b") === true, escaped instanceof CommandFailure ? escaped.remedy : escaped);
 }
 
 restore();

@@ -55,6 +55,7 @@ import {
   runDriverCaller,
   RUN_LAUNCH_DEADLINE_MS,
   standaloneConnectOpts,
+  oneLine,
   unansweredRail,
   unansweredRequest,
   type EpError,
@@ -95,7 +96,7 @@ import {
 } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
-import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
+import { openRequestKeys, printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
 import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
@@ -932,8 +933,28 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     ...(values.value !== undefined ? { value } : {}),
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
     ...(verb === "amend" ? { amend: true } : {}),
+  }).catch(async (error: unknown) => {
+    throw verb === "answer" ? await withMatchingKeys(error, a, b, values, () => ask("run-status", { runId: a, ...endpoint }) as Promise<RunStatusView>) : error;
   });
   runReceipt(verb, space, result, values, a, { step: b, ...(values.value !== undefined ? { value } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
+}
+
+/** A step key the run has no open request at, answered with the open keys whose step name it matches,
+ *  as `frage` matches `/checkpoint:frage#0`. A run that cannot be read leaves the refusal as it was. */
+export async function withMatchingKeys(error: unknown, runId: string, stepKey: string, values: RunValues, read: () => Promise<RunStatusView>): Promise<unknown> {
+  if (!(error instanceof CommandFailure) || error.code !== "TARGET_NOT_FOUND") return error;
+  let open: string[];
+  try { open = openRequestKeys(await read()); } catch { return error; }
+  const stepName = (key: string) => /:([^:/#]*)#\d+$/.exec(key)?.[1] ?? key;
+  const word = stepName(stepKey);
+  const matches = open.filter((key) => key !== stepKey && (stepName(key) === word || (word !== "" && (stepName(key).includes(word) || word.includes(stepName(key))))));
+  if (!matches.length) return error;
+  // A step name comes from the program, so it is escaped and quoted before the terminal shows it.
+  const quoted = (key: string) => `'${oneLine(key).replaceAll("'", `'\\''`)}'`;
+  const remedy = matches.length === 1
+    ? `the open request ${quoted(matches[0]!)} matches; answer it with cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.on ? ` --on ${values.on}` : ""}`
+    : `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
+  return new CommandFailure(error.outcome, error.code, error.message, { remedy, target: error.target, ...(error.native ? { native: error.native } : {}) });
 }
 
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;

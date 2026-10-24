@@ -55,12 +55,22 @@ function escalation(row: StepRow): string {
   return `escalated to ${row.addressee}${row.deadlineAt === undefined ? "" : `, open until ${new Date(row.deadlineAt).toISOString()}`}`;
 }
 
-export function printRunDetail(space: string, view: RunStatusView, values: OutputValues): void {
-  const shown = view.journal.slice(-(values.limit === undefined ? 20 : Number(values.limit)));
-  // A step's rows run from pending to settled, so only its last row says whether it is still open
-  // and which answer it settled with.
+/** Each step's last journal row. A step's rows run from pending to settled, so only its last row says
+ *  whether it is still open and which answer it settled with. */
+function lastRows(view: RunStatusView): Map<string, StepRow> {
   const steps = new Map<string, StepRow>();
   for (const row of view.journal) if (row.kind === "step") steps.set(row.step, row);
+  return steps;
+}
+
+/** The step keys of a run's open checkpoints and asks, which `run answer` takes. */
+export function openRequestKeys(view: RunStatusView): string[] {
+  return [...lastRows(view).values()].filter((row) => row.state === "pending" && row.asks !== undefined).map((row) => row.step);
+}
+
+export function printRunDetail(space: string, view: RunStatusView, values: OutputValues): void {
+  const shown = view.journal.slice(-(values.limit === undefined ? 20 : Number(values.limit)));
+  const steps = lastRows(view);
   const needsAnswer = [...steps.values()].filter((row) => row.state === "pending" && row.asks !== undefined);
   const answered = [...steps.values()].filter((row) => row.answer !== undefined);
   // The program read an accepted answer only when its step resolved in a branch that did not lose a race.

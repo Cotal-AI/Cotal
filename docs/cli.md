@@ -6131,7 +6131,10 @@ required ([workflows](workflows.md)).
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
 `answer` with `TARGET_NOT_FOUND`, also when it is sent before the run records the first, and a
-revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. An
+revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. A step the run holds no
+open request at is also `TARGET_NOT_FOUND`; when an open checkpoint or `ask` has the name you typed,
+as `frage` names `/checkpoint:frage#0`, the next step gives its full key, and several matches are
+listed for you to pick from. An
 answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
