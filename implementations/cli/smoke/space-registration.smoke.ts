@@ -1123,6 +1123,18 @@ if (process.platform === "linux") {
   check("...and none of them wrote: the folder is still the file, and the project has only its .cotal", readFileSync(dir, "utf8") === "not a folder" && readdirSync(folder).join() === ".cotal");
   rmSync(dir);
   if (held) renameSync(aside, dir);
+  // A record in it that does not parse, or is not a prepared space record, is refused by its file.
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const [name, body] of [["unparsed.json", "{ not json"], ["unshaped.json", '{"space":"pf"}']]) {
+    const damaged = join(dir, name);
+    writeFileSync(damaged, body);
+    for (const args of [["space"], ["use", "pf"]]) {
+      const r = await json(args, folder);
+      check(`${args.join(" ")} with a damaged prepared record (${name}) refuses SCHEMA_INVALID, exit 1, naming that file`,
+        refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === damaged && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
+    }
+    rmSync(damaged);
+  }
 }
 
 finish();

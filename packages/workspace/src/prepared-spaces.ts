@@ -26,10 +26,9 @@ export function preparedSpacesDir(): string {
 
 const preparedFile = (space: string): string => join(preparedSpacesDir(), `${spaceSegment(space)}.json`);
 
-/** Every prepared space. A file that is not a prepared space record throws naming it, as the
- *  registry does, so a damaged record is never read as an absent one. A folder that exists and
- *  cannot be read, such as a regular file in its place, throws a {@link MeshRegistryError} naming
- *  it, as an unreadable registry folder does. */
+/** Every prepared space. A file that is not a prepared space record, and a folder that exists and
+ *  cannot be read, such as a regular file in its place, throw a {@link MeshRegistryError} naming
+ *  it, as the registry does, so a damaged record is never read as an absent one. */
 export function loadPreparedSpaces(): PreparedSpace[] {
   let files: string[];
   try {
@@ -46,10 +45,10 @@ function readPreparedFile(file: string): PreparedSpace {
   try {
     doc = JSON.parse(readFileSync(file, "utf8")) as Partial<PreparedSpace>;
   } catch (e) {
-    throw new Error(`${file} does not parse as a prepared space record (${(e as Error).message}) - remove it`);
+    throw new MeshRegistryError(file, `${file} does not parse as a prepared space record (${(e as Error).message}) - remove it`, { cause: e });
   }
   if (typeof doc.space !== "string" || typeof doc.root !== "string" || !isAbsolute(doc.root) || typeof doc.ts !== "string" || file !== preparedFile(doc.space))
-    throw new Error(`${file} is not a usable prepared space record - remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable prepared space record - remove it`);
   return { space: doc.space, root: doc.root, ts: doc.ts };
 }
 
