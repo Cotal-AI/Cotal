@@ -19,8 +19,10 @@
  *     and keeps any other.
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
  *     definitions saved for the root, and another folder starts a stack under the same name.
- *  6. Space delete under a stopped stack. With only the broker running the delete applies, and its
- *     receipt names `cotal up`, and `cotal down --yes` with `cotal space forget`. History, send and
+ *  6. Space delete under a stopped stack. Beside a running service the user added, it refuses naming
+ *     that service's `cotal service stop` and then the delete again, since `down` refuses there
+ *     too. With only the broker running the delete applies, and its receipt names `cotal up`, and
+ *     `cotal down --yes` with `cotal space forget`. History, send and
  *     `run ps` then refuse naming the missing streams, and `status` shows them absent with `up
  *     --root` first in its Next. A bare `up` creates the streams again on the running broker,
  *     empty, says so and starts delivery, and a later `up` finds them held.
@@ -242,6 +244,19 @@ try {
     check("up starts the broker and delivery", started.status === 0 && typeof delivery === "string", { up: shown(started), services: shown(services) });
     const stoppedDelivery = cli(root, "service", "stop", "stack-delivery", "--instance", String(delivery), "--space", space, "--yes", "--json");
     check("the delivery member stops on its own", stoppedDelivery.status === 0, shown(stoppedDelivery));
+    // A service the user added still uses the streams, and `down` refuses beside it, so the refusal
+    // names that service's own stop and then the delete again.
+    writeFileSync(join(root, "idle.json"), JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", "setTimeout(() => {}, 600000)"], cwd: root }, readiness: { type: "process", timeoutMs: 10000 } }));
+    const added = cli(root, "service", "add", "idle", "--file", "idle.json", "--space", space, "--json");
+    const idleStart = cli(root, "service", "start", "idle", "--space", space, "--json");
+    const idle = idleStart.env?.result?.instanceId;
+    check("rig: a service the user added runs beside the broker", added.status === 0 && idleStart.status === 0 && typeof idle === "string", { added: shown(added), started: shown(idleStart) });
+    const besideService = cli(home, "space", "delete", space, "--yes", "--json");
+    check("space delete beside it refuses LIFECYCLE_BLOCKED, naming its service stop and then the delete again",
+      besideService.status === 2 && besideService.env?.error?.code === "LIFECYCLE_BLOCKED" && /^services of this space still run here \(idle\)/.test(besideService.env.error.message) &&
+        besideService.env.error.remedy === `stop each service with cotal service stop idle --instance ${String(idle)} --space ${space} --yes, then run cotal space delete ${space} again`, shown(besideService));
+    const idleStop = cli(root, "service", "stop", "idle", "--instance", String(idle), "--space", space, "--yes", "--json");
+    check("the named service stop stops it", idleStop.status === 0, shown(idleStop));
 
     const deleted = cli(home, "space", "delete", space, "--yes");
     check("space delete applies with only the broker running", deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), shown(deleted));

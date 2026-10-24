@@ -27,13 +27,23 @@ interface PresenceImpact { id: string; name: string | null; status: string | nul
  *  itself, so it is not counted. A space registered for another machine's broker is not checked. */
 function liveStackRefusal(entry: MeshEntry, space: string, preview = false): CommandFailure | undefined {
   if (entry.origin !== "up") return undefined;
-  let controller: boolean, users: string[];
+  let controller: boolean, users: string[], services: { definition: string; instanceId: string }[];
   try {
-    ({ controller, members: users } = runningStackMembers(entry.root, space));
+    ({ controller, members: users, services } = runningStackMembers(entry.root, space));
   } catch { return new CommandFailure("refused", "TARGET_UNAVAILABLE", "this space's local service and process records could not be read, so a running stack was not ruled out; no broker was contacted", { target: { space, root: entry.root } }); }
   if (!users.length) return undefined;
   // A preview reads the broker before it reports this, so only the apply says no broker was contacted.
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${users.join(", ")}) and uses these streams${preview ? "" : "; no broker was contacted and nothing was deleted"}`, { target: { space, root: entry.root, running: users }, remedy: controller
+  const deleted = preview ? "" : "; no broker was contacted and nothing was deleted";
+  if (services.length) {
+    // `down` refuses while another service of the space runs, so each one is stopped first. With
+    // only the broker left after that, the delete itself applies.
+    const stack = users.filter((name) => !services.some((service) => service.definition === name));
+    const stops = services.map((service) => `cotal service stop ${service.definition} --instance ${service.instanceId} --space ${space} --yes`).join("; ");
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `services of this space still run here (${users.join(", ")}) and use these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: stack.length
+      ? `stop each service with ${stops}, then stop the stack with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
+      : `stop each service with ${stops}, then run cotal space delete ${space} again` });
+  }
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${users.join(", ")}) and uses these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: controller
     ? `stop it with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
     : `stop it with cotal down from ${entry.root}, then remove its stored streams with cotal clean store --force there` });
 }

@@ -2134,8 +2134,11 @@ still runs here, before any broker connection. On a controller root that is any 
 the space other than its broker, and on a legacy root any recorded daemon other than the broker.
 Deleting the streams under them leaves a stack that can neither start nor stop. The refusal names
 the running services and `cotal down`, then `cotal reset store <space> --yes` on a controller root or
-`cotal clean store --force` on a legacy one to remove the stored streams. The dry-run shows the same
-refusal as a warning.
+`cotal clean store --force` on a legacy one to remove the stored streams. When a service that is not
+one of the stack's members runs, such as one added with `cotal service add`, `cotal down` refuses
+too, so the refusal first names `cotal service stop <name> --instance <id> --space <space> --yes`
+for each one. With only the broker left after that, it names the delete again in place of
+`cotal down`. The dry-run shows the same refusal as a warning.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. A script supplies the exact positional name with `--yes`;
