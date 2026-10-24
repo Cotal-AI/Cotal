@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { connect as netConnect } from "node:net";
 import { join, resolve } from "node:path";
 import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
 import {
@@ -384,7 +385,55 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
  *  settled what the broker is. */
 export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   const r = await preflightTarget(target);
-  return r.ok ? good(undefined) : bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+  if (r.ok) return good(undefined);
+  return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+}
+
+/** Budget for each probe of an address that answered no broker under the scheme it was given. */
+const SCHEME_PROBE_TIMEOUT_MS = 2_000;
+const DEFAULT_PORTS: Readonly<Record<string, number>> = { nats: 4222, tls: 4222, ws: 80, wss: 443 };
+
+/** Why no broker answered at a single `server` address: nothing took a connection at its port, or a
+ *  broker answers there under another scheme, which the remedy names. `undefined` for an address
+ *  this cannot take apart, such as a list, so the general sentence stands. */
+async function unreachableAt(server: string): Promise<Check<never> | undefined> {
+  if (server.includes(",")) return undefined;
+  let url: URL;
+  try { url = new URL(server.includes("://") ? server : `nats://${server}`); } catch { return undefined; }
+  const scheme = url.protocol.slice(0, -1);
+  const port = url.port ? Number(url.port) : DEFAULT_PORTS[scheme];
+  if (port === undefined || !url.hostname) return undefined;
+  const at = `${url.hostname}:${port}`;
+  const refused = (message: string, remedy: string): Check<never> => ({ ok: false, message: `✗ ${message}`, code: "TARGET_UNAVAILABLE", remedy });
+  const answer = await portAnswer(url.hostname.replace(/^\[|\]$/g, ""), port);
+  if (answer === "unresolved")
+    return refused(`no broker answered at ${server}: the host name ${url.hostname} does not resolve`, "check the host name in --server");
+  if (answer === "silent")
+    return refused(`no broker answered at ${server}: nothing accepted a connection at ${at}`, `check that the mesh is up and listening on port ${port} of ${url.hostname}, or pass --server with the port it listens on`);
+  // A websocket route keeps its path, which a TCP address cannot have.
+  const route = url.pathname === "/" ? "" : url.pathname;
+  const schemes = ["nats", "tls", "ws", "wss"].filter((other) => !route || other.startsWith("ws"));
+  for (const other of schemes) {
+    if (other === scheme) continue;
+    const candidate = `${other}://${at}${other.startsWith("ws") ? route : ""}`;
+    const probe = await probeConnect(candidate, { timeoutMs: SCHEME_PROBE_TIMEOUT_MS });
+    if (!probe.ok && probe.reason !== "auth-required") continue;
+    const plain = (scheme === "tls" || scheme === "wss") && (other === "nats" || other === "ws") ? ", without TLS" : "";
+    return refused(`no broker answered at ${server}, but one answers at ${candidate}${plain}`, `run it again with --server ${candidate}`);
+  }
+  return refused(`no broker answered at ${server}: something accepted the connection at ${at}, but no broker answered there as ${schemes.slice(0, -1).join(", ")} or ${schemes.at(-1)}`, `check that --server names the broker's own address and port`);
+}
+
+/** Whether anything accepts a TCP connection at `host:port`: `silent` when the port refuses or does
+ *  not answer in time, `unresolved` when the host name does not resolve. */
+function portAnswer(host: string, port: number): Promise<"accepted" | "silent" | "unresolved"> {
+  return new Promise((done) => {
+    const socket = netConnect({ host, port });
+    const finish = (answer: "accepted" | "silent" | "unresolved") => { socket.destroy(); done(answer); };
+    socket.setTimeout(SCHEME_PROBE_TIMEOUT_MS, () => finish("silent"));
+    socket.once("connect", () => finish("accepted"));
+    socket.once("error", (error: NodeJS.ErrnoException) => finish(error.code === "ENOTFOUND" || error.code === "EAI_AGAIN" ? "unresolved" : "silent"));
+  });
 }
 
 /** Write the record. Returns whether it became the default — same policy as `cotal up`: adopt only

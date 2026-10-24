@@ -2026,6 +2026,10 @@ registered is a `CONFLICT`, and its remedy offers `--force` only for a registrat
 A broker that does not answer is a `TARGET_UNAVAILABLE`, and its remedy offers `--force`.
 A broker that requires auth, with a `--root` that holds another space's trust, is a
 `DEPENDENCY_UNAVAILABLE` that names the space the folder holds.
+When no broker answers at `--server`, the `TARGET_UNAVAILABLE` refusal says whether anything took a
+connection at its port. When a broker answers there under another scheme, such as `nats://` for a
+`tls://` address, the remedy names that address, and says when it has no TLS. A port that takes no
+connection gets the port check as its remedy. The `--force` route follows either one.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Declining the question is a

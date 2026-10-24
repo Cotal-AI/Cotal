@@ -129,7 +129,7 @@ const usage = (message: string, remedy?: string): CommandFailure => new CommandF
 function take<T>(check: Check<T>, target: unknown): T {
   if (check.ok) return check.value;
   if (!check.code) throw new Error(`internal error: a registration rule refused without a code: ${check.message}`);
-  throw new CommandFailure("refused", check.code, check.message.replace(/^✗ /, ""), { target });
+  throw new CommandFailure("refused", check.code, check.message.replace(/^✗ /, ""), { target, ...(check.remedy === undefined ? {} : { remedy: check.remedy }) });
 }
 
 const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: string): CommandFailure =>
@@ -216,8 +216,9 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   if (verified) {
     take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);
     const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired));
-    // A broker that does not answer may be down right now, which is what --force is for.
-    if (!reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `pass --force to add "${name}" unchecked, as for a space that is down right now`);
+    // A broker that does not answer may be down right now, which is what --force is for. The
+    // diagnosis's own next step comes first.
+    if (!reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
     take(reached, target);
     if (mode === "open") await servedOrThrow(server, name, target);
   }

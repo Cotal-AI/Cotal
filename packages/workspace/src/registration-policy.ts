@@ -3,8 +3,8 @@ import { isLoopbackHost } from "./join-target.js";
 import type { RefusalCode } from "./output.js";
 
 /** A rule's verdict: the value it produced, or the operator-facing sentence explaining the refusal
- *  and, where the rule knows it, the stable code a structured refusal carries. */
-export type Check<T> = { ok: true; value: T } | { ok: false; message: string; code?: RefusalCode };
+ *  and, where the rule knows them, the stable code a structured refusal carries and what to run next. */
+export type Check<T> = { ok: true; value: T } | { ok: false; message: string; code?: RefusalCode; remedy?: string };
 /** A bundle that fails a rule here is invalid input, unless the rule says otherwise. */
 const bad = (message: string, code: RefusalCode = "SCHEMA_INVALID"): Check<never> => ({ ok: false, message, code });
 const good = <T>(value: T): Check<T> => ({ ok: true, value });
