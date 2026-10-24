@@ -860,8 +860,8 @@ if (process.platform === "linux") {
   // So does one that is not JSON at all: the default file's content is invalid, not the command line.
   writeFileSync(defaultSeed, '{"channels":');
   const unparsedDefault = await json(["up", "--open", "--server", server], fresh);
-  check("a default .cotal/channels.json that is not JSON refuses SCHEMA_INVALID too, with the same remedy, before a store or a registration",
-    refused(unparsedDefault, 1, "SCHEMA_INVALID") && (unparsedDefault.env?.error?.message ?? "").includes(`${defaultSeed} is not valid JSON`) && unparsedDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
+  check("a default .cotal/channels.json that is not JSON refuses USAGE_INVALID, with the same remedy, before a store or a registration",
+    refused(unparsedDefault, 1, "USAGE_INVALID") && (unparsedDefault.env?.error?.message ?? "").includes(defaultSeed) && unparsedDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(unparsedDefault));
   unlinkSync(defaultSeed);
   // A FIFO there would block the read, so it is refused by its file type before it is opened.
@@ -881,15 +881,17 @@ if (process.platform === "linux") {
   const seedFifo = join(home, "channels-seed.fifo");
   spawnSync("mkfifo", ["-m", "600", seedFifo]);
   const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten"}}}', seedFifo], { stdio: "ignore" });
-  const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--channels", seedFifo], {}, fresh);
-  feeder.kill();
-  unlinkSync(seedFifo);
+  const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
   check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
-  const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
-  check("it reads a --channels FIFO written once a single time and seeds the channel from it", seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), shown(seeded));
-  check("the selection still names it", getCurrent() === "demo", getCurrent());
   const bomSeeded = await json(["channel", "show", "bomseed", "--space", "demo"]);
+  // An explicit --channels replaces the default file for that up, and is read once.
+  const fifoUp = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--channels", seedFifo], {}, fresh);
+  feeder.kill();
+  unlinkSync(seedFifo);
+  const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
+  check("it reads a --channels FIFO written once a single time and seeds the channel from it", fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), { up: shown(fifoUp), seeded: shown(seeded) });
+  check("the selection still names it", getCurrent() === "demo", getCurrent());
   check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
     bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
   unlinkSync(defaultSeed);
