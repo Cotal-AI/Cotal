@@ -1787,8 +1787,8 @@ reason; for a group- or world-writable path it names `chmod go-w <path>`. Values
 fingerprints are not printed. No maintenance lock is taken by the preview. Like the store dry-run, it
 has a Store contents section when a store is present, naming what removing it removes and the runs
 the last down recorded, and `--json` carries them as `storeContents`. The apply's confirmation shows
-the same section. A preview that passes every check says the apply is offered and names
-`cotal reset space <space> --yes` as Next.
+the same section. A preview that passes every check opens with a verdict, as the store dry-run
+does: the apply is offered, with `cotal reset space <space> --yes` as Next.
 
 Apply shows the path inventory and defaults to cancellation, or requires
 `--yes` in a script. Under the maintenance lock it repeats the eligibility
@@ -2453,7 +2453,9 @@ the running services and `cotal down`, then `cotal reset store <space> --yes` on
 one of the stack's members runs, such as one added with `cotal service add`, `cotal down` refuses
 too, so the refusal first names `cotal service stop <name> --instance <id> --space <space> --yes`
 for each one. With only the broker left after that, it names the delete again in place of
-`cotal down`. The dry-run shows the same refusal as a warning.
+`cotal down`. The dry-run opens with a verdict, as `reset store`'s does: the apply would refuse,
+with that refusal's reason and remedy, or it is offered, with `cotal space delete <space> --yes` as
+Next. `--json` carries the refusal as `applyBlockedBy` and as a `LIFECYCLE_BLOCKED` warning.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. A script supplies the exact positional name with `--yes`;

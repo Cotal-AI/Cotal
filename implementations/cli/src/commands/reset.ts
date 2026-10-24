@@ -9,6 +9,7 @@ import { readLocalServiceCensus } from "../lib/service-census.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
+import { verdictSection } from "../lib/verdict.js";
 
 export const resetFlags = [jsonFlag, plainFlag,
   { name: "dry-run", type: "boolean", description: "inspect local store, maintenance and process records without deleting anything" },
@@ -109,10 +110,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
   // A preview that read what it could succeeds. It is partial in what it proves, which the
   // verdict's apply rechecks under the maintenance lock.
   writeResult(presentationOf(args.values), { command: "reset", target: { space, root }, result, completeness: "partial" }, (data): Report => ({ sections: [
-    { title: "Verdict", blocks: refusal
-      ? [{ kind: "lines", lines: [{ text: `reset store ${space} would refuse (${refusal.code}): ${refusal.message}`, tone: "failed" }, ...(refusal.remedy ? [`Next: ${refusal.remedy}`] : [])] }]
-      : [{ kind: "lines", lines: [{ text: `reset store ${space} is offered. The apply runs every check again under the root's maintenance lock.`, tone: "ok" }] },
-        { kind: "commands", items: [{ command: `cotal reset store ${space} --yes`, description: "Remove only this stopped store" }] }] },
+    verdictSection(`reset store ${space}`, refusal, { command: `cotal reset store ${space} --yes`, description: "Remove only this stopped store", recheck: "The apply runs every check again under the root's maintenance lock." }),
     { title: "Reset local impact", blocks: [{ kind: "fields", rows: [["Scope", data.operation], ["Space", data.space], ["Recorded root", data.root], ["Store candidate", data.recordedStorePath], ["Inspected path", data.inspectedStorePath], ["Store state", data.storeState], ["Identity", data.identityImpact], ["Maintenance", data.maintenance], ["Broker probe", data.brokerProbe], ["Recorded processes that may run", data.possibleProcesses.length ? data.possibleProcesses.join(", ") : "none found in legacy pidfiles"], ["Service instance records", String(data.serviceOwners.length)], ["Supervisor receipts", String(data.serviceCensus.supervisors.length)], ["Retained native attempts", String(data.serviceCensus.nativeAttempts.length)], ["Additive ledgers", String(data.additiveLedgers.length)], ["Unreadable additive ledgers", String(data.unreadableAdditiveLedgers.length)], ["Retained additive deployments", String(data.retainedAdditiveAttempts.length)], ["Unreadable additive attempts", String(data.unreadableAdditiveAttempts.length)], ["Unsettled fresh attempts", String(data.unsettledBootAttempts.length)], ["Unreadable fresh records", String(data.unreadableBootRecords.length)], ["Other exact-address registrations", String(data.otherBrokerRegistrations.length)], ["Identity inventory", data.identityInventory], ["Exact identity paths", data.exactIdentityPaths]] }, { kind: "lines", lines: [{ text: "The local reads are not a maintenance lock, exclusive custody or broker stop proof. A negative credless probe may miss TLS-first listeners. Provider-owned secrets, full deletion paths and broker exclusivity remain unproved. No process was stopped and no file or registration was removed.", tone: "waiting" }] }] },
     ...storeContentsSection(data.storeContents.removed, runsAtDown, data.root),
     { title: "Additive ownership at root", blocks: [
