@@ -2,7 +2,9 @@ import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join } from "node:path";
 import {
+  accountRevocations,
   credentialLifetime,
+  credsClaims,
   credsProblem,
   CotalEndpoint,
   inspectCredHealth,
@@ -14,6 +16,7 @@ import {
   type CredentialKind,
   type FlagValues,
   type ParsedArgs,
+  type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   CommandFailure, accountInventory, canonicalRoot, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, presentationOf, readLocalRecordSource, renewalRecordPath, writeResult,
@@ -48,6 +51,7 @@ import {
 import { displayCmd } from "../lib/self-exec.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
+import { credentialExportStore } from "../lib/credential-exports.js";
 
 export const doctorFlags = [jsonFlag, plainFlag,
   { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds, or mint one again that holds no key while its broker does not answer; needs the local signer)" },
@@ -158,11 +162,17 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     problem: row.problem ?? null, warning: row.warning ?? null,
     repair: row.repair ?? null, superseded: row.superseded === true,
   }));
-  const warnings = items.filter((row) => row.warning !== null).map((row) => ({ code: "CREDENTIAL_UNBOUNDED_BY_REQUEST", target: { path: row.path }, message: `${row.label}: ${row.warning}` }));
+  let exported: ExportedRow[] | null;
+  try { exported = exportedCredentials(root, auth); } catch { exported = null; }
+  const warnings = [
+    ...items.filter((row) => row.warning !== null).map((row) => ({ code: "CREDENTIAL_UNBOUNDED_BY_REQUEST", target: { path: row.path }, message: `${row.label}: ${row.warning}` })),
+    ...(exported ?? []).filter((row) => row.state === "expired").map((row) => ({ code: "EXPORTED_CREDENTIAL_EXPIRED", target: { path: row.path }, message: `${row.label}: ${row.path} expired at ${at(row.expiresAt ?? undefined)}; ${row.repair}` })),
+    ...(exported === null ? [{ code: "EXPORTED_CREDENTIALS_UNREAD", target: { space: auth.space }, message: "the records of the files auth mint --out wrote could not be read, so those files are not listed" }] : []),
+  ];
   const findings = items.filter((row) => row.problem !== null).length;
   const refused = renewal.state === "present" && renewal.brokerAcceptance === "recorded-refusal";
   const incomplete = renewal.state === "unreadable";
-  const result = { kind: "credential-health", root, space: auth.space, mode: userMode ? "user" : "static", scope: "local credential claims and recorded renewal only", items, findings, renewal, repair, brokerAuthorization: "not-checked", liveAgentHealth: "not-checked", systemAccountRotated: false, agentCredentialsReminted: false };
+  const result = { kind: "credential-health", root, space: auth.space, mode: userMode ? "user" : "static", scope: "local credential claims and recorded renewal only", items, exported, findings, renewal, repair, brokerAuthorization: "not-checked", liveAgentHealth: "not-checked", systemAccountRotated: false, agentCredentialsReminted: false };
   // A recorded refusal names the renewal owner to repair, so the finding keeps its next step.
   const failure = incomplete ? new CommandFailure("partial", "OPERATION_PARTIAL", "credential observations were collected but the renewal record is unreadable; a complete healthy verdict was not inferred", { target }) : findings || refused ? new CommandFailure(repair.results.some((row) => row.ok) || repair.migrations.length ? "partial" : "failed", repair.results.some((row) => row.ok) || repair.migrations.length ? "OPERATION_PARTIAL" : "OPERATION_FAILED", refused ? "the recorded renewal was not broker-accepted; local re-signing alone cannot clear that finding" : "local credential findings remain; per-file native repair guidance is retained", { target, ...(refused ? { remedy: "start or repair this space's manager, the renewal owner, so it re-signs the daemon credentials and the broker accepts them; do not respawn agents for this finding" } : {}) }) : undefined;
   writeResult(presentationOf(values), { command: "doctor auth", target, result, completeness: incomplete ? "partial" : "complete", warnings, failure, noOp: failure === undefined && values.fix === true && !repair.attempted && !repair.migrations.length }, (data): Report => ({ sections: [
@@ -175,6 +185,11 @@ export async function doctor(args: ParsedArgs): Promise<void> {
       { kind: "table", columns: [{ key: "name", label: "Credential" }, { key: "state", label: "Local state" }, { key: "issued", label: "Issued" }, { key: "expiry", label: "Expiry" }], rows: data.items.slice(0, 200).map((row) => ({ name: row.label, state: row.state, issued: at(row.issuedAt ?? undefined), expiry: at(row.expiresAt ?? undefined) })) },
       ...(data.items.length > 200 ? [{ kind: "lines" as const, lines: [`${data.items.length - 200} credential rows are not shown; JSON retains every public diagnostic row.`] }] : []),
     ] },
+    ...(data.exported?.length ? [{ title: "Exported credential files", blocks: [
+      { kind: "table" as const, columns: [{ key: "name", label: "Credential" }, { key: "file", label: "File" }, { key: "state", label: "Local state" }, { key: "expiry", label: "Expiry" }], rows: data.exported.slice(0, 200).map((row) => ({ name: row.label, file: row.path, state: row.state, expiry: at(row.expiresAt ?? undefined) })) },
+      ...(data.exported.length > 200 ? [{ kind: "lines" as const, lines: [`${data.exported.length - 200} exported rows are not shown; JSON retains every row.`] }] : []),
+      ...(data.exported.some((row) => row.repair !== null) ? [{ kind: "lines" as const, lines: data.exported.filter((row) => row.repair !== null).slice(0, 200).map((row) => `${row.label}: ${row.repair}`) }] : []),
+    ] }] : []),
     { title: "Recorded renewal", blocks: [{ kind: "fields", rows: [["Record", data.renewal.state], ["Recorded time", data.renewal.recordedAt ?? "not established"], ["Recorded owner", data.renewal.recordedOwner ?? "not established"], ["Broker acceptance at that pass", data.renewal.brokerAcceptance], ["Recorded coordination", data.renewal.authority ?? "not recorded"], ["Delivery responder at that pass", data.renewal.deliveryResponderUnbound ? "reported unbound" : "not established by this view"]] }, ...(data.renewal.deliveryResponderUnbound ? [{ kind: "lines" as const, lines: [RESPONDER_UNBOUND_CONSEQUENCE, "Repair the original delivery responder and inspect status; do not respawn agents merely because a responder was absent at that recorded pass."] }] : []),
       // The leftover root-scoped record is named, never read as this space's verdict.
       ...("legacyRecordPresent" in data.renewal && data.renewal.legacyRecordPresent ? [{ kind: "lines" as const, lines: [`This root also holds .cotal/renewal.json, a pre-per-space renewal record. It names no space, so it is not read as this space's verdict. ${displayCmd()} clean all --force removes it when this root is reset.`] }] : [])] },
@@ -255,6 +270,44 @@ function renewalObservation(root: string, space: string) {
     if (adoption !== undefined && (!adoption || typeof adoption !== "object" || typeof adoption.ok !== "boolean")) throw new Error();
     return { state: "present" as const, recordedAt: value.ts, recordedOwner: value.owner, authority: value.authority === "lease" || value.authority === "offline" ? value.authority : null, brokerAcceptance: adoption === undefined ? "not-requested-by-that-pass" : adoption.ok ? "recorded-acceptance" : "recorded-refusal", deliveryResponderUnbound: responderUnboundAtLastRenewal(typeof adoption?.error === "string" ? adoption.error : undefined), legacyRecordPresent: legacyRenewalRecord(root) !== undefined };
   } catch { return { ...absent, state: "unreadable" as const, brokerAcceptance: "not-established", legacyRecordPresent: false }; }
+}
+
+/** One file `auth mint --out` wrote for this space, as it reads now. */
+interface ExportedRow { label: string; profile: string; path: string; state: string; issuedAt: number | null; expiresAt: number | null; revokedAt: number | null; repair: string | null }
+
+/** The files `auth mint --out` wrote for this space from this root that are still there, with their
+ *  expiry and, for one the broker refuses or soon will, the mint that replaces it. */
+function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
+  const cmd = displayCmd(), here = canonicalRoot(root), revocations = accountRevocations(auth.account.jwt);
+  const rows: ExportedRow[] = [];
+  for (const { record: { value: entry } } of credentialExportStore(auth.space).list()) {
+    if (canonicalRoot(entry.root) !== here) continue;
+    const row: ExportedRow = { label: entry.label, profile: entry.profile, path: entry.path, state: "unreadable", issuedAt: null, expiresAt: null, revokedAt: null, repair: null };
+    let bytes: Buffer | undefined;
+    try { bytes = readLocalRecordSource(entry.path, 1024 * 1024, true); }
+    catch {
+      try { const stat = lstatSync(entry.path); row.repair = stat.isFile() ? credentialFileExposure(entry.path, stat)?.remedy ?? null : null; } catch { /* reported unreadable */ }
+      rows.push(row);
+      continue;
+    }
+    // A file removed since is not listed.
+    if (!bytes) continue;
+    let claims: ReturnType<typeof credsClaims>;
+    try { claims = credsClaims(bytes.toString("utf8")); } catch { rows.push(row); continue; }
+    const health = inspectCredHealth(bytes.toString("utf8"));
+    const profile = entry.profile === "agent" ? "" : ` --profile ${entry.profile}`;
+    const fresh = `mint a new key: \`${cmd} auth mint ${entry.label}${profile} --out <new file>\``;
+    const revokedAt = claims.sub === undefined ? undefined : revocations[claims.sub];
+    Object.assign(row, { state: health.state, issuedAt: claims.iat ?? null, expiresAt: claims.exp ?? null });
+    if ((claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub)
+      Object.assign(row, { state: "other-account", repair: `the space's identity changed after it was written, so its broker refuses it; ${fresh}` });
+    else if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt))
+      Object.assign(row, { state: "revoked", revokedAt, repair: `its key was revoked at ${at(revokedAt)}, and auth mint --identity refuses that key; ${fresh}` });
+    else if (health.state === "expired" || health.state === "near-expiry")
+      row.repair = `\`${cmd} auth mint ${entry.label}${profile} --identity ${entry.path} --out ${entry.path}\` signs the same key again${entry.profile === "agent" ? " with the same grants" : ""}`;
+    rows.push(row);
+  }
+  return rows.sort((x, y) => x.label.localeCompare(y.label) || x.path.localeCompare(y.path));
 }
 
 function isRemintable(kind: CredentialKind): boolean {

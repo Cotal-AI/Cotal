@@ -16,6 +16,7 @@ import {
 } from "@cotal-ai/workspace";
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
+import { agentGrants, recordCredentialExport, type AgentGrants } from "../lib/credential-exports.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
 export { resolveMintTarget } from "../lib/credential-authority.js";
@@ -78,7 +79,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   const profile = (values.profile ?? "agent") as Profile;
   const changed: Record<string, unknown>[] = [];
   let mayHaveProvisioned = false, publicationStarted = false;
-  let identity: Identity | undefined, lifecycleUid: string | undefined;
+  let identity: Identity | undefined, lifecycleUid: string | undefined, carried: AgentGrants | undefined;
   let held: ReturnType<typeof acquireLock> | undefined;
   let target: { space?: string; name: string; profile: string; path?: string; identity?: string; lifecycleUid?: string } = { name, profile };
   try {
@@ -91,8 +92,12 @@ export async function mint(args: ParsedArgs): Promise<void> {
       protectedCredentialReference(path);
       const bytes = readLocalRecordSource(path, 1024 * 1024, true);
       if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the protected identity source disappeared");
-      try { identity = identityFromCreds(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+      let text: string;
+      try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); identity = identityFromCreds(text); }
       catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the identity source has no matching native JWT subject and user nkey seed; contents were not printed"); }
+      // An agent credential this space issued keeps its grants when it is minted again.
+      const claims = credsClaims(text);
+      if (profile === "agent" && claims.name === "agent" && (claims.nats?.issuer_account ?? claims.iss) === auth.account.pub) carried = agentGrants(claims.nats ?? {}, space);
       // A credential signed now would postdate the revocation, so the broker would accept the key again.
       const revokedAt = accountRevocations(auth.account.jwt)[identity.id];
       if (revokedAt !== undefined)
@@ -127,9 +132,11 @@ export async function mint(args: ParsedArgs): Promise<void> {
     if (profile === "agent") {
       const path = agentFilePath(root, name);
       const definition = existsSync(path) ? loadAgentFile(path) : undefined;
-      allowSubscribe = resolveReadAcl(definition?.subscribe ?? [], csv(values["allow-subscribe"]) ?? definition?.allowSubscribe);
-      allowPublish = csv(values["allow-publish"]) ?? definition?.allowPublish;
-      role = values.role ?? definition?.role;
+      // A flag wins, then the grants of the --identity credential, then the persona.
+      const readFlag = csv(values["allow-subscribe"]);
+      allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
+      allowPublish = csv(values["allow-publish"]) ?? carried?.post ?? definition?.allowPublish;
+      role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
       lifecycleUid = mintLifecycleUid();
     }
     identity ??= newIdentity();
@@ -188,11 +195,19 @@ export async function mint(args: ParsedArgs): Promise<void> {
       catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", `the credential was written, but its no-expiry record ${noExpiryRecord} was not, so doctor auth reports it as an unbounded finding`, { target, remedy: `once nothing uses ${out}, remove it and mint it again with --no-expiry` }); }
       changed.push({ kind: "no-expiry-record", path: noExpiryRecord, acknowledged: true });
     }
+    // The record lets doctor auth find this file again; it holds no credential.
+    if (values.out !== undefined) {
+      try { recordCredentialExport(space, { label: name, profile, path: out, root, identity: identity.id }); }
+      catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", `the credential was written to ${out}, but its export record was not, so doctor auth does not list it`, { target, remedy: `mint it again with the same --identity ${out} --out ${out} to record it` }); }
+      changed.push({ kind: "credential-export-record", path: out, acknowledged: true });
+    }
     const claims = credsClaims(creds);
-    const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, lifecycleReused: false, expiresAt: claims.exp ?? null, defaultLifetime, noExpiryRecord, replaced: replaced ?? null, secretOnStdout: false, changed };
+    const fromIdentity = carried ? ([["read", values["allow-subscribe"]], ["post", values["allow-publish"]], ["role", values.role]] as const).filter(([, flag]) => flag === undefined).map(([grant]) => grant) : [];
+    const grants = profile === "agent" ? { read: allowSubscribe ?? [], post: allowPublish ?? [], role: role ?? null, fromIdentity } : null;
+    const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, grants, lifecycleReused: false, expiresAt: claims.exp ?? null, defaultLifetime, noExpiryRecord, replaced: replaced ?? null, secretOnStdout: false, changed };
     const warnings = result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : [];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
-      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ["Private file", data.output], ...(data.replaced ? [["Replaced", data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : "a credential with no expiry claim"]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
+      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : "a credential with no expiry claim"]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
     ] }));
   } catch (error) {
     if (isCommandFailure(error)) {
@@ -204,6 +219,14 @@ export async function mint(args: ParsedArgs): Promise<void> {
     if (mayHaveProvisioned || publicationStarted) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "provisioning or private publication started, but the final credential outcome is unconfirmed; no mint was retried", { target, changed, remedy: "inspect the original identity/lifecycle and output; do not allocate another identity blindly" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "native credential preparation failed before provisioning or private publication; file values and secret material were not printed", { target });
   } finally { held?.release(); }
+}
+
+const channelList = (channels: readonly string[]) => channels.length ? channels.join(", ") : "no channel";
+
+/** The receipt rows for an agent credential's grants, naming those carried from `--identity`. */
+function grantRows(grants: AgentGrants & { fromIdentity: readonly string[] }): [string, string][] {
+  const carried = (grant: string) => grants.fromIdentity.includes(grant) ? " (carried from --identity)" : "";
+  return [["May read", `${channelList(grants.read)}${carried("read")}`], ["May post", `${channelList(grants.post)}${carried("post")}`], ["Role", `${grants.role ?? "none"}${carried("role")}`]];
 }
 
 async function provisionForMint(auth: SpaceAuth, identity: Identity, options: { allowSubscribe?: string[]; allowPublish?: string[]; role?: string; lifecycleUid: string; expiresInSeconds?: number; expiresAt?: number }, target: MeshTarget, onProvisioned: () => void): Promise<void> {

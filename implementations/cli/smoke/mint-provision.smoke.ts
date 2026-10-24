@@ -35,6 +35,8 @@
  *  10. --replace: an existing label refuses CONFLICT, naming --replace; --replace swaps an expired
  *      standing credential and an unbounded one, whose no-expiry record goes with it; a still-valid
  *      one refuses CONFLICT naming its expiry and stays as it was; --replace with --out is refused
+ *  11. an agent mint lists its grants; --identity keeps them unless a flag replaces one; doctor auth
+ *      lists each --out file with its state, and an expired one's repair re-mints it in place
  *
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
  * registered runner), never a hand-built ParsedArgs. It runs in a child, because the kernel writes a
@@ -611,6 +613,43 @@ try {
     const withOut = await runMint(["kurz", "--replace", "--out", out]);
     check("--replace with --out exits 1 with the reason and writes nothing",
       withOut.code === 1 && /--replace replaces the label's standing credential, so it takes no --out/.test(withOut.out) && !existsSync(out), withOut.out);
+  }
+
+  // ── 11. --identity keeps an agent credential's grants; doctor auth lists each --out file ─────
+  {
+    type Envelope = { result?: { grants?: unknown; exported?: { path: string; state: string; repair: string | null }[] | null }; warnings?: { code: string; message: string }[] };
+    const envelope = (out: string): Envelope => {
+      const line = out.split("\n").find((text) => text.startsWith('{"schemaVersion"'));
+      try { return line ? JSON.parse(line) as Envelope : {}; } catch { return {}; }
+    };
+    // The credential's channel rows and TASK role row, which the grants are minted into.
+    const grantRows = (path: string) => {
+      const nats = credsClaims(readFileSync(path, "utf8")).nats;
+      return [...(nats?.pub?.allow ?? []), ...(nats?.sub?.allow ?? [])].filter((row) => row.startsWith("cotal.") && row.includes(".chat.") || row.includes(".svc_")).sort();
+    };
+    const first = join(root, "grants-first.creds"), again = join(root, "grants-again.creds"), other = join(root, "grants-other.creds");
+    const minted = await runMint(["grants", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "board", "--expires-in", "1", "--out", first, "--json"]);
+    check("an agent mint's JSON lists its grants",
+      minted.code === 0 && JSON.stringify(envelope(minted.out).result?.grants) === JSON.stringify({ read: ["general"], post: ["general"], role: "board", fromIdentity: [] }), minted.out);
+    const carried = await runMint(["grants", "--identity", first, "--out", again, "--json"]);
+    check("a re-mint with --identity and no grant flag keeps the read, post and role grants and names them carried",
+      carried.code === 0 && JSON.stringify(envelope(carried.out).result?.grants) === JSON.stringify({ read: ["general"], post: ["general"], role: "board", fromIdentity: ["read", "post", "role"] }), carried.out);
+    check("  and the new credential holds the same channel and role rows", grantRows(again).length > 2 && JSON.stringify(grantRows(again)) === JSON.stringify(grantRows(first)), { first: grantRows(first), again: grantRows(again) });
+    const flagged = await runMint(["grants", "--identity", first, "--allow-publish", "ops", "--out", other]);
+    check("a grant flag replaces only its own grant, and the receipt marks the carried ones",
+      flagged.code === 0 && /^\s*May read:\s+general \(carried from --identity\)$/m.test(flagged.out) && /^\s*May post:\s+ops$/m.test(flagged.out) && /^\s*Role:\s+board \(carried from --identity\)$/m.test(flagged.out), flagged.out);
+    await wait(2100);
+    const expired = await runCotal(["doctor", "auth", "--space", SPACE, "--json"]);
+    const rows = envelope(expired.out).result?.exported ?? [];
+    const row = rows.find((entry) => entry.path === first);
+    check("doctor auth lists the files auth mint --out wrote, each with its state",
+      row?.state === "expired" && rows.some((entry) => entry.path === again && entry.state === "healthy") && rows.some((entry) => entry.path === other), rows);
+    check("  an expired one is a warning, and its repair mints the same key into the same file",
+      row?.repair?.includes(`auth mint grants --identity ${first} --out ${first}\``) === true && envelope(expired.out).warnings?.some((warning) => warning.code === "EXPORTED_CREDENTIAL_EXPIRED" && warning.message.includes(first)) === true, { row, warnings: envelope(expired.out).warnings });
+    const renewed = await runMint(["grants", "--identity", first, "--out", first]);
+    const after = envelope((await runCotal(["doctor", "auth", "--space", SPACE, "--json"])).out).result?.exported ?? [];
+    check("  following it renews the file with its grants, and doctor then reads it healthy",
+      renewed.code === 0 && JSON.stringify(grantRows(first)) === JSON.stringify(grantRows(again)) && after.find((entry) => entry.path === first)?.state === "healthy", { renewed: renewed.out, after });
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);

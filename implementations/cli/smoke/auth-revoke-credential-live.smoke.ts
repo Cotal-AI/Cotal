@@ -5,7 +5,8 @@
  *     and `cotal up`, and the account record is unchanged.
  *  2. After `down`, without `--yes` it refuses USAGE_INVALID (exit 1). With `--yes` it records the
  *     key from the creds file in the account JWT's revocations, and again by public key it reports
- *     the same time and changes nothing. A creds file another account issued refuses CONFLICT.
+ *     the same time and changes nothing. doctor auth lists the file as revoked, naming a mint with a
+ *     new key. A creds file another account issued refuses CONFLICT.
  *  3. After `up`, the broker refuses the revoked credential, another minted credential still reads,
  *     and the channel history is kept. `auth mint --identity` refuses the revoked key, CONFLICT, and
  *     a fresh mint works.
@@ -108,6 +109,12 @@ try {
     const again = cli(root, "auth", "revoke-credential", key, "--yes", "--json");
     check("by public key again it reports the same time and changes nothing",
       again.status === 0 && again.env?.outcome === "no-op" && again.env.result?.alreadyRevoked === true && again.env.result.revokedAt === result.revokedAt, shown(again));
+    const doctor = cli(root, "doctor", "auth", "--json");
+    const exported = (doctor.env?.result?.exported ?? []) as { path: string; state: string; repair: string | null }[];
+    const listed = exported.find((row) => row.path === leaked);
+    check("doctor auth lists the revoked file, and its repair is a mint with a new key, since --identity refuses that key",
+      listed?.state === "revoked" && listed.repair?.includes("auth mint --identity refuses that key; mint a new key:") === true && listed.repair.includes("auth mint leaked --out <new file>")
+        && exported.find((row) => row.path === kept)?.state === "unbounded", { exported, doctor: shown(doctor) });
     const foreign = join(creds, "foreign.creds");
     writeFileSync(foreign, await mintCreds(await createSpaceAuth("elsewhere"), newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
     const other = cli(root, "auth", "revoke-credential", foreign, "--yes", "--json");
