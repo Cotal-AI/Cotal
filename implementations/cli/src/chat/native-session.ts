@@ -155,6 +155,9 @@ export interface NativeSessionInputs {
 export class NativeChatSession implements AdmittedChatSession {
   private readonly engine: ParticipantEngine;
   private readonly listeners = new Set<(e: SessionEvent) => void>();
+  /** What the session emitted before its first subscriber, such as the presence the endpoint's start
+   *  reports, this session's own row included. The first subscriber gets it, so nothing is lost. */
+  private early: SessionEvent[] | undefined = [];
   private state: ConnectionState = "connected";
   private attention: "open" | "dnd" | "focus" = "open";
   private closed: Promise<CloseReport> | undefined;
@@ -195,6 +198,11 @@ export class NativeChatSession implements AdmittedChatSession {
 
   subscribe(listener: (event: SessionEvent) => void): () => void {
     this.listeners.add(listener);
+    const early = this.early ?? [];
+    this.early = undefined;
+    for (const e of early) {
+      try { listener(e); } catch { /* a listener fault never breaks delivery */ }
+    }
     return () => this.listeners.delete(listener);
   }
 
@@ -434,6 +442,10 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   private emit(e: SessionEvent): void {
+    if (this.early) {
+      this.early.push(e);
+      return;
+    }
     for (const l of this.listeners) {
       try { l(e); } catch { /* a listener fault never breaks delivery */ }
     }
