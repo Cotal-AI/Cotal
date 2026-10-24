@@ -1250,11 +1250,12 @@ process that holds a reused pid is never signalled. The broker scope
 is checked again after its dependants stop. A failure stops the sequence and preserves completed and
 unattempted members. A member stopped by signal that has not exited 15 seconds after SIGTERM gets
 SIGKILL. Its row then reads `stopped with SIGKILL`, and a `STOP_ESCALATED` warning names its pid.
-Only a complete confirmed stop removes the delivery credential and local registration. When the
-delivery daemon was already gone or had to be killed, its credential stays: that daemon never
-released its lease, and
-the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
-The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
+Only a complete confirmed stop removes the delivery credential and local registration. After the
+delivery daemon stops, `down` reads its lease. When the daemon was already gone, or the lease still
+names the daemon that credential gave, as after a kill or a release a full store refused, the
+credential stays, and the next `up` uses it to recognise the row and wait it out before it mints a
+new one. When the lease cannot be read, the credential stays too, and a `DELIVERY_LEASE_UNREAD`
+warning says so. The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
 definitions and the journal remain for the next `up`, and the space stays prepared at its root. A
 selection that names it stays, so the next command run without `--space` refuses with
 `TARGET_UNAVAILABLE`, exit 2, and names the root to start it in, rather than reach another space.
