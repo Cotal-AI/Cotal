@@ -165,7 +165,8 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     const m = findMesh(name);
     if (!m) {
       const p = findPreparedSpace(name);
-      if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
+      // No space has the name, so the refusal is not headed with it.
+      if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { requested: name }, remedy: "see the registered spaces with `cotal space`" });
       const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current) };
       writeResult(presentation, { command: "space", target: { space: p.space }, result }, preparedView);
       return;

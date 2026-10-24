@@ -12,6 +12,8 @@
  *    started" / "absent origin = `up`" is expected and intended.)
  *  • `add` verifies against the real broker before recording, and records nothing when that fails;
  *  • `--force` is the explicit record-without-verifying / replace escape;
+ *  • `add` refuses a space name `space create` refuses, and `rm` still removes one an earlier
+ *    release registered;
  *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here, saying
  *    that on its pidfile root `cotal down` drops the record.
  *
@@ -327,6 +329,14 @@ try {
   check("add refuses a space name that starts with -, even with --force, naming the rule, and records nothing",
     dashed.code === 1 && dashed.out.includes('the space name "-x" starts with "-", so it cannot be passed as a flag value') &&
       dashed.out.includes("choose a name that starts with a letter, digit or underscore") && findMesh("-x") === undefined, dashed.out);
+  // A name `space create` refuses cannot be registered either. One an earlier release registered is
+  // still removed by rm.
+  const starred = await run(["add", "a*b"], { server: DEAD, root, force: true });
+  check("add refuses a space name space create refuses, even with --force, naming the rule, and records nothing",
+    starred.code === 1 && starred.out.includes("a space name is 1 to 64 letters, digits, underscores or hyphens") && findMesh("a*b") === undefined, starred.out);
+  recordMesh({ space: "a*b", server: DEAD, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
+  const oddRemoved = await run(["rm", "a*b"]);
+  check("  rm still removes a registration an earlier release made under such a name", oddRemoved.code === 0 && findMesh("a*b") === undefined, oddRemoved.out);
 
   // MODE HONESTY. A NATS broker with no auth configured accepts a credential-bearing CONNECT and
   // ignores it, so "the creds were accepted" is not evidence of enforcement. Registering `auth`

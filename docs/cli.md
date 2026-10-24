@@ -196,7 +196,9 @@ stops something, and classified failures. A failure raised after the command
 resolved its space carries that space in `target.space`, even when the failing
 step named no space. The label comes from the operation's target, not a new read
 of the current selection. Global reports do not invent a selected mesh. JSON
-retains `target.space` without a text header. Plain watch feeds and followed
+retains `target.space` without a text header. A refusal for a name no space has, such as one
+`space create` refuses or one `space show` and `space forget` do not find, carries the name as
+`target.requested` and has no `Mesh:` heading. Plain watch feeds and followed
 history prefix each new row with the mesh name so the context remains visible as
 output scrolls.
 
@@ -2342,8 +2344,8 @@ and `space show` of a prepared space gives those with the kind `prepared-space`.
 such a folder `(no longer exists)` and names `cotal space forget <space>` for it instead of `cotal up`.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
-that starts with `-`, given or named by a bundle, refuses with `USAGE_INVALID`, exit 1, before
-anything is written, as it does for `space create`. With
+`space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
+refuses with `USAGE_INVALID`, exit 1, before anything is written. With
 `--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
 holds the space's trust, `open` otherwise. `--root` defaults to this project. Outside one it is
 required, and leaving it out is a one-line `USAGE_INVALID` refusal whose remedy says what to pass:
@@ -2841,7 +2843,8 @@ a terminal - a script, an agent, CI - nothing prompts and the flag form's errors
 
 `cotal up` and `cotal down` maintain their own records. `meshes add` registers a mesh they cannot
 speak for: one running on another machine, a shared broker, a hosted space. Like `space add`, it
-refuses a space name that starts with `-`, exit 1, with nothing written. `--root` is the folder
+refuses a space name `space create` refuses, exit 1, with nothing written, even with `--force`. A
+mesh an earlier release registered under such a name still lists, shows and removes as before. `--root` is the folder
 whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas.
 The default is the project you run it in. The registry stores that path, never a secret. `--mode`
 defaults to `auth` when the root holds the space's account record and to `open` otherwise. The

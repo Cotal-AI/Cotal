@@ -10,6 +10,9 @@
  * their folder. A forget of a running space names `cotal down`: on a legacy root it says that down
  * drops the record, and for a controller stack, whose down keeps it prepared, it names forget again.
  * `meshes rm` of that stack says the same and names `space forget`.
+ * `space add` refuses a name `space create` refuses. A refusal for a name no space has, from
+ * create, show or forget, carries it as `target.requested` with no `Mesh:` heading, while a
+ * registration an earlier release made under such a name is still headed with it.
  * On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
  * whose members this home has no record of, with a live manager, stands for a stack running under
@@ -191,6 +194,9 @@ setCurrent("keep");
   check("add of a name that starts with - is USAGE_INVALID, saying it cannot be passed as a flag value, even with --force",
     refused(dashed, 1, "USAGE_INVALID") && (dashed.env?.error?.message ?? "").includes('the space name "-x" starts with "-", so it cannot be passed as a flag value') &&
       dashed.env?.error?.remedy === "choose a name that starts with a letter, digit or underscore", shown(dashed));
+  const starred = await json(["space", "add", "a*b", "--server", LIVE, "--root", root, "--force"]);
+  check("add of a name space create refuses is USAGE_INVALID, with the name as target.requested, even with --force, and records nothing",
+    refused(starred, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(starred.env?.error?.message ?? "") && starred.env?.target?.requested === "a*b" && findMesh("a*b") === undefined, shown(starred));
   // A space added from elsewhere is carried by the same local files as one created here.
   for (const length of [65, 117]) {
     const long = "r".repeat(length), limit = `the space name has ${length} characters, and a space name holds at most 64`;
@@ -824,6 +830,17 @@ if (process.platform === "linux") {
   check("up --space=-x is USAGE_INVALID before anything is started or written",
     refused(dashedUp, 1, "USAGE_INVALID") && (dashedUp.env?.error?.message ?? "").endsWith("cannot be passed as a flag value; nothing was started or written") && dashedUp.env?.error?.remedy === "choose a name that starts with a letter, digit or underscore", shown(dashedUp));
   check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é", "-x"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
+  // A name no space has resolves to nothing, so its refusal carries the name as target.requested and
+  // has no `Mesh:` heading. A registration an earlier release made under such a name still has one.
+  for (const args of [["space", "create", "a*b"], ["space", "show", "a*b"], ["space", "forget", "a*b"], ["space", "show", "nosuchspace"], ["space", "forget", "nosuchspace"]]) {
+    const r = await json(args, spare);
+    check(`${args.join(" ")} is refused with the name as target.requested and no Mesh: heading`,
+      r.status !== 0 && r.env?.outcome === "refused" && r.env.target?.requested === args[2] && r.env.target.space === undefined && !/^Mesh:/m.test(r.stderr), shown(r));
+  }
+  recordMesh({ space: "a*b", server: DEAD, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() });
+  const odd = await run(["space", "show", "a*b"]);
+  check("space show of a registration an earlier release made under such a name still heads it Mesh: <name>", odd.status === 0 && odd.stdout.startsWith("Mesh: a*b"), shown(odd));
+  removeMesh("a*b");
   // A space name holds at most 64 characters, so its hex fits every local file name that carries it.
   const longName = "y".repeat(65), longest = "y".repeat(64);
   const tooLong = await json(["space", "create", longName], spare);

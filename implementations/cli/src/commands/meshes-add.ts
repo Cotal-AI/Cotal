@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { connect as netConnect } from "node:net";
 import { join, resolve } from "node:path";
-import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
+import { mkSecretDir, probeConnect, token, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
 import {
   assertPinnedFetchUrl,
   authDir,
@@ -25,6 +25,7 @@ import {
   PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
   setCurrent,
+  SPACE_NAME_MAX,
   spaceNameTooLong,
   userAuthStateDir,
   type Check,
@@ -85,10 +86,20 @@ export function isDir(path: string): boolean {
 
 /** A space name that starts with `-` reads as an option, so `--space <name>`, `use <name>` and the
  *  child processes a stack starts cannot pass it. */
-export function checkSpaceName(space: string): Check<string> {
+export function checkSpaceFlagValue(space: string): Check<string> {
   return space.startsWith("-")
     ? { ok: false, message: `✗ the space name "${space}" starts with "-", so it cannot be passed as a flag value`, code: "USAGE_INVALID", remedy: "choose a name that starts with a letter, digit or underscore" }
     : good(space);
+}
+
+/** A name `space create` refuses cannot be registered either: a space starts only under one native
+ *  routing token, and {@link checkSpaceFlagValue} applies too. */
+export function checkSpaceName(space: string): Check<string> {
+  const flag = checkSpaceFlagValue(space);
+  if (!flag.ok) return flag;
+  if (token(space) !== space)
+    return { ok: false, message: `✗ a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, code: "USAGE_INVALID", remedy: "choose a name of only letters, digits, underscores and hyphens" };
+  return good(space);
 }
 
 /**
