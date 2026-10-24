@@ -299,7 +299,7 @@ Ask the manager to tear a teammate down: it leaves the mesh and its process/tab 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | no | Name of the peer to stop. Omit to stop yourself (self-despawn). |
-| `instance` | string | no | Optional manager instance id that runs the named peer, for a multi-manager space. Needs `name`. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager. |
+| `instance` | string | no | Optional manager instance id for the named peer. Requires `name`. Omitted keeps this session's existing manager selection. A managed user-auth seat must use its own manager. An unresolved pin is refused without fallback. |
 | `graceful` | boolean | no | Default true: let the session exit cleanly. false = hard kill. |
 
 ## `cotal_yield`

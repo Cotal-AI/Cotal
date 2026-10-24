@@ -1528,7 +1528,7 @@ export function cotalToolSpecs(
             catch { return false; }
           }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
           .optional()
-          .describe("Optional manager instance id that runs the named peer, for a multi-manager space. Needs `name`. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager."),
+          .describe("Optional manager instance id for the named peer. Requires `name`. Omitted keeps this session's existing manager selection. A managed user-auth seat must use its own manager. An unresolved pin is refused without fallback."),
         graceful: z
           .boolean()
           .optional()
