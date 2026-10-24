@@ -538,7 +538,10 @@ broker-only. For a split topology with a manager, wait for `.cotal/manager.<spac
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
-only what actually started. Started from the machine home, the line names `cotal down --preserve-state`,
+only what actually started. Its receipt begins with `Mesh: <space>` and ends with a Next that names
+`cotal spawn` when a manager runs, and the stop. With no `--space`, in a folder that names no space,
+it also says that `up` started the default space `main`. Started from the machine home, the line
+names `cotal down --preserve-state`,
 because bare `down` refuses the home stack. With `--no-manager` it names `cotal up` first, because
 `--preserve-state` needs a manager. On POSIX, a foreground broker has its own session and process group.
 Terminal Ctrl-C reaches the CLI owner, which stops the manager through the same stop as bare
@@ -1157,7 +1160,8 @@ service registration in that case, so no successor is handed authority while tha
 run; the lease lapses on its TTL. A named `down` is the service stop above and never stops a
 legacy component by its pidfile, so `cotal down manager` or `cotal down web` on a legacy stack is
 refused unless a saved definition has that name. Only bare `cotal down` stops a legacy root's
-components, all together, under the folder you run it in. It takes no `--space`. A bare `down` or
+components, all together, under the folder you run it in. It takes no `--space`. Its stop lines
+follow a `Mesh: <space>` heading, and its Next names `cotal up` to start the stack again. A bare `down` or
 `down --dry-run` whose `--space` names a space whose stack is recorded in another folder refuses
 `TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh

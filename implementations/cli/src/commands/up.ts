@@ -174,7 +174,7 @@ import { c } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { renderDetachedSummary } from "../lib/up-report.js";
+import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
@@ -1652,6 +1652,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
     const quietRestore = restored !== undefined && restoreSinks.has(restored.attemptId);
+    // The receipt names its space before the launch prints anything, as every report does.
+    const receiptSpace = values.space ?? folderSpace();
+    const unnamed = values.space === undefined && unnamedDefault(cotalRoot(), receiptSpace);
+    if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
     const { pid, executable, authService, controlPlane, delivery, manager } = await startMeshDetached({
       transport,
       server,
@@ -1676,9 +1680,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       ...(quietRestore ? { quietBoot: true } : {}),
     });
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
+    const detached = { pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) };
     if (!quietRestore) {
       console.log(c.dim(`Started ${executable}.`));
-      console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) })));
+      console.log(c.green(renderDetachedSummary(detached)));
+      if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -1702,6 +1708,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
         console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restored.selection)}`));
     }
+    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext(detached, receiptSpace) }] }] }, "rich", terminalWidth(process.stdout))}`);
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,
@@ -3677,11 +3684,16 @@ function folderSpace(): string {
   return resolveSpace(process.cwd());
 }
 
+/** Whether `space` is the default space a bare `up` starts because this folder names none. */
+function unnamedDefault(root: string, space: string): boolean {
+  return space === DEFAULT_SPACE && soleSpaceOf(authDir(root)) === undefined && !preparedSpaceAt(root) && !localMeshesForRoot(root).length && !readStackJournal(root);
+}
+
 /** A bare `up` in a folder that names no space starts the default space. When the selected space
  *  is prepared in a folder that no longer exists, as after that folder was moved, the default is not
  *  what was meant, so `up` refuses with the step that prepares the selection here. */
 function assertSelectionNotMoved(root: string, space: string): void {
-  if (space !== DEFAULT_SPACE || soleSpaceOf(authDir(root)) !== undefined || preparedSpaceAt(root) || localMeshesForRoot(root).length || readStackJournal(root)) return;
+  if (!unnamedDefault(root, space)) return;
   const current = getCurrent();
   const prepared = current === undefined || current === space ? undefined : findPreparedSpace(current);
   if (!prepared || existsSync(prepared.root)) return;

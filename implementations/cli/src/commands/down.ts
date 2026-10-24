@@ -7,6 +7,8 @@ import {
   isCommandFailure,
   localRecordName,
   presentationOf,
+  renderReport,
+  terminalWidth,
   abortMaintenanceCut,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
@@ -450,6 +452,8 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let folderContext: LocalProcessContext | undefined;
   const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
   refuseUncontainedRecords(selected, folderCtx());
+  // The stop's lines follow the space they stop, as every other report of down begins.
+  console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
   // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
   // this folder's root. Its services stop first, through the service controller.
   await stopBareDownServices(guarded.space, guarded.services, { style: "rich", withAgents: values["with-agents"] === true });
@@ -515,6 +519,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", terminalWidth(process.stdout))}`);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
