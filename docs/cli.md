@@ -1178,7 +1178,8 @@ definitions and the journal remain for the next `up`, and the space stays prepar
 selection that names it stays, so the next command run without `--space` refuses with
 `TARGET_UNAVAILABLE`, exit 2, and names the root to start it in, rather than reach another space.
 No descendant, lease or authority cleanup is
-implied. A dry run reads records only, takes no lock, does not establish native impact and exits 0;
+implied. A dry run reads records and, with a live manager, how much the space's store holds. It takes
+no lock, does not establish native impact and exits 0;
 its JSON marks `completeness` as `partial`. It lists members in stop order, says when the stop would
 first settle an earlier operation, and names a scope check the real stop would refuse as a warning.
 A member whose recorded process is already gone is recorded as stopped without loading its adapter
@@ -1195,7 +1196,11 @@ once, naming its pid, and stops nothing. When the broker's process runs but does
 manager read waits out its bound and `down` refuses the same way. The broker stops last and
 is never force killed, so `down` does not signal it. Resume a suspended broker with
 `kill -CONT <pid>` and run `cotal down` again; end one that stays unresponsive, then take the route
-above. Controller roots refuse
+above. The manager's stop rides a control credential whose issuance record the broker stores first,
+and a store over its cap refuses that write. With a live manager, `down` then refuses
+`DEPENDENCY_UNAVAILABLE`, exit 2, before any stop, naming the store and the `--max-file-store` cap
+this machine recorded. Make room with `cotal history clear --yes`, then run `cotal down`. A dry run
+names that refusal as a warning when the space holds more than the recorded cap. Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help. A stop records each step in the stack journal in the root's

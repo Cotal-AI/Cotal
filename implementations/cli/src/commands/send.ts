@@ -1,7 +1,6 @@
 import { hostname, userInfo } from "node:os";
 import { closeSync, fstatSync, openSync, read } from "node:fs";
 import { promisify } from "node:util";
-import { JetStreamApiError } from "@nats-io/jetstream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   resolvePeer,
@@ -28,7 +27,7 @@ import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
-import { brokerStoreWrite, recordedStore } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { chatStreamGone, streamsAbsent } from "../lib/space-streams.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
@@ -317,11 +316,11 @@ function payloadRefused(error: unknown): boolean {
  *  its cap, and stores nothing. The refusal names the store and cap this machine records for the
  *  space's broker. */
 function storeFullRefusal(error: unknown, root: string | undefined, space: string, target: unknown): CommandFailure | undefined {
-  if (!(error instanceof JetStreamApiError) || error.code !== 10023) return undefined;
+  if (!storeRefusedWrite(error)) return undefined;
   let store: ReturnType<typeof recordedStore> | undefined;
   try { store = root ? recordedStore(root, space) : undefined; } catch { store = undefined; }
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker's JetStream store${store ? ` ${store.path}` : ""} is full${store?.cap !== undefined ? ` at its --max-file-store cap of ${store.cap} bytes` : ""}, so it refused the message; nothing was stored`, {
-    target, native: { code: String(error.code) },
+    target, native: { code: "10023" },
     remedy: `make room with cotal history clear --yes, which purges this space's channel history (--dms also purges its direct messages), then send again${store?.cap !== undefined ? "; to raise the cap afterwards, run cotal down and cotal up --max-file-store <bytes>" : ""}`,
   });
 }

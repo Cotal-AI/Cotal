@@ -1,5 +1,7 @@
 import { join } from "node:path";
-import { loadMeshes, localProcessPath } from "@cotal-ai/workspace";
+import { JetStreamApiError } from "@nats-io/jetstream";
+import { CotalEndpoint, mintCreds, newIdentity } from "@cotal-ai/core";
+import { loadMeshes, localProcessPath, type MeshTarget } from "@cotal-ai/workspace";
 import { pidfileState } from "../commands/down.js";
 import { readOwnedLogTail, readServiceLog } from "./service-process.js";
 import { serviceInstances, instanceProjection } from "./service-instances.js";
@@ -23,6 +25,33 @@ export function recordedStore(root: string, space: string): { path: string; cap?
   const stack = readStackJournal(root)?.journal;
   const recorded = stack?.space === space && stack.broker ? stack.broker : loadMeshes().find((mesh) => mesh.space === space && mesh.root === root);
   return { path: recorded?.storeDir ?? join(root, ".cotal", "nats"), ...(recorded?.maxFileStore !== undefined ? { cap: recorded.maxFileStore } : {}) };
+}
+
+/** Whether `error`, or an error that caused it, is JetStream's 10023, insufficient resources, which
+ *  the broker answers to every file-store write while its store holds more than its cap. */
+export function storeRefusedWrite(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e instanceof JetStreamApiError && e.code === 10023) return true;
+  return false;
+}
+
+/** One read of the bytes `target`'s space holds in its broker's file store, over an observer
+ *  credential, which writes nothing. Undefined for a user-auth space, for which this machine mints
+ *  no observer, and when the read fails. */
+export async function readStoredBytes(target: MeshTarget, name: string): Promise<number | undefined> {
+  if (target.mode === "user") return undefined;
+  const id = newIdentity();
+  let ep: CotalEndpoint | undefined;
+  try {
+    ep = new CotalEndpoint({ space: target.space, servers: target.server, tls: target.tlsRequired, creds: target.auth ? await mintCreds(target.auth, id, "observer") : undefined, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { id: id.id, name, kind: "endpoint" } });
+    ep.on("error", () => {});
+    ep.on("warning", () => {});
+    await ep.start();
+    return await ep.storedBytes();
+  } catch {
+    return undefined;
+  } finally {
+    await ep?.stop().catch(() => {});
+  }
 }
 
 /** A space holding more JetStream file storage than its broker's recorded cap. nats-server refuses

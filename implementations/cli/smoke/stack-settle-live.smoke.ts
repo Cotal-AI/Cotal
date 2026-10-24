@@ -29,7 +29,9 @@
  *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
  *     naming that cap and the flag. Once a space holds more than its cap, `send` refuses
  *     `DEPENDENCY_UNAVAILABLE` naming the store and the cap, `status` shows the store full and leads
- *     Next with `history clear`, and after that clear `send` stores again. A project folder renamed while its stack runs: the broker names
+ *     Next with `history clear`, and `down` refuses the same way before any stop, because the
+ *     manager's stop needs an issuance record, which its dry run predicts. After that clear `send`
+ *     stores again. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
  *     `status --space` from the renamed folder name the move and the way back, `status` there offers
  *     no `clean store`, and after the move back `down` stops it.
@@ -441,7 +443,7 @@ try {
   {
     const space = "fullcap";
     const root = prepare(space);
-    const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--max-file-store", "70000000", "--json");
+    const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-file-store", "70000000", "--json");
     track(space);
     check("up with a 70 MB cap starts", up.status === 0, shown(up));
     const store = readStackJournal(root)!.journal.broker!.storeDir;
@@ -461,7 +463,14 @@ try {
     check("status --json shows the store full with its bytes, cap and path", status.status === 0 && full?.state === "full" && full.cap === 70000000 && (full.used ?? 0) > 70000000 && full.path === store, { status: status.status, store: full });
     const plain = cli(root, "status", "--plain");
     check("status shows a full Store row and leads Next with history clear", /Store: +full - \d+ bytes stored, over its --max-file-store cap of 70000000/.test(plain.stdout) && plain.stdout.includes(`history clear --space ${space} --yes`), plain.stdout);
+    const stopRefused = `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, and stopping the manager needs a credential whose issuance record the full store cannot take; no member was stopped`;
+    const preview = cli(root, "down", "--dry-run", "--json");
+    check("down --dry-run predicts the full-store refusal of the manager's stop", preview.status === 0 && (preview.env?.result?.blockedBy as { code?: string; message?: string } | null)?.code === "DEPENDENCY_UNAVAILABLE" && (preview.env?.result?.blockedBy as { message?: string }).message === stopRefused && Boolean(preview.env?.warnings?.some((w) => w.code === "DEPENDENCY_UNAVAILABLE")), shown(preview));
+    const manager = pidOf(space, "stack-manager");
+    const down = cli(root, "down", "--yes", "--json");
+    check("down --yes on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming history clear then down", down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && down.env.error.message === stopRefused && down.env.error.cause?.code === "10023" && down.env.error.remedy === "make room with cotal history clear --yes, then run cotal down" && manager !== null && alive(manager) && !gone(space, "stack-delivery"), shown(down));
     check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
+    check("down --dry-run then names no refusal", cli(root, "down", "--dry-run", "--json").env?.result?.blockedBy === null);
     const again = cli(root, "send", "-c", "general", "after the clear", "--json");
     check("send stores again once room is made", again.status === 0, shown(again));
     check("status no longer shows the store full", (cli(root, "status", "--json").env?.result?.store as { state?: string } | undefined)?.state !== "full");
