@@ -2003,15 +2003,19 @@ cotal use [<space> | --clear] [--json|--plain]
 ```
 
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
-(`started here`, `registered` or `discovered`) and root, with the selected one marked. It probes
+(`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
+project whose root has one registered or prepared space other than the selection, that space is
+marked as this folder's, since a command without `--space` targets it there. It probes
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable`; its registration stays. A discovered space is never dialed by a listing and
-reads `not checked`. `space show [<name>]` shows one space in full, the selected one when no name is
-given, and probes only that broker. Neither writes anything. A registry record that cannot be
+reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
+With no name it shows the space a command without `--space` targets: this folder's space as above,
+else the selected one. Neither writes anything. A registry record that cannot be
 read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 
 `--json` writes one document. `space` gives `current` (the selected space or null),
-`currentRecorded`, `items` and `prepared`; each item is the row `cotal status --json` gives under
+`currentRecorded`, `folder` (this folder's space when it is marked, else null), `items` and
+`prepared`; each item is the row `cotal status --json` gives under
 `meshes.items`: `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`,
 `current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
 `recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
@@ -2178,7 +2182,9 @@ project folder. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
 registered is refused with `TARGET_NOT_FOUND`, exit 2, and the selection stays. Bare `use` reports
-the selection. A selection that names a space no longer registered is reported with a
+the selection. Inside a project whose root has one registered or prepared space other than the
+selection, `use` also says that commands in the folder target that space, and `--json` gives it as
+`folder`. A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With

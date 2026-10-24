@@ -164,6 +164,16 @@ const QUESTION = "Which one?";
     envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
       envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
       !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout + inDeltaText.stderr), { json: shown(inDelta), text: shown(inDeltaText) });
+  // The listing, `space show` and `use` there name it as the target too.
+  const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
+  check("in that folder space marks it as this folder's, and space show and use name it as the target there",
+    envelope(listed)?.result?.folder === "delta" && /^ {2}delta \(this folder's\) /m.test(listedText.stdout) &&
+      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
+      envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === "delta" && usedText.stdout.includes(`commands in this folder target its space "delta"; the selection applies outside it`),
+    { listed: shown(listed), listedText: shown(listedText), shownSpace: shown(shownSpace), used: shown(used), usedText: shown(usedText) });
+  const listedAway = run(["space", "--json"]), usedAway = run(["use", "--json"]);
+  check("control: from a folder with no project space and use name no folder space",
+    envelope(listedAway)?.result?.folder === null && envelope(usedAway)?.result?.folder === null, { listed: shown(listedAway), used: shown(usedAway) });
   removePreparedSpace("delta");
   clearCurrent();
 }
