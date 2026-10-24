@@ -501,6 +501,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
   }
+  // A channel refusal quotes the value with its control characters escaped.
+  for (const flag of ["--subscribe", "--allow-subscribe", "--allow-publish"]) {
+    const r = cotal(["persona", "create", "q", "--prompt", "body", ...(flag === "--subscribe" ? [] : ["--subscribe", ""]), flag, `v${E}`], persona, noSeed);
+    check(`cotal persona create q ${flag} escapes control characters in its refusal`,
+      r.status === 1 && r.stderr.includes(`${flag}: invalid channel "v\\u001b]0;PWN\\u0007`) && !raw.test(r.stdout + r.stderr), shown(r));
+  }
   // A name that differs from an existing persona's only in case is refused, and nothing is written.
   for (const argv of [["persona", "create", "X", "--prompt", "body", "--subscribe", ""], ["personas", "new", "X", "--prompt", "body", "--subscribe", "", "--force"]]) {
     let agents = "";

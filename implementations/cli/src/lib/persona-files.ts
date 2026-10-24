@@ -205,11 +205,16 @@ async function withDraft<T>(name: string, action: (path: string) => T | Promise<
   }
 }
 
-/** Use the existing serializer for flag-built definitions; file inputs keep their original bytes. */
-export function serializePersona(def: AgentDef): Promise<Buffer> {
-  for (const [flag, value] of [["--role", def.role], ["--model", def.model]] as const)
+/** Refuse a `--role` or `--model` that holds control characters by name, before any rule quotes it. */
+export function assertLabels(values: { role?: string; model?: string }): void {
+  for (const [flag, value] of [["--role", values.role], ["--model", values.model]] as const)
     if (value !== undefined && /[\u0000-\u001f\u007f]/u.test(value))
       throw new CommandFailure("refused", "USAGE_INVALID", `${flag} takes a label without control characters`);
+}
+
+/** Use the existing serializer for flag-built definitions; file inputs keep their original bytes. */
+export function serializePersona(def: AgentDef): Promise<Buffer> {
+  assertLabels(def);
   if (def.model !== undefined && !def.model.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "--model is empty", { remedy: "name a model, or leave --model out for the application default" });
   return withDraft(def.name, path => {

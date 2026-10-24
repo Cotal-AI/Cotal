@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
-import { assertValidChannel, assertValidRole, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { assertValidChannel, assertValidRole, oneLine, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
@@ -11,7 +11,7 @@ import {
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { readPersonas } from "../lib/personas.js";
 import {
-  commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
+  assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
@@ -138,11 +138,13 @@ async function createSource(name: string, path: string, values: Values): Promise
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
   if (values.harness !== undefined) checkHarness(values.harness);
+  assertLabels(values);
+  // A refusal that quotes a value escapes its control characters, so the value cannot rewrite the terminal.
   if (values.role !== undefined) {
     // A control character is refused before the role check, which would echo the value.
     if (/[\u0000-\u001f\u007f]/u.test(values.role)) throw usage("--role takes a label without control characters");
     try { assertValidRole(values.role); }
-    catch (error) { throw usage(`--role: ${(error as Error).message}`); }
+    catch (error) { throw usage(`--role: ${oneLine((error as Error).message)}`); }
   }
   const body = values.prompt ?? readInput(values.from!).toString("utf8");
   if (!body.trim()) throw usage("persona body is empty");
@@ -151,7 +153,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   const channels = (flag: string, text: string | undefined) => text?.split(",").map(value => value.trim()).filter(Boolean).map(channel => {
     try { return assertValidChannel(channel); }
     catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", `${flag}: ${(error as Error).message}`, channel.startsWith("#") ? { remedy: `name the channel without its #, as ${channel.slice(1)}` } : {});
+      throw new CommandFailure("refused", "USAGE_INVALID", `${flag}: ${oneLine((error as Error).message)}`, channel.startsWith("#") ? { remedy: `name the channel without its #, as ${oneLine(channel.slice(1))}` } : {});
     }
   });
   const subscribe = channels("--subscribe", values.subscribe), allowSubscribe = channels("--allow-subscribe", values["allow-subscribe"]);
