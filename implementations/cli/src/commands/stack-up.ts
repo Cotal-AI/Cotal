@@ -299,17 +299,33 @@ function stackListeners(journal: StackJournal): StackListener[] | null {
     listeners.push(...found);
   }
   return listeners;
+/** The selection a start finds: one that names a registered or prepared space, else none. */
+function usableSelection(): string | undefined {
+  const current = getCurrent();
+  return current && (findMesh(current) || findPreparedSpace(current)) ? current : undefined;
+}
+
+/** What `up` says when it selects the space it started, because nothing usable was selected. */
+export function selectedOnUp(space: string): string {
+  return `selected "${space}": a command without --space targets it, except in another space's project folder`;
+}
+
+/** What `up` says when another selected space stays selected. */
+export function keptOnUp(space: string, kept: string): string {
+  return `"${space}" up; "${kept}" stays selected for commands run outside this folder - \`cotal use ${space}\` to switch`;
 }
 
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
+  const before = usableSelection();
   const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
-  // The start keeps another selected space; the receipt says so, as a legacy `up` does.
-  const current = getCurrent();
-  const keptCurrent = current && current !== space && (findMesh(current) || findPreparedSpace(current)) ? current : undefined;
+  // The receipt says when the start selected its space, and when another space stays selected.
+  const current = usableSelection();
+  const keptCurrent = current !== space ? current : undefined;
+  const selected = current === space && before !== space;
   const written: { what: string; path: string }[] = [];
   const warnings: OutputWarning[] = settled ? [{ code: "OPERATION_SETTLED", target: { root, space, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [];
   try {
@@ -331,7 +347,8 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
       managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: "cotal up", description: "Add the manager to this stack" },
       { command: "cotal down", description: "Stop every recorded member" },
     ] }] }];
-    const kept: Report["sections"] = keptCurrent ? [{ blocks: [{ kind: "lines", lines: [{ text: `"${space}" up; current is still "${keptCurrent}" - \`cotal use ${space}\` to switch`, tone: "hint" }] }] }] : [];
+    const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
+    const kept: Report["sections"] = selection ? [{ blocks: [{ kind: "lines", lines: [{ text: selection, tone: "hint" }] }] }] : [];
     const rotated: Report["sections"] = result.rotatedSystemAccount ? [{ title: "System account rotated", blocks: [
       { kind: "fields", rows: [["Generation", String(result.rotatedSystemAccount.generation)], ["$SYS creds valid to", result.rotatedSystemAccount.expiresAt?.slice(0, 10) ?? "no expiry"]] },
       { kind: "lines", lines: ["membership-observer.creds and connection-evictor.creds were minted against the new system account, and the broker started on a configuration rendered from it. The data account, every agent credential and the JetStream store are unchanged. Old $SYS creds are refused by any broker that loads this configuration."] },

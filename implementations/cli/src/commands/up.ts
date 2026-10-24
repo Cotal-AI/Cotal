@@ -204,7 +204,7 @@ import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { cleanedManifestStart } from "../lib/legacy-start.js";
-import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import { bindReaches, controllerStackApplies, keptOnUp, recheckExistingStore, requestedStackMode, selectedOnUp, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
@@ -4041,8 +4041,8 @@ export const recordOurMeshForTest = (m: MeshEntry, provenance: Provenance): void
 
 /** Record this mesh in the registry, and set it as the `current` default when there's no usable one
  *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
- *  ghost pointer is not a default). Never silently redirect a `current` that still resolves to a live
- *  mesh; just say another is the default and how to switch. */
+ *  ghost pointer is not a default), and say so. Never silently redirect a `current` that still resolves
+ *  to a live mesh; just say another is the default and how to switch. */
 function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false): void {
   const cur = getCurrent();
   const usableCurrent = cur && (findMesh(cur) || findPreparedSpace(cur)) ? cur : undefined; // compute before recording m
@@ -4060,10 +4060,11 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setCurrent(m.space);
+    if (!quietBoot) console.log(c.dim(selectedOnUp(m.space)));
     return;
   }
   if (usableCurrent !== m.space && !quietBoot)
-    console.log(c.dim(`"${m.space}" up; current is still "${usableCurrent}" - \`cotal use ${m.space}\` to switch`));
+    console.log(c.dim(keptOnUp(m.space, usableCurrent)));
 }
 
 /** Write the default persona into the root this `up` started or refreshed when it has none, and
@@ -4415,6 +4416,8 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
 function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   const remedy = explicit ? "fix the file, or omit --channels" : `fix or remove ${path}`;
   let text: string;
+  // A FIFO or a device would block the read, so only a regular file is opened.
+  if (statSync(path, { throwIfNoEntry: false })?.isFile() === false) throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not a regular file, such as a FIFO; it was not read`, { remedy });
   try { text = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
   let value: unknown;

@@ -1,6 +1,6 @@
 import { c } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
-import { CommandFailure, exitCode, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
 import { displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
 
 // Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
@@ -217,7 +217,9 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
 /** A report as lines of text, fitted to `width` columns (unbounded when output is not a terminal):
  *  tables fit or become records, and long values and lines wrap at spaces. */
 export function renderReport(report: Report, style: Style, width = Number.POSITIVE_INFINITY): string {
+  const note = report.space ? operationSpaceNote(report.space) : undefined;
   const out: string[] = report.space ? drawWrapped({ text: `Mesh: ${report.space}`, tone: "selected" }, style, width) : [];
+  if (note) out.push(...drawWrapped({ text: note, tone: "hint" }, style, width - 2).map((line) => `  ${line}`));
   for (const section of report.sections) {
     if (out.length) out.push("");
     const indent = section.title === undefined ? "" : "  ";

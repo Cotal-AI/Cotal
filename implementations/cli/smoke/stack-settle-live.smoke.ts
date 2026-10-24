@@ -443,7 +443,7 @@ try {
     const copyStatus = cli(copy, "status", "--space", space, "--json");
     rmSync(copy, { recursive: true, force: true });
     check("stopped and moved, up, send and history there all name moving the folder back", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
-    check("status --space there names the same step", String((status.env?.result?.selected as { message?: string } | undefined)?.message ?? "").endsWith(way), shown(status));
+    check("status --space there names the same step", ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), shown(status));
     const offersNoReset = (r: Run) => {
       const result = r.env?.result as { folder?: { storedState?: boolean }; hints?: string[] } | undefined;
       return result?.folder?.storedState === false && Array.isArray(result.hints) && !result.hints.some((hint) => hint.includes("clean store"));
