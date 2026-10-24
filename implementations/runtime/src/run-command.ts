@@ -673,10 +673,13 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   const { target: t, seat } = await resolveRunControlTarget(values);
   resolved?.(t.space);
   const who = controlCaller(t.auth);
-  if ("refusal" in who) {
-    console.error(who.refusal);
-    process.exit(1);
-  }
+  // A raw --creds file carries no endpoint-caller triple, and this route cannot mint one. Without
+  // --creds the CLI mints the one-shot caller from the space's trust or the signed-in login.
+  if ("refusal" in who)
+    throw new CommandFailure("refused", "UNSUPPORTED", "a hosted run command cannot use a raw --creds file: it carries no endpoint-caller triple (owner, actor, lifecycle uid), and this route cannot mint one; nothing was sent", {
+      target: { space: t.space },
+      remedy: "run it again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
+    });
   const auth: ControlAuth = t.auth;
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
