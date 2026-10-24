@@ -540,6 +540,10 @@ export interface ManagedGrantTransaction {
   read(owner: string, actor: string): (ActorRow & { kind: ActorKind }) | undefined;
   grantManaged(row: ManagedGrantInput): ActorRow;
   grantInteractive(row: Omit<ActorRow, "grantedAt">): ActorRow;
+  /** Set an interactive row's display label and keep every other field, its lifecycle UID and grant
+   *  time included. The label is outside the authorization digest, so a bearer issued under the row
+   *  stays valid. Undefined when the owner has no interactive row for the actor. */
+  relabelInteractive(owner: string, actor: string, label: string): ActorRow | undefined;
   revokeInteractive(owner: string, actor: string): boolean;
   revokeManaged(owner: string, actor: string): boolean;
   revokeManagedAt(owner: string, actor: string, lifecycleUid: string): boolean;
@@ -580,6 +584,13 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
     read: live((owner: string, actor: string) => findActorUnified(dir, owner, actor)),
     grantManaged: live((row: ManagedGrantInput) => rawGrantManaged(dir, row)),
     grantInteractive: live((row: Omit<ActorRow, "grantedAt">) => rawGrantInteractive(dir, row)),
+    relabelInteractive: live((owner: string, actor: string, label: string) => {
+      const row = findIn(dir, "interactive", owner, actor);
+      if (!row) return undefined;
+      const relabeled: ActorRow = { ...row, label };
+      writeRow(dir, "interactive", relabeled);
+      return relabeled;
+    }),
     revokeInteractive: live((owner: string, actor: string) => revokeIn(dir, "interactive", owner, actor)),
     revokeManaged: live((owner: string, actor: string) => revokeIn(dir, "managed-agent", owner, actor)),
     revokeManagedAt: live((owner: string, actor: string, lifecycleUid: string) => rawRevokeManagedAt(dir, owner, actor, lifecycleUid)),

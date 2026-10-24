@@ -5837,6 +5837,7 @@ account's discovered registry entries. See
 cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--role <r>] [--label <l>] [--json|--plain]
 cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>] [--json|--plain]
 cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--json|--plain]
+cotal actor label <actor> (--sub <IdP subject> | --owner <u_…>) <label> [--json|--plain]
 cotal actor list [--sub <IdP subject>] [--json|--plain]
 ```
 
@@ -5860,7 +5861,12 @@ derive the subject's owner as `grant --sub` does, with this root's owner secret 
 that owner's rows, interactive and managed-agent alike. The report is titled
 `Rows for <subject> (owner <u_…>)`, and JSON adds `subject` and `owner` to its result and names the
 owner in its target. A subject with no rows lists none. An empty `--sub` refuses `USAGE_INVALID`.
-`cotal help actor` lists `grant`, `revoke` and `list`, and shell completion offers them.
+`actor label <actor> <label>` sets only an interactive row's label. The label is outside the
+authorization digest, so the row keeps its lifecycle, grant time, capabilities and channels, and a
+bearer issued under it keeps working. The receipt names the earlier label, and JSON carries it as
+`previousLabel`. An actor with no row refuses `TARGET_NOT_FOUND`, and a managed agent's row refuses
+`UNSUPPORTED`. Neither writes anything.
+`cotal help actor` lists `grant`, `revoke`, `label` and `list`, and shell completion offers them.
 `actor list`, `grant` and `revoke` resolve their space and root as `auth grants`, `auth grant` and
 `auth revoke` do, and refuse the same way. With no space to resolve they refuse with a next step,
 such as `cotal up`, rather than assume one, and a root that does not hold the space's user-auth

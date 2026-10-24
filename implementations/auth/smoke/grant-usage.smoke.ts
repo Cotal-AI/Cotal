@@ -101,7 +101,7 @@ try {
     assert.match(both.message, /both --sub and --owner/, "actor grant with --sub and --owner: says to choose one");
     const bareActor = await failureOf("validate", actorCommand, bare, {}, []);
     assertUsage(bareActor, "bare actor");
-    assert.match(bareActor.message, /use actor list, actor grant <actor>, or actor revoke <actor>/, "bare actor: names the verbs");
+    assert.match(bareActor.message, /use actor list, actor grant <actor>, actor label <actor> <label>, or actor revoke <actor>/, "bare actor: names the verbs");
   }
 
   // 4. Complete flags on a space with no user-auth ledger: usage passes, then the capability
