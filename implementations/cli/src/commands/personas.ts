@@ -8,7 +8,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { targetFlags } from "@cotal-ai/workspace";
+import { targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames } from "../lib/personas.js";
@@ -157,7 +157,8 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       .join("  ");
     console.log(`${c.bold(name)}  ${meta}`.trimEnd());
     const desc = d.description ?? firstLine(d.persona);
-    if (desc) console.log(c.dim(`  ${oneLine(truncate(desc, 100))}`));
+    // The preview wraps under its indent at the terminal's width, so none of it is cut off.
+    if (desc) for (const line of wrapWords(oneLine(desc), terminalWidth(process.stdout) - 2)) console.log(c.dim(`  ${line}`));
     if (verbose && d.persona) console.log(d.persona.split(/\r?\n/).map((line) => `    ${oneLine(line)}`).join("\n") + "\n");
   }
 }
@@ -261,10 +262,6 @@ function remove(name: string | undefined, force: boolean, values: { space?: stri
 
 function firstLine(s?: string): string | undefined {
   return s?.split("\n").find((l) => l.trim())?.trim();
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 function notFound(name: string, path: string): never {

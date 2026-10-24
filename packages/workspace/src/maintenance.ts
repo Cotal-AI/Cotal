@@ -931,6 +931,17 @@ function removeReaper(path: string, token: string): void {
   }
 }
 
+/** Whether a live process holds `root`'s maintenance lock, read without taking it: the holder's
+ *  status as {@link acquireMaintenanceLock} would judge it, or `undefined` when no lock is held. */
+export function maintenanceLockHolder(root: string): OwnerStatus | undefined {
+  try {
+    return localProcessOwnerStatus(readLockFile(maintenancePaths(root).lock).owner);
+  } catch (error) {
+    if (errno(error) === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 export function acquireMaintenanceLock(
   root: string,
   options: AcquireMaintenanceLockOptions = {},

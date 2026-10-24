@@ -10,6 +10,8 @@ import {
   loadMeshes,
   pinnedFetch,
   removeMesh,
+  renderReport,
+  terminalWidth,
   type MeshEntry,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -87,8 +89,8 @@ export async function meshes(args: ParsedArgs): Promise<void> {
 
 // ---- list -----------------------------------------------------------------------------------
 
-/** The registered meshes, one per line, with a `*` on the `current` default. This is how you see
- *  what a bare `cotal spawn` would join and which `--space` names exist. The sweep runs first so a
+/** The registered meshes, one row each, with the `current` default marked `(default)`. This is how
+ *  you see what a bare `cotal spawn` would join and which `--space` names exist. The sweep runs first so a
  *  dead broker is tagged `offline` rather than deleted: an `up` record is the restart authority for
  *  that root, and a hand-registered one is still the mesh you meant, just not up. `--json` prints
  *  one {@link meshRow} per line instead, and only rows reach stdout. */
@@ -102,7 +104,7 @@ async function listMeshes(json: boolean): Promise<void> {
   }
   const current = getCurrent();
   const offline = new Set(sweep.offline);
-  // A `current` that no longer matches any recorded mesh (its broker went down) shows no `*` — say
+  // A `current` that no longer matches any recorded mesh (its broker went down) marks no row — say
   // why, so a bare `cotal spawn` still reporting "multiple meshes" isn't a mystery.
   const dangling = current && !all.some((m) => m.space === current)
     ? `note: default "${current}" is not running - \`cotal use <name>\` to set a live one`
@@ -112,27 +114,31 @@ async function listMeshes(json: boolean): Promise<void> {
     if (dangling) console.error(c.dim(dangling));
     return;
   }
-  const width = (pick: (m: MeshEntry) => string, header: string) =>
-    Math.max(header.length, ...all.map((m) => pick(m).length));
-  const wSpace = width((m) => m.space, "SPACE");
-  const wServer = width((m) => m.server, "SERVER");
-  const wMode = width((m) => m.mode, "MODE");
-  console.log(c.dim(`  ${"SPACE".padEnd(wSpace)}  ${"SERVER".padEnd(wServer)}  ${"MODE".padEnd(wMode)}  ROOT`));
-  for (const m of all) {
-    const marker = m.space === current ? c.green("*") : " ";
-    const tags = [
-      ...(m.policy?.events === "required" ? [c.yellow("events: required")] : []),
-      ...(m.origin === "manual" ? [c.dim("registered")] : []),
-      ...(m.origin === "catalog" ? [c.dim("discovered")] : []),
-      ...(m.origin === "catalog" && m.catalogName && m.catalogName !== m.space ? [c.dim(m.catalogName)] : []),
-      ...(m.origin !== "catalog" && offline.has(m.space) ? [c.yellow("offline")] : []),
+  const rows = all.map((m) => {
+    const notes = [
+      ...(m.policy?.events === "required" ? ["events: required"] : []),
+      ...(m.origin === "manual" ? ["registered"] : []),
+      ...(m.origin === "catalog" ? ["discovered"] : []),
+      ...(m.origin === "catalog" && m.catalogName && m.catalogName !== m.space ? [m.catalogName] : []),
+      ...(m.origin !== "catalog" && offline.has(m.space) ? ["offline"] : []),
     ];
-    console.log(
-      `${marker} ${m.space.padEnd(wSpace)}  ${c.dim(`${m.server.padEnd(wServer)}  ${m.mode.padEnd(wMode)}  ${m.root}`)}` +
-        (tags.length ? `  ${tags.join(c.dim(" · "))}` : ""),
-    );
-  }
-  if (dangling) console.log(c.dim(`\n${dangling}`));
+    const warn = notes.includes("offline") || notes.includes("events: required");
+    return {
+      space: m.space === current ? { text: `${m.space} (default)`, tone: "selected" as const } : m.space,
+      server: { text: m.server, tone: "hint" as const },
+      mode: { text: m.mode, tone: "hint" as const },
+      root: { text: m.root, tone: "hint" as const },
+      // An empty styled cell would still draw color codes, which keep the padding before it trailing.
+      notes: notes.length ? { text: notes.join(" · "), tone: warn ? "waiting" as const : "hint" as const } : "",
+    };
+  });
+  // The shared table: a terminal too narrow for its columns gets one labeled record per mesh.
+  const columns = [{ key: "space", label: "SPACE" }, { key: "server", label: "SERVER" }, { key: "mode", label: "MODE" }, { key: "root", label: "ROOT" }];
+  const sections = [
+    { blocks: [{ kind: "table" as const, columns: rows.some((row) => row.notes) ? [...columns, { key: "notes", label: "NOTES" }] : columns, rows }] },
+    ...(dangling ? [{ blocks: [{ kind: "lines" as const, lines: [{ text: dangling, tone: "hint" as const }] }] }] : []),
+  ];
+  console.log(renderReport({ sections }, "rich", terminalWidth(process.stdout)));
 }
 
 /** One `cotal meshes --json` row: what the table shows, as named fields. Origin and liveness stay

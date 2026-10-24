@@ -26,7 +26,7 @@ export function sourceOf(file: string): string {
       : code === "EISDIR" ? ["USAGE_INVALID", "is a directory, not a workflow source file"] as const
       : code === "EACCES" || code === "EPERM" ? ["PERMISSION_DENIED", "is not readable with this user's permissions"] as const
       : ["TARGET_NOT_FOUND", `could not be read (${code ?? "unknown error"})`] as const;
-    throw new CommandFailure("refused", refusal, `the workflow source ${file} ${cause}`, { target: { file } });
+    throw new CommandFailure("refused", refusal, `the workflow source ${file} ${cause}`, { target: { file }, remedy: `check that ${file} exists and this account can read it` });
   }
   if (bytes.length === 0) throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is empty, and a run's source must not be empty", { target: { file }, remedy: `write the program into ${file}` });
   try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }

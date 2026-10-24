@@ -284,6 +284,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("the text view prints the last 20 rows by default and the last n under --limit n",
     bare.includes("last 20 of 30") && rows(bare) === 20 && limited.includes("last 25 of 30") && rows(limited) === 25 && limited.includes("epoch 29") && !limited.split("\n").some((line) => line.trimEnd().endsWith("epoch 4")),
     { bare: rows(bare), limited: rows(limited) });
+// A source file that cannot be read is refused with the path to check.
+{
+  const missing = join(tmpdir(), `run-source-missing-${process.pid}.cotal.js`);
+  reset();
+  const refused = await runWorkflow({ values: {}, positionals: ["validate", missing], raw: [] }).then(() => undefined, (e: Error) => e);
+  c("validate refuses a file it cannot read, TARGET_NOT_FOUND, with a remedy naming the path", isCommandFailure(refused) && refused.code === "TARGET_NOT_FOUND" && refused.detail().remedy === `check that ${missing} exists and this account can read it`, refused);
 }
 
 // A source file that is empty or not UTF-8 is refused by validate and by a hosted start alike,
