@@ -5,9 +5,12 @@
  *     operation. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
- *  2. Broker crash after start. The next `up` restarts the broker from its records. After a manager
- *     crash, the next `up` relaunches the manager over the pidfile the killed process left. Once
- *     delivery is killed, `status` reads its ready row as stale instead of bound.
+ *  2. Broker crash after start. The `up` that adds the manager and `service status` list the broker's
+ *     client and websocket listeners and the manager's console; a wildcard configuration lists them
+ *     on every interface and names the plaintext ones. The next `up` restarts the broker from its
+ *     records. After a manager crash, the next `up` relaunches the manager over the pidfile the
+ *     killed process left. Once delivery is killed, `status` reads its ready row as stale instead of
+ *     bound.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
  *     launches nothing; once the port is free the same `up` starts. A second space whose first `up`
  *     finds that stack's broker answering refuses CONFLICT naming the address and that space, with a
@@ -98,6 +101,7 @@ const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTA
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
+const { definitionListeners, exposedPlaintext, listenerRow } = await import("../src/lib/stack-listeners.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -206,6 +210,25 @@ try {
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
+    // The receipt and service status name every listener the stack opened: the broker's client and
+    // websocket listeners and the manager's console, here all on loopback.
+    type Listed = Parameters<typeof exposedPlaintext>[0];
+    const listed = added.env?.result?.listeners as Listed | null | undefined;
+    const brokerListed = cli(root, "service", "status", "stack-broker", "--space", space, "--json").env?.result?.listeners as Listed | undefined;
+    const consoleListed = cli(root, "service", "status", "stack-manager", "--space", space, "--json").env?.result?.listeners as Listed | undefined;
+    check("up's receipt and service status list the broker's client and websocket listeners and the manager's console, on loopback",
+      JSON.stringify(listed?.map((l) => [l.name, l.host, l.name === "client" ? l.port : typeof l.port, l.reach, l.encrypted])) === JSON.stringify([["client", "127.0.0.1", port, "loopback", false], ["websocket", "127.0.0.1", "number", "loopback", false], ["console", "127.0.0.1", "object", "loopback", false]])
+        && JSON.stringify(brokerListed) === JSON.stringify(listed?.slice(0, 2)) && JSON.stringify(consoleListed) === JSON.stringify(listed?.slice(2)), { listed, brokerListed, consoleListed });
+    // A wildcard bind, as `up --host 0.0.0.0` renders it, reaches every interface, and the report says
+    // which listeners are plaintext there. No socket is opened for this.
+    const wildConfig = join(home, "wildcard-server.conf");
+    writeFileSync(wildConfig, "host: 0.0.0.0\nport: 4999\nmax_control_line: 1\nwebsocket {\n  host: 0.0.0.0\n  port: 5000\n  no_tls: true\n}\n");
+    const definitionOf = (adapter: string, options: Record<string, unknown>) => ({ name: "x", record: { revision: 1, value: { launch: { type: "adapter", adapter, options } } } }) as unknown as Parameters<typeof definitionListeners>[0];
+    const wild = [...definitionListeners(definitionOf("nats-broker", { config: wildConfig })) ?? [], ...definitionListeners(definitionOf("manager-service", { "console-host": "0.0.0.0" })) ?? []];
+    check("a wildcard bind lists every listener on every interface and names the plaintext ones",
+      JSON.stringify(wild.map(listenerRow)) === JSON.stringify([["Broker client", "0.0.0.0:4999 · every interface · plaintext"], ["Broker websocket", "0.0.0.0:5000 · every interface · plaintext"], ["Manager console", "0.0.0.0, on a port the manager picks when it starts · every interface · plaintext HTTP"]])
+        && exposedPlaintext(wild) === "The broker client, broker websocket and manager console listeners are plaintext and reachable from other machines, so what crosses them is not encrypted."
+        && exposedPlaintext(listed ?? []) === undefined, wild);
 
     const crashed = pidOf(space, "stack-broker");
     if (crashed !== null) process.kill(crashed, "SIGKILL");

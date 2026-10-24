@@ -22,6 +22,7 @@ import {
 import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
+import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { prepareKernelServiceStop, prepareProcessService, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
@@ -267,6 +268,20 @@ function membersView(journal: StackJournal, title: string, executable?: NatsServ
   ] }] };
 }
 
+/** The listeners the stack's running broker and manager opened, from their saved definitions. Null
+ *  when the broker's configuration could not be read, so no list is given rather than a short one. */
+function stackListeners(journal: StackJournal): StackListener[] | null {
+  const store = serviceDefinitionStore(journal.space), listeners: StackListener[] = [];
+  for (const member of journal.members) {
+    if (member.role !== "broker" && member.role !== "manager" || member.state !== "started" && member.state !== "reused") continue;
+    const definition = store.read(member.definition);
+    const found = definition && definitionListeners(definition);
+    if (!found) return null;
+    listeners.push(...found);
+  }
+  return listeners;
+}
+
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
@@ -284,9 +299,14 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, written }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
-    const view: Report = result.written.length ? { ...members, sections: [...members.sections, { blocks: [{ kind: "fields", rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] } : members;
+    const exposed = result.listeners && exposedPlaintext(result.listeners);
+    const listening: Report["sections"] = [{ title: "Listeners", blocks: [
+      result.listeners ? { kind: "fields", rows: result.listeners.map(listenerRow) } : { kind: "lines", lines: ["The broker's configuration could not be read, so its listeners are not listed."] },
+      ...(exposed ? [{ kind: "lines" as const, lines: [{ text: exposed, tone: "waiting" as const }] }] : []),
+    ] }];
+    const view: Report = { ...members, sections: [...members.sections, ...listening, ...(result.written.length ? [{ blocks: [{ kind: "fields" as const, rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] : [])] };
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
       managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: "cotal up", description: "Add the manager to this stack" },
