@@ -45,7 +45,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -1106,6 +1106,23 @@ if (process.platform === "linux") {
   mkdirSync(typo);
   const created = await run(["up", "-f", "cotal.yaml", "--dry-run", "--store-dir", typo], {}, lastRoot);
   check("the same start with the directory created first is not refused", created.status === 0, shown(created));
+}
+
+// ── A regular file where the prepared spaces folder belongs ─────────────────────────────────────────
+// Every command that reads that folder refuses by it, as it refuses an unreadable registry folder.
+{
+  const dir = preparedSpacesDir(), aside = `${dir}.aside`, held = existsSync(dir);
+  if (held) renameSync(dir, aside);
+  writeFileSync(dir, "not a folder");
+  const folder = projectRoot("prepared-file");
+  for (const args of [["space"], ["space", "create", "pf"], ["use", "pf"], ["space", "show", "pf"], ["up", "--server", DEAD, "--no-manager"]]) {
+    const r = await json(args, folder);
+    check(`${args.slice(0, 2).join(" ")} with a file at the prepared spaces folder refuses SCHEMA_INVALID, exit 1, naming that folder`,
+      refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
+  }
+  check("...and none of them wrote: the folder is still the file, and the project has only its .cotal", readFileSync(dir, "utf8") === "not a folder" && readdirSync(folder).join() === ".cotal");
+  rmSync(dir);
+  if (held) renameSync(aside, dir);
 }
 
 finish();

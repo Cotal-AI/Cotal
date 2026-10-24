@@ -2349,7 +2349,9 @@ also says what is wrong with it. `status` is the exception: it lists the readabl
 file and exits 4. Remove the file or restore the record; nothing repairs or invents a field for you.
 A registry directory that exists but cannot be read, such as one without read permission or a
 regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
-error. Only an absent directory is an empty registry. A record removed between listing and reading
+error. Only an absent directory is an empty registry. The folder of prepared spaces,
+`~/.cotal/prepared`, refuses the same way when it exists and cannot be read, on every command that
+reads it, such as `space`, `space create`, `use <name>` and `up`. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
 parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps
 the directory for an older-format record of the same space. Any error listing the directory for

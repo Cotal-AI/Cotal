@@ -2,7 +2,7 @@ import { isAbsolute, join } from "node:path";
 import { readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { spaceSegment } from "./auth-paths.js";
-import { canonicalRoot, homeCotalDir } from "./mesh-registry.js";
+import { MeshRegistryError, canonicalRoot, homeCotalDir } from "./mesh-registry.js";
 
 /**
  * A local space `cotal space create` prepared and no `cotal up` has started: its name and root.
@@ -27,14 +27,16 @@ export function preparedSpacesDir(): string {
 const preparedFile = (space: string): string => join(preparedSpacesDir(), `${spaceSegment(space)}.json`);
 
 /** Every prepared space. A file that is not a prepared space record throws naming it, as the
- *  registry does, so a damaged record is never read as an absent one. */
+ *  registry does, so a damaged record is never read as an absent one. A folder that exists and
+ *  cannot be read, such as a regular file in its place, throws a {@link MeshRegistryError} naming
+ *  it, as an unreadable registry folder does. */
 export function loadPreparedSpaces(): PreparedSpace[] {
   let files: string[];
   try {
     files = readdirSync(preparedSpacesDir()).filter((f) => f.endsWith(".json"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw e;
+    throw new MeshRegistryError(preparedSpacesDir(), `the prepared spaces folder ${preparedSpacesDir()} could not be read: ${(e as Error).message}`, { cause: e });
   }
   return files.sort().map((f) => readPreparedFile(join(preparedSpacesDir(), f)));
 }
