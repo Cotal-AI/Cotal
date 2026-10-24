@@ -1214,7 +1214,9 @@ name, as `channel set` takes it, and its object takes those three fields plus `d
 registry, and fields the file leaves out keep their values. Any other key, a wildcard or invalid
 channel name, or an invalid value refuses `SCHEMA_INVALID` before anything starts, naming the file
 and the entry. A default file that is invalid refuses the same way, with a remedy to fix or remove
-it. A manifest start (`-f`) seeds from the manifest's own channels instead.
+it. A manifest start (`-f`) seeds from the manifest's own channels instead. Because the next start
+writes the default file's values back, a `channel set` or `channel defaults` of a field that file
+sets, and a `channel remove` of a channel it names, warn `CHANNEL_SEED_REAPPLIES` and name the file.
 
 ## down
 
@@ -2112,7 +2114,11 @@ store it set aside. A reopened step accepts an answer again. `cotal status` and 
 `backup cleanup-fallback` preview name the same runs. To find them, the restore copies the store it
 sets aside and reads its run journals on one more isolated broker, so such a restore takes longer
 and needs disk space for that copy.
-`up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
+`up --restore --restore-only registry` prints the same two lines. Without `--store-dir`, a restore
+creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as after
+`up --store-dir`; only a controller root restores into its recorded store. The preserved store stays
+where it is until `backup cleanup-fallback` deletes it, so to keep the space on another disk, name a
+new store there with `--store-dir`. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
@@ -2178,8 +2184,9 @@ directory is trusted operator input: hashes detect corruption, not malicious rew
 [`space create`](#selecting-a-space) rule for other local writers to the artifact directory, each
 file in it and each directory above it. An artifact another account could write refuses
 `PERMISSION_DENIED`, exit 2, before a restore stages or changes anything, and the refusal names each
-such path and one remedy such as `chmod g-w <paths>`. `backup inspect` does not check this, and a
-copy that other accounts can only read is accepted.
+such path and one remedy such as `chmod g-w <paths>`. `backup create` refuses the same way, before it
+writes anything, when a folder that would hold the artifact breaks the rule. `backup inspect` does
+not check this, and a copy that other accounts can only read is accepted.
 
 Restore validates and stages the exact allowlisted artifact bytes before moving or creating a store.
 It requires the same space. A full restore also requires the trust state the artifact was taken
@@ -5353,7 +5360,9 @@ history again. A `set`, `defaults` or `remove` that the broker refuses for the c
 applied nothing, so it is refused with `PERMISSION_DENIED` (exit 2), naming the credential's profile,
 the write it lacks and the subject the broker refused. With `--creds`, the Next is to run it without
 `--creds`, on the operator credential this machine records. A remove whose credential may not read
-the registry skips the name check, and the broker's answer to the remove decides.
+the registry skips the name check, and the broker's answer to the remove decides. A change that the
+root's default `.cotal/channels.json` would undo at the next start warns that it will, as the
+[channel seed file](#channel-seed-file) section says.
 
 
 | Flag | Default | Meaning |

@@ -404,6 +404,24 @@ try {
       "a create into an existing directory is a conflict refusal",
     );
     assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "the conflict claimed nothing");
+    // A destination in a folder another local account could write is refused before any claim, as
+    // verify and restore would refuse the artifact there.
+    if (process.platform !== "win32") {
+      const exposedFolder = join(root, "create-exposed");
+      mkdirSync(exposedFolder, { mode: 0o700 });
+      chmodSync(exposedFolder, 0o707);
+      const real = realpathSync(exposedFolder);
+      await assert.rejects(
+        backup({ positionals: ["create", join(exposedFolder, "artifact")], values: {}, raw: [] }),
+        (error: unknown) => isCommandFailure(error) && error.code === "PERMISSION_DENIED"
+          && error.message === `the backup destination is not protected against other local writers: ${real} is writable by every local account`
+          && error.remedy === `chmod o-w ${real}`,
+        "a create into a folder others can write refuses with the remedy verify would give",
+      );
+      assert.deepEqual(readdirSync(exposedFolder), [], "that refusal wrote nothing there");
+      assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "and claimed nothing");
+      chmodSync(exposedFolder, 0o700);
+    }
     await assert.rejects(
       backup({ positionals: ["create", join(root, "create-artifact")], values: {}, raw: [] }),
       (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("maintenance state is cut-intent") && (error.target as { space?: string }).space === "create",
