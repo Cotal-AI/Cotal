@@ -1,4 +1,4 @@
-import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync, type Stats } from "node:fs";
 import { delimiter, dirname, isAbsolute, resolve } from "node:path";
 import { CommandFailure, oneLine, parseServiceDefinitionInput, protectedLocalDirectory, protectedLocalEntry, resolveOnPath, type ServiceDefinitionInput } from "@cotal-ai/workspace";
 import { decodeLocalJson, ProtectedRecordStore, protectedCredentialReference, readLocalRecordSource, type LocalRecordSnapshot } from "./protected-records.js";
@@ -12,8 +12,9 @@ const bareName = (executable: string) => !isAbsolute(executable) && !/[\\/]/.tes
 /** Installed adapter metadata is required before saving adapter options; executable imports are not validation.
  *  A process launch's executable must be protected against other local writers, as
  *  {@link protectedServiceExecutable} checks, unless `adapterPlan` marks the launch an adapter built
- *  from Cotal's own programs. */
-export function validateServiceDefinition(input: unknown, space: string, checkReferences = true, adapterPlan = false): ServiceDefinitionInput {
+ *  from Cotal's own programs. `saved` names the saved definition a start checks, so a refusal for a
+ *  launch path can name the remove that replaces it. */
+export function validateServiceDefinition(input: unknown, space: string, checkReferences = true, adapterPlan = false, saved?: string): ServiceDefinitionInput {
   let value: ServiceDefinitionInput;
   try { value = parseServiceDefinitionInput(JSON.stringify(input), space); }
   catch (error) {
@@ -25,20 +26,39 @@ export function validateServiceDefinition(input: unknown, space: string, checkRe
   else {
     // `add` saves a bare name as the absolute path it finds, so only an earlier release saved one.
     if (bareName(value.launch.executable)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the definition names its executable by a bare name, which each start would look up on its own PATH; no launch or write was attempted", { remedy: "remove it with cotal service remove and add it again; add saves the absolute path it finds on PATH" });
-    try {
-      if (!statSync(value.launch.cwd).isDirectory()) throw new Error();
-      accessSync(value.launch.cwd, constants.R_OK | constants.X_OK);
-    } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the declared working directory is not a readable directory on this machine; no launch or write was attempted"); }
-    let executable: string | undefined;
-    try {
-      executable = isAbsolute(value.launch.executable) ? value.launch.executable : resolve(value.launch.cwd, value.launch.executable);
-      if (!executable || !statSync(executable).isFile()) throw new Error();
-      accessSync(executable, constants.X_OK);
-    } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the declared executable is not an executable file on this machine; no launch or write was attempted"); }
-    if (!adapterPlan) protectedServiceExecutable(executable!);
+    assertLaunchPath(value.launch.cwd, "working directory", space, saved);
+    const executable = isAbsolute(value.launch.executable) ? value.launch.executable : resolve(value.launch.cwd, value.launch.executable);
+    assertLaunchPath(executable, "executable", space, saved);
+    if (!adapterPlan) protectedServiceExecutable(executable);
   }
   if (value.credentialRef) protectedCredentialReference(value.credentialRef.path);
   return value;
+}
+
+/** A launch path `add` checked can be moved, removed or change mode before a start, so the refusal
+ *  names the path, what is wrong with it and its fix. A saved definition's paths change only when it
+ *  is removed and added again, which the refusal names when `saved` gives the definition. */
+function assertLaunchPath(path: string, kind: "executable" | "working directory", space: string, saved: string | undefined): void {
+  const shown = oneLine(path), folder = kind === "working directory";
+  const restore = saved === undefined ? `correct launch.${folder ? "cwd" : "executable"} in the definition` : folder ? `create ${shown} or put it back` : `put it back at ${shown}`;
+  const refusal = (problem: string, fix: string, replaceable: boolean) => {
+    const replace = replaceable && saved !== undefined ? `; to use another ${folder ? "folder" : "file"}, forget the service with cotal service remove ${saved} --space ${oneLine(space)} --yes and add it again` : "";
+    return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the declared ${kind} ${shown} ${problem}; no launch or write was attempted`, { remedy: `${fix}, then run the command again${replace}` });
+  };
+  let stat: Stats;
+  try { stat = statSync(path); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw refusal(code === "ENOENT" || code === "ENOTDIR" ? "does not exist" : `could not be checked (${code ?? "unknown error"})`, restore, true);
+  }
+  if (folder ? !stat.isDirectory() : !stat.isFile()) throw refusal(`is not a ${folder ? "directory" : "regular file"}`, restore, true);
+  const mode = (stat.mode & 0o7777).toString(8).padStart(4, "0");
+  try { accessSync(path, folder ? constants.R_OK | constants.X_OK : constants.X_OK); }
+  catch {
+    throw folder
+      ? refusal(`cannot be read and entered by you (mode ${mode})`, `let yourself read and enter it with chmod u+rx ${shown}`, false)
+      : refusal(`is not executable by you (mode ${mode})`, `make it executable with chmod u+x ${shown}`, false);
+  }
 }
 
 /** A process service runs its executable as you, so the file and the folders above it must be ones

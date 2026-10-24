@@ -41,6 +41,13 @@
  * `restart` before anything launches or stops. World write is used because group write is refused
  * or accepted by whether the host proves a private group. The Node services run a copy of Node in
  * the suite's private home, since a shared tool cache can be writable by other accounts.
+ *
+ * A saved executable that was moved or set to mode 0600, or a working directory that was removed or
+ * set to mode 000, refuses the start DEPENDENCY_UNAVAILABLE, naming the path, what is wrong with it
+ * and its fix: putting it back, or the `chmod` that restores the mode. A path that is gone also names
+ * the `service remove` that lets the service be added again with another one, and an `add` of a path
+ * that does not exist names the field to correct. No refused start records an instance.
+ *
  * A definition whose readiness breaks the schema refuses SCHEMA_INVALID, exit 1, naming the field
  * and the rule it breaks, such as a timeoutMs out of range or a field the chosen type does not take.
  *
@@ -61,7 +68,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -410,6 +417,54 @@ if (process.platform === "linux") {
   chmodSync(script, 0o700);
   check("rig: its instance stops", run(["service", "stop", "unsafe", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
   check("rig: the definition is forgotten", run(["service", "remove", "unsafe", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A saved executable that was moved or lost its execute bit, or a working directory that was removed
+// or lost its modes, refuses the start, naming that path, what is wrong with it and the fix.
+{
+  const dir = realpathSync(mkdtempSync(join(home, "moved-"))), script = join(dir, "run.sh"), work = join(dir, "work"), file = join(home, "moved.json");
+  writeFileSync(script, "#!/bin/sh\nexec sleep 60\n", { mode: 0o700 });
+  mkdirSync(work, { mode: 0o700 });
+  const definition = (executable: string) => JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable, args: [], cwd: work }, readiness: { type: "process", timeoutMs: 3000 } });
+  const unavailable = (r: ReturnType<typeof run>, message: string, remedy: string) => r.status === 2 && r.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE"
+    && r.envelope.error.message === `${message}; no launch or write was attempted` && r.envelope.error.remedy === remedy;
+  const replace = (thing: string) => `; to use another ${thing}, forget the service with cotal service remove moved --space b1 --yes and add it again`;
+  writeFileSync(file, definition(join(dir, "nosuch.sh")));
+  const missingAdd = run(["service", "add", "moved", "--file", file, "--space", "b1"]);
+  check("add of an executable that does not exist refuses DEPENDENCY_UNAVAILABLE, exit 2, naming it and the field to correct",
+    unavailable(missingAdd, `the declared executable ${join(dir, "nosuch.sh")} does not exist`, "correct launch.executable in the definition, then run the command again"), shown(missingAdd));
+  writeFileSync(file, definition(script));
+  check("rig: the definition is saved", run(["service", "add", "moved", "--file", file, "--space", "b1"]).status === 0);
+  renameSync(script, `${script}.moved`);
+  const moved = run(["service", "start", "moved", "--space", "b1"]);
+  check("a start after the executable was moved refuses DEPENDENCY_UNAVAILABLE, exit 2, naming it, putting it back and the remove that replaces it",
+    unavailable(moved, `the declared executable ${script} does not exist`, `put it back at ${script}, then run the command again${replace("file")}`), shown(moved));
+  renameSync(`${script}.moved`, script);
+  rmSync(work, { recursive: true });
+  const removed = run(["service", "start", "moved", "--space", "b1"]);
+  check("a start after the working directory was removed names it, creating it again and the remove that replaces it",
+    unavailable(removed, `the declared working directory ${work} does not exist`, `create ${work} or put it back, then run the command again${replace("folder")}`), shown(removed));
+  mkdirSync(work, { mode: 0o700 });
+  // Root reads and enters any folder and runs a file with any execute bit, so these modes refuse only an ordinary account.
+  if (process.getuid?.() !== 0) {
+    chmodSync(script, 0o600);
+    const plain = run(["service", "start", "moved", "--space", "b1"]);
+    check("a start of an executable set to mode 0600 names that mode and chmod u+x",
+      unavailable(plain, `the declared executable ${script} is not executable by you (mode 0600)`, `make it executable with chmod u+x ${script}, then run the command again`), shown(plain));
+    chmodSync(script, 0o700);
+    chmodSync(work, 0o000);
+    const closed = run(["service", "start", "moved", "--space", "b1"]);
+    check("a start in a working directory set to mode 000 names that mode and chmod u+rx",
+      unavailable(closed, `the declared working directory ${work} cannot be read and entered by you (mode 0000)`, `let yourself read and enter it with chmod u+rx ${work}, then run the command again`), shown(closed));
+    chmodSync(work, 0o700);
+  }
+  const listed = run(["service", "--space", "b1"]);
+  check("no refused start recorded an instance", Array.isArray(listed.envelope?.result?.instances) && !(listed.envelope.result.instances as { definition?: string }[]).some((row) => row.definition === "moved"), listed.envelope?.result);
+  const started = run(["service", "start", "moved", "--space", "b1"]);
+  const id = started.envelope?.result?.instanceId;
+  check("with each put back, the start runs it", started.status === 0 && typeof id === "string", shown(started));
+  check("rig: its instance stops", run(["service", "stop", "moved", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
+  check("rig: the definition is forgotten", run(["service", "remove", "moved", "--space", "b1", "--yes"]).status === 0);
 }
 
 // A definition records the root it was added in. After a forget, a space of the same name prepared

@@ -449,7 +449,7 @@ function targetRefusal(error: MeshTargetError): CommandFailure {
 
 export function prepareProcessService(definition: ServiceDefinitionSnapshot) {
   processServiceHost();
-  validateServiceDefinition(definition.record.value, definition.record.value.space);
+  validateServiceDefinition(definition.record.value, definition.record.value.space, true, false, definition.name);
   const launch = definition.record.value.launch;
   const program = launch.type === "process" ? executable(definition.record.value) : undefined;
   if (launch.type === "process" && commandIsCotalSupervisor([program, ...launch.args].join(" "))) throw new CommandFailure("refused", "UNSUPPORTED", "a native manager needs its service adapter and agent-impact guards, not generic process control; no instance was allocated");

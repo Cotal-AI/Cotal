@@ -21,7 +21,8 @@ export const CATALOG = Object.freeze({
   // ASI itself is ALLOWED. The error is the two constructs where a newline changes what the code
   // MEANS: a value on the line after a bare `return`, and a line opening with `(` or `[` that
   // continues the statement above it. "Missing semicolon" named a rule this language does not have.
-  L1008: "Newline hazard",
+  // Source that does not parse at all is refused under this code too.
+  L1008: "Invalid syntax or newline hazard",
   L1009: "Unbraced branch",
   L1010: "`switch` case does not terminate",
   L1011: "Computed property name",

@@ -47,7 +47,7 @@ the content hash of exactly this text, so there is no second file. Its **program
 
 Automatic semicolon insertion is allowed. The two constructs where a newline changes what a program
 means are refused (L1008): a value on the line after a bare `return`, and a line opening with `(`
-or `[` that continues the statement above it.
+or `[` that continues the statement above it. Source that does not parse is refused with L1008 too.
 
 ### 2.2 The syntax table
 
@@ -1166,7 +1166,7 @@ time, L5xxx durability, L6xxx simulation.
 | L1005 | Forbidden syntax: generator |
 | L1006 | Forbidden syntax: `eval` or `Function` |
 | L1007 | Forbidden syntax: regular expression literal |
-| L1008 | Newline hazard |
+| L1008 | Invalid syntax or newline hazard |
 | L1009 | Unbraced branch |
 | L1010 | `switch` case does not terminate |
 | L1011 | Computed property name |

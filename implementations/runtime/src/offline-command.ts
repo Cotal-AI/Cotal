@@ -158,7 +158,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
       { title: "Workflow not valid", blocks: [
         { kind: "fields", rows: [["File", file], ["Problems", String(result.problems.length)]] },
         ...result.problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
-        { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime or application was checked.", tone: "hint" }] },
+        { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime, application or broker message limit was checked.", tone: "hint" }] },
       ] },
     ] }));
     return;
@@ -168,7 +168,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   const warnings = checked.warnings.map((warning) => ({ code: warning.code, target: { file, span: warning.span }, message: `${warning.code} ${warning.title} (${warning.span.file}:${warning.span.line}:${warning.span.column}): ${warning.cause} Fix: ${warning.fix}` }));
   if (mode === "validate") {
     writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-validation", valid: true, warnings: checked.warnings.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix })) }, warnings }, () => ({ sections: [
-      { title: "Workflow valid", blocks: [{ kind: "fields", rows: [["File", file], ["Warnings", String(warnings.length)]] }, { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime or application was checked.", tone: "hint" }] }] },
+      { title: "Workflow valid", blocks: [{ kind: "fields", rows: [["File", file], ["Warnings", String(warnings.length)]] }, { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime, application or broker message limit was checked.", tone: "hint" }] }] },
       { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal r plan <file>", description: "See validated static call sites" }, { command: "cotal r simulate <file> --handler <results.json>", description: "Exercise the program with explicit scripted results, offline" }] }] },
     ] }));
     return;
