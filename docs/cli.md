@@ -6716,7 +6716,8 @@ verdict. A reopened gate with retained cursor cleanup returns exit 4.
 `cotal run` (or `cotal r`) lists the authorized workflow records. `run show <run-id>` reads
 recorded state, open requests, each step's recorded error and the last 20 journal rows. `--limit <n>`
 prints the last `n` rows instead, from 1 to 1000, and is refused with `--json`. A settled
-`race` row names the branch it took, and an answer whose step was in a branch that lost a race, or
+`race` row names the branch it took, and a cancelled row in a branch that lost a race names the
+branch that won and the race. An answer whose step was in a branch that lost a race, or
 whose pause was cancelled after accepting it, is listed as `not acted on`. Its JSON result contains
 the full returned status and journal. Revoked admission and unreadable revocation markers remain distinct
 from the record's state. Neither a record nor a receipt is a live agent-progress report.
