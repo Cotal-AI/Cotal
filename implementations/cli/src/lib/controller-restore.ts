@@ -18,6 +18,7 @@ import { assertControllerCoupling, assertControllerResumeEligible } from "./cont
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstanceStore } from "./service-instances.js";
 import { assertNoServiceUnitAttempts } from "./service-process.js";
+import { configuredStoreDir } from "./store-dir.js";
 
 const CONFIG_LIMIT = 1024 * 1024;
 
@@ -80,19 +81,23 @@ export function assertControllerRestorable(root: string, journal: MaintenanceRea
   const stack = assertControllerCoupling(root, cut, journal.cut.launch.server, journal.source.path);
   assertControllerResumeEligible(journal.space, cut, journal.cutCompletion.controllerStops ?? [], cut.brokerDefinitionRevision);
   const { options } = assertControllerBrokerConfig(journal.space, cut);
-  if (storeDir !== undefined && resolve(storeDir) !== journal.source.path) jetStreamRewrite(options.config, journal.source.path, stack.broker?.maxFileStore);
+  if (storeDir !== undefined && resolve(storeDir) !== journal.source.path) jetStreamRewrite(options.config, root, journal.source.path, stack.broker?.maxFileStore);
 }
 
-/** Core's own JetStream block for the source store must occur once in the configuration. */
-function jetStreamRewrite(config: string, sourcePath: string, maxFileStore: number | undefined): { text: string; block: string } {
+/** Core's own JetStream block for the source store must occur once in the configuration, naming the
+ *  store as {@link configuredStoreDir} does or, in a configuration an earlier release wrote, by its
+ *  absolute path. The rewrite names the target the same way. */
+function jetStreamRewrite(config: string, root: string, sourcePath: string, maxFileStore: number | undefined): { text: string; block: string; storePath: (path: string) => string } {
   const bytes = readLocalRecordSource(config, CONFIG_LIMIT);
   if (!bytes) return refuse("TARGET_UNAVAILABLE", "the broker configuration is missing; nothing was restored", { config });
   const text = bytes.toString("utf8");
-  const block = brokerJetStreamBlock(sourcePath, maxFileStore);
+  const forms = [(path: string) => configuredStoreDir(root, path), (path: string) => resolve(path)];
+  const storePath = forms.find((form) => text.includes(brokerJetStreamBlock(form(sourcePath), maxFileStore))) ?? forms[0]!;
+  const block = brokerJetStreamBlock(storePath(sourcePath), maxFileStore);
   const count = text.split(block).length - 1;
   if (count !== 1)
     refuse("CONFLICT", `the broker configuration holds ${count} copies of the JetStream block for the preserved store, not one; an alternate-target restore cannot rewrite it`, { config });
-  return { text, block };
+  return { text, block, storePath };
 }
 
 /** Rewrite the broker definition before commit intent and under the maintenance lock. The rendered
@@ -107,10 +112,10 @@ export function reconfigureControllerBroker(lock: MaintenanceLock): void {
   const stack = assertControllerCoupling(lock.root, cut, record.cut.launch.server, record.source.path);
   assertControllerResumeEligible(record.space, cut, record.cutCompletion.controllerStops ?? [], cut.brokerDefinitionRevision);
   const { definition, options, configSha256 } = assertControllerBrokerConfig(record.space, cut);
-  const { text, block } = jetStreamRewrite(options.config, record.source.path, stack.broker?.maxFileStore);
+  const { text, block, storePath } = jetStreamRewrite(options.config, lock.root, record.source.path, stack.broker?.maxFileStore);
   if (createHash("sha256").update(text, "utf8").digest("hex") !== configSha256)
     refuse("CONFLICT", "the broker configuration changed while it was read; the broker definition was not changed", { config: options.config });
-  const rendered = text.split(block).join(brokerJetStreamBlock(record.restore.targetPath, stack.broker?.maxFileStore));
+  const rendered = text.split(block).join(brokerJetStreamBlock(storePath(record.restore.targetPath), stack.broker?.maxFileStore));
   const toConfigPath = join(dirname(options.config), `server.restore-${record.restore.attemptId}.conf`);
   writeSecretFileCreateOnly(toConfigPath, rendered);
   const stat = lstatSync(toConfigPath, { bigint: true });

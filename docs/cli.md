@@ -223,8 +223,10 @@ A command with a JSON output exits by its outcome, with or without `--json`:
 
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure. A command run from a folder that no longer exists refuses with `USAGE_INVALID`, exit 1,
-before it does anything, and says to `cd` to an existing folder. `help`, `version` and `completion`
-still work there.
+before it does anything, and says to `cd` to an existing folder. A command whose folder has a
+`.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
+2, before it does anything, names that file and says to rename or move it. `help`, `version` and
+`completion` still work in both.
 
 Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
 the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
@@ -498,7 +500,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--space <s>` | the folder's space | Space name |
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f` |
-| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
+| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108864 (64 MiB), which the space's membership bucket reserves; a smaller value refuses `USAGE_INVALID` before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
@@ -596,7 +598,13 @@ stop or preserve, prints `Foreground stack released` and exits 0. On a controlle
 `SIGTERM` in that terminal runs the same guarded stop as bare `cotal down` and exits 130 or 143. A
 signal while the stack is still starting lets the start settle, then runs that stop. When the start
 fails, the stop still runs before the start failure is printed. A hangup, such as a closed terminal,
-runs no stop: the command exits 129 and the stack keeps running until `cotal down` stops it. A
+runs no stop: the command exits 129 and the stack keeps running until `cotal down` stops it. While
+a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`, and a
+second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and starts
+nothing. A foreground `up` on a stack that is already running without such a holder, because a
+background `up` started it or the holding terminal closed, takes over its lifetime. Before it
+blocks it says that the stack is already running and that Ctrl-C or `SIGTERM` there stops the
+whole stack. A
 systemd unit that runs `up --foreground` should set `KillMode=mixed`, so the stop signal reaches
 only `cotal up`, which runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop.
 The default `control-group` mode signals every member at the same time, and a manager signalled
@@ -664,8 +672,29 @@ numeric code and status without copying the server's description or changing the
 The journal records the absolute root it was written in, and the stack runs only from that folder.
 In a copy of a controller project, or after the folder is moved, commands that read the journal
 refuse `CONFLICT`, exit 2, and name the recorded folder: a copy is told to use the stack from the
-original, and a moved folder to move back there first. `space create` in a copy whose records name
-another root says so and names that root.
+original, and a moved folder to move back there first. A folder is moved when its recorded folder no
+longer holds the journal. A second Cotal home that reaches the original over a shared filesystem is
+told the same, and it can adopt the copy only after the original's stack is stopped there and that
+folder no longer holds its journal. When this machine records neither the space nor an instance of
+its stack, as on another machine, moving back would not start it, so a moved folder is told only to
+adopt the journal with `space create --adopt`. `status`, `send` and `history` there name the same
+next step. Commands that reach a static-auth space from a moved folder, such as `send`, `history`,
+`ps` and `service stop`, refuse the same way. The broker names a store inside the project folder
+relative to that folder and runs from it, so a broker still running when its folder is renamed keeps
+writing into the renamed folder and does not create the old path again. A broker an earlier release
+started does, so when something is found at the recorded path, the refusal says to move it aside
+before moving the folder back. When the space is prepared or registered here and
+`space create --adopt` could take the journal over instead, the refusal names that command too. A
+folder whose `.cotal` is a link to another project's `.cotal` is told that it is a link and to use
+the stack from that project. `status` there does not read the folder's boot and additive attempt
+inventories through the link and warns that it did not. `space create` in a copy whose records name
+another root says so and names that root, and in a linked folder it names the link.
+
+A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
+`down`, `clean` and `reset` refuse `SCHEMA_INVALID`, exit 1, naming its path, and `status` warns
+about it. When no member of the stack runs, the Next says to remove the file, and the next
+`cotal up` starts the stack again from its saved definitions. When members still run, it names the
+`cotal service stop` for each one first, manager first and broker last.
 
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
@@ -758,7 +787,10 @@ readiness is recorded as failed with its exit code, and the refusal names its lo
 `cotal service logs <definition> --instance <id> --space <space>`. When the broker this `up` started cannot
 create the space's streams, `up` stops that broker again, so the next `up` starts a fresh one. It
 fails `OPERATION_FAILED`, exit 5, and names the cause when the broker's log shows it ran out of
-open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log.
+open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log. When
+another member, such as the manager, exits before readiness and the broker's log shows it ran out of
+open files, `up` names that log and that cause. A running broker keeps the open-file limit it started
+with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`.
 
 Before it launches a broker, the controller binds the broker address once. When another process
 holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches nothing. A
@@ -1937,7 +1969,7 @@ cotal space [--json|--plain]
 cotal space show [<name>] [--json|--plain]
 cotal space add <name> --server <url> [--root <dir>] [--mode auth|open] [--tls] [--allow-unencrypted-overlay] [--force] [-y|--yes]
 cotal space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root <dir>] [--server <url>] [--force] [-y|--yes]
-cotal space create <name> [--root <dir>]
+cotal space create <name> [--root <dir>] [--adopt]
 cotal space forget <name>
 cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]
 cotal use [<space> | --clear] [--json|--plain]
@@ -2017,6 +2049,12 @@ written. It refuses with `CONFLICT` a name that is registered or prepared, a fol
 space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
+does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
+path contains a control character, such as a tab, a newline or an escape character, or a bidirectional
+formatting mark, which can show one path as another, refuses `USAGE_INVALID`, exit 1, with nothing
+written, in `space create` and in `cotal up`. The refusal names the character and shows the path with
+it escaped. `space` lists
+prepared spaces under their own heading, and `space show` and `use` accept one. A command that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. `space` lists
 prepared spaces under their own heading, below a line that says no space has been started or
 registered yet when that is so, and `space show` and `use` accept one. A command that
@@ -2131,7 +2169,9 @@ back to the selection.
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
 `cotal space forget <space>`. `cotal space create <space> --root <dir>` then prepares it again.
-`use`, `up --space` and `space forget` also say the folder no longer exists.
+`use`, `up --space` and `space forget` also say the folder no longer exists. Run from the folder it
+was moved to, whose stack journal names the old folder, such a command says the folder was moved and
+names the next step that `up` and `down` name there.
 
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
@@ -2142,6 +2182,20 @@ command never dials the default address instead. `status` there reads the machin
 and probes no broker. A legacy root after its `down`, which drops its registration, is refused the
 same way, naming the address in the broker configuration its last start rendered and the bare
 `cotal up` there that starts it at that address again.
+
+A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
+`space create <name>` there refuses `CONFLICT`, exit 2, and names `cotal space create <name> --adopt
+--root <root>`, and `status` names the same command. `--adopt` takes the journal over: it rewrites it
+to name this folder, moves a broker store that lay under the recorded folder to the same place under
+this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
+with the copied store. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
+link, when the recorded folder still holds the journal, because this folder is then a copy of a stack
+that runs from there, when this machine records an instance of that stack, because the folder was
+then moved on this machine and moves back, and when the space is prepared or registered on this
+machine, where its Next names `cotal space forget` first. A copy brought from another machine and a
+folder moved after its record was forgotten are adopted. A folder renamed from a path that `cotal up`
+refuses, such as one with a tab in it, is told only to adopt, since moving it back would not start
+the stack. Without `--adopt`, nothing rewrites a journal.
 
 With no `--space`, `--server` or `--creds`, nothing selected and no project in the folder, a command
 that several running spaces could serve asks which one when it runs in a terminal. The answer is the
@@ -2228,7 +2282,14 @@ are separate columns; neither a saved serving state nor a supervisor receipt bec
 endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
-process is gone, Next offers `cotal up --root <root>` first. A running `stack-manager` gets one
+process is gone, Next offers `cotal up --root <root>` first. When an earlier `down`, or a foreground
+`up` whose terminal closed, ended after it signalled the broker or the delivery daemon and before it
+saw that process exit, `up` and `down` refuse until that stop is abandoned. `status` then says so
+under the selected space, names the member, and offers `cotal down --abandon-stop <request-id> --yes`
+with the request ID their refusal names, and the member's `service status`, in place of `up --root`.
+`--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
+receipts, which only `up` and `down` read, so `status` does not name it.
+A running `stack-manager` gets one
 probe of its manager endpoint, and the selected space's `Manager` row reads `answering`,
 `not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be
 made or another manager instance answered. A manager that does not answer puts `kill -KILL <pid>`
@@ -7032,10 +7093,23 @@ absent from the mesh-selection registry. Live, foreign, unreadable or unresolved
 removal. A starting intent and the extension writer lock prevent an uninstall from crossing the
 controller's final provider check. Providers still run as the current OS user, not in a sandbox.
 
-Process readiness reports a live creation-pinned direct process as Running. HTTP readiness uses
+Process readiness waits up to one second, or its deadline when that is shorter, for the process to
+exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
+recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A live
+creation-pinned direct process is reported Running. HTTP readiness uses
 a bounded loopback request with credentials omitted and redirects disabled. Its success is
 Reachable, not proof that the child owns that listener or serves a native endpoint. Status labels
 the stored readiness observation and its time separately from the current process observation.
+Before it launches a process with HTTP readiness, `service start` sends one such request. When
+something already answers there, such as an instance of the same definition on its port, any answer
+could come from it rather than the new process, so the start refuses `CONFLICT`, exit 2, names the
+address and that instance, and launches nothing. When the HTTP deadline passes first, `service start`
+names the loopback address without the URL's path, the expected status and the deadline. When the
+service kept answering another status, such as 503, it exits 5 with `OPERATION_FAILED` and names that
+status. When the last check got no answer, such as a refused connection, it exits 3, names what it
+saw, and its Next also names `cotal service show <name>`, which shows the readiness deadline. Either
+way the process is left running, and the Next names the `service logs` and `service stop` for that
+exact instance.
 
 Stop and restart default to cancellation in a terminal and need `--yes` in scripts. The selected
 record revision and creation identity are checked before signals, including escalation. A reused

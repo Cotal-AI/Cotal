@@ -15,6 +15,8 @@ import { maintenanceStackView } from "./stack-journal.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+/** How long a launch with process readiness waits for an immediate exit before it reports the process running. */
+const PROCESS_SETTLE_MS = 1000;
 const gone = (state: string) => state === "gone" || state === "previous-boot" || state === "foreign-pid";
 /** A record with no creation pin whose own state says no child exists: its launch failed before
  *  a process did. There is nothing to stop. */
@@ -108,6 +110,14 @@ export async function settleRetainedNativeStop(definition: ServiceDefinitionSnap
   if (result.nativeStop !== "returned" || result.requestId !== retained.requestId || result.process.pid !== value.process.pid || result.process.token !== value.process.token || !gone(observeServiceProcess(value)))
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter's settlement did not answer the retained request and its exact process exit; the record was kept", { target: instanceProjection(row) });
   return transition(row, { state: "stopped", requestId: retained.requestId, readiness: "not-checked", nativeStop: result });
+}
+
+/** Whether {@link settleRetainedNativeStop} may change this record before a classification reads it:
+ *  a native `stopping` record that published no request, a signal stop whose process still runs, or a
+ *  published native stop, which only its adapter's receipts decide. */
+export function retainedStopMaySettle(value: ServiceInstance): boolean {
+  const retained = retainedStopRequest(value);
+  return value.nativeStopRequired && value.process !== undefined && value.state === "stopping" && !retained || resumableSignalStop(value) || retained?.publication === "published";
 }
 
 /** Abandon the native stop `requestId` this record retains, on an operator's explicit request. The
@@ -275,8 +285,31 @@ async function adapterCall<T>(call: (signal: AbortSignal) => Promise<T> | T, tim
   } finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }
 }
 
+/** What a failed bounded readiness request saw, in words. No response body or header is kept. */
+function httpReadinessFailure(error: unknown): string {
+  const code = (error as { cause?: { code?: unknown } } | undefined)?.cause?.code;
+  if (code === "ECONNREFUSED") return "connection refused, so nothing listened there";
+  if ((error as { name?: unknown } | undefined)?.name === "TimeoutError") return "no answer before the request timed out";
+  return typeof code === "string" ? `the request failed with ${code}` : "the request failed";
+}
+
+/** Whether something already answers `url` before a child is launched: any HTTP answer there would
+ *  then not be the new process's. A refused, failed or unanswered request is not an answer. */
+async function readinessAddressAnswers(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, { redirect: "manual", credentials: "omit", signal: AbortSignal.timeout(1000) });
+    await response.body?.cancel();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function serviceReadiness(row: ServiceInstanceSnapshot, definition: ServiceDefinitionInput, adapter?: { provider: LoadedServiceAdapter; context: ServiceAdapterContext }): Promise<ServiceInstanceSnapshot> {
   const deadline = Date.now() + definition.readiness.timeoutMs;
+  // The last HTTP readiness observation, named when the deadline passes first: the status the
+  // service answered with, or what a failed request saw.
+  let seen: { status: number } | { failure: string } | undefined;
   do {
     const state = observeServiceProcess(row.record.value);
     if (gone(state)) throw new CommandFailure("failed", "OPERATION_FAILED", "the owned service process exited before readiness was established", { target: { instanceId: row.name, requestId: row.record.value.requestId } });
@@ -305,10 +338,26 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
       const response = await fetch(definition.readiness.url, { redirect: "manual", credentials: "omit", signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))) });
       await response.body?.cancel();
       if (response.status === definition.readiness.expectedStatus && observeServiceProcess(row.record.value) === "running") return transition(row, { state: "running", readiness: "http-reachable" });
-    } catch { /* A failed bounded HTTP read is not proof of process death or listener ownership. */ }
+      seen = { status: response.status };
+    } catch (error) {
+      // A failed bounded HTTP read is not proof of process death or listener ownership.
+      seen = { failure: httpReadinessFailure(error) };
+    }
     await delay(Math.min(100, Math.max(0, deadline - Date.now())));
   } while (Date.now() < deadline);
   const uncertain = transition(row, { state: "unknown", readiness: "not-checked" });
+  if (definition.readiness.type === "http") {
+    // The address alone is named: a definition's URL is kept out of reports, and its path may carry a token.
+    const { definition: name, instanceId, space } = uncertain.record.value, host = new URL(definition.readiness.url).host;
+    const inspect = `read its output with cotal service logs ${name} --instance ${instanceId} --space ${space}, and stop it with cotal service stop ${name} --instance ${instanceId} --space ${space} --yes before another start`;
+    // A service that answered with another status said it is not ready, so the start failed.
+    if (seen && "status" in seen)
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the owned process answered its HTTP readiness check on ${host} with status ${seen.status}, not ${definition.readiness.expectedStatus}, until its ${definition.readiness.timeoutMs} ms deadline passed. The process was left running, not relaunched or killed`, { target: instanceProjection(uncertain), remedy: inspect });
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the owned process did not answer its HTTP readiness check on ${host} with status ${definition.readiness.expectedStatus} within ${definition.readiness.timeoutMs} ms; the last check saw ${seen?.failure ?? "no completed request"}. The process was left running, not relaunched or killed`, {
+      target: instanceProjection(uncertain),
+      remedy: `${inspect}; cotal service show ${name} --space ${space} shows the readiness deadline it missed`,
+    });
+  }
   throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned process did not establish its declared readiness before the deadline; it was not relaunched or automatically killed", { target: instanceProjection(uncertain), remedy: "inspect service status/logs with the original full instance ID before another start" });
 }
 
@@ -396,6 +445,15 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       if (declaredAdapter?.declaration.stop === "native" && selected.record.value.process && !settledExit && !(selected.record.value.state === "stopped" && selected.record.value.nativeStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native service disappeared during its retained stop request, without its recorded terminal stop; no replacement was launched", { target: instanceProjection(selected), remedy: `inspect the original request with cotal service status ${definition.name} --instance ${selected.name} --space ${value.space}` });
       if (declaredAdapter?.declaration.stop === "kernel-exit" && selected.record.value.process && !settledExit && !(selected.record.value.state === "stopped" && selected.record.value.kernelStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original broker process disappeared during its retained stop request, without this controller's recorded exact-exit stop; no replacement listener was launched over its store", { target: instanceProjection(selected), remedy: `inspect the original request with cotal service status ${definition.name} --instance ${selected.name} --space ${value.space}` });
     }
+    // HTTP readiness proves only that something answers, so an address that answers before the
+    // launch could pass a child that never listened, such as a second instance on the first one's port.
+    if (value.readiness.type === "http" && await readinessAddressAnswers(value.readiness.url)) {
+      const host = new URL(value.readiness.url).host, live = rows.find((row) => observeServiceProcess(row.record.value) === "running");
+      throw new CommandFailure("refused", "CONFLICT", `something already answers ${host}, where ${definition.name}'s HTTP readiness is checked, so a new process's readiness could not be told from it; nothing was launched`, {
+        target: { space: value.space, definition: definition.name, address: host, ...(live ? { instanceId: live.name } : {}) },
+        remedy: live ? `instance ${live.name} of ${definition.name} answers there; give another instance its own port, or stop that one with cotal service stop ${definition.name} --instance ${live.name} --space ${value.space} --yes first` : `stop what listens on ${host}, then run the command again`,
+      });
+    }
     hold.check();
     const now = new Date().toISOString(), id = options.brokerInstance?.instanceId ?? options.replacement?.instanceId ?? selected?.name ?? randomUUID(), launchRequestId = options.brokerInstance?.launchRequestId ?? options.replacement?.launchRequestId ?? randomUUID();
     const instance: ServiceInstance = { schemaVersion: 1, instanceId: id, definition: definition.name, definitionRevision: definition.record.revision, space: value.space, host: processServiceHost(), requestId: launchRequestId, launchRequestId, state: "starting", launcher, readiness: "not-checked", supervisor: "none", ...(options.attempt ? { attempt: { attemptId: options.attempt.attemptId } } : {}), ...(declaredAdapter ? { adapter: declaredAdapter.pin, ...(declaredAdapter.declaration.stop === "native" ? { nativeStopRequired: true as const } : declaredAdapter.declaration.stop === "kernel-exit" ? { kernelStopRequired: true as const } : {}) } : {}), foreground: options.foreground === true, createdAt: selected?.record.value.createdAt ?? now, updatedAt: now };
@@ -459,11 +517,14 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       throw new CommandFailure(exited ? "failed" : "unknown", exited ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", "the child could not be creation-pinned; its native child handle was asked to exit, and no replacement was launched", { target: instanceProjection(row) });
     }
     row = transition(row, { process: identity });
+    // A process that exits at once never ran: process readiness first gives it a moment to do so,
+    // and that exit is then settled below with the code this parent observed.
+    if (value.readiness.type === "process") await Promise.race([exit, delay(Math.min(PROCESS_SETTLE_MS, value.readiness.timeoutMs))]);
     let running: ServiceInstanceSnapshot;
     try { running = await serviceReadiness(row, value, adapter); }
     catch (error) {
       // Only an exit of the pinned child itself is settled here, with the exit this parent observed.
-      if (!isCommandFailure(error) || error.code !== "OPERATION_FAILED") throw error;
+      if (!isCommandFailure(error) || error.code !== "OPERATION_FAILED" || observeServiceProcess(row.record.value) === "running") throw error;
       await Promise.race([exit, delay(1000)]);
       const failed = transition(row, { state: "failed", readiness: "not-checked", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
       throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; its log records the cause`, { target: instanceProjection(failed), remedy: `read its log with cotal service logs ${definition.name} --instance ${id} --space ${value.space}` });

@@ -32,8 +32,8 @@ import { brokerAddressForDisplay } from "./broker-display.js";
 import { c } from "./colors.js";
 import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
-import { findMesh, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { credsSpace, isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags } from "./mesh-target.js";
+import { findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
+import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type RefusalCode } from "./output.js";
@@ -684,6 +684,9 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
   // classify it as "open now wants auth" and prune or attach as open. Refuse here,
   // naming the recorded mode.
   if (target.mode === "auth" && !target.auth) {
+    // A project folder moved after its stack started there keeps its seed under the new path.
+    const moved = movedProject(target.space, target.root);
+    if (moved) throw new ConnectRefusal(`✗ ${moved.message} - ${moved.remedy}`, undefined, { code: "CONFLICT", parts: { message: moved.message, remedy: moved.remedy }, target: moved.target });
     throw new ConnectRefusal(
       `✗ mesh "${target.space}" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,
       undefined,

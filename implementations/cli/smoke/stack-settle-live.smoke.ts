@@ -16,7 +16,12 @@
  *     address makes its bare `up` name stopping that space, and it keeps the address. A first `up`
  *     refused at a port another program holds names another `--server`, records no broker instance
  *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
- *     refusal says the stack started no member.
+ *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
+ *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
+ *     naming that cap and the flag. A project folder renamed while its stack runs: the broker names
+ *     its store relative to the root, so it does not create the old path again; `send` and `up` from
+ *     the renamed folder name the move and the way back, and after the move back `down` stops it.
+ *     Stopped and moved again, `up`, `send`, `history` and `status` there all name moving it back.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -51,8 +56,9 @@
  *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
  *     stack, `up` starts it again and a later `down` stops it.
  *  9. A `down` killed mid-stop. Killed while the broker's record is `stopping`, it leaves a broker
- *     that is gone under an unconfirmed request: the next `down` refuses and names
- *     `down --abandon-stop <request> --yes`, which records the broker failed with a warning, and
+ *     that is gone under an unconfirmed request: `status` names that member and request, the next
+ *     `down` refuses and names `down --abandon-stop <request> --yes`, which records the broker failed
+ *     with a warning, and
  *     `up` then `down` cycle the stack. Killed while the manager's record is `stopping` and before
  *     its request is published, the next bare `down` stops the stack and releases the reservation
  *     that killed `down` took.
@@ -70,12 +76,12 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { acquireMaintenanceLock, agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, releaseMaintenanceLock, stopReservationPath } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, isCommandFailure, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -282,6 +288,59 @@ try {
     check("down --yes stops the moved stack again", cli(second, "down", "--yes", "--json").status === 0);
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", stopped.status === 0, shown(stopped));
+  }
+
+  // 3c. A recorded file store cap too small for the space's streams, as an earlier release accepted.
+  {
+    const space = "smallcap";
+    const root = prepare(space);
+    const first = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--max-file-store", "134217728", "--json");
+    track(space);
+    check("up with a 128 MiB cap starts", first.status === 0, shown(first));
+    const running = cli(root, "up", "--no-manager", "--max-file-store", "268435456", "--json");
+    check("a running broker keeps its cap: CONFLICT, naming the stop that lets a new one apply", running.status === 2 && running.env?.error?.code === "CONFLICT" && Boolean(running.env.error.remedy?.includes("a new --max-file-store applies once the broker is stopped with cotal down --yes")), shown(running));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    const path = join(root, ".cotal", "stack-controller.json");
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { broker: Record<string, unknown> };
+    writeFileSync(path, JSON.stringify({ ...journal, broker: { ...journal.broker, maxFileStore: 1 } }));
+    const failed = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    check("bare up with a 1-byte recorded cap fails OPERATION_FAILED, exit 5, naming the cap and the flag that replaces it", failed.status === 5 && failed.env?.error?.code === "OPERATION_FAILED" && failed.env.error.message.includes("its JetStream file store cap (--max-file-store 1) has too little room for them") && Boolean(failed.env.error.remedy?.includes(`run cotal up --max-file-store <bytes> from ${root}`)), shown(failed));
+    const fixed = cli(root, "up", "--no-manager", "--max-file-store", "134217728", "--json");
+    track(space);
+    check("up with a new cap on the stopped broker records it and starts", fixed.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { broker: { maxFileStore?: number } }).broker.maxFileStore === 134217728, shown(fixed));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3d. A project folder renamed while its stack runs.
+  {
+    const space = "renamed";
+    const root = prepare(space);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    track(space);
+    check("up starts the stack", started.status === 0, shown(started));
+    check("its broker configuration names the store relative to the root", readFileSync(join(root, ".cotal", "auth", "server.conf"), "utf8").includes(`jetstream { store_dir: ${JSON.stringify(join(".cotal", "nats"))}`));
+    const moved = `${root}-renamed`;
+    renameSync(root, moved);
+    const send = cli(moved, "send", "--space", space, "-c", "general", "after the move", "--json");
+    check("send from the renamed folder refuses CONFLICT, naming the move and the way back", send.status === 2 && send.env?.error?.code === "CONFLICT" && send.env.error.message.includes(`was started in ${root}`) && send.env.error.message.endsWith("so this folder was moved from there") && send.env.error.remedy === `move this folder back to ${root}, then run the command again there`, shown(send));
+    const up = cli(moved, "up", "--json");
+    check("up there refuses CONFLICT, saying the folder was moved", up.status === 2 && up.env?.error?.code === "CONFLICT" && up.env.error.message.includes(`recorded at ${root}, so this folder was moved from there`), shown(up));
+    // The stack's own clients create consumers within seconds; a broker that named its store by the
+    // old absolute path created that path again for them.
+    await sleep(10_000);
+    check("the running broker did not create the old path again", !existsSync(root), existsSync(root) ? readdirSync(root, { recursive: true }) : []);
+    renameSync(moved, root);
+    check("after the move back, down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    // Stopped and moved again: this machine records the stack's instances, so every command from the
+    // moved folder names the one way back.
+    renameSync(root, moved);
+    const way = `move this folder back to ${root}, then run the command again there`;
+    const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
+    const status = cli(moved, "status", "--space", space, "--json");
+    renameSync(moved, root);
+    check("stopped and moved, up, send and history there all name moving the folder back", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
+    check("status --space there names the same step", String((status.env?.result?.selected as { message?: string } | undefined)?.message ?? "").endsWith(way), shown(status));
   }
 
   // 3b. A first up refused at a port another program holds pins nothing.
@@ -642,10 +701,15 @@ try {
   const killDownAt = async (root: string, space: string, definition: string): Promise<string | undefined> => {
     assertSmokeSandboxDown(anchors.get(root), ["down", "--yes", "--json"], { cwd: root, env });
     const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes", "--json"], { cwd: root, env, stdio: "ignore" });
-    const stopping = () => serviceInstances(space, definition)[0]?.record.value;
+    // A read that meets down's own write of the record refuses CONFLICT; the poll takes that as not yet.
+    const read = () => {
+      try { return serviceInstances(space, definition)[0]?.record.value; }
+      catch (error) { if (isCommandFailure(error) && error.code === "CONFLICT") return undefined; throw error; }
+    };
     const end = Date.now() + 120_000;
-    while (Date.now() < end && child.exitCode === null && stopping()?.state !== "stopping") await sleep(2);
-    const request = stopping()?.state === "stopping" ? stopping()!.requestId : undefined;
+    let seen = read();
+    while (Date.now() < end && child.exitCode === null && seen?.state !== "stopping") { await sleep(2); seen = read(); }
+    const request = seen?.state === "stopping" ? seen.requestId : undefined;
     child.kill("SIGKILL");
     await exited(child);
     return request;
@@ -660,6 +724,9 @@ try {
     const request = await killDownAt(root, space, "stack-broker");
     await until(() => gone(space, "stack-broker"), 10_000);
     check(`${space}: the killed down left the broker stopping under its request, with its process gone`, request !== undefined && serviceInstances(space, "stack-broker")[0]?.record.value.state === "stopping" && gone(space, "stack-broker"), { request });
+    const status = cli(root, "status", "--space", space, "--json");
+    const block = (status.env?.result?.folder as { stackBlock?: { definition?: string; reason?: string; route?: { kind?: string; requestId?: string } } | null } | undefined)?.stackBlock;
+    check(`${space}: status names the broker as what keeps up and down from settling, with that request to abandon`, (status.status === 0 || status.status === 4) && block?.definition === "stack-broker" && block.route?.kind === "abandon" && block.route.requestId === request && Boolean(block.reason?.includes("process is gone")), { ...shown(status), block });
     const refused = cli(root, "down", "--yes", "--json");
     check(`${space}: the next down refuses and names the abandon command for that request`, refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(refused.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`)), shown(refused));
     const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
