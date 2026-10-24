@@ -18,8 +18,8 @@
     {
       "name": "the recovered count double-counts, so the ceiling arrives early",
       "file": "packages/lang/src/journal.ts",
-      "find": "      if (e.kind !== \"conclave\" && (EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;",
-      "replace": "      if (e.kind !== \"conclave\" && (EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 2;",
+      "find": "      if ((EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;",
+      "replace": "      if ((EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 2;",
       "expectRed": "and it stops at the pinned number rather than after it",
       "completionMarker": "and stays well inside one yield interval (1024)",
       "cell": "and it stops at the pinned number rather than after it"

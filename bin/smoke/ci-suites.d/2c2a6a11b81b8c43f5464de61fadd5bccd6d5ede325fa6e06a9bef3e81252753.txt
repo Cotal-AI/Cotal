@@ -1,0 +1,3 @@
+# Dormant service custody writer: sealed host and readiness, bootstrap, cancellation and the
+# writer-owned endpoint-gate request boundary, on an owned loopback broker.
+smoke:service-custody-writer:auth

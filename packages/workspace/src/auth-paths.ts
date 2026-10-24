@@ -1,11 +1,14 @@
-import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { CommandFailure } from "./output.js";
+import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
+import { homeCotalDir } from "./cotal-home.js";
 import {
   composeSpaceAuth,
   jwtIssuedAt,
   mkSecretDir,
   newIdentity,
+  oneLine,
   validateSpaceAuthForRead,
   writeSecretFile,
   writeSecretFileAtomic,
@@ -38,6 +41,44 @@ const AUTH_FILE = "auth.json";
 
 export function authDir(root: string): string {
   return join(root, ".cotal", "auth");
+}
+
+/** `<root>/.cotal/stack-controller.json`, the whole-stack journal `cotal up` writes for this root. */
+export function stackJournalPath(root: string): string {
+  return join(root, ".cotal", "stack-controller.json");
+}
+
+/** The root a folder's stack journal names, read for that field alone. Undefined when the folder has
+ *  no journal, or one that is not a small regular file naming a root. */
+export function stackJournalRoot(root: string): string | undefined {
+  const path = stackJournalPath(root);
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.size > 64 * 1024) return undefined;
+    const value = JSON.parse(readFileSync(path, "utf8")) as { root?: unknown } | null;
+    return typeof value?.root === "string" ? value.root : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The way back for a project folder moved away from `recordedRoot`, the folder its records name. A
+ *  broker from an earlier release that kept running there may have created empty folders at that path,
+ *  which a plain move back would nest the project inside. */
+export function movedRootRemedy(recordedRoot: string): string {
+  return existsSync(recordedRoot)
+    ? `move what is now at ${recordedRoot} aside, such as empty folders a running broker created there, then move this folder back to ${recordedRoot} and run the command again there`
+    : `move this folder back to ${recordedRoot}, then run the command again there`;
+}
+
+/** The longest space name `space create` and `cotal up` accept. A local file that carries a space
+ *  spells its {@link spaceKey}, twice the name's length, beside up to about 90 other bytes, and a
+ *  file name holds at most 255 bytes, so a longer name could be prepared but not started. */
+export const SPACE_NAME_MAX = 64;
+
+/** The one-line refusal for a space name longer than {@link SPACE_NAME_MAX}, or undefined. */
+export function spaceNameTooLong(space: string): string | undefined {
+  return space.length > SPACE_NAME_MAX ? `the space name has ${space.length} characters, and a space name holds at most ${SPACE_NAME_MAX}, because the names of the local files that carry it spell it twice over` : undefined;
 }
 
 /** The ONE injective, case-safe space key: lowercase hex of the space's UTF-8 bytes. Every
@@ -134,9 +175,9 @@ export function spaceFromSegment(name: string): string | undefined {
  *  the canonical segment HERE means no flow can ever read (or worse, `ensure*`-REGENERATE) beside
  *  material the old layout still holds. Deliberately not in {@link hasUserAuthState} alone: a
  *  user-mode connect through a registry record never consults the marker before minting. */
-export function userAuthStateDir(root: string, space: string): string {
+export function userAuthStateDir(root: string, space: string, options: { readonly readOnly?: boolean } = {}): string {
   const canonical = join(authDir(root), spaceSegment(space));
-  migrateLegacyUserAuthState(root, space, canonical);
+  migrateLegacyUserAuthState(root, space, canonical, options);
   return canonical;
 }
 
@@ -154,7 +195,7 @@ export function userAuthStateDir(root: string, space: string): string {
  *  (the old bug: a user-auth space flips, and `mint` writes static admin creds) or stealing another
  *  tenant's canonical dir. Refuse and make the operator disambiguate, rather than infer ownership
  *  from the directory spelling. */
-function migrateLegacyUserAuthState(root: string, space: string, canonical: string): void {
+function migrateLegacyUserAuthState(root: string, space: string, canonical: string, options: { readonly readOnly?: boolean }): void {
   const legacyName = encodeURIComponent(space);
   if (legacyName === "creds") return;
   const dir = authDir(root);
@@ -177,6 +218,7 @@ function migrateLegacyUserAuthState(root: string, space: string, canonical: stri
   // legacy path is a crashed enable, not state, so it neither migrates nor blocks.
   const hit = entries.find((e) => e.name === legacyName && e.isDirectory());
   if (!hit || !pathHasUserAuthMarker(legacyPath)) return;
+  if (options.readOnly) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this observation encountered legacy user-auth state requiring migration; no directory was moved and static mode was not inferred", { target: { space }, remedy: "complete this root's supported explicit migration before retrying the observation" });
   // Real pre-hex state exists for this space. Two situations are irreducibly ambiguous and FAIL
   // LOUD rather than guess: (1) the legacy name is also another space's canonical segment; (2) a
   // canonical dir already exists (a crashed/partial new-layout enable) - migrating would either
@@ -230,8 +272,8 @@ function pathHasUserAuthMarker(dir: string): boolean {
  *  `existsSync` on {@link userAuthStateDir}: only a real provider pin inside a real directory
  *  counts. The state-dir read goes through {@link userAuthStateDir}, so a pre-hex legacy layout
  *  has already been migrated by the time the marker is checked. */
-export function hasUserAuthState(root: string, space: string): boolean {
-  return pathHasUserAuthMarker(userAuthStateDir(root, space));
+export function hasUserAuthState(root: string, space: string, options: { readonly readOnly?: boolean } = {}): boolean {
+  return pathHasUserAuthMarker(userAuthStateDir(root, space, options));
 }
 
 /** Every space with user-auth state under this auth dir, detectable WITHOUT `broker.json`/accounts:
@@ -284,6 +326,65 @@ export function findCotalRoot(start: string = process.cwd()): string {
     const parent = dirname(dir);
     if (parent === dir) return resolve(start);
     dir = parent;
+  }
+}
+
+/** Why `<root>/.cotal` cannot hold the folder's records: it exists and is not a directory, such as a
+ *  notes file named `.cotal`. Undefined when it is a directory or absent. */
+export function cotalDirProblem(root: string): string | undefined {
+  const path = join(root, ".cotal");
+  let stat: Stats;
+  try {
+    stat = statSync(path);
+  } catch {
+    return undefined;
+  }
+  return stat.isDirectory() ? undefined : `${path} is a ${stat.isFile() ? "file" : "special file"}, not a directory, so it cannot hold this folder's Cotal records`;
+}
+
+/** Why a project folder's path cannot hold a stack: it contains a control character, such as a tab or a
+ *  newline, which a stack journal does not record, or a bidirectional formatting mark, which can make
+ *  one path display as another. The path is named as {@link oneLine} shows it. Undefined when it can. */
+export function rootPathProblem(root: string): string | undefined {
+  const found = /[\p{Cc}\p{Bidi_Control}]/u.exec(root)?.[0];
+  if (found === undefined) return undefined;
+  const code = found.codePointAt(0)!, hex = code.toString(16).toUpperCase().padStart(4, "0");
+  const names: Record<number, string> = { 9: "a tab", 10: "a newline", 13: "a carriage return", 27: "an escape character", 127: "a delete character" };
+  const name = names[code] ?? (/\p{Cc}/u.test(found) ? `the control character U+${hex}` : `the bidirectional formatting mark U+${hex}`);
+  return `the folder path ${oneLine(root)} contains ${name}, and a project path may hold neither control characters nor bidirectional formatting marks`;
+}
+
+/** The control directory `path` is or lies in: a root's `.cotal`, or the machine home's. */
+export function controlDirectory(path: string): string | undefined {
+  const home = resolve(homeCotalDir());
+  if (path === home || path.startsWith(`${home}${sep}`)) return home;
+  const parts = path.split(sep), at = parts.indexOf(".cotal");
+  return at === -1 ? undefined : parts.slice(0, at + 1).join(sep);
+}
+
+/** Why `root` cannot be a project folder: it is, or is in, a control directory, by its own path or by
+ *  the physical path its links lead to. A `.cotal` made there would sit among that directory's
+ *  credentials and records, and start a second stack inside another project's. `project` is the
+ *  folder that control directory belongs to, absent for the machine home's. Undefined when it can. */
+export function rootControlProblem(root: string): { controlDirectory: string; project?: string; message: string } | undefined {
+  const path = resolve(root);
+  let physical: string | undefined;
+  try { physical = realpathSync.native(path); } catch { physical = undefined; }
+  const control = controlDirectory(path) ?? (physical === undefined ? undefined : controlDirectory(physical));
+  if (control === undefined) return undefined;
+  const project = control === resolve(homeCotalDir()) ? undefined : dirname(control);
+  const holds = project === undefined ? "this machine's own records" : `the Cotal records of the project ${project}`;
+  return { controlDirectory: control, project, message: `${path} is ${path === control || physical === control ? "" : "in "}the control directory ${control}, which holds ${holds}, so it cannot be a project folder` };
+}
+
+/** Where `<root>/.cotal` leads when it is a symlink, such as a link to another project's `.cotal`.
+ *  Undefined when it is a real directory, absent, or a link that leads nowhere. */
+export function cotalDirLink(root: string): string | undefined {
+  const path = join(root, ".cotal");
+  try {
+    return lstatSync(path).isSymbolicLink() ? realpathSync(path) : undefined;
+  } catch {
+    return undefined;
   }
 }
 

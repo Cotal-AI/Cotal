@@ -136,6 +136,13 @@ check("re-login is deterministic (same sub → same owner)",
   const skew = Math.abs(short.exp - (Math.floor(Date.now() / 1000) + 60));
   check("ttlSec passes through to the bearer exp", skew <= 2);
 }
+{
+  const instanceId = mintLifecycleUid();
+  const called = await bridge.exchange(idpJwt, { actor: "agent_1", view: "manager-caller", managerInstanceId: instanceId });
+  const act = (await validateUserToken(called.token, { key: cotalIssuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE })).act;
+  check("a manager-caller bearer binds the requested instance", act.view === "manager-caller" && act.managerInstanceId === instanceId);
+  check("a manager-caller exchange answers only token, owner and exp", Object.keys(called).sort().join() === "exp,owner,token", Object.keys(called));
+}
 
 await rejects("ledger deny fails the exchange", () => bridge.exchange(idpJwt, { actor: "denied_agent" }), "ledger");
 {
@@ -207,7 +214,7 @@ check("a scopeless grant mints a scopeless bearer (explicit allow, no scope)",
     j.setSubject("human-42").setIssuer(IDP_ISS).setAudience(IDP_ISS).setIssuedAt(now()).setExpirationTime(idpExp));
   const capped = await synth.exchange(nearExpiry, { actor: "agent_1", ttlSec: 900 });
   check("a near-expiry IdP proof caps the bearer to its remaining life, not the full TTL",
-    capped.exp <= idpExp + 2 && capped.exp > now() + 20, { bearerExp: capped.exp, idpExp });
+    capped.exp <= idpExp && capped.exp > now() + 20, { bearerExp: capped.exp, idpExp });
 }
 
 await rejects("HS256 alg confusion is rejected at the header", async () => {

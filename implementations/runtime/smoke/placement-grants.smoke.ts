@@ -53,7 +53,7 @@ import {
 } from "@cotal-ai/core";
 // Read from core SOURCE, not the package dist: these are the builders under review, and the runtime
 // smoke suite already imports them this way for the same reason.
-import { runMediatorGrants, runDriverCaller, PLACEMENT_COMMANDS } from "@cotal-ai/core";
+import { runMediatorGrants, runDriverCaller, PLACEMENT_COMMANDS, PLACED_LIFECYCLE_COMMANDS } from "@cotal-ai/core";
 import { canonicalCwd } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -64,7 +64,7 @@ const MGR_IID = "m".repeat(26);
 const RUN = "pg-run-1";
 const TAKE = "tk000001";
 const CALLER = runDriverCaller(RUN);        // the triple the rows are stamped with
-const EXPECTED_CELLS = 12;
+const EXPECTED_CELLS = 19;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -76,6 +76,12 @@ const connIdFor = (tag: string): string => `pgconn${tag}`.padEnd(16, "0");
  *  calls, so a variant subtracts what the builder actually emitted rather than a guessed string. */
 const rowsForCommand = (command: string): string[] =>
   epRequestGrantRows(SPACE, { endpoint: EP, command, routes: [], instanceId: MGR_IID }, CALLER);
+/** The placed `turn` rows: the same owner-pinned target as the class row, on the one instance rail. */
+const turnRows = (): string[] =>
+  epRequestGrantRows(SPACE, { endpoint: EP, command: "turn", routes: [], instanceId: MGR_IID, target: { mode: "owner", tOwner: CALLER.owner } }, CALLER);
+const SEAT = { actor: "seat1", uid: "s".repeat(26) };
+const OTHER_IID = "o".repeat(26);             // a well-formed instance this run did not place
+const OTHER_OWNER = `u_${"o".repeat(26)}`;    // a well-formed owner that is not the run's
 const placed = (connId: string) => runMediatorGrants(SPACE, { endpoint: EP, runId: RUN, takeoverId: TAKE, instanceId: MGR_IID, epoch: 1, placement: { instanceId: MGR_IID } }, connId);
 const legacy = (connId: string) => runMediatorGrants(SPACE, { endpoint: EP, runId: RUN, takeoverId: TAKE, instanceId: MGR_IID, epoch: 1 }, connId);
 /** The full placement credential minus the rows of ONE placement command. The subtraction is
@@ -87,6 +93,12 @@ const minus = (connId: string, command: string): { publish: string[]; subscribe:
   const publish = all.publish.filter((r) => !drop.has(r));
   return { publish, subscribe: all.subscribe, removed: all.publish.length - publish.length };
 };
+const minusTurn = (connId: string): { publish: string[]; subscribe: string[]; removed: number } => {
+  const all = placed(connId);
+  const drop = new Set(turnRows());
+  const publish = all.publish.filter((r) => !drop.has(r));
+  return { publish, subscribe: all.subscribe, removed: all.publish.length - publish.length };
+};
 
 const VARIANTS = [
   { user: "full", rows: placed(connIdFor("full")), connId: connIdFor("full") },
@@ -94,6 +106,7 @@ const VARIANTS = [
   { user: "nocwd", rows: minus(connIdFor("nocwd"), "resolve-cwd"), connId: connIdFor("nocwd") },
   { user: "nospawn", rows: minus(connIdFor("nospwn"), "spawn"), connId: connIdFor("nospwn") },
   { user: "unplaced", rows: legacy(connIdFor("unplcd")), connId: connIdFor("unplcd") },
+  { user: "noturn", rows: minusTurn(connIdFor("noturn")), connId: connIdFor("noturn") },
 ] as const;
 
 // ── broker ─────────────────────────────────────────────────────────────────────────────────────
@@ -145,16 +158,26 @@ try {
     type: "object", additionalProperties: false, required: ["cwd", "host"],
     properties: { cwd: { type: "string" }, host: { type: "string" } },
   } as const;
+  const TURN_INPUT = {
+    type: "object", additionalProperties: false, required: ["payload"],
+    properties: { payload: { type: "string" }, deadlineMs: { type: "number" } },
+  } as const;
+  const TURN_OUTPUT = {
+    type: "object", additionalProperties: false, required: ["accepted"],
+    properties: { accepted: { type: "boolean" } },
+  } as const;
   const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
   const COMPILED = {
     spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
     "resolve-cwd": { input: cc(RESOLVE_CWD_INPUT), output: cc(RESOLVE_CWD_OUTPUT) },
+    turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
   };
   const DOCUMENT = {
     urn: "ai.cotal.test.placegrants", revision: 1, attributes: [], events: [],
     commands: [
       { name: "spawn", class: "ephemeral" as const, targeted: false, capability: "manager.spawn", inputDigest: COMPILED.spawn.input.closureDigest, outputDigest: COMPILED.spawn.output.closureDigest },
       { name: "resolve-cwd", class: "ephemeral" as const, targeted: false, capability: "manager.spawn", inputDigest: COMPILED["resolve-cwd"].input.closureDigest, outputDigest: COMPILED["resolve-cwd"].output.closureDigest },
+      { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner"], capability: "manager.spawn", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
     ],
   };
   const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -165,7 +188,7 @@ try {
   {
     const values: unknown[] = [];
     const seen = new Set<string>();
-    for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, RESOLVE_CWD_INPUT, RESOLVE_CWD_OUTPUT]) {
+    for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, RESOLVE_CWD_INPUT, RESOLVE_CWD_OUTPUT, TURN_INPUT, TURN_OUTPUT]) {
       const rootDigest = contractDigest(source);
       if (seen.has(rootDigest)) continue;
       seen.add(rootDigest);
@@ -198,6 +221,7 @@ try {
   });
   const resolved: string[] = [];
   const accepted: string[] = [];
+  const turned: string[] = [];
   const handle = serveEndpoint(nc, SPACE, grant, [
     {
       command: "resolve-cwd", contract: COMPILED["resolve-cwd"],
@@ -219,7 +243,16 @@ try {
         return { name: String(args.name), owner: "local", actor: `seat${accepted.length}`, uid: `s${String(accepted.length).padStart(25, "0")}` };
       },
     },
-  ] as EpCommandDef[], { public: true }, {});
+    {
+      command: "turn", contract: COMPILED.turn,
+      handler: (ctx: EpServeContext): unknown => {
+        turned.push(String(((ctx.request.args ?? {}) as { payload?: unknown }).payload));
+        return { accepted: true };
+      },
+    },
+  ] as EpCommandDef[], { public: true }, {
+    resolveTarget: (t) => t.owner === CALLER.owner && t.actor === SEAT.actor ? { lifecycleUid: SEAT.uid, mappingRevision: 0 } : undefined,
+  });
 
   // ── the caller side, over each scoped credential ─────────────────────────────────────────────
   /** The placed-spawn reach, exactly as `MeshEffectHandler.spawn` performs it: a PINNED resolve,
@@ -274,6 +307,45 @@ try {
   // instance has answered TWO resolves by now. What no refused credential ever reached is the
   // accept: one placed spawn was submitted in this suite, by the one credential that held all three.
   c("no refused credential ever reached the spawn accept", accepted.length === 1 && resolved.length === 2, { resolved: resolved.length, accepted: accepted.length });
+
+  console.log("E. PLACED TURN — the placed seat's turn on its placement instance, owner-pinned, nowhere else");
+  /** The pinned turn a placed run's host submits (mesh-handler.ts `manager(host)`), over one credential. */
+  const placeTurn = async (user: string, connId: string, at: { instanceId?: string; owner?: string } = {}): Promise<{ stage: string; err?: string }> => {
+    const cnc = await connect({ servers: `nats://127.0.0.1:${PORT}`, user, pass: "pw", inboxPrefix: `_INBOX_${connId}` });
+    let stage = "resolve";
+    try {
+      const svc = await resolveService(cnc, SPACE, EP, CALLER, { instanceId: at.instanceId ?? MGR_IID });
+      stage = "turn";
+      const r = await invokeCommand(cnc, SPACE, svc, "turn", { payload: user }, { deadlineMs: 8_000, target: { mode: "owner", owner: at.owner ?? CALLER.owner, actor: SEAT.actor, lifecycleUid: SEAT.uid } });
+      if (r.reply.ok === false) throw new Error(r.reply.error?.message ?? "refused");
+      return { stage: "done" };
+    } catch (err) {
+      return { stage, err: String((err as Error)?.message ?? err) };
+    } finally {
+      await cnc.close().catch(() => undefined);
+    }
+  };
+  const placedTurn = await placeTurn("full", connIdFor("full"));
+  c("the stock placed credential's pinned turn reaches the placement instance and is served there",
+    placedTurn.stage === "done" && turned.length === 1 && turned[0] === "full", { placedTurn, turned });
+  c("removing the placed turn rows removes rows the builder had emitted", minusTurn(connIdFor("x")).removed === turnRows().length && turnRows().length > 0, minusTurn(connIdFor("x")).removed);
+  const noTurn = await placeTurn("noturn", connIdFor("noturn"));
+  c("without the placed turn row the pinned turn is refused by the broker on the turn rail, and nothing ran",
+    noTurn.stage === "turn" && noTurn.err !== undefined && /REFUSED BY THE BROKER/.test(noTurn.err) && noTurn.err.includes(".turn.") && turned.length === 1, { noTurn, turned });
+  const placedRows = placed(connIdFor("full")).publish.filter((r) => r.includes(".inst.") && r.includes(".turn."));
+  c("the placed turn rows name only the placement instance and keep the caller-owner target",
+    [...PLACED_LIFECYCLE_COMMANDS].join(",") === "turn" && placedRows.length > 0 && placedRows.every((r) => r.includes(`.inst.${EP}.${MGR_IID}.turn.`)) && placedRows.join() === turnRows().join(), placedRows);
+  const legacyRows = legacy(connIdFor("unplcd")).publish;
+  const wrongInstance = await placeTurn("full", connIdFor("full"), { instanceId: OTHER_IID });
+  c("WRONG INSTANCE: the placed credential cannot reach an instance the run did not place; the broker refuses there and nothing ran",
+    wrongInstance.stage === "resolve" && wrongInstance.err !== undefined && /REFUSED BY THE BROKER/.test(wrongInstance.err) && wrongInstance.err.includes(OTHER_IID) && turned.length === 1,
+    { wrongInstance, turned });
+  const wrongOwner = await placeTurn("full", connIdFor("full"), { owner: OTHER_OWNER });
+  c("WRONG OWNER: a placed turn whose target names another owner is refused by the broker on the turn rail, and nothing ran",
+    wrongOwner.stage === "turn" && wrongOwner.err !== undefined && /REFUSED BY THE BROKER/.test(wrongOwner.err) && wrongOwner.err.includes(".turn.") && turned.length === 1,
+    { wrongOwner, turned });
+  c("an unplaced credential keeps its class turn row and gains no instance turn row",
+    legacyRows.some((r) => r.includes(`.one.${EP}.turn.`)) && !legacyRows.some((r) => r.includes(".inst.") && r.includes(".turn.")), legacyRows.filter((r) => r.includes(".turn.")));
 
   await handle.stop();
 } catch (e) {

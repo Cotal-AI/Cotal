@@ -1,5 +1,135 @@
 # @cotal-ai/tmux
 
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+No changes in this release.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+### Patch Changes
+
+- c69a00d: The tmux runtime passes `-u` to every tmux call. Without a UTF-8 locale (`LANG`, `LC_CTYPE` and `LC_ALL` unset or not UTF-8) the tmux client wrote tabs and non-ASCII bytes in its output as `_`, so the runtime could not find a window by name and read pane screens with mangled text.
+
+## 0.92.0
+
+## 0.91.0
+
+## 0.90.1
+
+## 0.90.0
+
+## 0.89.0
+
+## 0.88.0
+
+## 0.87.0
+
+### Patch Changes
+
+- 8fc9dca: A tmux seat that outlives its manager is now adopted by the next manager instead of closed. The manager records each adoptable seat, and on startup the successor checks the recorded tmux server, window and pane, then manages the seat again under its existing credential so a run's pending turn continues on it. A seat whose pane has exited is retired as before.
+
+## 0.86.0
+
+### Patch Changes
+
+- a4dcc61: The tmux terminal layout now refuses a multi-pane tab with no `split` before it writes a launch script or opens a window. Before this, `open()` started the first pane in a new window and then threw, so the caller got an error with no ref while the window and its command kept running, and every retry left another one.
+
 ## 0.85.0
 
 ### Patch Changes

@@ -237,10 +237,14 @@ const managerSrc = readFileSync(join(ROOT, "implementations/manager/src/manager.
 const detach = managerSrc.match(/private releaseManagedAgents\(\): string\[\] \{([\s\S]*?)\n  \}/)?.[1] ?? "";
 check("releaseManagedAgents is present in manager.ts", detach.includes("const managed = [...this.agents.values()]"));
 check("releaseManagedAgents does not optional-chain close", !/close\?\./.test(detach), detach);
+// The PTY-release predicate lives in isProcessBoundSeat, which releaseManagedAgents filters by.
+const processBound = managerSrc.match(/private isProcessBoundSeat\(agent: ManagedAgent\): boolean \{([\s\S]*?)\n  \}/)?.[1] ?? "";
 check(
   "releaseManagedAgents validates PTY release before invoking handles",
-  /handle\.kind === "pty"/.test(detach) && /typeof a\.handle\.release !== "function"/.test(detach) && /a\.handle\.release\?\.\(\)/.test(detach),
-  detach,
+  /\.filter\(\(a\) => !this\.isProcessBoundSeat\(a\)\)/.test(detach)
+    && /agent\.handle\.kind === "pty"/.test(processBound) && /typeof agent\.handle\.release !== "function"/.test(processBound)
+    && /a\.handle\.release\?\.\(\)/.test(detach),
+  { detach, processBound },
 );
 const custodialSrc = readFileSync(join(ROOT, "implementations/manager/src/runtime/custodial-pty.ts"), "utf8");
 check(

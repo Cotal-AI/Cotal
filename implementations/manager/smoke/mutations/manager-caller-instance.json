@@ -22,8 +22,8 @@
     {
       "name": "cotal models drops --on before the manager-caller exchange",
       "file": "implementations/cli/src/commands/models.ts",
-      "find": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", on);",
-      "replace": "  const t = await resolveControlTarget(v, \"control-caller-privileged\");",
+      "find": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", on, { onRefusal: \"throw\" });",
+      "replace": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", undefined, { onRefusal: \"throw\" });",
       "expectRed": "#3959 `cotal models --on <instance>` succeeds against the named instance",
       "cell": "#3959 `cotal models --on <instance>` succeeds against the named instance",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -31,8 +31,8 @@
     {
       "name": "cotal run drops --on before the manager-caller exchange",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  const t = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\", on);",
-      "replace": "  const t = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\");",
+      "find": "  const target = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\", on);",
+      "replace": "  const target = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\");",
       "expectRed": "#3959 `cotal run ps --on <instance>` succeeds against the named instance",
       "cell": "#3959 `cotal run ps --on <instance>` succeeds against the named instance",
       "afterRestore": "pnpm --filter @cotal-ai/runtime build"
@@ -40,8 +40,8 @@
     {
       "name": "MCP cotal_run ps drops its instance argument",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "            const reply = await agent.run(\"ps\", { endpoint: a.endpoint }, a.instance);",
-      "replace": "            const reply = await agent.run(\"ps\", { endpoint: a.endpoint });",
+      "find": "            const reply = await agent.run(\"ps\", { endpoint: a.endpoint, ...(a.page !== undefined ? { page: a.page } : {}) }, a.instance);",
+      "replace": "            const reply = await agent.run(\"ps\", { endpoint: a.endpoint, ...(a.page !== undefined ? { page: a.page } : {}) });",
       "expectRed": "#3959 MCP cotal_run ps with instance succeeds against the named instance",
       "cell": "#3959 MCP cotal_run ps with instance succeeds against the named instance",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build"

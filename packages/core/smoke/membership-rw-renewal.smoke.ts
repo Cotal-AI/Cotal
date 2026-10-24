@@ -180,7 +180,9 @@ try {
   let reads = 0;             // times the source was read (0 after the initial connect's read)
   const source = async (): Promise<string> => { reads++; return served; };
 
-  feed = await startMembershipFeed({ servers: SERVERS, space, accountId, observerCreds, rwCreds: source, intervalMs: 60_000 });
+  const feedLog: string[] = [];
+  const log = (m: string): void => { feedLog.push(m); console.error(`! membership: ${m}`); };
+  feed = await startMembershipFeed({ servers: SERVERS, space, accountId, observerCreds, rwCreds: source, intervalMs: 60_000, log });
   let hb = await provesLive(feed, initial, 0);
   check("feed starts on the initial proven cred (source read exactly once)", reads === 1, reads);
   check("conn B is live (heartbeat stamped via a real broker round-trip)", hb > 0, hb);
@@ -190,10 +192,15 @@ try {
   const renewed = await mintCreds(auth, feedId, "membership-rw", { expiresInSeconds: 4200 });
   check("a valid re-sign has a DIFFERENT fingerprint (distinct generation)", credsFingerprint(renewed) !== credsFingerprint(initial));
   served = renewed;
+  const logBeforeAdopt = feedLog.length;
   const adopt = await feed.reloadRwCreds(credsFingerprint(renewed)).then((w) => ({ ok: true, w }), (e: Error) => ({ ok: false, e: e.message }));
   check("explicit reload ADOPTS a validly re-signed cred (broker-accepted window returned)", adopt.ok && (adopt as { w: { identity: string } }).w.identity === feedId.id, adopt);
   const afterAdopt = await provesLive(feed, renewed, hb);
   check("conn B works on the ADOPTED cred (heartbeat advanced, read back with the new generation)", afterAdopt > hb, { afterAdopt, hb });
+  // The adoption reconnects conn B in place, and the first poll above runs before the redial lands, so
+  // the broker has no conn B to report. That sweep keeps the last membership; it did not miss anything.
+  const adoptLog = feedLog.slice(logBeforeAdopt);
+  check("a sweep during conn B's own reconnect is not reported as one that omitted conn B", !adoptLog.some((l) => /omitted our own rw connection/.test(l)), adoptLog);
   hb = afterAdopt;
 
   // Case 3: the expected-generation fingerprint rejects a DIFFERENT candidate BEFORE the preflight. Source

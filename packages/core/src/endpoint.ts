@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { createConnection } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
+import { createConnection, isIP } from "node:net";
 import {
   connect,
   credsAuthenticator,
@@ -30,6 +31,7 @@ import {
   type ProbeOutcome,
   type ResponderState,
 } from "./liveness.js";
+import { processRuntime } from "./process-runtime.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { withDeadline } from "./deadline.js";
@@ -46,8 +48,9 @@ import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
 import { readAcceptedRow } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
-import { liveKvEntries } from "./kv-scan.js";
-import { isJetStreamMissing } from "./jetstream-missing.js";
+import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
+import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
+import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
@@ -58,10 +61,12 @@ import {
   AckPolicy,
   DeliverPolicy,
   JetStreamApiCodes,
+  JetStreamApiError,
   type JetStreamClient,
   type JetStreamManager,
   type Consumer,
   type ConsumerMessages,
+  type ConsumerConfig,
   type ConsumerInfo,
   type JsMsg,
   type JetStreamPublishOptions,
@@ -124,6 +129,9 @@ import {
   chatStream,
   chatHistDurable,
   chatSubject,
+  historyReaderConsumer,
+  calloutReaderId,
+  HISTORY_READERS,
   controlServiceSubject,
   livenessSubject,
   livenessServeFilter,
@@ -172,6 +180,9 @@ import {
   unicastRecvFilter,
 } from "./subjects.js";
 
+import { isPermissionDenied } from "./permission-denied.js";
+export { isPermissionDenied };
+
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
@@ -205,6 +216,43 @@ export const MULTI_FILTER_BATCH = 1_000;
  *  issuing one read per channel: a space large enough to need batches must not get the fan-out back
  *  under another name. */
 export const MULTI_FILTER_READ_CONCURRENCY = 4;
+
+/** A history reader's inactive threshold. It bounds only a reader whose delete never ran (its link
+ *  dropped, or its process stopped), because every read deletes its readers when it ends. Five
+ *  minutes is what the nats.js ordered consumers it replaces carried, and it keeps a reader alive
+ *  across the gap between pulls on a slow link. */
+const HISTORY_READER_INACTIVE_MS = 5 * 60_000;
+
+/** The longest delay `setTimeout` honors, 2^31-1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** One read's hold on a history-reader name (see {@link CotalEndpoint}'s `acquireHistoryReader`). */
+type HistoryReader = {
+  nc: NatsConnection;
+  js: JetStreamClient;
+  jsm: JetStreamManager;
+  stream: string;
+  pool: HistoryReaderSlots;
+  slot: number;
+  name: string;
+  /** False once the hold is given back, so it is given back once. */
+  held: boolean;
+  /** True once a delete under the name failed, so the name may still hold this read's reader and is
+   *  set aside rather than freed when the hold is given back. */
+  left: boolean;
+};
+
+/** One stream's history-reader names under one reader id: the free slots, how many reads hold one,
+ *  the reads waiting, and until when a read fails at once because the credential was refused a
+ *  reader delete. A slot neither free nor held is set aside until a consumer under it would have
+ *  expired. */
+type HistoryReaderSlots = {
+  readerId: string;
+  free: number[];
+  held: number;
+  waiting: (() => void)[];
+  refusedUntil: number;
+};
 
 export interface EndpointOptions {
   /** Trusted composition custody of each opened transport, including replacement epochs.
@@ -301,6 +349,30 @@ export interface EndpointOptions {
    *  cache — so its cred needs no channel-registry read grant (residual 2). No effect when `consume` is
    *  true: the join-time replay decision reads the registry, so a consumer always opens it. */
   watchChannels?: boolean;
+  /** Read presence and the channel registry ONCE at start instead of watching them (default false),
+   *  for an endpoint that does one thing and stops (`cotal send`, a roster probe). Each read is one
+   *  Direct Get of every key's last record, so it binds no consumer. A watch's ordered consumer
+   *  outlives {@link CotalEndpoint.stop} by the broker's five-minute inactive threshold, because the
+   *  operator and agent profiles hold no CONSUMER.DELETE on these buckets (#691), and one per
+   *  short-lived process piles up until the broker refuses new consumers there (#4091). The roster
+   *  and the channel cache hold the state at start and never update, and no sweep runs. A bucket of
+   *  more than 1024 keys refuses the read. Requires `consume` and `registerPresence` false. */
+  readOnce?: boolean;
+  /** Consume ONLY this endpoint's own existing DM durable, for a credential that can read nothing
+   *  else. The endpoint binds `dm_<owner>-<actor>-<uid>` and opens no channel registry, presence,
+   *  KV, channel subscription, `dlv_` durable, history reader or JetStream manager. It never creates
+   *  the durable: a missing one fails start with {@link DmDurableMissingError}, a refused bind with
+   *  {@link DmBindRefusedError}. Each authenticated DM goes to `handler`, one at a time; the next is
+   *  not read until the previous handler settles. The `message` event does not fire in this mode.
+   *  {@link CotalEndpoint.stop} resolves only after the connection is closed and the running handler
+   *  has settled; a rejecting handler still lets the connection close, and stop throws, keeping
+   *  custody, when closure or settlement within `settleTimeoutMs` (default 30000) is unproved.
+   *  A copy received after stop begins or after a reconnect replaces the connection is never
+   *  handed to the handler and stays unacked for broker redelivery; an ack, nak or in-progress
+   *  signal on a closed connection throws.
+   *  Requires static or sourced creds or a bearer, `consume` true, `registerPresence`,
+   *  `watchPresence` and `watchChannels` false, and no channels, role, `readOnce` or `acceptedToken`. */
+  dmOnly?: DmOnlyOptions;
   /** Create inbound stream consumers (DM / chat / anycast). Default true; a pure observer sets false. */
   consume?: boolean;
   /** Initial per-channel attention overrides to publish in presence from the first heartbeat (the
@@ -329,6 +401,34 @@ export type PresenceView =
   | { state: "current"; fresh: true }
   | { state: "unpopulated"; fresh: false }
   | { state: "stale"; fresh: false; staleSince: number };
+
+/** See {@link EndpointOptions.dmOnly}. */
+export interface DmOnlyOptions {
+  /** Receives each authenticated DM. A resolved promise does not ack: call `delivery.ack()`. A
+   *  rejection is emitted as `error` and leaves the copy unacked, so the broker redelivers it. */
+  handler: (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => void | Promise<void>;
+  /** How long {@link CotalEndpoint.stop} waits for a running handler, in milliseconds. */
+  settleTimeoutMs?: number;
+}
+
+/** A DM-only endpoint's own `dm_` durable does not exist. The endpoint never creates it. */
+export class DmDurableMissingError extends Error {
+  readonly code = "dm-durable-missing" as const;
+  constructor(readonly stream: string, readonly durable: string) {
+    super(`dm-durable-missing: durable "${durable}" on stream "${stream}" does not exist; a DM-only endpoint binds an existing durable and never creates one`);
+    this.name = "DmDurableMissingError";
+  }
+}
+
+/** The broker refused a DM-only endpoint's bind of its own `dm_` durable. No other credential or
+ *  read path is tried. */
+export class DmBindRefusedError extends Error {
+  readonly code = "dm-bind-refused" as const;
+  constructor(readonly stream: string, readonly durable: string, cause: unknown) {
+    super(`dm-bind-refused: binding durable "${durable}" on stream "${stream}" was refused (${cause instanceof Error ? cause.message : String(cause)})`, { cause });
+    this.name = "DmBindRefusedError";
+  }
+}
 
 /** A presence bucket that has refused consecutive writes for at least one full presence TTL.
  * The condition is non-transient: ordinary heartbeat retry has already failed for the whole
@@ -475,7 +575,11 @@ export class CotalEndpoint extends EventEmitter {
   private readonly doRegister: boolean;
   private readonly doWatch: boolean;
   private readonly doWatchChannels: boolean;
+  private readonly readOnce: boolean;
   private readonly doConsume: boolean;
+  private readonly dmOnly?: DmOnlyOptions;
+  /** The DM-only handler now running, if any; stop awaits it. */
+  private dmOnlyInFlight?: Promise<void>;
   private readonly ackWaitMs: number;
   private readonly inactiveThresholdMs: number;
 
@@ -573,6 +677,11 @@ export class CotalEndpoint extends EventEmitter {
    *  `chathist_<id>` consumer, so overlapping reads would delete/recreate it under one another. */
   private histLock: Promise<unknown> = Promise.resolve();
   private readonly subs: Subscription[] = [];
+  /** The observer feeds {@link tap} was asked for. This is INTENT, re-subscribed by {@link bindTap}
+   *  on every (re)connect: a rebuild after an outage the library could not ride out closes the old
+   *  connection and every subscription on it, so a tap bound once went silent while the endpoint
+   *  reported itself connected again. */
+  private readonly taps: { readonly handler: (subject: string, msg: CotalMessage | undefined) => void; readonly subject: string }[] = [];
   /** The liveness responders {@link serveLiveness} was asked for, by plane. This is INTENT, re-bound
    *  by {@link bindLiveness} on every (re)connect: a rebuild closes the old connection and every
    *  subscription on it, so a responder bound once would leave its plane to the broker's
@@ -606,13 +715,16 @@ export class CotalEndpoint extends EventEmitter {
    *  self-heals on recovery instead of leaving the channel silently live-only. Surfaced to the connector
    *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
   private readonly pendingBootJoins = new Set<string>();
-  /** Chat-join subjects currently being broker-confirmed. An out-of-ACL subscribe among these trips an
-   *  EXPECTED async permission violation that joinChannel turns into a clean throw, so watchStatus
-   *  suppresses it rather than surfacing a spurious connection error. */
-  private readonly confirmingChatSubs = new Set<string>();
-  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches,
-   *  running membership scans and running history reads (see {@link recordOwnWatchConsumer}). */
+  /** The refusals a channel's live subscription callback received. nats.js hands a subscription
+   *  refusal to the refused subscription's callback and then dispatches that same instance on the
+   *  connection status, so the callback owns it (see {@link subscribeChat}) and watchStatus skips it. */
+  private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
+  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
+   *  running membership scans (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
+  /** Per stream, the history-reader names of this connection's current reader id and the reads
+   *  waiting for one (see {@link acquireHistoryReader}). */
+  private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
   /** True until the first successful connect completes its boot backfill — distinguishes first-connect
    *  (backfill the boot channels' history) from a reconnect (reopen the core-subs, no re-backfill).
    *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
@@ -898,6 +1010,24 @@ export class CotalEndpoint extends EventEmitter {
     this.doWatch = opts.watchPresence ?? true;
     this.doWatchChannels = opts.watchChannels ?? true;
     this.doConsume = opts.consume ?? true;
+    this.readOnce = opts.readOnce ?? false;
+    if (this.readOnce && (this.doConsume || this.doRegister))
+      throw new Error("EndpointOptions.readOnce requires consume and registerPresence false: a one-time read cannot keep a consumer's channel cache or its own presence current");
+    if (opts.dmOnly !== undefined) {
+      if (typeof opts.dmOnly.handler !== "function")
+        throw new Error("EndpointOptions.dmOnly.handler must be a function");
+      const settle = opts.dmOnly.settleTimeoutMs;
+      if (settle !== undefined && (!Number.isSafeInteger(settle) || settle <= 0))
+        throw new Error("EndpointOptions.dmOnly.settleTimeoutMs must be a positive safe integer");
+      if (!this.authed)
+        throw new Error("EndpointOptions.dmOnly requires creds or a bearer: it binds a provisioned durable and never creates one");
+      if (!this.doConsume || this.doRegister || this.doWatch || this.doWatchChannels || this.readOnce)
+        throw new Error("EndpointOptions.dmOnly requires consume true and registerPresence, watchPresence, watchChannels and readOnce false");
+      if (this.channels.length || opts.card.role || opts.acceptedToken !== undefined)
+        throw new Error("EndpointOptions.dmOnly takes no channels, role or acceptedToken: the endpoint reads only its own DM durable");
+      this.requireLifecycleUid("EndpointOptions.dmOnly");
+      this.dmOnly = opts.dmOnly;
+    }
     // Seed the presence mirror so file-default channel modes are visible from the first publish
     // (not only after the first runtime toggle). Mirror only — delivery reads the connector's state.
     this.channelModes = opts.channelModes && Object.keys(opts.channelModes).length ? opts.channelModes : undefined;
@@ -1113,6 +1243,15 @@ export class CotalEndpoint extends EventEmitter {
    *  deferral is safe. */
   private static readonly RESIDENT_SWAP_DEFER_MS = 250;
 
+  /** How long a delivery-admin request read after a reload waits for the resident swap's reconnect.
+   *  nats.js drops a publish made while the connection is down when it redials, so a reply sent
+   *  during the swap is lost and its caller waits out its whole request timeout. Past this bound the
+   *  request is answered anyway, as it was before the gate. */
+  private static readonly RESIDENT_SWAP_GATE_MS = 5_000;
+
+  /** The resident swap a reload scheduled, until its connection is back or the gate's bound ends. */
+  private residentSwap?: Promise<void>;
+
   /** The daemon-side deadline for the WHOLE prove-then-adopt transaction (source fetch + preflight +
    *  commit), kept strictly BELOW the manager's delivery-admin request bound so a slow or hung hosted
    *  store returns a structured component failure rather than an ambiguous client timeout, and a late
@@ -1190,9 +1329,12 @@ export class CotalEndpoint extends EventEmitter {
         ? credsExp * 1000
         : undefined;
     if (expiryMs === undefined || this.stopped) return;
-    this.authExpiryReconnectTimer = setTimeout(() => {
-      if (this.nc === nc) this.disableLibraryReconnect(nc);
-    }, Math.max(0, expiryMs - Date.now() - 500));
+    // Node fires a delay above 2^31-1 ms (about 24.8 days) after 1 ms, which would disable reconnect
+    // at once. A later expiry waits in steps of that bound, and the fence is armed again from there.
+    const delay = Math.max(0, expiryMs - Date.now() - 500);
+    this.authExpiryReconnectTimer = delay > MAX_TIMER_MS
+      ? setTimeout(() => { if (this.nc === nc) this.armAuthExpiryReconnectFence(nc); }, MAX_TIMER_MS)
+      : setTimeout(() => { if (this.nc === nc) this.disableLibraryReconnect(nc); }, delay);
     this.authExpiryReconnectTimer.unref?.();
   }
 
@@ -1323,10 +1465,30 @@ export class CotalEndpoint extends EventEmitter {
    *  still open, or a slow co-component proof would let `nc.reconnect()` reconnect the admin rail
    *  before the reply flushes and silently strand it. The short deferral lets the reply flush on the
    *  still-live old cred first. Best-effort — the proof was the preflight; a transient swap failure is
-   *  retried by the 75% timer and the broker's own expiry-close, both presenting the adopted candidate. */
+   *  retried by the 75% timer and the broker's own expiry-close, both presenting the adopted candidate.
+   *  Until the swapped connection is back, {@link residentSwap} holds the delivery-admin requests that
+   *  arrive after this reply. */
   private scheduleResidentSwap(): void {
     if (this.stopped) return;
-    setTimeout(() => { void this.swapConnectionOntoFreshCreds(); }, CotalEndpoint.RESIDENT_SWAP_DEFER_MS).unref?.();
+    const swap: Promise<void> = new Promise<void>((resolve) => { setTimeout(resolve, CotalEndpoint.RESIDENT_SWAP_DEFER_MS).unref?.(); })
+      .then(async () => {
+        const back = this.transportBack(CotalEndpoint.RESIDENT_SWAP_GATE_MS);
+        await this.swapConnectionOntoFreshCreds();
+        await back;
+      })
+      .finally(() => { if (this.residentSwap === swap) this.residentSwap = undefined; });
+    this.residentSwap = swap;
+  }
+
+  /** Resolve when this endpoint reports its transport connected again, or after `ms`. */
+  private transportBack(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); this.off("transport", seen); resolve(); };
+      const seen = (state: TransportState) => { if (state.connected) done(); };
+      const timer = setTimeout(done, ms);
+      timer.unref?.();
+      this.on("transport", seen);
+    });
   }
 
   private armCredsRefresh(delayMs: number): void {
@@ -1427,6 +1589,16 @@ export class CotalEndpoint extends EventEmitter {
     this.watchStatus();
     this.js = jetstream(this.nc);
 
+    // DM-only (EndpointOptions.dmOnly): the own DM durable is the whole binding. Nothing below runs:
+    // no accepted-row read, presence, channel registry, JetStream manager, lease, membership,
+    // Plane-3 or liveness responder, so the credential needs no row for any of them.
+    if (this.dmOnly) {
+      await this.bindDmOnly(this.dmOnly);
+      if (this.stopped) return;
+      this.emit("connection", { connected: true });
+      return;
+    }
+
     // Discovery of the issued generation (SPEC 13.15): the ISSUER wrote the accepted reference
     // under the token this launch was handed; the broker admits the read only under this
     // connection's own per-key grant. What comes back must name this incarnation, and a fresh
@@ -1449,7 +1621,8 @@ export class CotalEndpoint extends EventEmitter {
         : await kvm.create(presenceBucket(this.space), { ttl: this.ttlMs, storage: PRESENCE_STORAGE });
     }
 
-    if (this.doWatch) {
+    if (this.doWatch && this.readOnce) await this.readPresenceOnce();
+    else if (this.doWatch) {
       await this.startPresenceWatch();
       this.sweepTimer = setInterval(
         () => this.sweep(),
@@ -1465,7 +1638,7 @@ export class CotalEndpoint extends EventEmitter {
     const watchChannels = this.doWatch && this.doWatchChannels;
     if (watchChannels || this.doConsume) {
       this.channelKv = await openChannelRegistry(this.nc, this.space, { create: !this.authed });
-      if (watchChannels) await this.startChannelWatch();
+      if (watchChannels) await (this.readOnce ? this.readChannelsOnce() : this.startChannelWatch());
     }
 
     // Rebind the daemon's lease-loss watch onto the fresh connection (#1596). The intent survived
@@ -1549,6 +1722,7 @@ export class CotalEndpoint extends EventEmitter {
     // Re-bind the liveness responders on this connection, for armPlane3's reason: the rebuild closed
     // the old connection and the responders with it.
     for (const plane of this.livenessResponders.keys()) this.bindLiveness(plane);
+    for (const tap of this.taps) this.bindTap(tap);
 
     // Bound and live — covers initial start, manual reconnect, AND background self-heal (every
     // path lands here). The single signal an in-process agent's connected flag tracks.
@@ -1621,7 +1795,6 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.chatSubs.clear();
     this.chatSubDenied.clear();
-    this.confirmingChatSubs.clear();
     this.ownWatchDeletePrefixes.clear();
     this.roster.clear();
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
@@ -1877,6 +2050,9 @@ export class CotalEndpoint extends EventEmitter {
           return; // success — re-armed; the supervisor re-triggers on the next terminal close
         } catch (e) {
           if (!this.stopped) this.emitRecoverable(e as Error);
+          // A warning listener may stop the endpoint. A backoff armed after that holds the process
+          // open for the whole delay, because the stop has already kicked the backoff it saw.
+          if (this.stopped) return;
           const delay = this.nextRetryDelayMs();
           await new Promise<void>((resolve) => {
             this.backoffResolve = resolve;
@@ -1987,6 +2163,14 @@ export class CotalEndpoint extends EventEmitter {
       /* best-effort graceful leave */
     }
     await this.settleDeliveryLeaseWatches();
+    // DM-only: the pull above is stopped, so no new copy reaches the handler. Let a running handler
+    // settle while the connection is still open, so its ack can reach the broker; close either way.
+    let dmOnlyUnsettled = false;
+    if (this.dmOnly && this.dmOnlyInFlight) {
+      const settleMs = this.dmOnly.settleTimeoutMs ?? 30_000;
+      dmOnlyUnsettled = await withDeadline(this.dmOnlyInFlight.then(() => false), settleMs, () => new Error("unsettled"))
+        .catch(() => true);
+    }
     await this.closeWithoutLibraryReconnect(this.nc);
     // #1356: stop() does its own teardown and never runs clearConnectionScoped, so clear here too —
     // AFTER the best-effort offline publish above, which would otherwise re-record a refusal on its
@@ -2000,6 +2184,8 @@ export class CotalEndpoint extends EventEmitter {
     await this.startPromise;
     if ([...this.ownedConnections].some((nc) => !nc.isClosed()))
       throw new Error("endpoint stop could not prove its connection closed; local consumer custody must be retained");
+    if (dmOnlyUnsettled)
+      throw new Error(`endpoint stop closed the connection but the DM-only handler did not settle within ${this.dmOnly?.settleTimeoutMs ?? 30_000}ms; its copy stays unacked and handler custody must be retained`);
   }
 
   // ---- messaging -----------------------------------------------------------
@@ -2329,8 +2515,15 @@ export class CotalEndpoint extends EventEmitter {
     handler: (subject: string, msg: CotalMessage | undefined) => void,
     opts?: { subject?: string },
   ): void {
+    const tap = { handler, subject: opts?.subject ?? spaceWildcard(this.space) };
+    this.taps.push(tap);
+    this.bindTap(tap);
+  }
+
+  /** Subscribe one {@link tap} on the current connection; with none, the next bind subscribes it. */
+  private bindTap(tap: (typeof this.taps)[number]): void {
     if (!this.nc) return;
-    const sub = this.nc.subscribe(opts?.subject ?? spaceWildcard(this.space));
+    const sub = this.nc.subscribe(tap.subject);
     this.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
@@ -2340,7 +2533,7 @@ export class CotalEndpoint extends EventEmitter {
         } catch {
           decoded = undefined;
         }
-        handler(m.subject, decoded);
+        tap.handler(m.subject, decoded);
       }
     })().catch((e) => this.emit("error", e as Error));
   }
@@ -2761,9 +2954,9 @@ export class CotalEndpoint extends EventEmitter {
     return { state: "stale", fresh: false, staleSince };
   }
 
-  /** Wait until the current presence watch has consumed its initial KV snapshot. An empty bucket
-   * emits no watch entry, so the timeout keeps a genuinely empty mesh bounded and is reported
-   * distinctly from snapshot completion. */
+  /** Wait until the current presence watch has consumed its initial KV snapshot. An observer that
+   * does not register completes on an empty bucket at once. A registering one completes when its
+   * own record arrives, and the timeout bounds that wait. */
   async waitForPresenceSnapshot(timeoutMs = 1_000): Promise<"snapshot" | "timeout"> {
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -2782,7 +2975,11 @@ export class CotalEndpoint extends EventEmitter {
     await this.publishPresence();
   }
 
-  async setStatus(status: PresenceStatus): Promise<void> {
+  /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
+   *  the new activity beside the old status. */
+  async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
+    if (activity !== undefined) this.activity = activity;
     if (status !== this.status) this.statusSince = Date.now();
     this.status = status;
     await this.publishPresence();
@@ -2836,6 +3033,18 @@ export class CotalEndpoint extends EventEmitter {
     await this.publishPresence();
   }
 
+  /** Overlay the session's working directory onto the card's display-only `meta.cwd`, then
+   *  republish presence. For connectors that learn the directory from the harness after launch (e.g.
+   *  Claude Code's `SessionStart` hook) rather than from their own process. Advisory display data,
+   *  never a routing or access input. The pathname is kept byte for byte: a directory name may hold
+   *  or end in whitespace, so it is never trimmed or normalized. An empty string names no directory
+   *  and leaves the card unchanged. */
+  async setCardCwd(cwd: string): Promise<void> {
+    if (!cwd || this.card.meta?.cwd === cwd) return;
+    this.card.meta = { ...(this.card.meta ?? {}), cwd };
+    await this.publishPresence();
+  }
+
   // ---- channel discovery ---------------------------------------------------
 
   /** This channel's registry config from the live local cache (undefined if unset). */
@@ -2853,6 +3062,27 @@ export class CotalEndpoint extends EventEmitter {
    * for the full retained window. Only meaningful when {@link channelReplay} is true. */
   channelReplayWindow(channel: string): string | undefined {
     return this.channelConfigs.get(channel)?.replayWindow ?? this.channelDefaults.replayWindow;
+  }
+
+  /** A channel's effective replay policy read straight from the registry bucket, for a caller that
+   *  reads it right after start, before any watch cache has caught up, or that watches nothing. A
+   *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy.
+   *  `registered` says whether the channel has its own registry entry. */
+  async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null; registered: boolean }> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.space, { create: false }));
+    let cfg: ChannelConfig | undefined;
+    let defaults: ChannelDefaults | undefined;
+    try {
+      [cfg, defaults] = await Promise.all([
+        isConcreteChannel(channel) ? readChannelConfig(kv, channel) : Promise.resolve(undefined),
+        readChannelDefaults(kv),
+      ]);
+    } catch (e) {
+      // `open` binds lazily, so a space with no registry bucket surfaces on the first read.
+      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
+    }
+    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null, registered: cfg !== undefined };
   }
 
   /** Effective delivery class for a channel (per-channel override ?? space default ?? "durable"),
@@ -2897,12 +3127,11 @@ export class CotalEndpoint extends EventEmitter {
       // The confirm boundary (flush) failed — the connection drained/closed mid-join, so we have NO
       // confirmation the subscribe was accepted. Fail closed: undo the half-open join rather than
       // returning as if it were confirmed (a reconnect re-confirms from this.channels, which we never
-      // pushed to). unsubscribeChat clears chatSubs + confirmingChatSubs.
+      // pushed to). unsubscribeChat clears chatSubs.
       this.unsubscribeChat(channel);
       this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     if (this.chatSubDenied.has(channel)) {
       this.unsubscribeChat(channel);
       this.joinSeq.delete(channel);
@@ -2965,6 +3194,42 @@ export class CotalEndpoint extends EventEmitter {
     if (i >= 0) this.channels.splice(i, 1);
     this.joinSeq.delete(channel);
     return { left: true };
+  }
+
+  /**
+   * What the chat stream still holds and what removes the rest. `perSender` is the stream's
+   * per-subject cap: a subject is one sender on one channel, and past the cap that sender's oldest
+   * message on the channel is discarded. `maxAgeMs` is the stream's age limit. Each is `null` when
+   * the stream sets none. `senders` counts each sender's retained messages per channel, so a sender
+   * at the cap marks a channel whose retained history has lost that sender's older messages while
+   * other senders' messages from the same time remain. `stream` is false when the chat stream does
+   * not exist, which holds nothing. `lastSeq` is the stream's newest sequence, 0 when it has none.
+   */
+  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[]; stream: boolean; lastSeq: number }> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const mgr = await jetstreamManager(this.nc);
+    let info;
+    try {
+      info = await mgr.streams.info(chatStream(this.space), { subjects_filter: ">" });
+    } catch (e) {
+      // As in listChannels: an absent CHAT stream holds nothing yet; any other failure stays loud.
+      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
+      return { perSender: null, maxAgeMs: null, senders: [], stream: false, lastSeq: 0 };
+    }
+    const senders: { channel: string; sender: string; messages: number }[] = [];
+    for (const [subject, messages] of Object.entries(info.state.subjects ?? {})) {
+      const p = parseSubject(subject);
+      if (p?.kind === "chat" && isPrincipalOwnerToken(p.owner)) senders.push({ channel: p.rest, sender: p.sender, messages });
+    }
+    const cap = info.config.max_msgs_per_subject;
+    const age = info.config.max_age;
+    return {
+      perSender: typeof cap === "number" && cap > 0 ? cap : null,
+      maxAgeMs: typeof age === "number" && age > 0 ? Math.round(age / 1_000_000) : null,
+      senders: senders.sort((a, b) => a.channel.localeCompare(b.channel) || a.sender.localeCompare(b.sender)),
+      stream: true,
+      lastSeq: info.state.last_seq,
+    };
   }
 
   /** One coherent channel model for dashboards: every channel that has messages OR a registry
@@ -3193,16 +3458,16 @@ export class CotalEndpoint extends EventEmitter {
     watch.rejectStop = undefined;
   }
 
-  /** Record the consumer behind one of this connection's own KV watches, membership scans or history
-   *  reads, and return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
+  /** Record the consumer behind one of this connection's own KV watches or membership scans, and
+   *  return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
    *  rebuilding it after a stall or a sequence gap, deletes the predecessor itself with no hook before
    *  the send, so a profile without the delete row (#691) has that delete refused. A stalled link can
    *  time that delete out before its refusal arrives, and nats.js then hands the refusal to no request,
    *  so {@link trackRequestDenials} cannot own it and the consumer's name has to. A watch's prefix
    *  stays recorded for the connection because a retired watch's last rebuild can be refused after
-   *  the watch has stopped; {@link readMembership} and {@link drainWindow} retire theirs after their own
-   *  last delete, which goes out once nats.js has stopped the consumer and so is answered after every
-   *  predecessor delete. */
+   *  the watch has stopped; {@link readMembership} retires its scan's after its own last delete,
+   *  which goes out once nats.js has stopped the consumer and so is answered after every predecessor
+   *  delete. */
   private recordOwnWatchConsumer({ stream_name, name }: ConsumerInfo): string {
     const prefix = `$JS.API.CONSUMER.DELETE.${stream_name}.${name.slice(0, name.lastIndexOf("_") + 1)}`;
     this.ownWatchDeletePrefixes.add(prefix);
@@ -3215,9 +3480,9 @@ export class CotalEndpoint extends EventEmitter {
     return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
   }
 
-  /** Delete one of this connection's own ephemeral consumers, a history reader's or a KV watch's. A
-   *  refused delete is the designed outcome for a profile without a stream-wide CONSUMER.DELETE
-   *  (#691): the broker reaps the consumer at its inactive threshold. */
+  /** Delete one of this connection's own KV-watch consumers. A refused delete is the designed
+   *  outcome for a profile without a stream-wide CONSUMER.DELETE (#691): the broker reaps the
+   *  consumer at its inactive threshold. */
   private async deleteOwnConsumer(consumer: Consumer | PushConsumer): Promise<void> {
     try { await consumer.delete(); }
     catch (e) {
@@ -3306,6 +3571,89 @@ export class CotalEndpoint extends EventEmitter {
     )).map((r) => r.msg);
   }
 
+  /** Read one concrete channel using this lifecycle's single-filter CHAT grant (SPEC §8/§9).
+   *  No observer authority, presence or delivery ACL mirror is required. Returns the newest page,
+   *  oldest-first, including this caller's own sends. `complete` says no older valid row remains.
+   *  Reads have a ten-second budget, shortened by `signal`. Concurrent connections sharing this
+   *  lifecycle wait for native consumer inactivity cleanup; they never delete another reader. */
+  async channelHistoryPage(
+    channel: string,
+    opts?: { limit?: number; signal?: AbortSignal },
+  ): Promise<HistoryPage> {
+    assertValidChannel(channel);
+    if (!isConcreteChannel(channel)) throw new Error("channelHistoryPage requires one concrete channel");
+    const limit = opts?.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+      throw new Error("channelHistoryPage limit must be a whole number from 1 to 1000");
+    if (!this.nc || !this.js) throw new Error("endpoint not started");
+    const jsm = this.jsm ??= await jetstreamManager(this.nc);
+    const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
+    signal.throwIfAborted();
+    const stream = chatStream(this.space);
+    const name = chatHistDurable(this.owner, this.actor, this.requireLifecycleUid("channelHistoryPage"));
+    const subject = chatSubject(this.space, "*", "*", channel);
+    const marker = randomUUID();
+    let created: ConsumerInfo;
+    for (;;) {
+      signal.throwIfAborted();
+      try {
+        // The pinned client's add is CREATE-only. A unique description makes even an otherwise
+        // identical occupied config conflict. Never bind/update it or pre-delete by shared name.
+        created = await jsm.consumers.add(stream, {
+          name, description: marker, filter_subject: subject,
+          ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.All,
+          mem_storage: true, inactive_threshold: nanos(250),
+        });
+        break;
+      } catch (e) {
+        if (!(e instanceof JetStreamApiError) || e.code !== 10148) throw e; // consumer already exists
+        await delay(50, undefined, { signal });
+      }
+    }
+    signal.throwIfAborted();
+    const owns = (info: ConsumerInfo) => info.created === created.created &&
+      info.config.description === marker && info.config.filter_subject === subject;
+    if (!owns(created)) throw new Error("channelHistoryPage: consumer ownership was not established");
+    const consumer = await this.js.consumers.get(stream, name);
+    const pending = created.num_pending;
+    const out: CotalMessage[] = [];
+    let delivered = 0;
+    if (pending > 0) {
+      const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });
+      const stop = () => iter.stop(abortReason(signal));
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        signal.throwIfAborted();
+        for await (const m of iter) {
+          signal.throwIfAborted();
+          if (!subjectMatches(subject, m.subject))
+            throw new Error("channelHistoryPage: consumer delivered another channel; ownership was lost");
+          delivered++;
+          const msg = historyMessageFromDelivery(m);
+          if (msg) {
+            out.push(msg);
+            if (out.length > limit + 1) out.shift();
+          }
+          if (delivered >= pending) break;
+        }
+      } finally {
+        signal.removeEventListener("abort", stop);
+        iter.stop();
+      }
+      signal.throwIfAborted();
+      if (delivered !== pending)
+        throw new Error(`channelHistoryPage: read ${delivered} of ${pending} messages before the window was cut short`);
+    }
+    signal.throwIfAborted();
+    // A legacy join/recall reader can delete/recreate this fixed name. A final ownership check
+    // makes that interference loud. It is detection, not a fence against those legacy readers.
+    if (!owns(await consumer.info())) throw new Error("channelHistoryPage: consumer ownership was lost");
+    signal.throwIfAborted();
+    // No DELETE, even after abort: a delayed owner could otherwise delete its successor between
+    // INFO and DELETE. Native inactivity reaps this transient reader without that TOCTOU race.
+    return { items: out.slice(-limit), complete: out.length <= limit };
+  }
+
   /**
    * The newest `limit` chat messages across MANY channels at once, oldest-first within the page,
    * each tagged with the channel the BROKER delivered it on.
@@ -3345,7 +3693,7 @@ export class CotalEndpoint extends EventEmitter {
   async multiChannelHistory(
     channels: readonly string[],
     opts?: { limit?: number; signal?: AbortSignal; batch?: number },
-  ): Promise<{ channel: string; msg: HistoryMessage }[]> {
+  ): Promise<{ channel: string; seq: number; msg: HistoryMessage }[]> {
     const subjects = [...new Set(channels.map((channel) => {
       if (!isConcreteChannel(channel))
         throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - one consumer's filter subjects may not overlap, so name the concrete channels`);
@@ -3402,20 +3750,20 @@ export class CotalEndpoint extends EventEmitter {
     // payload's `ts` here instead would change which messages the page holds, which is the
     // selection question this pull request already had to answer once.
     const rows = pages.flat().sort((a, b) => a.seq - b.seq).slice(-limit);
-    return rows.map(({ subject, msg }) => {
+    return rows.map(({ seq, subject, msg }) => {
       const p = parseSubject(subject);
       // The filter set is built from chat subjects, so this cannot fire against a healthy broker.
       // It is here because the alternative to raising is tagging a message with a guess.
       if (p?.kind !== "chat")
         throw new Error(`multiChannelHistory: the broker delivered ${subject}, which is not a chat subject on this space`);
-      return { channel: p.rest, msg };
+      return { channel: p.rest, seq, msg };
     });
   }
 
-  /** Read a channel's recent history THROUGH THE DELIVERY DAEMON instead of through a consumer this
-   *  connection creates itself — the mediated read of SPEC's "Mediated reads (normative)" rule (no raw
-   *  consumer / `DIRECT.GET` / `STREAM.MSG.GET` for an untrusted holder; the trusted reader serves it
-   *  onto the caller's own confined rail). `items` is shape-identical to what {@link channelHistory}
+  /** Read a channel's recent history through the delivery daemon, using a provisioned ACL mirror.
+   *  SPEC's ban on raw control-surface stream reads does not remove the single-channel CHAT grant.
+   *  Human callers without an ACL mirror use {@link channelHistoryPage}; this method adds fresh
+   *  mirror checks for provisioned readers. `items` is shape-identical to what {@link channelHistory}
    *  returns — the same `CotalMessage[]`, the same newest-N selection, the same oldest-first order
    *  within the page — so a caller migrates by reading `.items` and nothing else changes. The return
    *  is WRAPPED rather than bare precisely because of `complete`: a bare array cannot say whether
@@ -3523,8 +3871,10 @@ export class CotalEndpoint extends EventEmitter {
     if (!Number.isSafeInteger(limit))
       throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);
     if (limit <= 0) return [];
-    const js = jetstream(this.nc);
+    const nc = this.nc;
+    let reader: HistoryReader | undefined;
     try {
+      reader = await this.acquireHistoryReader(nc, this.jsm ?? (this.jsm = await jetstreamManager(nc)), stream, signal);
       // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
       // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
       // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
@@ -3535,7 +3885,7 @@ export class CotalEndpoint extends EventEmitter {
       // Deliberately NOT `getMessage({ last_by_subj })`, which would be the obvious way to ask: it
       // needs `$JS.API.STREAM.MSG.GET`, which read credentials do not hold. That grant hole already
       // shipped once from this function and turned every non-admin history read into an empty list.
-      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subjects, signal);
+      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(reader, subjects, signal);
       if (ceiling < 1) return [];
 
       // Widen from the exact ceiling until a window holds a full page, or until the window IS the
@@ -3577,10 +3927,10 @@ export class CotalEndpoint extends EventEmitter {
       for (;;) {
         signal?.throwIfAborted();
         const start = Math.max(floor, ceiling - span + 1);
-        const page = await this.drainWindow(js, stream, subjects, start, ceiling, limit, signal);
+        const page = await this.drainWindow(reader, subjects, start, ceiling, limit, signal);
         if (page.length >= limit) return page.slice(-limit);
         if (!floorKnown) {
-          floor = Math.max(1, await this.firstMatchingSeq(js, stream, subjects, signal));
+          floor = Math.max(1, await this.firstMatchingSeq(reader, subjects, signal));
           floorKnown = true;
         }
         if (start <= floor) return page.slice(-limit);
@@ -3605,20 +3955,174 @@ export class CotalEndpoint extends EventEmitter {
       if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
       if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
       throw e;
+    } finally {
+      if (reader) this.releaseHistoryReader(reader);
     }
+  }
+
+  /** This connection's history-reader id, the key of its credential's reader deletes
+   *  ({@link historyReaderConsumer}). A static credential's is its connId, the nkey it signs with.
+   *  Under the auth callout the connId is the inbox nonce this client chose, so the callout keys the
+   *  deletes on {@link calloutReaderId} instead: the server's id and the client id it assigned this
+   *  connection, which the client reads from the server's INFO and does not choose. */
+  private historyReaderId(nc: NatsConnection): string {
+    if (!this.userMode) return this.connId;
+    const info = nc.info;
+    if (!info) throw new Error("history: the server has not sent its INFO, so this connection has no history reader id yet");
+    return calloutReaderId(info.server_id, info.client_id);
+  }
+
+  /** Take one of this connection's history-reader names on `stream` ({@link historyReaderConsumer})
+   *  for one read. The read holds the name for its whole walk and creates and deletes a consumer
+   *  under it at each step, so this connection keeps at most {@link HISTORY_READERS} reader consumers
+   *  on a stream (#4123). A read past that many waits for a name, and `signal` ends the wait. A
+   *  reconnect under the auth callout changes the reader id, and reads from then on take the new
+   *  id's names. */
+  private async acquireHistoryReader(
+    nc: NatsConnection,
+    jsm: JetStreamManager,
+    stream: string,
+    signal?: AbortSignal,
+  ): Promise<HistoryReader> {
+    for (;;) {
+      signal?.throwIfAborted();
+      const readerId = this.historyReaderId(nc);
+      let pool = this.historyReaderSlots.get(stream);
+      if (pool?.readerId !== readerId) {
+        pool = { readerId, free: Array.from({ length: HISTORY_READERS }, (_, i) => HISTORY_READERS - 1 - i), held: 0, waiting: [], refusedUntil: 0 };
+        this.historyReaderSlots.set(stream, pool);
+      }
+      // A read here would leave one more reader it may not delete, so it fails before creating one.
+      if (pool.refusedUntil > Date.now()) throw this.readerDeleteRefused(stream);
+      const slot = pool.free.pop();
+      if (slot !== undefined) {
+        pool.held++;
+        return { nc, js: jetstream(nc), jsm, stream, pool, slot, name: historyReaderConsumer(readerId, slot), held: true, left: false };
+      }
+      // No read here holds a name, so none will come back from one: every name is set aside (see
+      // openHistoryReader and closeHistoryReader). Waiting would hang until those expire.
+      if (pool.held === 0)
+        throw new Error(`history: every history reader name this connection has on ${stream} is set aside, held by a consumer it did not create (another process using the same credential, or one that stopped mid-read) or by a reader it could not confirm deleted; they expire ${HISTORY_READER_INACTIVE_MS / 60_000} minutes after their last use`);
+      const waitOn = pool;
+      await new Promise<void>((resolve, reject) => {
+        const wake = () => { signal?.removeEventListener("abort", stop); resolve(); };
+        const stop = () => { waitOn.waiting.splice(waitOn.waiting.indexOf(wake), 1); reject(abortReason(signal)); };
+        waitOn.waiting.push(wake);
+        signal?.addEventListener("abort", stop, { once: true });
+      });
+    }
+  }
+
+  /** Give a read's history-reader name back and wake one read waiting for a name. A name whose
+   *  delete failed is set aside instead. */
+  private releaseHistoryReader(reader: HistoryReader): void {
+    if (!reader.held) return;
+    reader.held = false;
+    const pool = reader.pool;
+    pool.held--;
+    if (!reader.left) { pool.free.push(reader.slot); pool.waiting.shift()?.(); return; }
+    this.setAsideHistoryReader(pool, reader.slot);
+    // Every waiter checks again, so one that no running read can now serve fails instead of hanging.
+    if (pool.held === 0) for (const wake of pool.waiting.splice(0)) wake();
+  }
+
+  /** Keep `slot` out of use until a consumer under it would have expired, then free it. */
+  private setAsideHistoryReader(pool: HistoryReaderSlots, slot: number): void {
+    setTimeout(() => { pool.free.push(slot); pool.waiting.shift()?.(); }, HISTORY_READER_INACTIVE_MS).unref();
+  }
+
+  /** Create the reader consumer for one step of a read, under the read's name. It is a plain pull
+   *  consumer: an nats.js ordered consumer renames itself on every rebuild, and the observer and admin
+   *  credentials may delete only these exact names.
+   *
+   *  Every create carries a fresh description. NATS answers a create whose config equals the existing
+   *  consumer's with that consumer, delivery state and all (measured on nats-server 2.15), and a read
+   *  repeats the same config on the same name. Without the description a reader left under the name
+   *  would come back as if new: a `DeliverPolicy.Last` reader that already delivered its message
+   *  reports nothing pending, which reads as an empty channel. With it, a create on a name in use is
+   *  refused, and a consumer that does not carry this step's description is never used.
+   *
+   *  A consumer already under the name is never deleted, whoever left it: another holder of this
+   *  credential, a process that stopped mid-read, or this endpoint when a delete's answer was lost and
+   *  the name was taken again since. The read moves to a free name, and the taken one stays out of use
+   *  until such a consumer would have expired. */
+  private async openHistoryReader(reader: HistoryReader, config: Partial<ConsumerConfig>): Promise<Consumer> {
+    const pool = reader.pool;
+    for (;;) {
+      // A reconnect under the auth callout moved this connection to new reader names, and its
+      // credential may no longer delete this one. Creating under it would leave the reader behind.
+      if (this.historyReaderId(reader.nc) !== pool.readerId)
+        throw new Error(`history: the connection was re-established during the read on ${reader.stream}, so its history reader names changed; the read is not served`);
+      const description = `cotal history read ${randomUUID()}`;
+      let info: ConsumerInfo | undefined;
+      try {
+        info = await reader.jsm.consumers.add(reader.stream, {
+          ...config,
+          name: reader.name,
+          description,
+          ack_policy: AckPolicy.None,
+          max_deliver: 1,
+          mem_storage: true,
+          num_replicas: 1,
+          inactive_threshold: nanos(HISTORY_READER_INACTIVE_MS),
+        });
+      } catch (e) {
+        if (!isConsumerAlreadyExists(e)) throw e;
+      }
+      if (info?.config.description === description) return reader.js.consumers.getConsumerFromInfo(info);
+      this.setAsideHistoryReader(pool, reader.slot);
+      const next = pool.free.pop();
+      if (next === undefined) {
+        // The read ends holding no name. Every waiter checks again, so one that no running read can
+        // now serve fails instead of hanging.
+        reader.held = false;
+        pool.held--;
+        for (const wake of pool.waiting.splice(0)) wake();
+        throw new Error(`history: reader ${reader.name} on ${reader.stream} is held by a consumer this read did not create, and no other reader name is free`);
+      }
+      reader.slot = next;
+      reader.name = historyReaderConsumer(pool.readerId, next);
+    }
+  }
+
+  /** Delete the read's reader consumer; already gone is the same outcome. A failed delete may still
+   *  have run with its answer lost, and the name may be taken again before this endpoint could tell,
+   *  so the name is set aside when the read gives it back rather than deleted again later. A refused
+   *  delete means the credential was minted before the observer and admin profiles held their reader
+   *  deletes. Each read would then leave a reader for the inactive threshold, which is how a polling
+   *  dashboard filled the stream's consumer limit (#4123), so the read fails and says to remint
+   *  rather than leak quietly, and reads on the stream fail at once until that reader expires. */
+  private async closeHistoryReader(reader: HistoryReader): Promise<void> {
+    try { await reader.jsm.consumers.delete(reader.stream, reader.name); }
+    catch (e) {
+      if (isConsumerNotFound(e)) return;
+      reader.left = true;
+      // No `cause`: a permission-shaped cause would let streamHistory read this as the admin-only
+      // DM denial and return an empty page.
+      if (isPublishPermissionDenied(e)) {
+        if (this.historyReaderId(reader.nc) !== reader.pool.readerId)
+          throw new Error(`history: the connection was re-established during the read on ${reader.stream}, so it may no longer delete its reader ${reader.name}, which expires on its own; the read is not served`);
+        reader.pool.refusedUntil = Date.now() + HISTORY_READER_INACTIVE_MS;
+        throw this.readerDeleteRefused(reader.stream);
+      }
+      throw e;
+    }
+  }
+
+  private readerDeleteRefused(stream: string): Error {
+    return new Error(`history: this credential may not delete its own history readers on ${stream}; it predates the observer and admin reader-delete grant, so remint it`);
   }
 
   /** The oldest stream sequence matching `subject`, or 0 when the subject has no messages.
    *  Mirror of {@link lastMatchingSeq}: same CREATE/INFO/NEXT/DELETE surface, `DeliverPolicy.All`
    *  instead of `Last`, first delivered seq instead of last. Read credentials already hold this. */
   private async firstMatchingSeq(
-    js: ReturnType<typeof jetstream>,
-    stream: string,
+    reader: HistoryReader,
     subjects: string[],
     signal?: AbortSignal,
   ): Promise<number> {
     signal?.throwIfAborted();
-    const consumer = await js.consumers.get(stream, {
+    const consumer = await this.openHistoryReader(reader, {
       filter_subjects: subjects,
       deliver_policy: DeliverPolicy.All,
     });
@@ -3637,24 +4141,23 @@ export class CotalEndpoint extends EventEmitter {
       }
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteOwnConsumer(consumer);
+      await this.closeHistoryReader(reader);
     }
   }
 
   /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
    *
-   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
+   *  One reader consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
    *  (available from the create, before anything is delivered) is 0 for an empty subject, and
    *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
    *  already uses, so no broker authority is added. */
   private async lastMatchingSeq(
-    js: ReturnType<typeof jetstream>,
-    stream: string,
+    reader: HistoryReader,
     subjects: string[],
     signal?: AbortSignal,
   ): Promise<number> {
     signal?.throwIfAborted();
-    const consumer = await js.consumers.get(stream, {
+    const consumer = await this.openHistoryReader(reader, {
       filter_subjects: subjects,
       deliver_policy: DeliverPolicy.Last,
     });
@@ -3679,17 +4182,16 @@ export class CotalEndpoint extends EventEmitter {
       // exists to stop.
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteOwnConsumer(consumer);
+      await this.closeHistoryReader(reader);
     }
   }
 
   /** Drain every message matching `subject` with sequence in `[start, ceiling]`, oldest-first.
-   *  One ephemeral ordered consumer, one batched pull — `AckPolicy.None`, so no per-message ack
+   *  One reader consumer, one batched pull — `AckPolicy.None`, so no per-message ack
    *  round trip. Fetches exactly the pending count so it returns as soon as the window is
    *  delivered rather than blocking for the pull's full expiry. */
   private async drainWindow(
-    js: ReturnType<typeof jetstream>,
-    stream: string,
+    reader: HistoryReader,
     subjects: string[],
     start: number,
     ceiling: number,
@@ -3698,9 +4200,11 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     signal?.throwIfAborted();
     const out: { seq: number; subject: string; msg: HistoryMessage }[] = [];
-    const consumer = await js.consumers.get(stream, { filter_subjects: subjects, opt_start_seq: start });
-    // A delivery-sequence gap makes nats.js rebuild this consumer and delete the predecessor itself.
-    const readerPrefix = this.recordOwnWatchConsumer(await consumer.info(true));
+    const consumer = await this.openHistoryReader(reader, {
+      filter_subjects: subjects,
+      deliver_policy: DeliverPolicy.StartSequence,
+      opt_start_seq: start,
+    });
     try {
       // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
       // explicit uncached `info()` this used to call was a round trip for data we already had.
@@ -3725,6 +4229,10 @@ export class CotalEndpoint extends EventEmitter {
         signal?.throwIfAborted();
         for await (const m of iter) {
           delivered++;
+          // A plain consumer does not rebuild itself the way an ordered one did, so a gap in its
+          // delivery sequence is a message this page would silently lack.
+          if (m.info.deliverySequence !== delivered)
+            throw new Error(`history: delivery ${m.info.deliverySequence} arrived where ${delivered} was due on ${subjectLabel(subjects)} - the window has a gap, so the page is not served`);
           if (m.seq >= ceiling) { // reached the page's upper bound
             if (m.seq === ceiling) {
               const msg = historyMessageFromDelivery(m);
@@ -3748,16 +4256,12 @@ export class CotalEndpoint extends EventEmitter {
         throw new Error(`history: read ${delivered} of ${pending} messages on ${subjectLabel(subjects)} before the stream ended early - the window was cut short, not empty`);
       return out;
     } finally {
-      // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute
-      // inactive threshold, so leaving them behind is not free: the widening search below can make
-      // up to eight per call, and a reload repeats every call the page makes. The dashboard used to
-      // make one per channel; since #1210 its activity feed makes one for all of chat and one for
-      // DMs, and the single-channel routes still make one each.
-      // Left alone that accumulates consumers on the broker until the thresholds expire, and the
-      // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
-      // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
-      // that threshold; only a profile holding the delete row reclaims them here.
-      await this.deleteOwnConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
+      // DELETE THE READER. Left alone it would stay for its inactive threshold, and the widening
+      // search can run several steps per call while a polling dashboard repeats every call on each
+      // poll. The observer and admin profiles used to hold no delete at all (#691), so a dashboard
+      // polling every ten seconds filled the stream's consumer limit and every later read failed
+      // (#4123). Each reader now goes when its step ends.
+      await this.closeHistoryReader(reader);
     }
   }
 
@@ -3769,6 +4273,7 @@ export class CotalEndpoint extends EventEmitter {
    * failing call — so without this an over-tight ACL silently drops the agent's
    * traffic and it just looks "absent". A denied request is the exception: nats.js also
    * rejects that request with the denial, so its caller owns it (see {@link trackRequestDenials}).
+   * So is a refused channel subscription, whose callback owns it (see {@link subscribeChat}).
    * We annotate permission denials explicitly so a denial is never mistaken for absence
    * (which already has a benign cause: MCP reconnect).
    */
@@ -3798,11 +4303,7 @@ export class CotalEndpoint extends EventEmitter {
           continue;
         }
         if (s.type !== "error") continue;
-        // Suppress the EXPECTED permission violation from a manager-free join we're confirming: an
-        // out-of-ACL `nc.subscribe` is refused async on its chat subject, which joinChannel catches
-        // and turns into a clean throw — it is not a connection error to surface.
-        if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
-          continue;
+        if (s.error instanceof PermissionViolationError && this.chatSubRefusals.has(s.error)) continue;
         if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
         // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
         // history reads, whose refusal can arrive after that delete timed out.
@@ -4107,8 +4608,8 @@ export class CotalEndpoint extends EventEmitter {
     return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
   }
 
-  /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
-   *  effort, a crash just lets the bucket TTL expire it).
+  /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (a
+   *  crash just lets the bucket TTL expire it).
    *
    *  THE REVISION IS WHAT MAKES THIS A RELEASE RATHER THAN A DELETE. An unconditional delete removes
    *  whatever row is there, and by shutdown time the row is not necessarily still ours: the exit
@@ -4117,6 +4618,10 @@ export class CotalEndpoint extends EventEmitter {
    *  no holder at all. Passing the revision this endpoint last owned makes the delete a compare-and-
    *  swap (`previousSeq` becomes JetStream's `ExpectedLastSubjectSequence`), so a row that has moved
    *  on is left alone.
+   *
+   *  A RELEASE THAT DID NOT COMMIT REJECTS. The broker's CAS refusal and any broker failure reach the
+   *  caller, because only the caller knows whether that matters: a shutdown that must finish anyway
+   *  catches it, and a close that reports whether a successor can start learns the outcome here.
    *
    *  THE ARGUMENT IS REQUIRED, AND EXPLICITLY NULLABLE RATHER THAN OPTIONAL. `undefined` means "this
    *  process no longer holds a revision it can argue for", which is the takeover paths' honest
@@ -4128,12 +4633,7 @@ export class CotalEndpoint extends EventEmitter {
    *  and the next acquire was refused. A caller must now say which it means. */
   async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
     if (revision === undefined) return;
-    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }
-    catch {
-      // Intentionally best-effort for EVERY failure: the lease TTL is the crash-safe release authority,
-      // and clean shutdown must continue even when the broker is already gone or draining. A refused
-      // CAS lands here too, which is the correct outcome, someone else owns the row.
-    }
+    await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision });
   }
 
   /** Read a shard's delivery lease (the daemon-availability signal), or `undefined` if none is live.
@@ -4334,8 +4834,8 @@ export class CotalEndpoint extends EventEmitter {
     try {
       await (await this.managerLeaseRegistry()).delete(MANAGER_RENEWAL_LEASE_KEY, { previousSeq: held });
     } catch {
-      // Best-effort, like releaseManagerLease: a moved revision means it is not ours, and a broker
-      // failure is recovered by the bucket TTL. Shutdown must not claim deletion.
+      // Best-effort: a moved revision means it is not ours, and a broker failure is recovered by the
+      // bucket TTL. Shutdown must not claim deletion.
     }
   }
 
@@ -4375,24 +4875,23 @@ export class CotalEndpoint extends EventEmitter {
    *  `undefined` means the key IS NOT THERE — a definite absence, established by a completed read.
    *  A read that could not be completed THROWS instead, so a caller can tell "it is gone" from "I could
    *  not find out". That distinction is the whole point of the method: a renew that got no answer has
-   *  proved nothing, and only a definite answer here may be acted on. */
-  async readOwnManagerLease(instanceId: string): Promise<{ info: ManagerLeaseInfo; revision: number } | undefined> {
+   *  proved nothing, and only a definite answer here may be acted on.
+   *
+   *  `created` is the broker's write time of the row (epoch ms), which is what the bucket TTL counts
+   *  from. */
+  async readOwnManagerLease(instanceId: string): Promise<{ info: ManagerLeaseInfo; revision: number; created: number } | undefined> {
     const e = await (await this.managerLeaseRegistry()).get(managerLeaseKey(instanceId));
     if (!e || e.operation !== "PUT") return undefined;
-    return { info: JSON.parse(new TextDecoder().decode(e.value)) as ManagerLeaseInfo, revision: e.revision };
+    return { info: JSON.parse(new TextDecoder().decode(e.value)) as ManagerLeaseInfo, revision: e.revision, created: e.created.getTime() };
   }
   /** Release THIS instance's key on clean shutdown so a same-id restart re-acquires immediately. CAS-guarded
-   *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, the conditional delete
-   *  no-ops. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
+   *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, and the conditional
+   *  delete is refused and rejects, like any broker failure; a shutdown that must finish anyway catches
+   *  it. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
   async releaseManagerLease(instanceId: string, revision?: number): Promise<void> {
-    try {
-      const kv = await this.managerLeaseRegistry();
-      if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
-      else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
-    } catch {
-      // Intentionally best-effort for EVERY failure: a revision mismatch means the lease is no longer
-      // ours, while a broker failure is recovered by the bucket TTL. Shutdown must not claim deletion.
-    }
+    const kv = await this.managerLeaseRegistry();
+    if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
+    else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
   }
   /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
    *  presence/existence check for the CLI's `spawn -f` reuse and `waitLeaseGone`, which only need "is any
@@ -5183,6 +5682,10 @@ export class CotalEndpoint extends EventEmitter {
    *  feed's rw connection, and reply with proof (identities + the adopted JWT windows) — or a
    *  structured failure (e.g. the file was never re-signed), never a silent partial. */
   private async handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> {
+    // A reload's resident swap reconnects the connection every reply here rides. A caller's next
+    // request, such as a manager's eviction right after its reload, is answered once that
+    // connection is back, not while it is down.
+    await this.residentSwap;
     // FENCE: same reason as the runtime rail above.
     if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     if (req.op === "reloadCreds") {
@@ -5342,13 +5845,22 @@ export class CotalEndpoint extends EventEmitter {
     return { ok: false, error: `op "${req.op}" not supported on the delivery admin service` };
   }
 
+  /** Create one of the daemon's Plane-3 durables. A named create is idempotent for the same config,
+   *  and a denial is never taken for existence. The one conflict accepted is this durable as a full
+   *  restore recreated it, starting after its recorded ACK floor ({@link isRestoredConsumer}); every
+   *  other failure propagates. */
+  private async addPlane3Durable(stream: string, config: Partial<ConsumerConfig>): Promise<void> {
+    try { await this.jsm!.consumers.add(stream, config); }
+    catch (e) {
+      if (!isConsumerAlreadyExists(e) || !isRestoredConsumer(this.space, stream, await this.jsm!.consumers.info(stream, config.durable_name!), config)) throw e;
+    }
+  }
+
   /** Fan-out loop: bind the privileged `fanout` durable on CHAT and route each message (routing only —
    *  the trusted reader is the auth gate). */
   private async runFanout(): Promise<void> {
     if (!this.js || !this.jsm) return;
-    // Named consumer creation is idempotent for the same config. A denial must not be mistaken for
-    // "already exists"; let the broker response decide and propagate every failure.
-    await this.jsm.consumers.add(chatStream(this.space), fanoutDurableConfig(this.space, { ackWaitMs: this.ackWaitMs }));
+    await this.addPlane3Durable(chatStream(this.space), fanoutDurableConfig(this.space, { ackWaitMs: this.ackWaitMs }));
     const consumer = await this.js.consumers.get(chatStream(this.space), FANOUT_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
@@ -5424,8 +5936,7 @@ export class CotalEndpoint extends EventEmitter {
    *  + transfer each entry. */
   private async runReader(): Promise<void> {
     if (!this.js || !this.jsm) return;
-    // Same fail-loud rule as fan-out: idempotent success is success, denial is not existence.
-    await this.jsm.consumers.add(inboxStream(this.space), inboxReaderConfig(this.space, { ackWaitMs: this.ackWaitMs }));
+    await this.addPlane3Durable(inboxStream(this.space), inboxReaderConfig(this.space, { ackWaitMs: this.ackWaitMs }));
     const consumer = await this.js.consumers.get(inboxStream(this.space), INBOX_READER_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
@@ -5780,7 +6291,6 @@ export class CotalEndpoint extends EventEmitter {
       const armed = this.firstConnect ? await this.armJoin(this.channels) : undefined;
       for (const ch of this.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      for (const ch of this.channels) this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", ch));
       if (armed) await this.backfillArmed(armed, this.backfillFloor);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
@@ -5815,35 +6325,9 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
-        let msg: CotalMessage;
-        try {
-          msg = m.json<CotalMessage>();
-        } catch (e) {
-          m.term(); // undecodable — never redeliver
-          this.emit("error", e as Error);
-          continue;
-        }
-        // Authenticity guard (fail closed): the sender is encoded in the subject, which the
-        // server policed who could publish. The payload `from` is advisory — it must match,
-        // and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
-        // Reject (term — a spoof is permanently invalid, never redeliver) BEFORE any handler.
-        if (!isRecord(msg) || !isUsableMessageId(msg.id)) {
-          m.term(); // malformed envelope (SPEC sec 5): absent/non-string id — permanently invalid
-          this.emit("error", new Error(`dropped message on ${m.subject}: absent or non-string id`));
-          continue;
-        }
-        const parsed = parseSubject(m.subject);
-        if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
-          m.term();
-          this.emit(
-            "error",
-            new Error(
-              `dropped message on ${m.subject}: payload from ${msg.from?.id ?? "(none)"} ` +
-                `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
-            ),
-          );
-          continue;
-        }
+        const authed = this.authenticateStreamMsg(m);
+        if (!authed) continue;
+        const { msg, parsed } = authed;
         // No-replay + dedup (chat only): drop a message at/below this channel's join watermark
         // — pre-join history the New tail still carries for a *lagging* joiner (cursor behind the
         // frontier), and the overlap a replay backfill already delivered. Must ack, or JetStream
@@ -5871,6 +6355,99 @@ export class CotalEndpoint extends EventEmitter {
     });
   }
 
+  /** Decode one stream copy and apply the authenticity guard (fail closed): the sender is encoded in
+   *  the subject, which the server policed who could publish. The payload `from` is advisory — it
+   *  must match, and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
+   *  A rejected copy is `term()`ed (permanently invalid, never redelivered) and reported, and
+   *  `undefined` returns, so no handler ever sees it. */
+  private authenticateStreamMsg(m: JsMsg): { msg: CotalMessage; parsed: ParsedSubject } | undefined {
+    let msg: CotalMessage;
+    try {
+      msg = m.json<CotalMessage>();
+    } catch (e) {
+      m.term(); // undecodable — never redeliver
+      this.emit("error", e as Error);
+      return undefined;
+    }
+    if (!isRecord(msg) || !isUsableMessageId(msg.id)) {
+      m.term(); // malformed envelope (SPEC sec 5): absent/non-string id — permanently invalid
+      this.emit("error", new Error(`dropped message on ${m.subject}: absent or non-string id`));
+      return undefined;
+    }
+    const parsed = parseSubject(m.subject);
+    if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
+      m.term();
+      this.emit(
+        "error",
+        new Error(
+          `dropped message on ${m.subject}: payload from ${msg.from?.id ?? "(none)"} ` +
+            `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
+        ),
+      );
+      return undefined;
+    }
+    return { msg, parsed };
+  }
+
+  /** Bind this endpoint's own existing DM durable and drive it serially (EndpointOptions.dmOnly).
+   *  The bind is one CONSUMER.INFO on `dm_<owner>-<actor>-<uid>`; reading is MSG.NEXT with a batch
+   *  of one, and the next copy reaches the handler only after the previous handler settles. */
+  private async bindDmOnly(mode: DmOnlyOptions): Promise<void> {
+    if (!this.js) throw new Error("endpoint not started");
+    const stream = dmStream(this.space);
+    const durable = dmDurable(this.owner, this.actor, this.requireLifecycleUid("consuming the DM inbox"));
+    let consumer: Consumer;
+    try {
+      consumer = await this.js.consumers.get(stream, durable);
+    } catch (e) {
+      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw new DmDurableMissingError(stream, durable);
+      throw new DmBindRefusedError(stream, durable, e);
+    }
+    const ackWaitMs = await ackWaitOf(consumer); // cached by the bind's own CONSUMER.INFO, no request
+    // A rebind after reconnect must not overlap the previous epoch's running handler. A handler that
+    // does not settle within the stop bound fails this bind; the retry loop tries again.
+    if (this.dmOnlyInFlight) {
+      const settleMs = mode.settleTimeoutMs ?? 30_000;
+      await withDeadline(this.dmOnlyInFlight, settleMs, () =>
+        new Error(`DM-only rebind waited ${settleMs}ms for the previous handler to settle; not reading the next DM yet`));
+    }
+    const msgs = await consumer.consume({ max_messages: 1 });
+    this.streamMsgs.push(msgs);
+    // The epoch this loop belongs to. nats.js can yield copies it already received after stop() began
+    // or after a rebuild replaced the connection (a stacked pull after a missed-heartbeat reset hands
+    // over several at once). Such a copy never reaches the handler and is neither acked nor nak'd:
+    // the connection is closing or closed, so any reply could be lost, and the broker redelivers an
+    // unacked copy after the durable's ack_wait to whichever epoch binds next.
+    const boundNc = this.nc;
+    const retired = (): boolean => this.stopped || this.nc !== boundNc || !boundNc || boundNc.isClosed();
+    void (async () => {
+      for await (const m of msgs) {
+        if (retired()) break;
+        const authed = this.authenticateStreamMsg(m);
+        if (!authed) continue;
+        if (authed.parsed.kind !== "inst") {
+          m.term(); // the DM stream filter admits only inst.* subjects; anything else is not a DM
+          continue;
+        }
+        const run = Promise.resolve().then(() => mode.handler(authenticatedMessage(authed.msg, authed.parsed), dmOnlyDelivery(m, ackWaitMs, boundNc), {
+          historical: false,
+          kind: "dm",
+        } satisfies MessageMeta));
+        const flight = run.then(() => {}, () => {});
+        this.dmOnlyInFlight = flight;
+        try {
+          await run;
+        } catch (e) {
+          this.emit("error", e instanceof Error ? e : new Error(String(e)));
+        } finally {
+          if (this.dmOnlyInFlight === flight) this.dmOnlyInFlight = undefined;
+        }
+      }
+    })().catch((e) => {
+      if (!this.stopped) this.emit("error", e as Error);
+    });
+  }
+
   /** Open a native core subscription to a channel's live feed (the manager-free live read path,
    *  broker-enforced by `sub.allow`). At-most-once — no replay, no ack; it is the live delivery for
    *  every channel (boot + runtime). For a `durable` channel it is also the low-latency wake-hint
@@ -5880,7 +6457,6 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.nc || this.chatSubs.has(channel)) return;
     this.chatSubDenied.delete(channel);
     const subject = chatSubject(this.space, "*", "*", channel);
-    this.confirmingChatSubs.add(subject);
     const sub = this.nc.subscribe(subject, {
       callback: (err, m) => {
         if (err) {
@@ -5888,12 +6464,11 @@ export class CotalEndpoint extends EventEmitter {
           // leak (the broker refused it). Drop the channel from local joined state even if it was
           // already treated as joined — a LATE refusal beyond the confirm window: conformance #13
           // "drop on late refusal". (During the join's own confirm the channel isn't pushed yet, so
-          // this fires nothing then; joinChannel reads `chatSubDenied` and throws cleanly.)
+          // this fires nothing then; joinChannel reads `chatSubDenied` and throws cleanly.) Either way
+          // the refusal is reported from here, by that throw or the leave below, so watchStatus skips it.
+          if (err instanceof PermissionViolationError) this.chatSubRefusals.add(err);
           this.chatSubDenied.add(channel);
           this.chatSubs.delete(channel);
-          // NOTE: do NOT remove `subject` from confirmingChatSubs here — that set gates watchStatus's
-          // suppression of this expected violation, and is cleared by joinChannel after confirm (or by
-          // unsubscribeChat). Removing it in the callback races the watcher and leaks a spurious error.
           const i = this.channels.indexOf(channel);
           if (i >= 0) {
             this.channels.splice(i, 1);
@@ -5907,7 +6482,7 @@ export class CotalEndpoint extends EventEmitter {
             if (gen !== undefined) void this.closeRefusedMembership(channel, gen);
             this.emit(
               "error",
-              new Error(`left channel "${channel}": its live subscription was refused by the broker`),
+              new Error(`left channel "${channel}": its live subscription was refused by the broker`, { cause: err }),
             );
           }
           return;
@@ -5936,7 +6511,6 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Close a channel's core subscription (manager-free leave). */
   private unsubscribeChat(channel: string): void {
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     const sub = this.chatSubs.get(channel);
     if (sub) {
       try {
@@ -6003,6 +6577,13 @@ export class CotalEndpoint extends EventEmitter {
   async chatFrontier(): Promise<number> {
     const jsm = await this.manager();
     return (await jsm.streams.info(chatStream(this.space))).state.last_seq;
+  }
+
+  /** The bytes this connection's account holds in JetStream file storage, as `$JS.API.INFO`
+   *  reports them. A broker's `max_file_store` cap counts every account it serves, so this is a
+   *  lower bound on what that cap measures. */
+  async storedBytes(): Promise<number> {
+    return (await (await this.manager()).getAccountInfo()).storage;
   }
 
   /** Phase 1 of a join — arm each channel's tail-drop watermark at the current frontier. MUST run
@@ -6265,6 +6846,7 @@ export class CotalEndpoint extends EventEmitter {
       // SPEC §6: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
       // omitted only where the endpoint has none (a pure operator/daemon connection never registers).
       ...(this.ownLifecycleUid !== undefined ? { lifecycleUid: this.ownLifecycleUid } : {}),
+      runtime: processRuntime(this.ownLifecycleUid),
       status: this.status,
       condition: this.condition,
       environment: this.environment,
@@ -6424,8 +7006,17 @@ export class CotalEndpoint extends EventEmitter {
       return undefined;
     }
     this.presenceWatchIter = iter;
+    // A bucket with no keys replays nothing, so no entry carries the end-of-replay marker. For an
+    // observer that does not register, that empty replay is the whole snapshot: nobody is present.
+    // A registering observer is populated by its own record instead (see onPresenceBucketEmpty).
+    const empty = info.num_pending === 0 && !this.doRegister;
+    if (empty) {
+      this.presenceSnapshotPopulated = true;
+      hydrated();
+      this.markPresenceBucketEmpty();
+    }
     void (async () => {
-      let ready = false;
+      let ready = empty;
       for await (const e of iter) {
         // A rebind bound a newer watch: this one's remaining entries belong to a retired epoch.
         // Stop consuming them (the rebind stops the iterator too; this ends the loop first).
@@ -6442,6 +7033,17 @@ export class CotalEndpoint extends EventEmitter {
       hydrated();
     })().catch((e) => this.emit("error", e as Error));
     return info;
+  }
+
+  /** {@link EndpointOptions.readOnce}: fill the roster from one read of the presence bucket. Stale
+   *  and offline records resolve as they do in a watch's initial replay. */
+  private async readPresenceOnce(): Promise<void> {
+    if (!this.kv) return;
+    for (const e of await lastKvEntries(this.kv)) this.handleKvEntry(e);
+    this.presenceSnapshotPopulated = true;
+    // No record reached the roster (an empty bucket, or only the TTL canary): nobody is present.
+    if (this.lastPresenceWatchAt === 0) this.markPresenceBucketEmpty();
+    else this.emitPresenceViewIfChanged();
   }
 
   /**
@@ -6505,6 +7107,12 @@ export class CotalEndpoint extends EventEmitter {
     void (async () => {
       for await (const e of iter) this.handleChannelEntry(e);
     })().catch((e) => this.emit("error", e as Error));
+  }
+
+  /** {@link EndpointOptions.readOnce}: fill the channel cache from one read of the registry. */
+  private async readChannelsOnce(): Promise<void> {
+    if (!this.channelKv) return;
+    for (const e of await lastKvEntries(this.channelKv)) this.handleChannelEntry(e);
   }
 
   private handleChannelEntry(e: KvEntry): void {
@@ -6648,6 +7256,7 @@ export class CotalEndpoint extends EventEmitter {
       prev.status !== "offline" &&
       p.status !== "offline" &&
       prev.lifecycleUid === p.lifecycleUid &&
+      sameRuntime(prev.runtime, p.runtime) &&
       prev.status === p.status &&
       prev.activity === p.activity &&
       sameCondition(prev.condition, p.condition) &&
@@ -6808,6 +7417,20 @@ function durableDelivery(m: JsMsg, ackWaitMs: number): Delivery {
     nak: () => m.nak(),
     durable: true,
     redelivery: { deliveryCount: m.info.deliveryCount, ackWaitMs, working: () => m.working() },
+  };
+}
+
+/** A DM-only copy's delivery. An ack, nak or in-progress signal on a closed connection is refused
+ *  with a throw instead of being dropped silently: the copy stays unacked and the broker redelivers it. */
+function dmOnlyDelivery(m: JsMsg, ackWaitMs: number, nc: NatsConnection | undefined): Delivery {
+  const open = (what: string): void => {
+    if (!nc || nc.isClosed()) throw new Error(`DM-only ${what} refused: the connection that delivered this copy is closed; the broker will redeliver it`);
+  };
+  return {
+    ack: () => { open("ack"); m.ack(); },
+    nak: () => { open("nak"); m.nak(); },
+    durable: true,
+    redelivery: { deliveryCount: m.info.deliveryCount, ackWaitMs, working: () => { open("in-progress signal"); m.working(); } },
   };
 }
 
@@ -7047,6 +7670,10 @@ function sameChannelModes(
   return ak.every((k) => a![k] === b?.[k]);
 }
 
+function sameRuntime(a: Presence["runtime"], b: Presence["runtime"]): boolean {
+  return a?.id === b?.id && a?.startedAt === b?.startedAt && a?.source === b?.source;
+}
+
 function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | undefined): boolean {
   return a?.code === b?.code
     && a?.source === b?.source
@@ -7148,17 +7775,6 @@ function describeStatusError(err: Error): Error {
   return err;
 }
 
-/** True when a failure is a NATS *permission denial* — the subject is forbidden to this
- *  endpoint's creds — rather than a missing responder or a timeout. The two need opposite
- *  fixes (grant the capability vs. start/await the service), so callers (e.g. a control
- *  request that can't reach the manager) must tell them apart instead of defaulting to
- *  "service down". Unwraps a wrapped `cause` and falls back to the server's error text, since
- *  a denied publish can surface either as the typed error or inside a request rejection. */
-export function isPermissionDenied(e: unknown): boolean {
-  if (e instanceof PermissionViolationError) return true;
-  if ((e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError) return true;
-  return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
-}
 
 /** The ordered consumer behind a KV watch, which nats.js keeps on the iterator and the KV types hide. */
 function kvWatchConsumer(iter: Awaited<ReturnType<KV["watch"]>>): PushConsumer {
@@ -7236,13 +7852,31 @@ export function defaultProbeTimeoutMs(servers: string): number {
  *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
  *  transport options: the URL scheme already decides TLS there, and the w3c transport refuses a
  *  `tls` block outright ("'tls' is not configurable"), so it is stripped here — at the one point
- *  that knows which transport is dialing — rather than at every caller composing auth options. */
+ *  that knows which transport is dialing — rather than at every caller composing auth options.
+ *  A TCP dial that requires TLS to one IP address names that address as the host its certificate
+ *  must cover (see {@link withDialedTlsHost}). */
 export function dialerFor(servers: string): typeof connect {
-  if (!wsServers(servers)) return connect;
+  if (!wsServers(servers)) return ((opts?: Parameters<typeof connect>[0]) => connect(withDialedTlsHost(servers, opts))) as typeof connect;
   return ((opts: Parameters<typeof connect>[0]) => {
     const { tls: _tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
     return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
   }) as typeof connect;
+}
+
+/** `opts` for a dial to `servers`, with the IP address it names as the host a TLS certificate must
+ *  cover when the dial requires TLS: a `tls` block, or a `tls://` address. The TCP transport upgrades
+ *  to TLS with no server name for an IP, and Node then checks the certificate against "localhost":
+ *  a certificate for the dialed address alone is refused, and one naming localhost passes for any
+ *  address. A dial that does not require TLS keeps its options, because a `tls` block refuses a
+ *  plaintext broker, and so does a list of several servers, whose one host the options cannot name. */
+function withDialedTlsHost(servers: string, opts: Parameters<typeof connect>[0]): Parameters<typeof connect>[0] {
+  const urls = servers.split(",").map((url) => url.trim()).filter(Boolean);
+  const tls = opts?.tls;
+  if (urls.length !== 1 || tls === null || tls === undefined && !/^tls:\/\//i.test(urls[0]!)) return opts;
+  let host: string;
+  try { ({ host } = hostPort(urls[0]!)); } catch { return opts; }
+  // Node checks an upgraded socket's certificate against `host` when no server name is set.
+  return isIP(host) ? { ...opts, tls: { host, ...tls } as NonNullable<typeof tls> } : opts;
 }
 
 /** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
@@ -7265,14 +7899,18 @@ function hostPort(server: string): { host: string; port: number } {
  *  broker rejects and logs). It is a *plaintext NATS* liveness check only:
  *    • a TLS-first (`handshake_first`, NATS ≥ 2.10.4) listener sends its TLS handshake before INFO,
  *      so the read won't match → returns false (a documented false-negative for that broker config);
- *    • a non-NATS / silent listener never sends a valid `INFO {` → also false (we require the real
- *      greeting, never "any open port is reachable").
- *  Closes well within the server's ~1s authorization timeout, so it cannot trip a timeout log. */
-function tcpInfoProbe(server: string, timeoutMs: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+ *    • a non-NATS listener never sends a valid `INFO {` → also false, and a silent one resolves
+ *      `"silent"` (we require the real greeting, never "any open port is reachable").
+ *  Closes well within the server's ~1s authorization timeout, so it cannot trip a timeout log.
+ *  A live server resolves to what its greeting said about auth. A peer that accepted the connection
+ *  and sent no full line before the deadline, as a stopped or overloaded broker does, resolves
+ *  `"silent"`; anything else resolves `false`. */
+function tcpInfoProbe(server: string, timeoutMs: number): Promise<false | "silent" | { authRequired: boolean }> {
+  return new Promise<false | "silent" | { authRequired: boolean }>((resolve) => {
     let socket: ReturnType<typeof createConnection> | undefined;
     let done = false;
-    const finish = (live: boolean) => {
+    let connected = false;
+    const finish = (live: false | "silent" | { authRequired: boolean }) => {
       if (done) return;
       done = true;
       try { socket?.destroy(); } catch { /* already gone */ }
@@ -7290,10 +7928,11 @@ function tcpInfoProbe(server: string, timeoutMs: number): Promise<boolean> {
       const line = buf.slice(0, nl);
       const brace = line.indexOf("{"); // greeting is `INFO {json}` (the server appends a trailing space)
       if (!/^INFO\b/.test(line) || brace === -1) return finish(false); // not NATS (incl. a TLS-first handshake)
-      try { JSON.parse(line.slice(brace)); finish(true); } // require a real INFO greeting, not arbitrary bytes
+      try { finish({ authRequired: (JSON.parse(line.slice(brace)) as { auth_required?: unknown })?.auth_required === true }); } // require a real INFO greeting, not arbitrary bytes
       catch { finish(false); }
     });
-    socket.on("timeout", () => finish(false));
+    socket.on("connect", () => { connected = true; });
+    socket.on("timeout", () => finish(connected ? "silent" : false));
     socket.on("error", () => finish(false)); // refused / reset / DNS failure
     socket.on("close", () => finish(false)); // closed before a full INFO line arrived
   });
@@ -7337,6 +7976,12 @@ function tcpDialable(server: string, timeoutMs: number): Promise<boolean> {
   });
 }
 
+/** Whether a failed connect was the server refusing these credentials: a server answered, so it is
+ *  up. The same errors {@link isReachable} reads as up after its own authenticated connect. */
+export function isAuthRejection(e: unknown): boolean {
+  return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
+}
+
 /** Whether a NATS server is *running* at `servers`. With NO creds this is a SILENT plaintext
  *  liveness check ({@link tcpInfoProbe}): it reads the server's pre-auth `INFO` greeting and closes
  *  WITHOUT authenticating, so a live broker (open OR auth — INFO precedes auth) returns true while
@@ -7366,7 +8011,7 @@ export async function isReachable(
         return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
       }
     }
-    return tcpInfoProbe(servers, timeoutMs);
+    return typeof (await tcpInfoProbe(servers, timeoutMs)) === "object";
   }
   // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
   // the same orphaned-socket defects probeConnect did (#389, and the slow-greeting case #2156) and
@@ -7379,7 +8024,8 @@ export async function isReachable(
   // address that never completed a handshake.
   const started = Date.now();
   const gate = opts.tls || wsServers(servers) ? tcpDialable : tcpInfoProbe;
-  if (!(await gate(servers, timeoutMs))) return false;
+  const reached = await gate(servers, timeoutMs);
+  if (!reached || reached === "silent") return false;
   try {
     const nc = await dialerFor(servers)({
       servers,
@@ -7404,10 +8050,13 @@ export async function isReachable(
  *  registry prune (the D5 credential-death event). `unreachable` means nothing usable answered and
  *  the cred is not provably dead (refused / timeout / a stale registry entry). `timeout` means the
  *  dial ran out of its own budget before anything conclusive came back — never a trust or credential
- *  verdict, just "try again with more time" (#851). */
+ *  verdict, just "try again with more time" (#851). `inferred` marks an `auth-required` read from
+ *  the broker's greeting rather than from a rejection: the greeting asked for auth and the handshake
+ *  was then reset. The greeting is unauthenticated, so that verdict may name a failure but must never
+ *  be grounds for deleting state. */
 export type ProbeResult =
   | { ok: true }
-  | { ok: false; reason: "auth-required" }
+  | { ok: false; reason: "auth-required"; inferred?: true }
   | { ok: false; reason: "stale-auth" }
   | { ok: false; reason: "unreachable" }
   | { ok: false; reason: "timeout" };
@@ -7439,7 +8088,11 @@ export async function probeConnect(
   // off TLS/ws, one extra greeting read) on the reachable path; the deadline below is the
   // REMAINDER of the budget, because `connect()`'s own `timeout` always covered its handshake too.
   const gate = opts.tls || wsServers(server) ? tcpDialable : tcpInfoProbe;
-  if (!(await gate(server, timeoutMs))) return classifyProbeFailure(undefined, opts);
+  const greeting = await gate(server, timeoutMs);
+  if (!greeting) return classifyProbeFailure(undefined, opts);
+  // A peer that took the connection and never greeted is there but not answering, as a stopped or
+  // overloaded broker is. That is the same latency verdict as a dial that ran out of its budget.
+  if (greeting === "silent") return classifyProbeFailure(undefined, opts, false, "timeout");
   try {
     const nc = await dialerFor(server)({
       servers: server,
@@ -7451,7 +8104,7 @@ export async function probeConnect(
     await nc.close();
     return { ok: true };
   } catch (e) {
-    return classifyProbeFailure(e, opts);
+    return classifyProbeFailure(e, opts, greeting !== true && greeting.authRequired);
   }
 }
 
@@ -7465,8 +8118,10 @@ export async function probeConnect(
  *  surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError, which
  *  used to misclassify a dead cred. Reading the cred removes that timing dependency entirely, so the
  *  classification is deterministic. Unreadable content falls through to the wire truth (no false
- *  stale diagnosis from garbage). `e` is undefined when the gate refused before any connect. */
-function classifyProbeFailure(e: unknown, opts: AuthOpts): ProbeResult {
+ *  stale diagnosis from garbage). `e` is undefined when the gate refused before any connect.
+ *  `authRequired` is true when the gate read a greeting that asked for auth. `otherwise` is the
+ *  verdict when nothing more specific applies. */
+function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false, otherwise: "unreachable" | "timeout" = "unreachable"): ProbeResult {
   if (typeof opts.creds === "string") {
     try {
       if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
@@ -7479,5 +8134,10 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts): ProbeResult {
   // and grading it `unreachable` made a TLS-required target read as a trust failure (#851). Only
   // nats-core's TimeoutError means that: a peer's `-ERR` that mentions a timeout answered at once.
   if (e instanceof TimeoutError) return { ok: false, reason: "timeout" };
-  return { ok: false, reason: "unreachable" };
+  // A broker that greeted us asking for auth and then reset the handshake most likely refused it.
+  // Windows can discard its `-ERR 'Authorization Violation'` when the reset lands, so the client
+  // sees only ECONNRESET, and a running auth broker used to read as gone. No rejection was read, so
+  // the verdict is marked inferred.
+  if (authRequired && (e as { code?: unknown } | undefined)?.code === "ECONNRESET") return { ok: false, reason: "auth-required", inferred: true };
+  return { ok: false, reason: otherwise };
 }

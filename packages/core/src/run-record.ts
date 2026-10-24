@@ -92,6 +92,29 @@ export interface RunStatusValue {
    */
   readonly journalHigh: number;
   readonly at: number;
+  /**
+   * Why a `failed` run failed: the language code its error carries, when it has one, and its message,
+   * bounded to {@link RUN_FAILURE_MESSAGE_LIMIT} characters. Only a failed status has it, and a
+   * failed status recorded before it existed has none.
+   */
+  readonly failure?: RunFailure;
+}
+
+/** A failed run's cause, as its status records it. */
+export interface RunFailure { readonly code?: string; readonly message: string }
+
+/** The longest failure message a run status records; a longer one is cut and marked. */
+export const RUN_FAILURE_MESSAGE_LIMIT = 4000;
+
+/** The status record's view of an error a program failed with: an `L` code when it carries one, and
+ *  its message, cut to the limit. */
+export function runFailureOf(error: unknown): RunFailure {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  const message = typeof e?.message === "string" && e.message ? e.message : String(error);
+  return {
+    ...(typeof e?.code === "string" && /^L\d{4}$/.test(e.code) ? { code: e.code } : {}),
+    message: message.length > RUN_FAILURE_MESSAGE_LIMIT ? `${message.slice(0, RUN_FAILURE_MESSAGE_LIMIT - 1)}…` : message,
+  };
 }
 
 /** A run's journal is missing records from its END — which nothing inside the journal can see. */

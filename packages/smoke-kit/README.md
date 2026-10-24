@@ -46,6 +46,12 @@ in `spawnSync` cannot acknowledge one. The watchdog finds processes through Linu
 nothing is watched on other platforms. It reads one root per line, so on Linux a root whose path
 contains a newline is refused.
 
+`assertSmokeSandboxDown` checks a `cotal down` call before the suite spawns it. It parses the call
+with every flag the CLI's `down` declares, such as `--yes`, `--json`, `--plain` and `-s`, after
+dropping the kernel's `--no-color` and `--no-input` as the CLI does. It then requires the spawn's
+working directory, `COTAL_HOME` and `XDG_CONFIG_HOME` to be the recorded sandbox. A flag `down` does
+not declare refuses the call.
+
 The CI shard runner also assigns each suite a `SMOKE_BROKER_SCOPE`. This non-secret test marker
 is separate from `COTAL_*` connection settings, so their normal scrub leaves it intact. The token
 carries a compact digest of the scope; Linux descendants can also recover it from ancestor

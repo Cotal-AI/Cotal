@@ -1,0 +1,28 @@
+<!-- installed by `cotal service install` -->
+<!-- cotal-mesh: @MESH@ -->
+<!-- cotal-root: @ROOT@ -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>@LABEL@</string>
+  <key>ProgramArguments</key>
+  <array>
+@ENTRY@
+    <string>supervise</string>
+  </array>
+  <key>WorkingDirectory</key><string>@WORKING_DIRECTORY@</string>
+  <key>EnvironmentVariables</key>
+<dict>
+    <key>PATH</key><string>@PATH@</string>
+    <key>COTAL_SPACE</key><string>@SPACE@</string>
+    <key>COTAL_SERVER</key><string>@SERVER@</string>
+    <key>COTAL_HOME</key><string>@STATE_DIR@</string>
+    <key>XDG_CONFIG_HOME</key><string>@STATE_DIR@/config</string>
+    <key>COTAL_SKIP_CONNECTOR_SEED</key><string>1</string>
+</dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>20</integer>
+</dict>
+</plist>

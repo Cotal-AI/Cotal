@@ -155,10 +155,9 @@
  * arrival it does not list (a `.php` naming the seam was the probe) is read by nothing and reddens
  * nothing. SKIP_DIRS is the same bet on directories: adding `examples` to it drops six container
  * files from the walk with every cell still green, because the census that guards the walk shares
- * the same skip list and simply sees a smaller tree. And the COUNTS measure population, not
- * identity, so moving sites between files is indistinguishable from losing them; the split into a
- * total and an untypechecked half catches a move ACROSS the halves, and nothing catches a move
- * within one.
+ * the same skip list and simply sees a smaller tree. The per-file census now catches a counted
+ * source disappearing even if another file adds a call. A hidden call compensated within the same
+ * file remains outside that census's identity bound.
  *
  * That last boundary COMPOSES with the door spellings below, and the composition is worth stating
  * because neither half is alarming alone. A door spelling is a way to write a call this reader does
@@ -168,9 +167,8 @@
  * runtime sits in the tree. That pair is only needed to hide an ALREADY COUNTED call; a call written
  * in a non-admitted spelling from the start is never counted, so adding one costs nothing at all. That was reproduced here rather than reasoned about: one site converted
  * to a nested table with `tls` dropped, one plain compensating call added, suite green at 143 of 143.
- * The counts are therefore NOT cover for the door. They pin that the SEEN population stays seen, and
- * even that only against an author who does not add a call while removing one. Closing it needs
- * identity rather than population, which is the site manifest named below and a different instrument.
+ * Total counts alone are therefore NOT cover for the door. The per-file census blocks that
+ * cross-file replacement, but cannot distinguish two calls exchanged within one file.
  *
  * THE DELIBERATE AUTHOR IS OUT OF SCOPE, by this file's construction rather than by omission, and
  * saying so is what keeps the paragraph above from reading as a security claim it cannot make. Every
@@ -179,17 +177,19 @@
  * a dummy call to a dummy manifest line. What such an instrument actually buys is accidental-drift
  * visibility, and the accidental form is the narrow real one: two unrelated edits landing in a single
  * change, one refactoring a site into a table and one adding a call elsewhere in the same half. That
- * is the case a follow-up earns, and the shape it should take is PER-FILE exact counts rather than
- * file and line, since line numbers would redden on every unrelated edit to a touched file and
- * reintroduce exactly the cry-wolf tax this design exists to avoid.
+ * is the case the per-file exact counts address. They do not pin line numbers, since those would
+ * redden on every unrelated edit to a touched file.
  *
  * A FOURTH boundary is the TREE ITSELF, and it matters more now that the counts are matched exactly
  * rather than as floors. This walk reads the FILESYSTEM, not the commit, so a working copy that has
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
  * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
  * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
- * Today it costs nothing, measured both ways: 94/67 with the bundle present and 94/67 with it moved
- * aside. It is on the record because an EXACT count turns any future divergence into a red that
+ * The bundle adds one outside-smoke call: a clean checkout has 312/237 and a built checkout has
+ * 313/237. Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
+ * `bin/seeded-connectors/hermes/`, which is gitignored too and adds one more. Each copy has its own
+ * one-site pin, required whenever that artifact exists. An EXACT count otherwise
+ * turns this divergence into a red that
  * depends on whether someone ran `pnpm bundle`, which is a property of a disk rather than of a
  * revision. Reading it is deliberate rather than an oversight, since that bundle SHIPS in the
  * connector package: a seam call inside it would be real, and skipping it would be a hole in shipped
@@ -431,8 +431,61 @@ const SEAMS: Seam[] = [
   // reads the lease row back from the bucket and takes it over, so the fixture's renew and release
   // are judged from the broker rather than from the fixture's own bookkeeping. Under `smoke/`, so
   // both counts move by one. It states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 229, untypecheckedSites: 179 },
+  // 229/179 -> 234/184: five smoke-side calls in
+  // implementations/auth/smoke/issued-caller-expiry.smoke.ts, all under `smoke/`, so both counts
+  // move by five:
+  //   • `r5Opts`     — the short-lived manager-caller options that R51's `dial` publishes the
+  //                    initial `run-start` with before expiry and R52's reconnect probe reuses;
+  //   • `readerNc`   — the run-mediator connection in R54's failure-diagnostic arm that reads back
+  //                    an admitted `RunAdmission` if the delayed first admission were not refused;
+  //   • `opts`       — the short-lived manager-caller options that R55's `dial` uses to publish and
+  //                    admit a run while its caller's generation is live;
+  //   • `driverNc`   — the issued run-driver connection in R55 that writes the initial `RunSpec`
+  //                    and running `RunStatus` to the records bucket before the caller expires;
+  //   • `mediatorNc` — the renewed run-mediator connection in R55 that reads the admission back
+  //                    after the caller's generation has expired to verify it stays unrevoked.
+  // Each of the five calls states `tls: false`.
+  // 265/212 -> 266/213: delegated-config.smoke.ts adds one issued-caller connection with
+  // `tls: false` to exercise delegated persona-config refusals through the public manager.
+  // 266/213 -> 286/214: two landings added calls without updating required-arg-sites.json.
+  // #4191 (bab4ca8bf5) adds one smoke-side call in
+  // implementations/manager/smoke/run-owned-agents.smoke.ts, so both counts move by one. The
+  // command-line redesign (5c85ef3749) adds nineteen source calls net: twenty-two new calls across
+  // fifteen files under implementations/, less the one it removed from
+  // implementations/cli/src/commands/describe.ts and the two it removed from
+  // implementations/manager/src/commands.ts. The per-file counts name each file. Every call states
+  // `tls`.
+  // The audited source population is pinned per file in required-arg-sites.json. The generated
+  // Hermes sidecar adds one separately pinned call after build, never a smoke-side call.
+  // 286/214 -> 307/233: three landings added calls without updating required-arg-sites.json.
+  // Control-only local management (#4240, a9a78ecf6) adds the provisioner dial of an
+  // `execution: none` manager in implementations/manager/src/manager.ts and seven smoke-side calls:
+  // interactive-manager-selection two, local-no-execution four and local-no-execution-state one.
+  // Caller-bound keyed submission (#4242) adds the run-admitter store connection in
+  // implementations/auth/src/service.ts and ten smoke-side calls: keyed-review-client one,
+  // keyed-submission-client-provider two, keyed-review-window four and keyed-submission-native
+  // three. Host vitals (#4253) adds two in manager-service-invoke.smoke.ts. Every call states `tls`.
+  // Workflow cancellation adds one run-admitter store connection in auth/src/service.ts and
+  // three smoke-side calls: bin/smoke/run-cancel-live two and auth/smoke/run-cancel-live one.
+  // Each states `tls`. The native conversation run suite adds one smoke-side writer connection in
+  // manager/smoke/native-conversation-run, which states `tls`; the source population is now 312/237.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 312, untypecheckedSites: 237 },
 ];
+
+const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
+const SIDECARS = [
+  "extensions/connector-hermes/plugin/cotal/_sidecar/standalone.cjs",
+  "bin/seeded-connectors/hermes/plugin/cotal/_sidecar/standalone.cjs",
+];
+const countsByFile = (sites: Site[]): Record<string, number> => {
+  const counts: Record<string, number> = {};
+  for (const site of sites) counts[site.file] = (counts[site.file] ?? 0) + 1;
+  return counts;
+};
+const censusDrift = (expected: Record<string, number>, actual: Record<string, number>): string[] =>
+  [...new Set([...Object.keys(expected), ...Object.keys(actual)])].sort()
+    .filter((file) => expected[file] !== actual[file])
+    .map((file) => `${file}: found ${actual[file] ?? 0}, expected ${expected[file] ?? 0}`);
 
 /**
  * Directories the walk does not enter, named one by one on purpose. An earlier cut skipped every
@@ -2409,6 +2462,12 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
   check("...while the same source holding a real boolean is untouched",
     one(`const src = { tls: false };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("a resolved mesh's TLS requirement captured as a primitive is stated without a default",
+    one(`const mesh = resolveMeshTarget(cwd, { space, server });\nconst tls = mesh.tlsRequired;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("the primitive spelling preserves an explicit false TLS decision",
+    one(`const tls = false;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("the primitive spelling still refuses an explicitly undefined TLS decision",
+    one(`const tls = undefined;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
   check("...and a PRODUCER written here is refused where it is called, as the inline invocation is",
     one(`const mk = () => ({ tls: undefined as any });\nconst { tls } = mk();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   check("...in the declaration spelling too, since the shape is the producer and not the arrow",
@@ -2558,6 +2617,21 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
 }
 
 console.log("\nB. the seam, across every source the compiler may or may not read");
+{
+  const call = "standaloneConnectOpts({ tls: false });";
+  const scan = (file: string, text: string) => summarize(sitesIn(file, text, SEAMS[0])).sites;
+  const expected = countsByFile([...scan("a.ts", call), ...scan("b.ts", call)]);
+  check("per-file counts accept the same sites without line-number pins",
+    censusDrift(expected, countsByFile([...scan("a.ts", `\n\n${call}`), ...scan("b.ts", call)])).length === 0);
+  check("per-file counts refuse replacing a hidden site with a call in another file at the same total",
+    censusDrift(expected, countsByFile(scan("b.ts", `${call}\n${call}`))).length === 2);
+  check("per-file counts name a newly added source rather than absorbing it into the population",
+    censusDrift(expected, countsByFile([...scan("a.ts", call), ...scan("b.ts", call), ...scan("new.ts", call)])).length === 1);
+}
+check("the literal per-file census accounts for the source and smoke totals",
+  Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0)
+  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 312
+  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 237);
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 
@@ -2586,6 +2660,14 @@ check("every container language present in this tree has a recorded decision, re
 for (const seam of SEAMS) {
   const all = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
   const { sites, aliased, bad, untypechecked } = summarize(all);
+  if (process.argv.includes("--census")) console.log(`REQUIRED_ARG_CENSUS ${JSON.stringify({ seam: seam.fn, sites })}`);
+  const walked = new Set(files.map((file) => relative(ROOT, file).split(sep).join("/")));
+  const sidecars = SIDECARS.filter((sidecar) => walked.has(sidecar));
+  const expectedByFile = { ...SITE_COUNTS, ...Object.fromEntries(sidecars.map((sidecar) => [sidecar, 1])) };
+  const normalized = sites.map((site) => ({ ...site, file: site.file.split(sep).join("/") }));
+  const drift = censusDrift(expectedByFile, countsByFile(normalized));
+  check(`\`${seam.fn}\`: every file matches its reviewed exact call count`, drift.length === 0, drift);
+  const expectedSites = seam.sites + sidecars.length;
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
   console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);
@@ -2606,11 +2688,10 @@ for (const seam of SEAMS) {
   // and each of those deserves a human look rather than an inequality that absorbs it.
   //
   // The cost is honest and small: a PR that legitimately adds or removes a seam call site updates
-  // one number here, and the failure prints both counts so there is nothing to work out. What this
-  // still cannot do is notice a site that moves BETWEEN files, since a count carries no identity,
-  // which is why the reader above refuses what it cannot resolve instead of relying on this.
-  check(`\`${seam.fn}\`: the scan finds EXACTLY ${seam.sites} call sites (if you added or removed one, update this number deliberately)`,
-    sites.length === seam.sites, { found: sites.length, expected: seam.sites });
+  // the per-file census and the totals here. The per-file check distinguishes cross-file changes,
+  // but a replacement inside the same file still requires review.
+  check(`\`${seam.fn}\`: the scan finds EXACTLY ${expectedSites} call sites (if you added or removed one, update the per-file census deliberately)`,
+    sites.length === expectedSites, { found: sites.length, expected: expectedSites });
 
   // Keep the smoke subtree census separate: a bare "> 0" would miss disappearing sites.
   // The legacy field name is not a typecheck coverage claim; packages now typecheck their smokes.

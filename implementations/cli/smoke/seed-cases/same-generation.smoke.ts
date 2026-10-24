@@ -1,4 +1,4 @@
-import { existsSync, rmSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { boot, existsSync, rmSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, track, finishScenario } from "./harness.js";
 
 try {
   // ── 8b. a built-in added at an UNCHANGED generation still seeds (fast-path coverage) ─────────────
@@ -26,8 +26,9 @@ try {
     // the manifest and from disk but never from `store/<generation>/codex`, so the re-seed takes the
     // stager's idempotent early return. That path copies nothing, so it must announce nothing, and the
     // only way to see that is to read this command's stderr.
-    const reseed = cotal(cfg, ["ext", "list"]); // any auto command must notice the unaccounted built-in and seed it
-    const names = ["claude", "opencode", "codex", "hermes", "pi"].filter((n) => reseed.stdout.includes(`connector:${n}`));
+    const reseed = boot(cfg); // any command that is not a read must notice the unaccounted built-in and seed it
+    const listed = cotal(cfg, ["ext", "list"]).stdout;
+    const names = ["claude", "opencode", "codex", "hermes", "pi"].filter((n) => listed.includes(`connector:${n}`));
     check("same-generation built-in add: auto reconcile seeds the missing built-in", names.includes("codex"), names);
     check("provenance: a re-seed that reuses an intact payload announces no seed-store write",
       !reseed.stderr.includes("seed store payload"), reseed.stderr);

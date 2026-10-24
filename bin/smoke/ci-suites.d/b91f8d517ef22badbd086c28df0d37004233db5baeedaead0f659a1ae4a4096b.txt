@@ -1,0 +1,4 @@
+# a supervised seat outlives its manager's crash: the successor restarts it under the same
+# lifecycle as one restart of its policy, serves it the turn the dead manager accepted, and
+# retires it once the budget is spent.
+smoke:manager-supervise-crash

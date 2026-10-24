@@ -1,0 +1,24 @@
+{
+  "suite": [
+    "implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts"
+  ],
+  "guard": "a pre-effect gate-repair refusal keeps the native guard's own sentence as its cause",
+  "command": "pnpm --filter cotal-ai... build && pnpm smoke:gate-reconcile-cli:auth",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/reconcile-guard-cause.json",
+  "why": [
+    "The suite drives the public manager reconcile command against a real broker and delivery daemon.",
+    "The mutation drops the native cause from the refusal. The live-holder cell then reddens because the envelope no longer names the freeze-holder or says to stop it.",
+    "The command builds @cotal-ai/manager first because the public binary imports its package dist."
+  ],
+  "mutations": [
+    {
+      "name": "drop the guard's sentence from the pre-effect refusal",
+      "file": "implementations/manager/src/commands.ts",
+      "find": " native: { code: error.condition, detail: error.message },",
+      "replace": "",
+      "expectRed": "CLI (live holder): the refusal names the live principal and says what to do",
+      "cell": "CLI (live holder): the refusal names the live principal and says what to do",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

@@ -1,34 +1,49 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync, type Stats } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
-  DEFAULT_SERVER,
   DEFAULT_SPACE,
   DEV_OWNER,
+  ROOT,
   assertLifecycleToken,
+  credsProblem,
+  inspectCredHealth,
   instancePinnedInstrumentCapabilities,
   isReachable,
+  isStreamNotFound,
+  jwtFromCreds,
   managerCallerBinding,
   mintCreds,
   mintLifecycleUid,
   mintGeneration,
   mintAcceptedToken,
   newIdentity,
+  oneLine,
   withIssuerSession,
   type IssuedCaller,
   probeConnect,
   registry,
+  token,
   type AuthProvider,
   type EpCaller,
   type MintOpts,
+  type ProbeResult,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { brokerAddressForDisplay } from "./broker-display.js";
 import { c } from "./colors.js";
 import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
-import { findMesh, getCurrent, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags } from "./mesh-target.js";
+import { findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
+import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
-import { renderWorkspaceError } from "./render.js";
+import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
+import { CommandFailure, type RefusalCode } from "./output.js";
+import { credentialFileExposure, localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
+import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
+import { stoppedLoopbackListener } from "./pid.js";
+import type { MeshTargetErrorCode } from "./mesh-target.js";
+import type { PreflightFailure } from "./preflight.js";
 
 /**
  * The one way every command that touches a running mesh figures out WHICH mesh + with what creds,
@@ -53,6 +68,8 @@ export interface ConnectFlags extends ResolveFlags {
 export interface ConnectOpts {
   instanceId?: string | string[];
   mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator" | "runAdmitter">;
+  /** A read must not sweep or prune the local registry as a hidden prelude. */
+  readOnly?: boolean;
 }
 
 /** Raw NATS auth for an off-registry connection — a join link / --token / --user+--pass / --creds.
@@ -217,6 +234,23 @@ export async function userSessionAuth(
   return { bearer, sentinelCreds };
 }
 
+/** {@link userViewAuth} with the provider's own failure classified, as {@link userConnectOrThrow}
+ *  classifies the bearer's. A refused, signed-out or unanswered exchange happens before any request,
+ *  so it is a {@link ConnectRefusal} under its code, not an unclassified error that a structured
+ *  command must report as unknown. Only signed-out is `permanent`. `cotal attach` mints this view
+ *  again on every reconnect, an exchange that did not answer may answer the next time, and the
+ *  provider reports every answered failure as refused, including a manager that is not live yet and
+ *  a registry read that failed. Any other error rethrows unchanged. */
+export async function userViewAuthOrThrow(conn: Connection, view: string, opts: Parameters<typeof userViewAuth>[2] = {}): Promise<UserViewAuth> {
+  try {
+    return await userViewAuth(conn, view, opts);
+  } catch (e) {
+    const code = (e as { code?: unknown } | undefined)?.code;
+    if (code !== "refused" && code !== "signed-out" && code !== "unavailable") throw e;
+    throw credentialRefusal(e, code === "signed-out" ? "permanent" : "transient");
+  }
+}
+
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
 export async function userViewAuthOrExit(conn: Connection, view: string): Promise<UserViewAuth> {
   try {
@@ -262,6 +296,7 @@ export function refuseStaticCredsForKnownUserAuth(space: string, server: string 
   throw new ConnectRefusal(
     `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
     `  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`,
+    { code: "AUTH_REQUIRED" },
   );
 }
 
@@ -287,20 +322,138 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  * wrapper that supplies the exiting disposition. The two forms cannot drift in what they say
  * because there is only one place the sentence is written.
  *
- * `kind` says whether asking again can help. `transient` is a broker that did not answer in time
- * or could not be reached, and nothing else: a caller that keeps going retries it. Every other
- * refusal is `permanent` (missing seed, refused credentials, a user-auth mesh offered static
- * creds), and a caller that keeps going must stop and say the sentence rather than retry it.
+ * `kind` says whether asking again can help. `transient` is a broker that did not answer in time or
+ * could not be reached, a user-auth service that did not answer, or a view exchange that failed for
+ * any reason but a sign-out (see {@link userViewAuthOrThrow}): a caller that keeps going retries it.
+ * Every other refusal is `permanent` (missing seed, refused credentials, a user-auth mesh offered
+ * static creds), and a caller that keeps going must stop and say the sentence rather than retry it.
  */
 export type ConnectRefusalKind = "transient" | "permanent";
 
+const REFUSAL_BRAND = Symbol.for("cotal.ConnectRefusal");
+
 export class ConnectRefusal extends Error {
+  /** A brand that survives two copies of this module, where `instanceof` would not. */
+  readonly [REFUSAL_BRAND] = true;
   readonly kind: ConnectRefusalKind;
-  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown; kind?: ConnectRefusalKind }) {
+  /** The stable code a structured command reports this refusal under (`AUTH_REQUIRED`,
+   *  `TARGET_UNAVAILABLE`, ...). Every refusal names one, so none reaches a script unclassified. */
+  readonly code: RefusalCode;
+  /** The sentence as its message and remedy, when it was written in two parts. */
+  readonly parts: WorkspaceErrorParts | undefined;
+  /** What the refusal is about, such as the file it names, for a structured command's `target`. */
+  readonly target: Record<string, unknown> | undefined;
+  constructor(readonly rendered: string, readonly hint: string | undefined, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode; parts?: WorkspaceErrorParts; target?: Record<string, unknown> }) {
     super(rendered, options);
     this.name = "ConnectRefusal";
-    this.kind = options?.kind ?? "permanent";
+    this.kind = options.kind ?? "permanent";
+    this.code = options.code;
+    this.parts = options.parts;
+    this.target = options.target;
   }
+
+  /** This refusal as a command's classified failure under its code: the message, and the remedy
+   *  apart from it. */
+  failure(): CommandFailure {
+    const remedy = this.parts?.remedy ?? this.hint?.trim();
+    return new CommandFailure("refused", this.code, this.parts?.message ?? this.rendered.replace(/^✗ /, ""), { ...(remedy ? { remedy } : {}), ...(this.target ? { target: this.target } : {}) });
+  }
+}
+
+/** A refusal over a workspace failure: the one-line sentence for a terminal, its parts for a
+ *  structured command. */
+function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
+  // A folder whose records name no space is probed under the default space, and its refusal names
+  // the folder, so its target names only the folder too.
+  const target = e.kind === "target" ? spaceRootTarget(e.error.details)
+    : e.kind === "preflight" ? spaceRootTarget(e.failure === "unreachable" && e.target.namesNoSpace ? { root: e.target.root } : e.target) : undefined;
+  return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e), ...(target ? { target } : {}) });
+}
+
+/** The space and root a failure names, as a structured refusal's `target`, or undefined when it
+ *  names neither. A script reads which space refused from it rather than from the message. */
+export function spaceRootTarget(at: { space?: string; root?: string }): { space?: string; root?: string } | undefined {
+  const target = { ...(at.space === undefined ? {} : { space: at.space }), ...(at.root === undefined ? {} : { root: at.root }) };
+  return Object.keys(target).length ? target : undefined;
+}
+
+export function isConnectRefusal(e: unknown): e is ConnectRefusal {
+  return typeof e === "object" && e !== null && (e as { [REFUSAL_BRAND]?: unknown })[REFUSAL_BRAND] === true;
+}
+
+/** The stable code for a mesh target that cannot be resolved. */
+export function targetErrorCode(code: MeshTargetErrorCode): RefusalCode {
+  switch (code) {
+    case "no-meshes":
+    case "unknown-space":
+    case "user-auth-unrecorded":
+      return "TARGET_NOT_FOUND";
+    case "not-started":
+      return "TARGET_UNAVAILABLE";
+    case "ambiguous-target":
+      return "TARGET_AMBIGUOUS";
+    case "default-occupied":
+      return "CONFLICT";
+    case "stale-auth-root":
+    case "unreadable-auth":
+      return "DEPENDENCY_UNAVAILABLE";
+  }
+}
+
+/** The stable code for a preflight that did not connect: an outage, a credential the broker needs
+ *  or a fresh one, or a credential it refused. */
+export function preflightCode(failure: PreflightFailure): RefusalCode {
+  switch (failure) {
+    case "unreachable":
+    case "slow-link":
+    case "broker-stopped":
+      return "TARGET_UNAVAILABLE";
+    case "registry-open-now-auth":
+    case "open-wants-auth":
+    case "stale-auth":
+      return "AUTH_REQUIRED";
+    case "registry-creds-rejected":
+    case "creds-rejected":
+      return "PERMISSION_DENIED";
+    case "tls-trust":
+      return "DEPENDENCY_UNAVAILABLE";
+  }
+}
+
+/** Why a user-auth provider could not issue credentials, when it says: no sign-in session
+ *  (`signed-out`), its service did not answer (`unavailable`), or it answered and refused this actor
+ *  (`refused`). A provider sets it as the thrown error's `code`; anything else is unclassified. */
+export type CredentialFailure = "signed-out" | "unavailable" | "refused";
+
+/** An error a user-auth provider throws, carrying its {@link CredentialFailure} and, when the
+ *  provider can name the next step apart from the reason, its remedy. */
+export function credentialFailure(code: CredentialFailure, message: string, remedy?: string): Error {
+  return Object.assign(new Error(message), { code }, remedy === undefined ? {} : { remedy });
+}
+
+/** A provider failure as a refusal: its message, and its remedy apart when it named one. */
+function credentialRefusal(e: unknown, kind: ConnectRefusalKind): ConnectRefusal {
+  const message = e instanceof Error ? e.message : String(e);
+  const remedy = (e as { remedy?: unknown } | undefined)?.remedy;
+  return typeof remedy === "string"
+    ? new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, { cause: e, kind, code: credentialCode(e), parts: { message, remedy } })
+    : new ConnectRefusal(`✗ ${message}`, undefined, { cause: e, kind, code: credentialCode(e) });
+}
+
+/** The provider's own sentence when it answered and refused this actor, such as the scope an elevated
+ *  view needs and the whole-row re-grant that adds it, shown on one line. Undefined for any other
+ *  error. */
+export function credentialRefusalMessage(e: unknown): string | undefined {
+  return e instanceof Error && (e as { code?: unknown }).code === "refused" ? oneLine(e.message) : undefined;
+}
+
+function credentialCode(e: unknown): RefusalCode {
+  const code = (e as { code?: unknown } | undefined)?.code;
+  if (code === "signed-out") return "AUTH_REQUIRED";
+  if (code === "refused") return "PERMISSION_DENIED";
+  // A provider that cannot issue credentials for a reason it does not name is still a dependency
+  // the command could not use; it is not reported as a sign-in the operator could fix.
+  return "DEPENDENCY_UNAVAILABLE";
 }
 
 /** The exiting disposition, in ONE place: print what the refusal already decided to say, and end
@@ -313,32 +466,117 @@ function exitOnRefusal(e: unknown): never {
 }
 
 /**
+ * Mint one control-caller instrument for a target the caller already resolved. It is an ISSUANCE
+ * (SPEC 13.15): its rails carry a fresh generation, and its ceiling is recorded before the material
+ * exists. It depends on no lifecycle gate, so its evidence carries the credential's own five-minute
+ * expiry as its liveness. Nothing here reads the registry or the `use` selection, so a caller that
+ * pinned its target keeps minting against that target after either one changes.
+ *
+ * `instanceId` pins THIS one-shot instrument to that manager instance, so it is issued the exact
+ * `ep.inst.<endpoint>.<iid>.<command>` rows. Without it the instrument holds only class-rail rows,
+ * every instance-addressed request is refused at the broker, and the client renders that refusal
+ * as a describe timeout, so `--on` reads as an unresponsive manager rather than an unminted grant.
+ * The capability SHAPE is core's to define; this site only decides that a pin was asked for.
+ */
+export async function mintControlInstrument(
+  target: Pick<MeshTarget, "server" | "space" | "tlsRequired"> & { readonly auth: SpaceAuth },
+  tier: "privileged" | "admin",
+  instanceId?: string | string[],
+): Promise<{ creds: string; epCaller: IssuedCaller }> {
+  const identity = newIdentity();
+  const uid = mintLifecycleUid();
+  const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+  const pinned = instanceId !== undefined ? instancePinnedInstrumentCapabilities(tier, instanceId) : undefined;
+  const creds = await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (s) =>
+    mintCreds(target.auth, identity, tier === "admin" ? "control-caller-admin" : "control-caller-privileged", {
+      lifecycleUid: uid,
+      ...(pinned ? { endpointCapabilities: pinned } : {}),
+      issued,
+      issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
+    }),
+  );
+  return { creds, epCaller: { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller };
+}
+
+/** The space {@link connectOrThrow} connects `flags` to, read from local records only, with no probe
+ *  and no dial. Undefined when those records name no single space, which connecting then reports. A
+ *  command reads it before it connects, so a refusal of its own input still names the mesh. */
+export function connectSpace(flags: ConnectFlags): string | undefined {
+  if (flags.creds) return flags.space ?? DEFAULT_SPACE;
+  if (flags.server && flags.space && !findMesh(flags.space)) return flags.space;
+  try { return resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }).space; }
+  catch { return undefined; }
+}
+
+/**
  * Resolve where a mesh-touching command connects + with what creds, THROWING {@link ConnectRefusal}
  * on every refusal instead of ending the process. {@link connectOrExit} is this plus the printing
  * and the exit; a caller that must survive a refusal (a reconnect loop) calls this one.
- *  • Explicit `--creds` → a RAW off-registry connection, except when the target is a known
- *    per-user-auth mesh. Those refuse static creds fail-closed because old local creds remain
- *    broker-valid but are the wrong identity plane after the flip.
+ *  • Explicit `--creds` → a RAW connection to `--server`, or to the address its space is registered
+ *    at: `--space`, else the selected space or this folder's ({@link credsSpace}), else the default.
+ *    Except when the target is a known per-user-auth mesh. Those refuse static creds fail-closed
+ *    because old local creds remain broker-valid but are the wrong identity plane after the flip.
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
- *    on an auth mesh, and preflight with the registry's stale-prune.
+ *    on an auth mesh, and preflight with the registry's stale-prune unless readOnly is requested.
  */
 export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: ConnectOpts = {}): Promise<Connection> {
   if (flags.creds) {
-    const space = flags.space ?? DEFAULT_SPACE;
+    let resolved: { space: string; selected: boolean } | undefined;
+    if (flags.space === undefined && flags.server === undefined) {
+      try { resolved = credsSpace(process.cwd()); }
+      catch (e) {
+        if (isWorkspaceTargetError(e)) throw workspaceRefusal({ kind: "target", error: e }, { cause: e, code: targetErrorCode(e.code) });
+        throw e;
+      }
+    }
+    const space = flags.space ?? resolved?.space ?? DEFAULT_SPACE;
+    // A space the caller named, selected or is in is named in a refusal; the default is not.
+    const named = flags.space !== undefined || resolved !== undefined;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
     // as "any recorded server for this space", so a user mesh on a NON-default port is still
     // recognized when the caller omits --server. Defaulting the server BEFORE the guard would make
     // its `recorded.server === server` match miss every non-4222 user mesh, letting a static --creds
     // slip past the flip.
     refuseStaticCredsForKnownUserAuth(space, flags.server, "--creds");
-    const server = flags.server ?? DEFAULT_SERVER;
-    if (!existsSync(flags.creds)) throw new ConnectRefusal(`✗ creds file not found: ${flags.creds}`);
-    const creds = readFileSync(flags.creds, "utf8");
-    // An explicit `--creds` file is an off-registry connect: no mesh record, so no recorded TLS
-    // intent to inherit. It stays non-strict, and that is a real (documented) gap rather than a
-    // safe default - a `--creds` connect to a TLS broker still upgrades, but is downgradeable.
-    await reachableOrThrow(server, { creds });
-    return { server, space, tls: false, creds };
+    // The credential goes only to a broker the caller paired it with: `--server`, or the address the
+    // space is registered at. The default address is never assumed for it.
+    const recorded = flags.server === undefined ? findMesh(space) : undefined;
+    const server = flags.server ?? recorded?.server;
+    if (server === undefined)
+      throw new ConnectRefusal(
+        `✗ --creds needs --server <url> or a registered --space: ${resolved ? (resolved.selected ? "the selected space" : "this folder's space") : flags.space === undefined ? "the default space" : "space"} "${space}" is not registered here, so nothing was dialed`,
+        "  pass the broker this credential belongs to with --server <url>",
+        { code: "TARGET_NOT_FOUND", ...(named ? { target: { space } } : {}) },
+      );
+    const creds = readCredsFile(flags.creds);
+    // A broker taken from the space's record keeps its recorded TLS requirement. With `--server` the
+    // connect is off-registry: no recorded TLS intent to inherit. It stays non-strict, and that is a
+    // real (documented) gap rather than a safe default - a `--creds` connect to a TLS broker still
+    // upgrades, but is downgradeable.
+    const tls = recorded?.tlsRequired === true;
+    try {
+      await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
+    } catch (e) {
+      // A rejected credential whose own permissions name another space is reported with that space.
+      const owner = isConnectRefusal(e) && e.code === "PERMISSION_DENIED" ? spaceInCreds(creds) : undefined;
+      if (owner === undefined) throw e;
+      const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
+      // A `--server` other than the one the credential's space is registered at sends it to another
+      // broker, so the step back drops `--server` rather than keeping it.
+      const ownerMesh = findMesh(owner);
+      const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
+      if (owner === space) {
+        if (elsewhere === undefined) throw e;
+        const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
+        const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
+        throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path: flags.creds, server: at } });
+      }
+      const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
+      const use = elsewhere !== undefined ? `use it with --space ${owner} and without --server, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
+      const remedy = `${use}${named ? `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space} --out <file>\`` : ""}`;
+      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path: flags.creds } });
+    }
+    return { server, space, tls, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
   // both is as deliberate as `--creds`, but an open broker has no creds to pass — connect bare,
@@ -352,13 +590,32 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     if (hasUserAuthState(findCotalRoot(), flags.space))
       throw new ConnectRefusal(
         `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+        undefined,
+        { code: "TARGET_NOT_FOUND" },
       );
     // A raw OPEN remote broker named entirely on the command line: nothing recorded it, so there
     // is no intent to honour. Non-strict, same documented gap as `--creds`.
     await reachableOrThrow(flags.server, {});
     return { server: flags.server, space: flags.space, tls: false };
   }
-  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline });
+  let target: MeshTarget;
+  if (opts.readOnly) {
+    try { target = resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }); }
+    catch (e) {
+      if (isWorkspaceTargetError(e)) throw workspaceRefusal({ kind: "target", error: e }, { cause: e, kind: e.code === "no-meshes" || e.code === "unknown-space" || e.code === "not-started" ? "transient" : "permanent", code: targetErrorCode(e.code) });
+      throw e;
+    }
+  } else target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline });
+  return connectTargetOrThrow(target, role, opts);
+}
+
+/**
+ * Connect to a mesh the caller already resolved, as {@link connectOrThrow} does once it has
+ * resolved one: the logged-in user bearer on a user-auth mesh, a minted `role` credential on a
+ * static-auth mesh and none on an open one, then a preflight with the registry's stale-prune unless
+ * readOnly is requested. It never resolves a target, so a caller that pinned one connects to it.
+ */
+export async function connectTargetOrThrow(target: MeshTarget, role: Profile, opts: ConnectOpts = {}): Promise<Connection> {
   // USER MODE is a HARD branch: it never mints from on-disk trust material (static creds DO work
   // on a user-auth broker — minting here would silently connect the operator on the wrong identity
   // plane) and never connects credlessly. Everything it needs comes from the login cache + the
@@ -378,6 +635,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     if (role === "control-caller-privileged" || role === "control-caller-admin")
       throw new ConnectRefusal(
         `✗ cannot mint the "${role}" instrument on a user-mode mesh - the logged-in user bearer is the control surface (ledger scope is the grant). Operator instruments are static-mesh only.`,
+        undefined,
+        { code: "UNSUPPORTED" },
       );
     // A workflow run's own profiles are minted by the space signer, which a client of a user-auth
     // mesh does not hold; the bearer carries none of their rows. The hosted path refuses too (the
@@ -385,6 +644,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     if (role === "run-driver" || role === "run-mediator" || role === "run-operator")
       throw new ConnectRefusal(
         `✗ cannot mint the "${role}" credential on a user-mode mesh - a run's driver rides a credential only the space signer mints (SPEC 14.6), and a user-auth mesh hosts no runs yet either. Run programs on a static-auth mesh.`,
+        undefined,
+        { code: "UNSUPPORTED" },
       );
     return userConnectOrThrow(target);
   }
@@ -395,67 +656,53 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
   let creds: string | undefined;
   let epCaller: EpCaller | undefined;
   if (target.auth) {
-    const identity = newIdentity();
-    if (instrument) {
+    if (role === "deployer") {
+      // The deployer is NOT an issuance. It is the one instrument the profile table leaves
+      // unbounded (a deploy spans planning, launches and their readiness waits), and an issuance
+      // bound to no lifecycle gate must carry an expiry as its liveness (SPEC 13.15), so the mint
+      // would refuse it. Nothing it does needs the versioned rail: only `run-start` requires the
+      // binding, and a deploy starts no run. It rides the legacy rail under its own uid.
+      const identity = newIdentity();
       const uid = mintLifecycleUid();
-      // `--on <instanceId>`: pin THIS one-shot instrument to the instance the resolve already
-      // chose, so it is issued the exact `ep.inst.<endpoint>.<iid>.<command>` rows for this
-      // invocation. Without it the instrument holds only class-rail rows, every instance-addressed
-      // request is refused at the broker, and the client renders that refusal as a describe
-      // timeout — so `--on` reads as an unresponsive manager rather than an unminted grant. The
-      // capability SHAPE is core's to define; this site only decides that a pin was asked for.
-      // Only the two control-caller tiers take it: `deployer` mints through a different arm that
-      // does not consume endpoint capabilities, so pinning it here would silently do nothing.
-      const tier = role === "control-caller-admin" ? "admin" : "privileged";
-      const pinned = opts.instanceId !== undefined && role !== "deployer"
-        ? instancePinnedInstrumentCapabilities(tier, opts.instanceId)
-        : undefined;
-      if (role === "deployer") {
-        // The deployer is NOT an issuance. It is the one instrument the profile table leaves
-        // unbounded (a deploy spans planning, launches and their readiness waits), and an issuance
-        // bound to no lifecycle gate must carry an expiry as its liveness (SPEC 13.15), so the mint
-        // would refuse it. Nothing it does needs the versioned rail: only `run-start` requires the
-        // binding, and a deploy starts no run. It rides the legacy rail under its own uid.
-        creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid });
-        epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
-      } else {
-        // A control-caller instrument is an ISSUANCE (SPEC 13.15): its rails carry a fresh
-        // generation, and its ceiling is recorded before the material exists. It depends on no
-        // lifecycle gate, so its evidence carries the credential's own five-minute expiry as its
-        // liveness.
-        const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
-        try {
-          creds = await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (s) =>
-            mintCreds(target.auth!, identity, role, {
-              lifecycleUid: uid,
-              ...(pinned ? { endpointCapabilities: pinned } : {}),
-              issued,
-              issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
-            }),
-          );
-        } catch (e) {
-          // The issuer dial is now the first thing on this path to touch the broker. A mesh that
-          // is not there must still be reported in the preflight's classified words (and prune the
-          // stale entry as before), not as the raw transport error the dial throws. Anything the
-          // preflight does not explain is the issuer's own fault and surfaces as such.
-          await preflightOrThrow(target);
-          throw e;
-        }
-        epCaller = { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller;
+      creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid });
+      epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
+    } else if (instrument) {
+      // `--on <instanceId>` reaches the mint as `opts.instanceId`. Only the two control-caller
+      // tiers take it: `deployer` mints through a different arm that does not consume endpoint
+      // capabilities, so pinning it would silently do nothing.
+      // The issuer dial waits out its own budget on a stopped broker, so the preflight names it first.
+      if (stoppedLoopbackListener(target.server) !== undefined) await preflightOrThrow(target, undefined, opts.readOnly === true);
+      try {
+        ({ creds, epCaller } = await mintControlInstrument({ server: target.server, space: target.space, tlsRequired: target.tlsRequired, auth: target.auth },
+          role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId));
+      } catch (e) {
+        // The issuer dial is now the first thing on this path to touch the broker. A mesh that
+        // is not there must still be reported in the preflight's classified words (and prune the
+        // stale entry as before), not as the raw transport error the dial throws. Anything the
+        // preflight does not explain is the issuer's own fault and surfaces as such.
+        await preflightOrThrow(target, undefined, opts.readOnly === true);
+        // The issuer reads the space's issuance buckets, which a space delete removes.
+        if (isStreamNotFound(e) && spaceStreamsExpected(target.space, target.mode)) throw spaceStreamsAbsent(target.space, localStackRoot(target.space));
+        throw e;
       }
     } else {
-      creds = await mintCreds(target.auth, identity, role, opts.mint ?? {});
+      creds = await mintCreds(target.auth, newIdentity(), role, opts.mint ?? {});
     }
   }
   // A registered AUTH mesh with no seed is still authenticated. A credless probe would
   // classify it as "open now wants auth" and prune or attach as open. Refuse here,
   // naming the recorded mode.
   if (target.mode === "auth" && !target.auth) {
+    // A project folder moved after its stack started there keeps its seed under the new path.
+    const moved = movedProject(target.space, target.root);
+    if (moved) throw new ConnectRefusal(`✗ ${moved.message} - ${moved.remedy}`, undefined, { code: "CONFLICT", parts: { message: moved.message, remedy: moved.remedy }, target: moved.target });
     throw new ConnectRefusal(
       `✗ mesh "${target.space}" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,
+      undefined,
+      { code: "DEPENDENCY_UNAVAILABLE" },
     );
   }
-  await preflightOrThrow(target, creds);
+  await preflightOrThrow(target, creds, opts.readOnly === true);
   // THE REGISTRY-RESOLVED PATH, and the one that must inherit the recorded decision: if the mesh
   // record says this broker is TLS-required, the connection REQUIRES it. This is the site whose
   // omission had no symptom - it connects either way against an honest broker.
@@ -506,15 +753,19 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
 export async function connectUserControlOrThrow(flags: ResolveFlags): Promise<Connection> {
   const target = await resolveTargetOrThrow(flags);
   if (target.mode !== "user")
-    throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`);
+    throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`, undefined, { code: "UNSUPPORTED" });
   return userConnectOrThrow(target);
 }
 
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root
  *  supplied — never imported here), exchange this machine's login session for a bearer, and hand
  *  back bearer + sentinel. The provider owns the failure copy for its own steps (not logged in,
- *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper only
+ *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper
  *  throws it as a {@link ConnectRefusal}, so each caller keeps its own disposition.
+ *
+ *  A service that did not answer is a `transient` refusal, as an unreachable broker is: `cotal
+ *  attach` exchanges the base bearer again on every reconnect, and the service may answer the next
+ *  time. Every other failure is `permanent`.
  *
  *  Takes a resolved target only — never a Profile. Callers that know the mesh is user-mode must
  *  enter via {@link connectUserControlOrExit} (no role) or the user branch of {@link connectOrExit}
@@ -524,7 +775,8 @@ async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
   try {
     return await userConnect(target);
   } catch (e) {
-    throw new ConnectRefusal(`✗ ${e instanceof Error ? e.message : String(e)}`, undefined, { cause: e });
+    const kind = (e as { code?: unknown } | undefined)?.code === "unavailable" ? "transient" : "permanent";
+    throw credentialRefusal(e, kind);
   }
 }
 
@@ -564,11 +816,74 @@ async function userConnect(target: MeshTarget): Promise<Connection> {
   };
 }
 
+/** Read a `--creds` file and check it before anything is dialed, so a missing, unreadable or
+ *  malformed file is refused naming the file and what is wrong with it, rather than reaching a
+ *  serving broker as an unreachable one. A file other accounts can read is still used, with a
+ *  warning on stderr: the private-file rule refuses only the credentials Cotal keeps itself. */
+export function readCredsFile(path: string): string {
+  const refuse = (problem: string, code: RefusalCode, remedy: string) =>
+    new ConnectRefusal(`✗ creds file ${problem}`, `  ${remedy}`, { code, parts: { message: `creds file ${problem}`, remedy }, target: { path } });
+  let stat: Stats;
+  let text: string;
+  try {
+    stat = statSync(path);
+    if (!stat.isFile()) throw refuse(`${path} is not a regular file`, "SCHEMA_INVALID", "pass the credential file itself");
+    // Another local account that can write a folder on its path can swap the file, so it is refused
+    // as auth mint refuses to write one there. POSIX only, as the file-mode warning below is.
+    if (localRecordAccess() === "posix") {
+      try { protectedLocalDirectory(dirname(resolve(path)), "its path"); }
+      catch (error) {
+        if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") throw refuse(`${path} cannot be used: ${error.message}`, "PERMISSION_DENIED", error.remedy ?? "move it to a folder only you can write");
+        throw error;
+      }
+    }
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    if (isConnectRefusal(e)) throw e;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw refuse(`not found: ${path}`, "TARGET_NOT_FOUND", "check the path; `cotal auth mint <label> --out <file>` writes a credential file");
+    throw refuse(`${path} could not be read (${code ?? "read failed"})`, code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : "SCHEMA_INVALID", "check the file's owner and permissions");
+  }
+  const problem = credsProblem(text);
+  if (problem) throw refuse(`${path} cannot be used: ${problem.message}`, "SCHEMA_INVALID", problem.code === "crlf"
+    ? `save it with LF line endings, for example with \`dos2unix ${path}\``
+    : "pass the complete credential file as it was issued; `cotal auth mint <label> --out <file>` writes a new one");
+  const exposure = credentialFileExposure(path, stat);
+  if (exposure) console.error(c.yellow(`! creds file ${path} ${exposure.reason}; ${exposure.remedy}`));
+  return text;
+}
+
+/** The one space a credential's own permissions name: the `<space>` of every `cotal.<space>.…`
+ *  subject its user JWT allows or denies. Undefined when they name none, more than one or a
+ *  wildcard, or the JWT does not decode. This is what the file says, not which broker accepts it. */
+export function spaceInCreds(creds: string): string | undefined {
+  try {
+    const claims = JSON.parse(Buffer.from(jwtFromCreds(creds)?.split(".")[1] ?? "", "base64url").toString("utf8")) as { nats?: Record<string, { allow?: unknown; deny?: unknown } | undefined> };
+    const subjects = ["pub", "sub"].flatMap((kind) => [claims.nats?.[kind]?.allow, claims.nats?.[kind]?.deny].flatMap((list) => Array.isArray(list) ? list : []));
+    const spaces = new Set(subjects.filter((subject): subject is string => typeof subject === "string" && subject.startsWith(`${ROOT}.`)).map((subject) => subject.split(".")[1] ?? ""));
+    const [space] = spaces;
+    return spaces.size === 1 && space !== undefined && token(space) === space ? space : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** {@link readCredsFile} with the exiting disposition. */
+export function readCredsFileOrExit(path: string): string {
+  try {
+    return readCredsFile(path);
+  } catch (e) {
+    exitOnRefusal(e);
+  }
+}
+
 /** Reachability check for a RAW (off-registry) connection — one plain sentence, never a registry/
  *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
  *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
 export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
-  let probe = await probeConnect(server, auth);
+  // A credential past its own expiry is dead, and no endpoint presents it, but the broker still
+  // accepts it until its last second ends. So it is refused without a dial.
+  let probe: ProbeResult = auth.creds !== undefined && inspectCredHealth(auth.creds).state === "expired" ? { ok: false, reason: "stale-auth" } : await probeConnect(server, auth);
   // CONFIRM BEFORE CONDEMNING, same reason as the registry path's re-probe (preflight.ts:100-110):
   // the default budget is 1s, a real link can need more, and the raw door never got the second try —
   // #709. `timeout`/`unreachable` are both inconclusive misses; `auth-required`/`stale-auth` are
@@ -581,7 +896,9 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   // of this: it is transport, not identity, and a TLS-only connection presents no credential.
   const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }), undefined, { kind });
+  const code: RefusalCode =
+    kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
+  throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code });
 }
 
 /** {@link reachableOrThrow} with the exiting disposition. */
@@ -611,27 +928,21 @@ export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTar
     // found is transient: the sweep keeps a crashed `up` mesh as offline, so it resolves again once
     // its broker is back. A record that exists and is broken, or several that match, is not.
     if (isWorkspaceTargetError(e)) {
-      const kind = e.code === "no-meshes" || e.code === "unknown-space" ? "transient" : "permanent";
-      throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e, kind });
+      const kind = e.code === "no-meshes" || e.code === "unknown-space" || e.code === "not-started" ? "transient" : "permanent";
+      throw workspaceRefusal({ kind: "target", error: e }, { cause: e, kind, code: targetErrorCode(e.code) });
     }
     throw e;
   }
-  // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,
-  // or kept as offline) and we fell back to the only live one — say so. The N>1 case errors
-  // loudly; this is the one spot that would otherwise quietly redirect a stale default.
-  const cur = getCurrent();
-  if (cur && (!findMesh(cur) || offline.includes(cur)) && target.source === "registry")
-    console.error(c.dim(`note: default mesh "${cur}" is down - using "${target.space}"`));
   return target;
 }
 
 /** Confirm the resolved mesh is up and accepts these creds — replaces the raw NATS "Authorization
- *  Violation" trace with one sentence, and prunes the entry if the broker is gone / mismatched.
+ *  Violation" trace with one sentence. A readOnly caller never prunes the entry on a mismatch.
  *  The probe + classify + render live beside this file; this wrapper owns the operator I/O — it
  *  acts on the prune decision, colours, and exits. Probes with `probeCreds` when given (the
  *  caller's `--creds`/minted creds); otherwise a throwaway identity is minted from the target's
  *  own trust material. */
-export async function preflightOrThrow(target: MeshTarget, probeCreds?: string): Promise<void> {
+export async function preflightOrThrow(target: MeshTarget, probeCreds?: string, readOnly = false): Promise<void> {
   // USER-mode targets are never credless-probed here: the callout denies a bare connect, the
   // classifier reads that as a stale-entry mismatch, and a mismatch prune would drop a healthy
   // `up` record (found live: foreground `spawn` did exactly this and every later command fell
@@ -639,11 +950,8 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    throw new ConnectRefusal(
-      `✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`,
-      undefined,
-      { kind: "transient" },
-    );
+    const parts = { message: `no mesh running at ${target.server}; mesh "${target.space}" is recorded at ${target.root} but not running`, remedy: "run `cotal up` there to restart" };
+    throw new ConnectRefusal(`✗ ${parts.message} - ${parts.remedy}`, undefined, { kind: "transient", code: "TARGET_UNAVAILABLE", parts });
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
@@ -651,9 +959,9 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // record is one an automatic sweep may delete. Liveness (`unreachable`) keeps an `up` record as
   // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
-  const pruned = r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
-  const kind = r.kind === "unreachable" || r.kind === "slow-link" ? "transient" : "permanent";
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }), undefined, { kind });
+  const pruned = !readOnly && r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
+  const kind = r.kind === "unreachable" || r.kind === "slow-link" || r.kind === "broker-stopped" ? "transient" : "permanent";
+  throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned, ...(r.pid === undefined ? {} : { pid: r.pid }) }, { kind, code: preflightCode(r.kind) });
 }
 
 /** {@link preflightOrThrow} with the exiting disposition. */

@@ -3,17 +3,31 @@ export * from "./advisory-lock.js";
 export * from "./local-consumer-custody.js";
 export * from "./subjects.js";
 export * from "./endpoint-subjects.js";
+export * from "./digest-id.js";
+export * from "./endpoint-auth-digest.js";
 export * from "./endpoint-grants.js";
 export * from "./endpoint-envelope.js";
 export * from "./endpoint-records.js";
 export * from "./lifecycle-state.js";
 export * from "./environment-manager-grants.js";
 export * from "./lifecycle-saga.js";
+export * from "./native-uid-custody.js";
 export * from "./endpoint-cluster.js";
 export * from "./endpoint-journal.js";
 export * from "./endpoint-binding.js";
+export * from "./endpoint-schema-diff.js";
+export * from "./space-resource-definitions.js";
+export * from "./space-deletion-targets.js";
+export * from "./authority-store-config.js";
+export * from "./broker-identity.js";
+export * from "./space-schema-observation.js";
+export * from "./space-initialization-observation.js";
+export * from "./space-initialization-diff.js";
+export * from "./stream-schema-diff.js";
+export * from "./space-schema-diff.js";
 export * from "./endpoint-service.js";
 export * from "./endpoint-serve.js";
+export * from "./endpoint-describe-observation.js";
 export * from "./endpoint-verbs.js";
 export * from "./endpoint-invoke.js";
 export * from "./endpoint-work.js";
@@ -38,8 +52,10 @@ export * from "./endpoint-traits.js";
 export * from "./safe-pattern.js";
 export * from "./resolve.js";
 export * from "./presence-ages.js";
+export * from "./process-runtime.js";
 export * from "./presence-text.js";
 export * from "./one-line.js";
+export * from "./text-encoding.js";
 export * from "./link.js";
 export * from "./identity.js";
 export * from "./secret-store.js";
@@ -64,8 +80,11 @@ export * from "./fs-safe.js";
 // publish primitive of the code that writes secrets. Everything a consumer legitimately needs is
 // named here; the seam stays reachable from the suite via a deep import of the module itself.
 export {
+  createPrivateRecord,
   hardenPrivate,
   mkSecretDir,
+  openPrivateAppend,
+  writePrivateRecord,
   writeSecretFile,
   writeSecretFileAtomic,
   writeSecretFileCreateOnly,
@@ -88,8 +107,12 @@ export * from "./environment.js";
 export * from "./terminal.js";
 export * from "./registry.js";
 export * from "./auth-provider.js";
+export * from "./conversation-selection.js";
+export * from "./conversation-approval.js";
 export * from "./manager-caller.js";
 export * from "./remote-manager-authority.js";
+export * from "./remote-service-authority.js";
+export * from "./endpoint-capability-policy.js";
 export * from "./delegated-recovery.js";
 export * from "./canonical.js";
 export * from "./artifact.js";
@@ -106,7 +129,16 @@ export * from "./run-migration.js";
 export * from "./run-program.js";
 export * from "./run-driver-grants.js";
 export * from "./turn-contract.js";
+export * from "./private-tool-results.js";
+export * from "./sealed-reply.js";
 export * from "./run-host.js";
 export * from "./issued-authority.js";
 export * from "./run-admission.js";
+export * from "./run-cancel.js";
+export * from "./run-submission.js";
+export * from "./run-submission-client.js";
 export * from "./issuer-session.js";
+
+export * from "./service-gate.js";
+
+export { parseClosureManifest } from "./contract-manifest.js";

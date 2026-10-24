@@ -5,7 +5,9 @@
  *
  * The fixture drives the shipped binary against its own isolated broker with a supported
  * multi-space account root. It runs both filename orders, then verifies that an absent requested
- * space and a record rooted elsewhere still refuse.
+ * space and a record rooted elsewhere still refuse. An `up --space` for a space that runs at the
+ * named address from another folder refuses, naming that folder, and offers no other port. So does
+ * one with `--json` or `--plain`, or with no `--server`, and none of them writes in that folder.
  *
  * Also carries the #1697 `--host` shape refusals (broker-free, first section): a URL typed into
  * `--host` used to be bracketed into `nats://[nats://…]:4222` and either misfired as an unrelated
@@ -15,7 +17,7 @@
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -30,7 +32,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 13 + 5 + 14; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 14; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -72,7 +74,7 @@ function cotal(fixture: Fixture, args: string[]) {
 }
 
 async function stop(fixture: Fixture): Promise<boolean> {
-  const down = cotal(fixture, ["down", "manager", "nats"]);
+  const down = cotal(fixture, ["down"]);
   const stopped = down.status === 0 && !down.error && !down.signal;
   check("the isolated mesh stops cleanly", stopped, {
     status: down.status,
@@ -87,12 +89,21 @@ async function orderedRefresh(rootSpace: string, tenantSpace: string, expectedOr
   const fixture = await makeFixture(rootSpace);
   process.env.COTAL_HOME = fixture.home;
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
-  const { createBrokerAuth, createSpaceAccountAuth } = await import("@cotal-ai/core");
-  const { authDir, findMesh, loadMeshes, recordMesh, removeMesh, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath } = await import("@cotal-ai/workspace");
+  const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintConnectionEvictorCreds, mintMembershipObserverCreds, newIdentity } = await import("@cotal-ai/core");
+  const { authDir, connectionEvictorCredsKey, findMesh, loadMeshes, membershipObserverCredsKey, recordMesh, removeMesh, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const broker = await createBrokerAuth(`refresh-${rootSpace}`);
   saveBrokerAuth(authDir(fixture.root), broker);
-  saveSpaceAccountAuth(authDir(fixture.root), await createSpaceAccountAuth(broker, rootSpace));
+  const rootAccount = await createSpaceAccountAuth(broker, rootSpace);
+  saveSpaceAccountAuth(authDir(fixture.root), rootAccount);
   saveSpaceAccountAuth(authDir(fixture.root), await createSpaceAccountAuth(broker, tenantSpace));
+  // A fresh `up` writes the space's $SYS pair while the broker's signing seed is in memory. This
+  // fixture builds the trust chain itself, so it writes the pair too: without it the delivery daemon
+  // on a two-space broker refuses, and a first boot whose control plane does not come up exits 1.
+  const rootAuth = composeSpaceAuth(broker, rootAccount);
+  const composition = { injected: false as const, root: fixture.root };
+  const store = workspaceSecretStore(fixture.root);
+  await store.put(membershipObserverCredsKey(rootSpace, composition), await mintMembershipObserverCreds(rootAuth, newIdentity()));
+  await store.put(connectionEvictorCredsKey(rootSpace, composition), await mintConnectionEvictorCreds(rootAuth, newIdentity()));
   const removeTenantAccount = () => rmSync(spaceAccountPath(authDir(fixture.root), tenantSpace), { force: true });
   let started = false;
   try {
@@ -165,6 +176,45 @@ async function foreignRootRefusal(): Promise<void> {
   }
 }
 
+/** `up --space` from an unrelated folder at the address its space already runs on: the broker there
+ *  is that space's own, so the refusal names its folder instead of offering a second broker. */
+async function namedSpaceElsewhere(): Promise<void> {
+  const fixture = await makeFixture("elsewhere");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const other = mkdtempSync(join(scratch, "elsewhere-other-"));
+  let started = false;
+  try {
+    const first = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", "home-space"]);
+    started = first.status === 0;
+    check("named-space fixture mesh starts", started, `${first.stdout}${first.stderr}`);
+    if (!started) return;
+    const again = spawnSync(TSX, [CLI, "up", "--server", fixture.server, "--space", "home-space"], { cwd: other, env: fixture.env, encoding: "utf8", timeout: 120_000 });
+    check("up --space from another folder at its running address names the folder it runs from, not another port",
+      again.status === 2 && again.stderr.includes(`space "home-space" runs at ${fixture.server}, started in ${fixture.root}`) &&
+        again.stderr.includes("--space home-space") && !again.stderr.includes("with a free port"), `${again.stdout}${again.stderr}`);
+    const refusal = `space "home-space" runs at ${fixture.server}, started in ${fixture.root}, so up did not start it again`;
+    for (const extra of [["--server", fixture.server, "--plain"], [], ["--plain"]]) {
+      const r = spawnSync(TSX, [CLI, "up", "--space", "home-space", ...extra], { cwd: other, env: fixture.env, encoding: "utf8", timeout: 120_000 });
+      check(`up --space ${["home-space", ...extra].join(" ")} from another folder is the same CONFLICT, naming that folder`, r.status === 2 && r.stderr.includes(refusal) && r.stderr.includes("CONFLICT"), `${r.stdout}${r.stderr}`);
+    }
+    for (const extra of [["--server", fixture.server], []]) {
+      const r = spawnSync(TSX, [CLI, "up", "--space", "home-space", ...extra, "--json"], { cwd: other, env: fixture.env, encoding: "utf8", timeout: 120_000 });
+      let envelope: { outcome?: string; error?: { code?: string; message?: string }; target?: { root?: string } } = {};
+      try { envelope = JSON.parse(r.stdout); } catch { /* shown below */ }
+      check(`up --space ${["home-space", ...extra].join(" ")} --json from another folder is the CONFLICT envelope, aimed at that folder`,
+        r.status === 2 && envelope.outcome === "refused" && envelope.error?.code === "CONFLICT" && envelope.error.message === refusal && envelope.target?.root === fixture.root, `${r.stdout}${r.stderr}`);
+    }
+    check("none of those refusals wrote anything in the folder it ran from", !existsSync(join(other, ".cotal")), join(other, ".cotal"));
+    started = !(await stop(fixture));
+  } finally {
+    if (started) await stop(fixture);
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -192,11 +242,11 @@ async function storeRecordRepair(): Promise<void> {
 
     let railsUp = false;
     for (let i = 0; i < 6 && !railsUp; i++) {
-      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      const set = cotal(fixture, ["channel", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
       if (set.status === 0) railsUp = true;
       else await sleep(5_000);
     }
-    check("(2) the manager answers channels set within the poll budget", railsUp);
+    check("(2) the manager answers channel set within the poll budget", railsUp);
 
     const pidPath = join(fixture.root, ".cotal", "nats.pid");
     const pid = Number(readFileSync(pidPath, "utf8").trim());
@@ -215,8 +265,8 @@ async function storeRecordRepair(): Promise<void> {
     const log = readFileSync(join(fixture.root, ".cotal", "nats.log"), "utf8");
     const lastStoreLine = log.split("\n").filter((l) => l.includes("Store Directory:")).pop() ?? "";
     check("(4) the log's last Store Directory: line names store-a/jetstream", lastStoreLine.includes(join("store-a", "jetstream")), lastStoreLine);
-    const list = cotal(fixture, ["channels", "list", "--server", fixture.server, "--space", space]);
-    check("(4) channels list still shows the pre-crash channel", /#probe/.test(`${list.stdout}${list.stderr}`), `${list.stdout}${list.stderr}`);
+    const list = cotal(fixture, ["channel", "--server", fixture.server, "--space", space]);
+    check("(4) the channel list still shows the pre-crash channel", /#probe/.test(`${list.stdout}${list.stderr}`), `${list.stdout}${list.stderr}`);
 
     const pid2 = Number(readFileSync(pidPath, "utf8").trim());
     process.kill(pid2, "SIGKILL");
@@ -297,7 +347,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
   const { findMesh } = await import("@cotal-ai/workspace");
   const space = "fg-crash";
-  const child = spawn(TSX, [CLI, "up", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(TSX, [CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout?.setEncoding("utf8");
@@ -307,11 +357,11 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
-      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      const set = cotal(fixture, ["channel", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
       if (set.status === 0) railsUp = true;
       else await sleep(1_000);
     }
-    check("the foreground fixture answers channels set within the poll budget", railsUp);
+    check("the foreground fixture answers channel set within the poll budget", railsUp);
     let recorded = false;
     for (let i = 0; i < 30 && !recorded; i++) {
       if (findMesh(space) !== undefined) recorded = true;
@@ -338,7 +388,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     // find, so `cotal down` here reports "Nothing running" and exits non-zero even though its
     // registry sweep (which runs unconditionally on a bare down, ahead of that exit) still clears
     // the crash-kept record — the real, documented effect this cell checks.
-    cotal(fixture, ["down", "manager", "nats"]);
+    cotal(fixture, ["down"]);
     check("`stop` (down) also removes the kept record", findMesh(space) === undefined, findMesh(space));
   } finally {
     if (child.exitCode === null) { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
@@ -346,15 +396,15 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
 
   // CONTROL: the same foreground `up`, ended with SIGINT (the intended stop) instead of SIGKILL,
   // exits 0 and drops the record — proving the crash branch above is the ONLY one that keeps it.
-  const control = spawn(TSX, [CLI, "up", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  const control = spawn(TSX, [CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
-      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      const set = cotal(fixture, ["channel", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
       if (set.status === 0) railsUp = true;
       else await sleep(1_000);
     }
-    check("(control) the second foreground fixture answers channels set within the poll budget", railsUp);
+    check("(control) the second foreground fixture answers channel set within the poll budget", railsUp);
     control.kill("SIGINT");
     const controlExit = await new Promise<number | null>((res) => control.once("exit", (code) => res(code)));
     check("(control) SIGINT (intended stop) exits 0", controlExit === 0, controlExit);
@@ -385,7 +435,10 @@ async function hostShapeRefusals(): Promise<void> {
   // starts none); foreign + manual is the refusal state the fixture exists to hold.
   const recordRoot = mkdtempSync(join(scratch, "host-shape-record-root-"));
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
-  const entry = { space: "host-shape", server: "nats://127.0.0.1:4222", root: recordRoot, mode: "open" as const, origin: "manual" as const, ts: new Date(0).toISOString() };
+  // The record names a free port: a broker answering at the recorded address would make `up` report
+  // the space as running elsewhere before the control reaches the manual-registration refusal.
+  const recordPort = await pickFreePort();
+  const entry = { space: "host-shape", server: `nats://127.0.0.1:${recordPort}`, root: recordRoot, mode: "open" as const, origin: "manual" as const, ts: new Date(0).toISOString() };
   recordMesh(entry);
   const out = (r: { stdout: string; stderr: string }) => `${r.stdout}${r.stderr}`;
   try {
@@ -408,7 +461,7 @@ async function hostShapeRefusals(): Promise<void> {
     check("a host:port spelling is refused as a bind host", hostPort.status !== 0 && /is not a valid bind host/.test(out(hostPort)) && /the port comes from --server/.test(out(hostPort)), out(hostPort));
 
     // The real mismatch diagnostic still prints for valid hosts that disagree (and exits, not throws).
-    const mismatch = cotal(fixture, ["up", "--space", "host-shape", "--host", "10.0.0.9", "--server", "nats://127.0.0.1:4222"]);
+    const mismatch = cotal(fixture, ["up", "--space", "host-shape", "--host", "10.0.0.9", "--server", `nats://127.0.0.1:${recordPort}`]);
     check("a --host/--server address mismatch still prints its own diagnostic", mismatch.status !== 0 && /name different addresses/.test(out(mismatch)), out(mismatch));
 
     // CONTROL: a correct bare host passes the shape guard and reaches the registry's own refusal
@@ -428,6 +481,7 @@ try {
   await orderedRefresh("alpha-root", "omega-tenant", ["alpha-root", "omega-tenant"]);
   await orderedRefresh("omega-root", "alpha-tenant", ["alpha-tenant", "omega-root"]);
   await foreignRootRefusal();
+  await namedSpaceElsewhere();
   await storeRecordRepair();
   await preFieldWarning();
   await foregroundCrashKeepsRecord();

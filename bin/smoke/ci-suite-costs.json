@@ -459,7 +459,6 @@
     "smoke:ps-provenance": { "seconds": 1.4, "shard": 1 },
     "smoke:ps-user-mode": { "seconds": 60, "shard": 1 },
     "smoke:public-remote-authority": { "seconds": 56.6, "shard": 0 },
-    "smoke:publish-closure-gate": { "seconds": 1.4, "shard": 0 },
     "smoke:queue-win": { "seconds": 5.4, "shard": 3 },
     "smoke:read-acl:auth": { "seconds": 4.9, "shard": 3 },
     "smoke:read-history:auth": { "seconds": 3.8, "shard": 1 },

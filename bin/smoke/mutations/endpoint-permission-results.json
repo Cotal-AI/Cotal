@@ -10,16 +10,16 @@
     {
       "name": "listChannels swallows every STREAM.INFO failure as registry-only data",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;",
-      "replace": "      if (isPermissionDenied(e)) return [...this.channelConfigs].map(([channel, config]) => ({ channel, messages: 0, config }));",
+      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;\n    }\n    const channels = new Set<string>([...counts.keys(), ...this.channelConfigs.keys()]);",
+      "replace": "      if (isPermissionDenied(e)) return [...this.channelConfigs].map(([channel, config]) => ({ channel, messages: 0, config }));\n    }\n    const channels = new Set<string>([...counts.keys(), ...this.channelConfigs.keys()]);",
       "expectRed": "listChannels propagates denied CHAT STREAM.INFO instead of returning an incomplete success",
       "cell": "a denied CHAT STREAM.INFO rejects listChannels rather than resolving to a valid-looking subset"
     },
     {
       "name": "listChannels throws on a genuinely absent CHAT stream",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;",
-      "replace": "      throw e;",
+      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;\n    }\n    const channels = new Set<string>([...counts.keys(), ...this.channelConfigs.keys()]);",
+      "replace": "      throw e;\n    }\n    const channels = new Set<string>([...counts.keys(), ...this.channelConfigs.keys()]);",
       "expectRed": "a genuinely absent CHAT stream remains a legitimate empty channel result",
       "cell": "structured stream absence remains the one legitimate empty-count result"
     }

@@ -4,11 +4,12 @@
 // they are gated on `canWrite` (open mode, or a privileged --creds). Control commands go through
 // `ctx.control` (one per-action call on the CLI's control path, console/control.ts), gated on
 // `canControl`; the observer endpoint never carries control.
-import { resolvePeer, AmbiguousPeerError, peerLabel, type CotalEndpoint } from "@cotal-ai/core";
+import { resolvePeer, AmbiguousPeerError, peerLabel, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import type { MeshSnapshot } from "../view/mesh-view.js";
 import type { ManagerReply } from "../lib/control.js";
 import type { ControlOp, ManagedRow, PsReply } from "./control.js";
 import { mentionsIn } from "../lib/mentions.js";
+import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 
 export interface CommandCtx {
   ep: CotalEndpoint;
@@ -68,7 +69,12 @@ export function formatManagedRow(a: ManagedRow): string {
  *  an exact id or a unique name resolves; a same-name collision throws `AmbiguousPeerError`
  *  (the caller renders {@link ambiguityNote}). */
 function idOf(snap: MeshSnapshot, name: string): string | undefined {
-  return resolvePeer([...snap.agents, ...snap.endpoints], name.replace(/^@/, ""))?.card.id;
+  return peerOf(snap, name)?.card.id;
+}
+
+/** {@link idOf}, keeping the roster row so a caller can read its status. */
+function peerOf(snap: MeshSnapshot, name: string): Presence | undefined {
+  return resolvePeer([...snap.agents, ...snap.endpoints], name.replace(/^@/, ""));
 }
 
 /** One-line note for the transient status bar when a name matched several peers. */
@@ -104,17 +110,18 @@ export const COMMANDS: ConsoleCommand[] = [
     run: async (ctx, rest) => {
       const m = rest.match(/^@?(\S+)\s+([\s\S]+)/);
       if (!m) return ctx.notify("usage: dm <@agent> <text>");
-      let id: string | undefined;
+      let peer: Presence | undefined;
       try {
-        id = idOf(ctx.snapshot, m[1]);
+        peer = peerOf(ctx.snapshot, m[1]);
       } catch (e) {
         if (e instanceof AmbiguousPeerError) return ctx.notify(ambiguityNote(e));
         throw e;
       }
-      if (!id) return ctx.notify(`no agent "${m[1]}"`);
+      if (!peer) return ctx.notify(`no agent "${m[1]}"`);
       if (!(await ctx.ensureParticipant())) return;
-      await ctx.ep.unicast(id, m[2]);
-      ctx.notify(`→ ${m[1].replace(/^@/, "")}`);
+      await ctx.ep.unicast(peer.card.id, m[2]);
+      const name = m[1].replace(/^@/, "");
+      ctx.notify(peer.status === "offline" ? `→ ${name}  ${offlineRecipientNotice(peer.card.name)}` : `→ ${name}`);
     },
   },
   {

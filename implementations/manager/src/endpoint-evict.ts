@@ -86,7 +86,7 @@ export async function untilDeliveryAdminAnswers<T>(
  *  profile default is never used because `observer` has none. A failed stop never replaces the
  *  outcome. */
 export async function withScopedEndpoint<T>(
-  opts: { space: string; servers: string; auth: SpaceAuth },
+  opts: { space: string; servers: string; auth: SpaceAuth; tlsRequired?: boolean },
   profile: "endpoint-evictor" | "observer" | "provisioner",
   name: string,
   work: (ep: CotalEndpoint) => Promise<T>,
@@ -98,6 +98,7 @@ export async function withScopedEndpoint<T>(
     ep = new CotalEndpoint({
       space: opts.space,
       servers: opts.servers,
+      tls: opts.tlsRequired,
       creds: await mintCreds(opts.auth, id, profile, { expiresInSeconds }),
       card: { id: id.id, name, kind: "endpoint" },
       channels: [],
@@ -142,6 +143,7 @@ export function makeManagerEndpointEvictionEvidence(opts: {
   space: string;
   servers: string;
   auth: SpaceAuth;
+  tlsRequired?: boolean;
   log: (line: string) => void;
   /** How long an UNREACHABLE rail is retried before the evictor throws (#871). A refusal or an
    *  unusable answer is never retried: the daemon answered. Absent means one attempt. */

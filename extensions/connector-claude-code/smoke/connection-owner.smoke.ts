@@ -76,7 +76,7 @@ const passed = (r: { stdout: string; code: number | null }): boolean => r.code =
 // The real gateway surface with a host that opens nothing: cotal_connect only needs a name and an id.
 const host: GatewayHost = {
   account: () => "acct",
-  open: async (_account, name) => ({ id: randomUUID(), agent: {}, config: { name } }) as unknown as GatewayConnection,
+  open: async (_account, name) => ({ id: randomUUID(), agent: {}, config: { name, subscribe: [], allowSubscribe: [], allowPublish: [] } }) as unknown as GatewayConnection,
   find: async () => undefined,
   close: async () => false,
 };

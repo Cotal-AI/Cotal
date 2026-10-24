@@ -78,9 +78,6 @@ export const hermesConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: HERMES_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      // Creds and broker URL ride a 0600 file; only its path is exported. This connector's launcher
-      // mints the control endpoint itself and merges the token into the same file (see launch.ts).
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -115,7 +112,19 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = opts.model;
       env.COTAL_MODEL = opts.model;
     }
-    return { command: LAUNCH_COMMAND, args: [LAUNCH_ENTRY], env, ...(resumeRecordPath ? { resumeRecordPath } : {}) };
+    // Creds and broker URL ride a 0600 file; only its path is exported. This connector's launcher
+    // mints the control endpoint itself and merges the token into a file of its own (see launch.ts).
+    // This one is written after every refusal above, and its directory is a launch artifact the
+    // launcher removes once the child has exited.
+    const artifacts: string[] = [];
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+    return {
+      command: LAUNCH_COMMAND,
+      args: [LAUNCH_ENTRY],
+      env,
+      ...(resumeRecordPath ? { resumeRecordPath } : {}),
+      ...(artifacts.length > 0 ? { artifacts } : {}),
+    };
   },
 };
 

@@ -173,9 +173,16 @@ try {
   const forward = async (q: IncomingMessage, s: ServerResponse, body: string) => {
     const headers: Record<string, string> = {};
     for (const h of ["content-type", "authorization"]) if (typeof q.headers[h] === "string") headers[h] = q.headers[h] as string;
-    const r = await fetch(`${publicUrl}${q.url}`, { method: q.method, headers, ...(q.method === "GET" || q.method === "HEAD" ? {} : { body }) });
-    s.writeHead(r.status, { "content-type": r.headers.get("content-type") ?? "application/json" });
-    s.end(Buffer.from(await r.arrayBuffer()));
+    // The teardown kills the auth service while the manager may still be mid-request: a failed
+    // forward is answered as a 502 on that response, never left as an unhandled rejection.
+    try {
+      const r = await fetch(`${publicUrl}${q.url}`, { method: q.method, headers, ...(q.method === "GET" || q.method === "HEAD" ? {} : { body }) });
+      s.writeHead(r.status, { "content-type": r.headers.get("content-type") ?? "application/json" });
+      s.end(Buffer.from(await r.arrayBuffer()));
+    } catch (e) {
+      if (!s.headersSent) s.writeHead(502, { "content-type": "application/json" });
+      s.end(JSON.stringify({ error: `proxy forward failed: ${(e as Error).message}` }));
+    }
   };
   proxy = createServer(async (q, s) => {
     const body = q.method === "POST" ? await readBody(q) : "";
@@ -190,7 +197,7 @@ try {
       s.writeHead(r.status, { "content-type": "application/json" });
       return void s.end(JSON.stringify(bundle));
     }
-    if (q.url !== "/manager-service-authority" || parsed?.request?.kind !== "manager-managed-agent-enrollment") return void forward(q, s, body);
+    if (q.url !== "/manager-service-authority" || parsed?.request?.kind !== "manager-managed-agent-enrollment") return forward(q, s, body);
     const send = (code: number, v: unknown) => { s.writeHead(code, { "content-type": "application/json" }); s.end(JSON.stringify(v)); };
     try {
       const { payload } = await jwtVerify(parsed.idpToken, jwks, { issuer: idpOrigin, audience: idpOrigin });
@@ -208,7 +215,7 @@ try {
       authorizedRequests.push(structuredClone(r));
       const t = r.target;
       const lifecycleUid = mintLifecycleUid();
-      grantManagedActor(hostDir, {
+      grantManagedActor(hostDir, { custody: { kind: "remote-manager", instanceId: r.instanceId },
         owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: t.allowSubscribe ?? [], allowPublish: t.allowPublish ?? [],
         ...(t.role !== undefined ? { role: t.role } : {}), parent: `${owner}.${r.actor}`, lifecycleUid, tokenHash: t.tokenHash,
       } as never);

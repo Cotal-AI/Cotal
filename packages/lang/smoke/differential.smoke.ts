@@ -1586,7 +1586,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const kinds = [...new Set([...EFFECT_KINDS, ...Object.entries(PRIMITIVES).filter(([, spec]) => spec.scope !== null).map(([n]) => n)])];
   const missingKinds = kinds.filter((k) => !reachedKinds.has(k));
   ok("and a corpus program journals every kind the engine can write", missingKinds.length === 0, missingKinds);
-  console.log(`  (${ADMITTED_NODES.size} admitted node types and ${kinds.length} journal kinds, each reached by a corpus program the engine ran)`);
+  console.log(`  (${ADMITTED_NODES.length} admitted node types and ${kinds.length} journal kinds, each reached by a corpus program the engine ran)`);
 }
 
 // ---- and the surface that holds the compartment closed, over THIS corpus ------------------------

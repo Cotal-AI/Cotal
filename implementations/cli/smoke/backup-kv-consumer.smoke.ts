@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager, type ConsumerInfo } from "@nats-io/jetstream";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import {
   isReachable,
@@ -21,11 +22,12 @@ import {
   acquireMaintenanceLock,
   beginMaintenanceCut,
   completeMaintenanceCut,
+  isCommandFailure,
   recordPreservationManagerCommit,
   releaseMaintenanceLock,
   writeMaintenanceResumeDocument,
 } from "@cotal-ai/workspace";
-import { backup } from "../src/commands/backup.js";
+import { backup, isStoppedKvWatcher } from "../src/commands/backup.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,6 +42,9 @@ type Residue = "kv-scan" | "wrong-filter";
 async function preservedFixture(label: string, residue: Residue): Promise<{
   root: string;
   artifact: string;
+  /** The registry stream and the ordered consumers the broker reported on it, which backup checks. */
+  stream: string;
+  consumers: ConsumerInfo[];
   cleanup(): Promise<void>;
 }> {
   const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}backup-kv-${label}-`));
@@ -93,7 +98,16 @@ async function preservedFixture(label: string, residue: Residue): Promise<{
     // consumer and every config field are real; only this fixture's delete is suppressed so
     // backup can inspect the residue after the connection is gone.
     await liveKvEntries(victim, { deleteOwnConsumer: async () => true });
+    const stream = bucket.stream;
     await nc.close();
+    // Read the residue as backup will, from a connection with nothing subscribed to it.
+    const reader = await connect({ servers: server, maxReconnectAttempts: 0 });
+    const consumers: ConsumerInfo[] = [];
+    try {
+      for await (const info of (await jetstreamManager(reader)).consumers.list(stream)) if (info.name.startsWith("oc_")) consumers.push(info);
+    } finally {
+      await reader.close();
+    }
     await stopBroker();
 
     const lock = acquireMaintenanceLock(root);
@@ -127,6 +141,8 @@ async function preservedFixture(label: string, residue: Residue): Promise<{
     return {
       root,
       artifact: join(root, "artifact"),
+      stream,
+      consumers,
       async cleanup() {
         await stopBroker();
         rmSync(root, { recursive: true, force: true });
@@ -147,8 +163,10 @@ const check = (name: string, condition: boolean, extra?: unknown) => {
   if (condition) { passed++; console.log(`  ✓ ${name}`); }
   else { failed++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
+let sanctionedShapeAccepted = false;
 try {
   const healthy = await preservedFixture("healthy", "kv-scan");
+  sanctionedShapeAccepted = healthy.consumers.length > 0 && healthy.consumers.every((info) => isStoppedKvWatcher(healthy.stream, info));
   try {
     process.chdir(healthy.root);
     let healthyError: unknown;
@@ -170,10 +188,16 @@ try {
     let unhealthyError: unknown;
     await backup({ positionals: ["create", unhealthy.artifact], values: {}, raw: [] })
       .catch((error) => { unhealthyError = error; });
+    // The command reports a classified failure without the native consumer configuration, so the
+    // reason is read where it is decided: the same watcher check that accepts the sanctioned scanner
+    // above rejects the lookalike's broker-reported consumer, the only thing the fixtures differ in.
     check(
       "backup still refuses an unhealthy ordered-consumer lookalike",
-      unhealthyError instanceof Error && /unsupported stopped KV watcher config/.test(unhealthyError.message),
-      unhealthyError instanceof Error ? unhealthyError.message : unhealthyError,
+      isCommandFailure(unhealthyError) && unhealthyError.outcome === "failed" && unhealthyError.code === "OPERATION_FAILED"
+        && unhealthyError.message.includes("no published artifact was established")
+        && sanctionedShapeAccepted && unhealthy.consumers.length > 0
+        && !unhealthy.consumers.some((info) => isStoppedKvWatcher(unhealthy.stream, info)),
+      { error: unhealthyError instanceof Error ? unhealthyError.message : unhealthyError, sanctionedShapeAccepted, consumers: unhealthy.consumers.map((info) => info.name) },
     );
   } finally {
     process.chdir(originalCwd);

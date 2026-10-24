@@ -198,9 +198,39 @@ check("web.ts declares the backfill mapper in one extractable expression", Boole
 // channel, and this is the statement that decides whether the dashboard's backfill is keyed on the
 // broker's routing or on a payload field. Extracted from the shipped core source and executed
 // against the real `parseSubject`, with a payload whose claim DISAGREES with its subject.
+//
+// FOUND BY ITS PLACE, NOT ITS SPELLING. The statement is the `return` that ends the method, mapping
+// the `rows` the method itself merged. A pattern over the whole file went red when the read began
+// returning each message's stream sequence beside its channel, and it would as readily have taken a
+// look-alike statement in another method. The parser finds the method's declaration, so neither a
+// reformat nor a lookalike elsewhere in the file changes what is executed.
+/** The last statement of the one method named `name` in `src` when it is a `return`, and whether it
+ *  returns `rows.map(…)` over a `rows` that same method declares. `undefined` when the method is
+ *  absent or declared more than once, or does not end in a `return`. */
+function finalReturn(src: string, name: string): { text: string; mapsOwnRows: boolean } | undefined {
+  const sf = ts.createSourceFile("endpoint.ts", src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const bodies: ts.Block[] = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isMethodDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name && n.body) bodies.push(n.body);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  if (bodies.length !== 1) return undefined;
+  const last = bodies[0].statements.at(-1);
+  if (!last || !ts.isReturnStatement(last) || !last.expression) return undefined;
+  const call = last.expression;
+  const mapsRows = ts.isCallExpression(call) && ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "map" &&
+    ts.isIdentifier(call.expression.expression) && call.expression.expression.text === "rows";
+  const declaresRows = bodies[0].statements.some((s) => ts.isVariableStatement(s) &&
+    s.declarationList.declarations.some((d) => ts.isIdentifier(d.name) && d.name.text === "rows"));
+  return { text: src.slice(last.getStart(sf), last.end), mapsOwnRows: mapsRows && declaresRows };
+}
 const endpointTs = read("../../../packages/core/src/endpoint.ts");
-const readMapper = /return rows\.map\(\(\{ subject, msg \}\) => \{[\s\S]*?\n {4}\}\);/.exec(endpointTs)?.[0];
+const readReturn = finalReturn(endpointTs, "multiChannelHistory");
+const readMapper = readReturn?.text;
 check("endpoint.ts declares the read's channel derivation in one extractable statement", Boolean(readMapper), { readMapper });
+check("and it is the statement multiChannelHistory returns: a map over the rows that method merged",
+  readReturn?.mapsOwnRows === true, { readMapper });
 {
   const expr = readMapper!.replace(/^return /, "").replace(/;$/, "");
   const ctx: { rows: unknown[]; parseSubject: typeof parseSubject; out?: { channel: string; msg: { channel?: string } }[] } =
@@ -209,13 +239,13 @@ check("endpoint.ts declares the read's channel derivation in one extractable sta
     ctx.rows = rows;
     runInContext(`out = ${expr};`, createContext(ctx), { filename: "endpoint.ts (read derivation)" });
   };
-  run([{ subject: chatSubject(SPACE, OWNER, ACTOR, "policed-channel"), msg: { channel: "attacker-claimed", id: "m1" } }]);
+  run([{ seq: 1, subject: chatSubject(SPACE, OWNER, ACTOR, "policed-channel"), msg: { channel: "attacker-claimed", id: "m1" } }]);
   check("the read tags a message with the channel in the SUBJECT the broker delivered it on",
     ctx.out?.[0]?.channel === "policed-channel", { got: ctx.out?.[0]?.channel });
   check("and it does not overwrite the payload, which the client still resolves at its own ingress",
     ctx.out?.[0]?.msg.channel === "attacker-claimed", { got: ctx.out?.[0]?.msg });
   check("a dotted channel survives the derivation whole, where a naive token index would truncate it",
-    (run([{ subject: chatSubject(SPACE, OWNER, ACTOR, "team.backend"), msg: {} }]), ctx.out?.[0]?.channel === "team.backend"),
+    (run([{ seq: 2, subject: chatSubject(SPACE, OWNER, ACTOR, "team.backend"), msg: {} }]), ctx.out?.[0]?.channel === "team.backend"),
     { got: ctx.out?.[0]?.channel });
 
   // THE KIND GATE, DRIVEN. `.rest` is the RECIPIENT on `inst` and the ROUTE on `svc`, so a

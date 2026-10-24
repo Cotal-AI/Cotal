@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { FeedEntry } from "../../mesh.js";
 import { agentColor, fmtTime, STATUS } from "../theme.js";
-import { targetsOf, type TopoGraph } from "./model.js";
+import { nodeLabel, targetsOf, type TopoGraph } from "./model.js";
 import { blankRow, stamp, toSegments, type Cell, type CellStyle } from "./raster.js";
 
 const MIN_LANE_W = 13;
@@ -80,13 +80,14 @@ export function Sequence({
   const top = Math.max(0, Math.min(selClamped - room + 1, entries.length - room));
   const visible = entries.slice(top, top + room);
 
-  // Header: one cell per lane — status glyph + colored name.
+  // Header: one cell per lane — status glyph + colored label.
   const header = blankRow(laneRegionW);
   for (const n of keptOrdered) {
     const glyph = STATUS[n.status ?? "offline"];
-    const x = centerOf(n.key) - Math.floor(Math.min(laneW - 1, n.name.length + 2) / 2);
+    const label = nodeLabel(n);
+    const x = centerOf(n.key) - Math.floor(Math.min(laneW - 1, label.length + 2) / 2);
     stamp(header, x, glyph.dot, { color: glyph.color });
-    stamp(header, x + 2, trunc(n.name, laneW - 3), { color: agentColor(n.name) });
+    stamp(header, x + 2, trunc(label, laneW - 3), { color: agentColor(n.name) });
   }
   if (folded) stamp(header, centerOf(FOLD) - 1, "…+" + folded, { dim: true });
 

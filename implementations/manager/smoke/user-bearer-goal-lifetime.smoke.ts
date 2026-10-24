@@ -175,6 +175,7 @@ async function main() {
       dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
       space: SPACE,
       token: { key: issuer.localKeySet(), issuer: "https://auth.cotal.test" },
+      recordIssuance: async () => {},
       authorizeActor: () => {},
       permissionsFor: (t, connId) => {
         const caller = { owner: t.owner, actor: t.act.actor, uid: t.act.lifecycleUid! };

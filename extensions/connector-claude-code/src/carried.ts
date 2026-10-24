@@ -5,10 +5,10 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import type { ResumeTranscriptLocator } from "@cotal-ai/core";
+import { writePrivateRecord, type ResumeTranscriptLocator } from "@cotal-ai/core";
 
 /** The project directory name a carried seat's transcripts live under (`CLAUDE_CODE_PROJECT_DIR_NAME`). */
 const SEAT_PROJECT = "seat";
@@ -111,13 +111,15 @@ export function carriedForkRecord(home: string): string {
 }
 
 /** Fill the seat's home: the carried transcript where `--resume` finds it, and the first-run state a
- *  fresh home would otherwise prompt for, trusting the authorized launch directory. */
+ *  fresh home would otherwise prompt for, trusting the authorized launch directory. Neither file is
+ *  written through a symlink: the state takes the private open, and the transcript copy refuses a
+ *  name that already exists. */
 export function placeCarried(home: string, transcript: string, resume: string | undefined, cwd: string): Record<string, string> {
-  writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, projects: { [cwd]: { hasTrustDialogAccepted: true } } }), { mode: 0o600 });
+  writePrivateRecord(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, projects: { [cwd]: { hasTrustDialogAccepted: true } } }));
   if (resume !== undefined) {
     const dir = join(home, "projects", SEAT_PROJECT);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    copyFileSync(transcript, join(dir, `${resume}.jsonl`));
+    copyFileSync(transcript, join(dir, `${resume}.jsonl`), constants.COPYFILE_EXCL);
   }
   return { CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_PROJECT_DIR_NAME: SEAT_PROJECT, ...(resume !== undefined ? { COTAL_CLAUDE_CARRIED: resume } : {}) };
 }

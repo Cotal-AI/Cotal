@@ -314,7 +314,7 @@ errno. Fix the directory's permissions on the seat's private state and start aga
 never repairs or widens them itself. A missing `sessions/` directory is a first launch and is left
 alone.
 
-`cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
+`cotal models --harness jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
 and any declared `reasoning_efforts`. This is the same config Jcode copies into a private managed
 instance. The command fails loud when the file is unreadable, malformed, or enables a catalog
@@ -323,7 +323,7 @@ without model entries.
 The listed effort tiers are display declarations, not Jcode runtime capabilities. Jcode's named
 model config does not assign effort support per model. A named provider profile enables it through
 provider configuration or Jcode's model-family detection. `cotal models` prints
-that caveat inline as `variants (declared, not provider-verified)` beside each configured tier list,
+that caveat inline as `(declared, not provider-verified)` after each configured tier list,
 so it cannot be missed by reading only the model rows. Providers can reject a tier the file names,
 so launch remains the authority: Jcode applies the requested value and a provider rejection ends the
 launch. `--refresh` does not turn this local declaration into a live probe.

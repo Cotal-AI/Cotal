@@ -27,8 +27,8 @@
     {
       "name": "the issuer dial's transport error escapes as the first attach's refusal",
       "file": "packages/workspace/src/connect.ts",
-      "find": "          await preflightOrThrow(target);\n          throw e;",
-      "replace": "          throw e;",
+      "find": "        await preflightOrThrow(target, undefined, opts.readOnly === true);\n        throw e;",
+      "replace": "        throw e;",
       "expectRed": "...saying the mesh is not there, in the CLI's own words",
       "cell": "...saying the mesh is not there, in the CLI's own words",
       "note": "Cell G pins an instance with `--on`, so this connect is the first thing that touches the broker, and the link is severed under it. Unmutated, the preflight classifies the dead link and the CLI prints `no mesh running at` plus the recorded root; mutated, the issuer dial's `connection refused` is what the operator reads. The other three checks in cell G (non-zero exit, a single failure mark, no reconnect banner) stay green under this mutant, so a kill here is a claim about the refusal's WORDS specifically, which is the whole finding.",

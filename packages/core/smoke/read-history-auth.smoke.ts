@@ -1,21 +1,15 @@
 /**
  * Mediated channel-history read (Track D, D3, PHASE 1, SLICE 1) — RED FIRST.
  *
- * NOT a capability gap. A read-only connection can already page history today — measured, not
- * assumed: an `observer`-profile connection with no `lifecycleUid` returns messages from
- * `channelHistory`. It does so by holding **raw consumer-create on the chat stream**, which is
- * exactly what SPEC's "Mediated reads (normative)" rule refuses an untrusted holder: no raw
- * consumer / `DIRECT.GET` / `STREAM.MSG.GET`; those reads come from the trusted reader onto the
- * caller's own confined rail.
+ * An observer can read through its broad CHAT consumer grant. Ordinary agents and human CLI
+ * actors have a separate lifecycle-pinned, single-filter CHAT grant (SPEC §8/§9); the ban in
+ * "Mediated reads" concerns control-surface streams, not those existing CHAT grants.
  *
- * So `readHistory` is a PRIVILEGE REDUCTION that aligns the code with a normative rule, served by
- * the delivery daemon on the rail it already owns (`ctl.delivery.<owner>.<actor>`, beside
- * `durableJoin`/`listMemberships`). The caller never names itself: `serveControl` fail-closes unless
- * the payload sender matches the broker-authenticated subject.
- *
- * Phase 1 is ADDITIVE — it adds the mediated path and removes nothing. Taking consumer-create away
- * from the observer profile is Phase 2, held and brokered separately, because the dashboard reads
- * history through that grant today.
+ * This additive mediator reads a provisioned ACL mirror on each call and serves onto the
+ * caller's confined rail. Human CLI actors have no such mirror and use channelHistoryPage.
+ * The caller never names itself: serveControl requires its payload sender to match the
+ * broker-authenticated subject. The tests below provision a reader, so they do not prove
+ * human CLI enrollment or native history reachability.
  *
  * **SLICE 1 IS CURSORLESS.** Newest-N plus a `complete` flag, matching `channelHistory`'s existing
  * shape so the two production callers are a drop-in migration. Cursors are slice 2 (scale), and the

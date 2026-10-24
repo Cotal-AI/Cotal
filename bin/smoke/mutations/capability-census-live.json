@@ -1,0 +1,110 @@
+{
+  "suite": [
+    "bin/smoke/capability-census-live.smoke.ts"
+  ],
+  "guard": "running a mapped command against a real broker and manager compares the endpoint commands and input fields it issued with the owner rows and with the commands its case declares: a row naming another command fails, an option map's keys are one value while an undeclared key under a structured field fails, an expected command must be owned by the run's command, mode and passed flags, and the issued commands must be the expected ones",
+  "command": "pnpm smoke:capability-census:live",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census-live.json",
+  "why": [
+    "The execution half is what catches a wrong owner the offline grammar accepts; removing either comparison must redden the self-test that feeds it one."
+  ],
+  "mutations": [
+    {
+      "name": "an issued command is no longer compared with its owner",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    if (!ownedHere(item)) problems.push(`cotal ${label} issued ${req.endpoint} ${req.command}, whose owner is ${shown(item)}`);",
+      "replace": "",
+      "expectRed": "a row that names another command for manager ps fails on the same observation",
+      "cell": "a row that names another command for manager ps fails on the same observation"
+    },
+    {
+      "name": "an issued input field is no longer compared with its owner",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "      if (!ownedHere(field))",
+      "replace": "      if (false)",
+      "expectRed": "a field row that names another command fails on the models observation",
+      "cell": "a field row that names another command fails on the models observation"
+    },
+    {
+      "name": "keys under a field with no declared properties are graded as fields",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "      if (id in map.owners && !structured.has(id)) return id;",
+      "replace": "      if (false) return id;",
+      "expectRed": "every request cotal spawn scout --detach --agent claude --opt effort=high issued matches its owner rows and its case",
+      "cell": "every request cotal spawn scout --detach --agent claude --opt effort=high issued matches its owner rows and its case"
+    },
+    {
+      "name": "every leading bare word counts as a mode word",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    if (`cli:${command} ${bare.slice(0, n).join(\" \")}` in map.owners) words = bare.slice(0, n);",
+      "replace": "    words = bare.slice(0, n);",
+      "expectRed": "positional values after a mode are not mode words",
+      "cell": "positional values after a mode are not mode words"
+    },
+    {
+      "name": "keys under a field that lists its properties are folded into it",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "      if (id in map.owners && !structured.has(id)) return id;",
+      "replace": "      if (id in map.owners) return id;",
+      "expectRed": "an undeclared key under a field whose contract lists its properties still fails",
+      "cell": "an undeclared key under a field whose contract lists its properties still fails"
+    },
+    {
+      "name": "an expected command that was not issued passes",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    if (!issued.has(item)) problems.push(`cotal ${label} did not issue ${item}`);",
+      "replace": "",
+      "expectRed": "a models run that issued nothing fails on the row its case expects",
+      "cell": "a models run that issued nothing fails on the row its case expects"
+    },
+    {
+      "name": "an issued command the case does not expect passes",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "  for (const item of issued) if (!expect.issues.includes(item)) problems.push(`cotal ${label} issued ${item}, which its case does not expect`);",
+      "replace": "",
+      "expectRed": "a command the case does not expect fails",
+      "cell": "a command the case does not expect fails"
+    },
+    {
+      "name": "an owner's flags need not be passed",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "owner.flags.every((flag) => run.flags.includes(flag))",
+      "replace": "true",
+      "expectRed": "a case cannot expect a row whose owner needs a flag the run does not pass",
+      "cell": "a case cannot expect a row whose owner needs a flag the run does not pass"
+    },
+    {
+      "name": "an owner's mode words need not match",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "owner.words.join(\" \") === run.words.join(\" \") && ",
+      "replace": "",
+      "expectRed": "a case cannot expect a row another mode owns",
+      "cell": "a case cannot expect a row another mode owns"
+    },
+    {
+      "name": "an owner of another command qualifies",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    owner.command === run.command && owner.words",
+      "replace": "    owner.words",
+      "expectRed": "a case cannot expect a row another command owns",
+      "cell": "a case cannot expect a row another command owns"
+    },
+    {
+      "name": "only an item's first owner qualifies",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    if (!current(item).some(performs))",
+      "replace": "    if (!current(item).slice(0, 1).some(performs))",
+      "expectRed": "an amend that issued the row it shares with answer passes",
+      "cell": "an amend that issued the row it shares with answer passes"
+    },
+    {
+      "name": "a resolution step is graded as an expected command",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    if (steps.includes(item)) continue;\n",
+      "replace": "",
+      "expectRed": "a resolution step the case declares is neither expected nor graded",
+      "cell": "a resolution step the case declares is neither expected nor graded"
+    }
+  ]
+}

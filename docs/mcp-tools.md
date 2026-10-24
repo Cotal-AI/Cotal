@@ -10,36 +10,36 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 
 | Tool | Does | Side-effect |
 |---|---|---|
-| [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |
-| [`cotal_connection_status`](#cotalconnectionstatus) | connection status | read-only |
-| [`cotal_docs`](#cotaldocs) | read the docs (version-exact) | read-only |
-| [`cotal_roster`](#cotalroster) | who's present | read-only |
-| [`cotal_inbox`](#cotalinbox) | read incoming messages | clears only the messages it returns (nothing at all when peek is true) |
-| [`cotal_send`](#cotalsend) | broadcast to a channel | publishes to a channel |
-| [`cotal_dm`](#cotaldm) | direct-message a peer | sends a private message to one peer |
-| [`cotal_anycast`](#cotalanycast) | ask any agent of a role | queues a request for one holder of a role |
-| [`cotal_status`](#cotalstatus) | set your status / attention | updates your own presence / attention |
-| [`cotal_channel_info`](#cotalchannelinfo) | what a channel is for | read-only |
-| [`cotal_channels`](#cotalchannels) | list channels | read-only |
-| [`cotal_channel_mode`](#cotalchannelmode) | silence or mute a channel | sets your own per-channel receive preference (quiet / muted / normal) |
-| [`cotal_join`](#cotaljoin) | join a channel | subscribes you to a channel |
-| [`cotal_leave`](#cotalleave) | leave a channel | unsubscribes you from a channel |
-| [`cotal_spawn`](#cotalspawn) | spawn a new teammate | starts a new agent process via the manager |
-| [`cotal_feedback`](#cotalfeedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
-| [`cotal_despawn`](#cotaldespawn) | stop a teammate | stops a teammate (or yourself) |
-| [`cotal_yield`](#cotalyield) | yield a run turn | settles one run turn via the manager (done / blocked / handoff) |
-| [`cotal_run`](#cotalrun) | run a workflow program | starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only |
-| [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
-| [`cotal_personas`](#cotalpersonas) | list or show personas | read-only |
-| [`cotal_describe`](#cotaldescribe) | describe an endpoint | none; reads an endpoint's registered command surface |
-| [`cotal_invoke`](#cotalinvoke) | invoke an endpoint command | whatever the named command does |
-| [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
+| [`cotal_orientation`](#cotal_orientation) | orient (who you are & what you can do) | read-only |
+| [`cotal_connection_status`](#cotal_connection_status) | connection status | read-only |
+| [`cotal_docs`](#cotal_docs) | read the docs (version-exact) | read-only |
+| [`cotal_roster`](#cotal_roster) | who's present | read-only |
+| [`cotal_inbox`](#cotal_inbox) | read incoming messages | clears only the messages it returns (nothing at all when peek is true) |
+| [`cotal_send`](#cotal_send) | broadcast to a channel | publishes to a channel |
+| [`cotal_dm`](#cotal_dm) | direct-message a peer | sends a private message to one peer |
+| [`cotal_anycast`](#cotal_anycast) | ask any agent of a role | queues a request for one holder of a role |
+| [`cotal_status`](#cotal_status) | set your status / attention | updates your own presence / attention |
+| [`cotal_channel_info`](#cotal_channel_info) | what a channel is for | read-only |
+| [`cotal_channels`](#cotal_channels) | list channels | read-only |
+| [`cotal_channel_mode`](#cotal_channel_mode) | silence or mute a channel | sets your own per-channel receive preference (quiet / muted / normal) |
+| [`cotal_join`](#cotal_join) | join a channel | subscribes you to a channel |
+| [`cotal_leave`](#cotal_leave) | leave a channel | unsubscribes you from a channel |
+| [`cotal_spawn`](#cotal_spawn) | spawn a new teammate | starts a new agent process via the manager |
+| [`cotal_feedback`](#cotal_feedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
+| [`cotal_despawn`](#cotal_despawn) | stop a teammate | stops a teammate (or yourself) |
+| [`cotal_yield`](#cotal_yield) | yield a run turn | settles one run turn via the manager (done / blocked / handoff) |
+| [`cotal_run`](#cotal_run) | run a workflow program | starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only |
+| [`cotal_persona`](#cotal_persona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
+| [`cotal_personas`](#cotal_personas) | list or show personas | read-only |
+| [`cotal_describe`](#cotal_describe) | describe an endpoint | none; reads an endpoint's registered command surface |
+| [`cotal_invoke`](#cotal_invoke) | invoke an endpoint command | whatever the named command does |
+| [`cotal_reconnect`](#cotal_reconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
 
 ## `cotal_orientation`
 
 *orient (who you are & what you can do)*
 
-Your orientation card: who you are (name/role/space), the recorded model pin if one was set, the channels you can read and post to, your capabilities, the tools available to you (grouped into a core loop plus the rest), who's present, your status/attention, and how many messages are unread. Call this first to get your bearings; it's read-only and safe to re-check anytime.
+Your orientation card: who you are (bound state, display name/role, owner+actor principal, lifecycle and replacement identity, space), the recorded model pin if one was set, the channels you can read and post to, your capabilities, the tools available to you (grouped into a core loop plus the rest), who's present, your status/attention, and how many messages are unread. Call this first to get your bearings; it's read-only and safe to re-check anytime.
 
 - **Side-effect:** read-only.
 - **Available:** always.
@@ -126,6 +126,7 @@ Send a private message to one specific peer, by name (or instance id).
 
 - **Side-effect:** sends a private message to one peer.
 - **Available:** always.
+- A name must match a present peer's name in full (case-insensitive) or its instance id. On a miss nothing is sent, and the refusal lists present names that start with the target so you can choose one; it never picks one for you. Your own name is refused as this session, not as a missing peer.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -133,17 +134,17 @@ Send a private message to one specific peer, by name (or instance id).
 | `text` | string | yes | The message. |
 | `replyTo` | string | no | The id of the peer's message this DM answers. Omit it to answer the peer's oldest unanswered message; when that peer's waiting messages belong to more than one conversation, the DM is refused with their ids. |
 
-On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.
+On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When the recipient was `offline`, the answer adds `<name> is offline: the DM is delivered when <name> reconnects, and a new agent spawned as <name> does not receive it.` The DM durable belongs to the recipient's lifecycle ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so the same session receives the DM when it comes back, and a new spawn under that name starts after it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.
 
 ## `cotal_anycast`
 
 *ask any agent of a role*
 
-Send a request to ANY one available agent of a given role (load-balanced). Use when you need 'a reviewer' rather than a specific person.
+Send a request to ANY one available agent of a given role (load-balanced). Use when you need 'a reviewer' rather than a specific person. The request waits on the role's queue until a holder takes it, so one sent while no agent holds the role is kept for the next that does.
 
 - **Side-effect:** queues a request for one holder of a role.
 - **Available:** always.
-- A request with no holder online waits on the role's queue.
+- When no holder is online the reply says that the request waits on the role's queue.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -156,7 +157,7 @@ On success the tool answers `Request stored as seq <N> on the @<role> queue (<k>
 
 *set your status / attention*
 
-Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention.
+Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts.
 
 - **Side-effect:** updates your own presence / attention.
 - **Available:** always.
@@ -176,7 +177,7 @@ Look up a channel's purpose, usage notes, and replay policy from the channel reg
 
 - **Side-effect:** read-only.
 - **Available:** always.
-- An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic.
+- An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic. An agent's event channel (`events.<owner>.<actor>`) is described as one, and your own as yours.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -186,12 +187,16 @@ Look up a channel's purpose, usage notes, and replay policy from the channel reg
 
 *list channels*
 
-Discover the channels in your space: name, one-line description, whether you're subscribed, its replay policy, and YOUR per-channel attention (quiet/muted, set with cotal_channel_mode). Use this to find a channel to cotal_join, or to see at a glance which channels you've silenced. Shows only your own subscription + attention, never other peers'.
+Discover the channels in your space: name, one-line description, whether you're subscribed, its replay policy, and YOUR per-channel attention (quiet/muted, set with cotal_channel_mode). Use this to find a channel to cotal_join, or to see at a glance which channels you've silenced. Shows only your own subscription + attention, never other peers'. By default it lists the channels you are on or may join, and counts the agents' event channels and the channels outside your read ACL it leaves out; all: true lists those too. filter narrows by name. A list longer than 100 rows ends with the after value that continues it.
 
 - **Side-effect:** read-only.
 - **Available:** always.
 
-No arguments.
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `filter` | string | no | Only channels whose name contains this text (case-insensitive). |
+| `all` | boolean | no | Also list agents' event channels and channels outside your read ACL. |
+| `after` | string | no | Continue a long list after this channel name, as the previous reply says. Pass the same filter and all. |
 
 ## `cotal_channel_mode`
 
@@ -239,7 +244,7 @@ Unsubscribe from a channel mid-session; you stop receiving its messages. Leaving
 
 *spawn a new teammate*
 
-Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal web` so the user can watch the mesh in real time.
+Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly.
 
 - **Side-effect:** starts a new agent process via the manager.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive.
@@ -333,7 +338,7 @@ ANSWER: first inspect status, then pass `verb: "answer"`, `runId`, the exact ope
 
 RESUME: pass `verb: "resume"` and `runId` to continue a run from its recorded source. A held run appears as `released` in status. Do not start a duplicate run to continue it or resume one the manager is already driving.
 
-Runs continue independently of your session and can recover after a manager restart. Their channel effects are bounded by the starting credential's issued channel scope. To report that your assigned agent turn is blocked or handed off, use `cotal_yield` instead.
+Runs continue independently of your session and can recover after a manager restart. Their channel effects are bounded by the starting credential's issued channel scope. To report that your assigned agent turn is blocked or handed off, use `cotal_yield` instead. Pass `instance` for the exact manager when an unbound user-auth caller has several managers; a failed pin does not fall back.
 
 - **Side-effect:** starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode). Hosted runs require issued caller authority and an execution-capable manager. Managed user-auth agents use their own bearer command and selected participant manager, with current child and direct-parent `run` grants. Open meshes and execution-free control managers refuse execution ([workflow setup](workflows.md#from-an-agent-session)).
@@ -350,13 +355,14 @@ Runs continue independently of your session and can recover after a manager rest
 | `value` | unknown | no | answer only: supply the value requested by the open checkpoint or ask and match its answer shape. A checkpoint may resolve without a value; an ask must receive its requested record. Use null only when that is the intended answer. |
 | `artifact` | string | no | answer only: a reference to what you reviewed before answering, recorded beside the answer. |
 | `endpoint` | string | no | status/ps/answer: the endpoint the run record lives under. Omit for runs the manager hosts. |
+| `page` | object | no | ps only: one bounded diagnostic JSON page, default 8 rows. Pin the manager with instance unless this session is already bound. Continuation is not snapshot, absence or ownership proof. A manager from release 0.88.0 or earlier refuses `page`. |
 | `instance` | string | no | Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager. |
 
 ## `cotal_persona`
 
 *define a persona*
 
-Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. A prompt that is already a complete agent file (its own --- frontmatter) is merged into one block: grants, role, and agent from that block survive, and explicit arguments such as model win. A malformed leading frontmatter block is refused rather than wrapped.
+Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. A prompt that is already a complete agent file (its own --- frontmatter) is merged into one block: grants, role, and agent from that block survive, and explicit arguments such as model win. A malformed leading frontmatter block is refused rather than wrapped. Pass `instance` to save on one full manager instance in a multi-manager space; a failed pin never falls back.
 
 - **Side-effect:** writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`.
 - **Available:** capability-gated like cotal_spawn.
@@ -365,6 +371,7 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | Unique name for the persona (also the spawn name): letters, digits, _ or -. |
+| `instance` | string | no | Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager. |
 | `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. A complete agent file (leading --- frontmatter with subscribe / allowSubscribe / allowPublish) is merged, not wrapped. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet). Wins over a model: in the prompt's frontmatter. |
 | `role` | string | no | Optional role written into the persona file (e.g. reviewer). Wins over a role: in the prompt's frontmatter. |
@@ -378,7 +385,7 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 
 *list or show personas*
 
-Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only, while unauthorized, unknown, and unparseable shows are all not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out.
+Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only, while unauthorized, unknown, and unparseable shows are all not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out. Pass `instance` to read one manager's catalog when the owner has several managers.
 
 - **Side-effect:** read-only.
 - **Available:** capability-gated like cotal_spawn.

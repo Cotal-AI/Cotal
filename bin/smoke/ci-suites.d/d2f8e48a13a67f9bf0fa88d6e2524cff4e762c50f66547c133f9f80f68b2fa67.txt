@@ -1,0 +1,3 @@
+# An issued manager-caller generation stops resolving when its credential expires, and a run admitted
+# before that keeps renewing (SPEC 13.15, 14.8).
+smoke:issued-caller-expiry

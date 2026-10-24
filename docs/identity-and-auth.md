@@ -46,11 +46,20 @@ The **provisioner** is whoever holds the account signing key. It mints profile-s
 credentials and pre-creates the durables agents may only *bind* (their DM inbox, their
 role's task queue). The manager hosts it today, but nothing is manager-special about it;
 privilege attaches to the signer, and a space can run without a manager.
-`cotal mint <name> --profile <agent|observer|admin>` is the out-of-band path; spawn calls
-the same library ([CLI](cli.md)). The out-of-band profiles carry no default TTL: pass
-`--expires-in <seconds>` (or `--expires-at`) for a bounded credential, which a
-standing-renewal consumer requires; pass `--identity <creds>` to re-mint for the nkey a
-file already carries, keeping the principal and its durables. Minting static creds is a
+The temporary native provisioner can request `$SYS.REQ.USER.INFO` for its own connection.
+The broker's configured system account maps the service to that requester. The reply can bind
+its public user/account and serving server to the local pins without a system credential.
+It is not an effective permission ceiling, issued generation, lifecycle or apply authorization.
+An unavailable or denied service does not trigger another credential or server fallback.
+`cotal auth mint <name> --profile <agent|observer|admin>` is the out-of-band path; spawn calls
+the same library ([CLI](cli.md)). The out-of-band profiles last 24 hours unless
+`--expires-in <seconds>` or `--expires-at` sets another lifetime, and a standing-renewal consumer
+requires a bounded credential. `--no-expiry` issues one with no expiry, which `cotal doctor auth`
+reports as a warning; it reports any other unbounded credential as a finding. `--replace` replaces a
+label's credential once it has expired or when it has no expiry. `--identity <creds>` reuses a file's nkey and principal,
+but the out-of-band agent mint allocates a new lifecycle UID. It does not reuse the old
+bind-only inboxes; clients must use the UID in the receipt and explicitly provision it when
+needed. Minting static creds is a
 **static-auth** surface: a
 per-user-auth space refuses it, because agents there join under a logged-in user, never
 via a handed-out file (see *Per-user auth* below).
@@ -68,8 +77,8 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 | Profile | Is |
 |---|---|
 | **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. Its read-only presence and channel-registry watches create and inspect client-managed ordered consumers but cannot delete any consumer on those streams; the broker removes a finished watch's consumer five minutes after its last interest. |
-| **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. Holds no consumer delete on any stream it reads, so it cannot remove another principal's watch or the delivery daemon's fan-out consumer; the broker removes its own finished consumers. |
-| **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in (`cotal web`). |
+| **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. Its only consumer deletes name its own history readers (`hist_<readerId>_<n>` on CHAT, keyed on its nkey or on the connection the server assigned), so each history read removes its consumers when it ends, and it cannot remove another principal's watch or the delivery daemon's fan-out consumer. The broker removes its finished watch consumers. |
+| **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in for elevated operator observation. Deletes its own history readers on CHAT and DM, and no other consumer. |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
 | **run-driver** | One workflow run and takeover attempt: its journal subject, replay durable and run-owned record writes. Store reads and effects go through the host. |
 | **run-mediator** | The trusted hosting process's separate connection for workflow effects and leader reads. It exposes journal-checked, run-bound operations and never hands its credential to the driver. |
@@ -112,9 +121,10 @@ lifecycle terminal that retires that family retires its issuances with it.
 The manager, `cotal spawn`, and the CLI's control-caller instruments all mint through an `issuer`
 session. The deployer instrument does not: it is the one instrument with no default expiry, and an
 issuance with no lifecycle gate must carry one, so a deploy rides the legacy rail under its own
-lifecycle uid. Only workflow `run-start` requires the binding today: a request for it on the legacy
-rail is refused with `permission-denied` and the detail `ai.cotal.ep.unbound-caller-authority`
-naming the caller. Every other command serves both rails.
+lifecycle uid. Only workflow `run-start` and the keyed `run-start-keyed` and `run-submission-status`
+require the binding today: a request for one of them on the legacy rail is refused with
+`permission-denied` and the detail `ai.cotal.ep.unbound-caller-authority` naming the caller.
+Every other command serves both rails.
 
 A user-auth `manager-caller` view is issued at the auth callout for an interactive row, or for a
 managed seat whose current persona-derived scope contains `run` and whose direct parent's fresh
@@ -158,8 +168,9 @@ one pin: the other caller adopts it when it names the same IdP and is refused wh
 URL pinned from it and the catalog link below must use HTTPS. Plain HTTP is accepted only on a
 loopback IP literal such as `127.0.0.1`, never on `localhost`, whose resolution would choose the
 keys the mesh trusts. After that,
-any command works: cached IdP session → fresh IdP proof per connect (so IdP-side
-revocation bites here too) → the configured exchange turns it into a short-lived Cotal bearer →
+any command works: cached IdP session → IdP proof, fetched per connect and reused in memory for
+at most a minute (so IdP-side revocation bites within a minute) → the configured exchange turns it
+into a short-lived Cotal bearer →
 the broker's **auth callout** checks the bearer and the ledger at connect time and mints
 a scoped credential on the spot. Every bearer also names a **root credential** row in the
 space's credential ledger, proved live at each connect, so revoking that one credential
@@ -169,6 +180,48 @@ channels; scope `spawn,role:default`, so it may spawn and may delegate the defau
 `--scope`, `--allow-subscribe` and `--allow-publish` for a narrow row. A grant with any of the
 three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
+
+Managed grants record who holds the lifecycle: a local manager's persisted logical instance ID,
+an authorized remote manager's instance ID, or a foreground launch with no manager. The trusted
+writer supplies this custody record. Ledger reads, decisions and writes share one synchronous
+transaction; broker provisioning and retirement run outside it. A grant that found no row refuses with
+`CONFLICT` when another grant for the same actor lands while it waits for the ledger lock. A re-grant
+or revoke whose actor row changes or disappears while its lifecycle retires ends `partial` (exit 4)
+when the auth service reports that this call retired the lifecycle: the lifecycle stays retired, the
+command writes and deletes nothing, and the error names the retired lifecycle under `changed`. When
+the service reports that the lifecycle never started or was already retired, the same race refuses
+with `CONFLICT`. A retirement answer without a readable result ends `unknown` before anything is
+written. Re-read `cotal actor list` before trying again. Old rows remain readable without
+custody, but a custody-pinned operation refuses them rather than adopting them. This field does
+not authorize recovery over another manager's or an unknown lifecycle.
+
+The auth ledger also reserves a closed `chat-sessions/` row space. An interactive or managed
+grant cannot reuse an alias present there, and a principal found in both spaces refuses.
+A pending chat row authorizes nothing.
+
+**User-mode chat sessions.** In a user-auth space the auth service can open chat sessions, the only
+identities it creates on its own. A signed-in person opens a session with their IdP proof and the hash of a
+holder secret that stays in the client's memory. The service picks the session's actor
+(`chat_` and 26 base32 characters) and a fresh lifecycle UID. It pins the person's own `cli`
+grant, keeps the session's read and post lists inside that grant, and fixes its lifetime at up to
+8 hours with no extension. Each bearer lasts at most 15 minutes, and never past the IdP proof or
+the session. The service checks the session, the holder index and the pinned grant before and
+after it signs one. A session connects as a plain agent with its own lists and no role, capability
+or view. A change to the person's `cli` grant refuses each open session's next bearer and connect.
+Closing a session retires its lifecycle before its quota slot is freed. The service also sweeps
+expired and abandoned sessions and keeps a retired row for 24 hours after its expiry. A provider
+without the optional chat methods cannot open a user-mode session, and the client refuses with no
+other identity tried.
+
+**Static-mode chat sessions.** On a static-auth mesh the local manager admits a chat session
+instead: it mints the session's own leaf under a fresh nkey and retires it through the static
+terminal, which cannot end the leaf at the broker before its expiry
+([control-surface.md](control-surface.md#static-chat-sessions)).
+The participant presentation carries the resolved space in its session identity and shows that
+mesh in its human header and connection report. The session label does not choose the target.
+An output-stream error stops new stdio input and requests session closure through the input-close
+path. A failed stdout cannot deliver the end record. When returned, the close report records the
+observed connection status.
 
 **Space catalogs.** A successful authenticated `GET <idp>/token` may advertise one catalog with:
 
@@ -241,10 +294,12 @@ That listener still binds `127.0.0.1`; put a reverse proxy in front of it and te
 In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
 and fork proxy-based deployments.
 
-The loopback face also serves three host-only doors, all capability-gated and never on the public
+The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
 and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its
-remote manager is gone. The third decides one:
+remote manager is gone. The interactive door answers every refusal it makes before the retirement
+barrier with `outcome: "not-executed"`. An error without that outcome may follow a barrier that had
+begun, so `cotal actor grant` and `cotal actor revoke` report it as unknown. The third decides one:
 `POST /manager-service-authority/verify-enrollment` answers whether a remote manager may have a
 managed agent enrolled or released under its authenticated owner. The body is
 `{ owner, request }` and nothing else. The caller's capability scope is read from this machine's
@@ -257,22 +312,31 @@ the service process, so no signing material reaches the caller, and it returns
 answering a manager-lifecycle phase for an agent-lifecycle request. The same door decides the hosted
 runtime create and status kinds. For those it reads the manager actor's ledger row itself and returns
 `{ authorized: true, owner, instanceId, actor, target }`.
-[embedding.md](embedding.md) documents the managed doors' contracts.
+The fourth, `POST /tool-result-human-proof/verify`, decides a pinned password proof for the
+host's authenticated session subject without issuing consent or credentials.
+The opt-in `POST /tool-result-consent/issue` door signs and records a same-owner consent
+under a host-custodied scoped anchor. It returns no result content, private key or capability.
+[embedding.md](embedding.md) documents these host doors' contracts.
 
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`,
-`POST /manager-service-authority`, and `GET /.well-known/cotal-mesh`; every other path is 404. It
+`POST /manager-service-authority`, `POST /manager-instances`, and `GET /.well-known/cotal-mesh`;
+every other path is 404. It
 does **not** require the loopback
 capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;
 on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
 the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must
 match a fresh managed-ledger row. The public face mints two elevated views, both still gated on
-ledger scope `admin`: `channel-writer` (`cotal channels set/default`) and `channel-purger` (the
+ledger scope `admin`: `channel-writer` (`cotal channel set` and `cotal channel defaults`) and `channel-purger` (the
 dashboard's per-click channel delete). It also mints the narrowing `manager-caller` view for humans
-or managed agents. That view adds no capability and binds the bearer to one live registered manager
-instance. God-view (`admin`), space-history `purger`, `deployer`, and `manager-service` stay
-loopback-only. A managed-agent secret exchange refuses every other view. This is not full remote channel management: `cotal web` still
-mints the read-only admin view at startup, so a remote dashboard that needs that god-view still
-fails even when a later delete would mint `channel-purger`.
+or managed agents. That view binds the bearer to one live registered manager instance. It adds no
+capability, except that a `spawn` holder's view may read that manager's `status`, `models` and
+`resolve-cwd`, which a host-local launch there needs. A manager using a delegated runtime refuses
+host cwd resolution before filesystem lookup because its seats execute outside that host.
+God-view (`admin`), space-history `purger`, `deployer`, and `manager-service` stay
+loopback-only. A managed-agent secret exchange refuses every other view. This is not full remote
+channel management. The older embedded dashboard path needs a startup admin view even when a later
+delete could use `channel-purger`. The new dashboard service currently accepts only an explicit
+static credential with read-only intent; it does not substitute that older operator login path.
 
 The well-known response contains the IdP pins and the actual deny-all sentinel credential remote
 agents need before the bearer-driven auth callout. The pins ride a `userAuth` arm that names the
@@ -289,7 +353,9 @@ more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a 
 credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
 matters to the deployment. A refusal at `POST /manager-service-authority` counts against the same
 budget as one at `/exchange` on that face, so after 30 refusals in a minute either route answers a
-further refusal with 429.
+further refusal with 429. An unpinned manager-caller exchange that finds no single live manager for
+its owner is refused only after its credential verified. It does not count against the budget and
+always answers with its own reason, because a session that no manager launched polls its manager this way.
 
 ### Enrollment redeem
 
@@ -362,9 +428,9 @@ could still hold them). If the claim's connections die mid-run, the service down
 loudly instead of serving from a half-dead plane.
 
 Ctrl-C on a foreground `up`, and a broker that exits under it, stop the service with the same stop
-`cotal down auth` uses. It holds the reservation `down` takes, so a concurrent `cotal down auth` is
-refused while it runs, and it sends SIGKILL to a service that has not exited 15 seconds after
-SIGTERM.
+bare `cotal down` uses for it. It holds the reservation `down` takes, so the auth stop of a
+concurrent `cotal down` is refused while it runs, and it sends SIGKILL to a service that has not
+exited 15 seconds after SIGTERM. A legacy stack has no command that stops only the auth service.
 
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a
@@ -414,7 +480,11 @@ spawned agent needs the matching `role:<r>` capability in the spawner's scope. T
 delegation chain is checked, not just the last link, and re-checked at every bearer
 exchange, so narrowing a user's grant reaches their agents within minutes, and revoking
 the user revokes everything under them, grandchildren included. A spawn beyond the
-envelope is refused with the exact widening re-grant to ask the operator for.
+envelope is refused with the exact widening re-grant to ask the operator for. One post entry is
+not taken from the spawner's lists: a spawner whose grant covers its own event channel may hand each
+child that child's own event channel, `events.<owner>.<child>`, and no other. It names the child, so
+it reaches nothing the spawner holds, and the spawner's own event channel is still checked against
+its parent.
 
 **Control ops ride your own login**, gated by ledger scope. `spawn` covers launching,
 `ps`, and stop/attach of the agents under **your own owner**: the owner is the
@@ -424,8 +494,8 @@ agents; it is never part of a default grant and never accepted from a manifest.
 
 **Elevated operator surfaces ride the same login** through a short-lived *view*: the
 exchange stamps a server-authored view claim into the bearer, and the callout mints that
-connection as the matching non-agent profile instead of `agent`. `cotal web` and
-`cotal console` ask for the read-only admin view, `clean history` for the purger,
+connection as the matching non-agent profile instead of `agent`. The older embedded dashboard
+path and `cotal console` ask for the read-only admin view, `clean history` for the purger,
 `channels set/default` for the channel-writer (all gated on ledger scope `admin`);
 `up -f` deploys over the deployer view, gated on `spawn`, because deploying your own team
 is spawn-grade (the manager still refuses a manifest claiming another owner). Elevated views exist
@@ -450,6 +520,21 @@ call it serves does, and names one object: the target instance and the transcrip
 callout mints writes to that object of that instance's transfer bucket and nothing else. The bearer,
 and with it the broker connection, lives at most five minutes, the lifetime of the static
 `transfer-writer` credential, and never past the login proof it was exchanged for.
+
+The `dm-reader` view lets an embedding read one user's own DMs while that user's app is closed,
+for example to send a content-free push. The callout mints three publish rows on the user's own
+`dm_` durable (consumer info, next message and its ack subtree) plus the connection inbox, and
+nothing else. The view needs no ledger scope and is loopback-only.
+
+It rides only a purpose-bound proof from the same IdP. Set `dmReaderAudience` in the space's IdP
+pin to an audience the IdP mints only for these proofs. It must differ from `audience`, and nothing
+derives it. The proof carries `purpose: "dm-reader"`, `actor`, `lifecycle` and `space`. The
+exchange accepts it only for `view: "dm-reader"` with the same actor, the actor's current
+lifecycle and this space. Every other door that takes a human proof refuses it, and the ordinary
+verifier now refuses any token that carries a `purpose` claim. The issue that proposed this listed
+five verifier call sites; this release has eight routes that take the proof, and all of them are
+covered. The bearer and its connection expire no later than the proof, so set the proof's lifetime
+to cover your own grant and session expiry.
 
 ### Remote manager authority
 
@@ -543,13 +628,22 @@ not by reusing the stock provider. Note that importing `@cotal-ai/auth` self-reg
 on the registry-resolution path must not also register its own. Whatever the path, never loosen the
 issuer/audience/JWKS pins to force-fit an IdP.
 
+A provider participating in reviewed local identity reset declares its secret
+keys through the optional offline `deprovisionSecretKeys(space)` inventory.
+The stock provider shares that list with `deprovisionSecrets`. The inventory
+returns keys only and performs no deletion or secret read. A provider without
+it, or with keys outside the selected space's secret segments, cannot use that
+reset route. Hosted deprovisioning remains a separate composition.
+
 The bridge (`createIdpBridge`) exchanges a verified IdP token for a Cotal bearer in three steps:
 
 1. **Bearer validation.** Verify the IdP's JWT offline against its **pinned JWKS**, with the token
    algorithm pinned to EdDSA. Keys resolve only through the pinned JWKS: a token carrying embedded
    key material (`jku`/`jwk`/`x5u`/`x5c`) is rejected, so the token can never influence key
-   resolution. Issuer and audience are checked, and the minted Cotal bearer is capped to the
-   upstream proof's remaining lifetime.
+   resolution. Issuer and audience are checked. The minted Cotal bearer never expires after the
+   upstream proof: the issuer signs the earlier of the requested lifetime and the proof's `exp`,
+   read when it signs, and refuses once the proof has expired. Time spent in the bridge's hooks
+   shortens the bearer instead of extending it.
 2. **Owner derivation.** The opaque per-space owner derives deterministically from the JSON-array
    encoding of `[idp issuer, sub]`, namespaced by issuer so no issuer/sub pair can straddle a
    delimiter, and re-login re-lands the same person in the same lanes. The owner-token *format*
@@ -577,6 +671,14 @@ const bridge = createIdpBridge({
 });
 ```
 
+For private-result consent, `verifyToolResultHumanProof` applies the separate password-freshness
+rule to the same pinned signature check. A signed integer-second `auth_time` must be no later
+than the decision and at most 300 seconds old, and signed `amr` must contain `pwd`. Neither a
+recent JWT `iat` nor a session's creation time supplies password provenance. Missing, malformed,
+future or stale provenance refuses this decision without changing ordinary bearer exchange.
+The host-only proof door and the remaining activation limits are documented under
+[private tool results](embedding.md#private-tool-results).
+
 ## Joining
 
 A single **join link** carries server, auth, and space
@@ -603,21 +705,26 @@ still sets `COTAL_CREDS` itself.
   renewals from it; a copied signing *seed* still stays valid for its identity until the
   signing key is rotated. Rotation remains the revocation lever for trust material.
 - **The two `$SYS` creds renew through rotation.** `membership-observer` and
-  `connection-evictor` are signed by the system-account seed, which is never persisted, so no
-  running process re-signs them: they carry a 30-day expiry and are renewed by issuing a new
+  `connection-evictor` are signed by the system-account seed. The trust record is written without
+  it; the root keeps the seed in its own secret-store record for own-broker caller issuance only,
+  and no running process re-signs these two creds in place: they carry a 30-day expiry and are renewed by issuing a new
   system account (`cotal down` then `cotal up --rotate-sys`), which leaves the data account,
   every agent cred and the store untouched but does invalidate earlier full backups (they bind to
   the operator JWT and system account they were taken under, so re-run `cotal backup` after). Past that horizon the mesh keeps delivering, but the
   membership feed and live eviction stop; `cotal doctor auth` and the manager warn from the 75%
-  point onward.
-- **Static agent creds are long-lived; the machinery's are not.** One-shot command creds
-  expire in minutes and the standing daemon creds in 24h with the manager renewing them
-  (`cotal doctor auth` is the one diagnosis and repair surface). But a static *agent*
-  cred has no TTL yet: `cotal_despawn` cuts a session, not a credential, and a
-  compromised agent that copied its creds can reconnect until the signing key is
-  rotated. Per-user-auth spaces close this: bearers live minutes, `cotal actor revoke`
-  denies the next exchange and the next connect and evicts the principal's live
-  connections immediately.
+  point onward. A host that keeps a registered system signer can re-mint the observer into the
+  delivery daemon's secret store instead: the feed reads it again at 75% of its lifetime, proves it
+  on a throwaway connection, and adopts it only when its issuer and permission scope match the
+  cred it started with.
+- **A copied static agent cred outlives its session.** One-shot command creds expire in
+  minutes and the standing daemon creds in 24h with the manager renewing them (`cotal doctor
+  auth` is the one diagnosis and repair surface). A manager-spawned agent cred also expires
+  after 24h, the manager renews it only while the agent is live, and despawn retires it. A
+  static mesh has no auth callout, so a compromised agent that copied its creds can still
+  reconnect until they expire, and a `cotal mint` cred without `--expires-in` or `--expires-at`
+  stays valid until the signing key is rotated ([security](security.md)). Per-user-auth spaces
+  close this: bearers live minutes, `cotal actor revoke` denies the next exchange and the next
+  connect and evicts the principal's live connections immediately.
 - **Not non-repudiation.** Authenticity is broker-enforced, not portable proof; it does
   not survive an untrusted relay. Signed envelopes are reserved
   ([SPEC §11](../SPEC.md#11-versioning-and-extensibility)).
@@ -627,3 +734,22 @@ still sets `COTAL_CREDS` itself.
 **Denials are loud, never silent.** A publish outside an ACL surfaces as a logged denial
 ("denied, not absent") on the endpoint's error path; an over-tight ACL never looks like a
 missing peer ([run a mesh](run-a-mesh.md)).
+
+## Standalone endpoint callers
+
+`auth mint <name> --endpoint <class> --out <private-file>` provisions the ordinary native agent
+footprint with explicit endpoint request rows from a fresh digest-verified surface. This route
+requires the selected local static signing authority and retains the registered broker TLS policy.
+Only untargeted synchronous ephemeral surfaces are supported; targeted, journaled and action
+surfaces refuse instead of receiving guessed or incomplete authority. The native baseline remains,
+but no spawn, run or admin capability is added. Explicit channels enter both read and post ACLs.
+
+A private create-only issuance intent precedes native footprint work and blocks blind replay after
+interruption. The intent contains no credential and proves no submission/completion. The resulting
+credential is private and is not a managed seat. The endpoint describe/invoke routes consume
+its paired private intent only after native signature/current-issuer, user-key, time-window,
+permission-builder and principal-tag checks. Broker admission remains a separate requirement.
+The intent selects coordinates; it is no wire grant, accepted-generation proof or live lifecycle
+check. Arbitrary raw files, different profiles and issued-generation files are not reinterpreted.
+User-auth issuance and managed launch remain unsupported. See
+[the CLI limits](cli.md#endpoint-caller-credentials).

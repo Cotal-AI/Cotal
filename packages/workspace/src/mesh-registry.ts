@@ -1,8 +1,11 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
-import { spaceSegment } from "./auth-paths.js";
+import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot } from "./auth-paths.js";
+import { homeCotalDir } from "./cotal-home.js";
+import { prepareCotalHomeForWrite } from "./protected-records.js";
+
+export { homeCotalDir, userCotalDir } from "./cotal-home.js";
 
 /**
  * The registry of meshes this machine can reach, so a `cotal spawn` from *any* directory can find
@@ -121,6 +124,10 @@ export interface MeshEntry {
    *  rather than reading agreement out of an address. Absent means no such acceptance was given,
    *  which is every record written before the flag existed. */
   unencryptedOverlay?: boolean;
+  /** Present and true when `space add --force` wrote the record without checking the broker, so its
+   *  `mode` is what the operator gave, not what the broker was seen to enforce. Absent means it was
+   *  checked, or the record predates this field. */
+  unchecked?: boolean;
   /** ISO timestamp of when the record was written. */
   ts: string;
 }
@@ -190,24 +197,23 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
     ...(o.sentinelCredsPath ? { sentinelCredsPath: o.sentinelCredsPath } : {}) };
 }
 
-/** The cotal machine-home dir, overridable via `COTAL_HOME`.
- *
- *  WHAT THE OVERRIDE ENFORCES (and only this): the mesh registry (`meshes/`), the current-mesh
- *  pointer, and the onboard marker resolve under this directory. POSIX default `~/.cotal`; Windows
- *  `%LOCALAPPDATA%\Cotal`.
- *
- *  WHAT IT DOES NOT ENFORCE: project-root state. `cotal up`, broker launch policy
- *  (`.cotal/broker-policy.json`), the NATS store, manager/delivery pidfiles, and auth material all
- *  resolve via {@link findCotalRoot} (walk up from cwd for a `.cotal/`). Setting only `COTAL_HOME`
- *  does not redirect those paths. A test or probe that sets `COTAL_HOME` and runs a real
- *  `cotal up` from a tree whose walked root is the operator home can still write live operator
- *  config. Sandbox the project root too (temp dir with its own `.cotal/`, and run the CLI with
- *  `cwd` there) — or you have sandboxed the registry label, not the launch surface. */
-export function homeCotalDir(): string {
-  if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
-  if (process.platform === "win32" && process.env.LOCALAPPDATA)
-    return join(process.env.LOCALAPPDATA, "Cotal");
-  return join(homedir(), ".cotal");
+/** Why `COTAL_HOME` can hold no record, or undefined when it is unset, a directory, or not created
+ *  yet. A file, or a path under one, can never be read or written as the machine-home dir. */
+export function cotalHomeProblem(): string | undefined {
+  const home = process.env.COTAL_HOME;
+  if (!home) return undefined;
+  try {
+    if (statSync(home).isDirectory()) return undefined;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOTDIR") return undefined;
+  }
+  return `COTAL_HOME ${home} is not a directory, so it can hold no Cotal records`;
+}
+
+/** The variables {@link homeCotalDir} falls back to on `platform` when `COTAL_HOME` is unset:
+ *  `homedir()` reads `HOME` on POSIX, and Windows reads `LOCALAPPDATA`, then `USERPROFILE`. */
+export function homeCotalDirFallbacks(platform: NodeJS.Platform = process.platform): readonly string[] {
+  return platform === "win32" ? ["LOCALAPPDATA", "USERPROFILE"] : ["HOME"];
 }
 
 /** Directory holding the per-mesh registry files (`~/.cotal/meshes`). */
@@ -224,7 +230,8 @@ function meshFileName(space: string): string {
   return `${spaceSegment(space)}.json`;
 }
 
-function meshFile(space: string): string {
+/** The registry file that holds a space's registration. */
+export function meshFile(space: string): string {
   return join(meshesDir(), meshFileName(space));
 }
 
@@ -287,6 +294,7 @@ export function recordMeshes(entries: Iterable<MeshEntry>): void {
     // The filenames in here ARE the space names, so a world-traversable dir would leak them to other
     // local users even though the file contents are private. Keep the dir readable only by us
     // (0700 POSIX / hardened ACL win32).
+    prepareCotalHomeForWrite();
     mkSecretDir(meshesDir());
     const file = meshFile(m.space);
     // Per-process temp name so two concurrent `up`s for the same space can't stomp each other's
@@ -349,6 +357,15 @@ export function canonicalRoot(p: string): string {
   try { return realpathSync.native(p); } catch { return resolve(p); }
 }
 
+/** When this folder holds the records of `space`, started in `recordedRoot`, and was moved away from
+ *  there: the sentence that says so and the way back. Only a folder whose stack journal names that
+ *  root was moved from it. */
+export function movedProject(space: string, recordedRoot: string): { message: string; remedy: string; target: { root: string; recordedRoot: string } } | undefined {
+  const here = findCotalRoot();
+  if (canonicalRoot(here) === canonicalRoot(recordedRoot) || stackJournalRoot(here) !== recordedRoot) return undefined;
+  return { message: `mesh "${space}" was started in ${recordedRoot}, and this folder ${here} holds its records, so this folder was moved from there`, remedy: movedRootRemedy(recordedRoot), target: { root: here, recordedRoot } };
+}
+
 /** Every registry entry recorded for THIS project root, matched {@link canonicalRoot}-wise so a
  *  differently-spelled root still matches. The root is the only sound key for a local operation on
  *  an OPEN mesh, which has no auth material to resolve its space NAME from — that would fall back
@@ -360,15 +377,15 @@ export function meshesForRoot(root: string): MeshEntry[] {
   return loadMeshes().filter((m) => canonicalRoot(m.root) === rootKey);
 }
 
-/** {@link removeMeshes}, clearing the `current` pointer once the entry it names is removed. An empty
- *  batch touches nothing. */
-function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
+/** {@link removeMeshes}, clearing the `current` pointer once the entry it names is removed, unless
+ *  it names `keep`. An empty batch touches nothing. */
+function removeMeshesReleasingCurrent(spaces: readonly string[], keep?: string): void {
   // Cleared right after its own entry, so a pointer that cannot be cleared stops the batch before the next
   // removal. Read per entry: a concurrent `cotal use` can move the pointer while the batch runs.
   function* releasing(): Generator<string> {
     for (const space of spaces) {
       yield space;
-      if (getCurrent() === space) clearCurrent();
+      if (space !== keep && getCurrent() === space) clearCurrent();
     }
   }
   removeMeshes(releasing());
@@ -377,7 +394,9 @@ function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
 /**
  * Drop the entries recorded for THIS project root because the mesh they describe was just stopped
  * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer if it names one.
- * Returns the removed space names.
+ * `keep` names a space the caller records again as prepared, as a controller stack's `down` does:
+ * a selection naming it stays, so the next bare command refuses that stopped space rather than
+ * falling through to another one. Returns the removed space names.
  *
  * OPERATOR-REGISTERED entries are skipped. The root is shared, not owned: `cotal meshes add`
  * defaults `--root` to the project you run it in, so registering a mesh that runs elsewhere from
@@ -386,9 +405,9 @@ function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
  * rewrite what `up` wrote; nothing rewrites a hand-registered record). `cotal meshes rm` is how one
  * of those leaves.
  */
-export function removeMeshesByRoot(root: string): string[] {
+export function removeMeshesByRoot(root: string, keep?: string): string[] {
   const removed = localMeshesForRoot(root).map((m) => m.space);
-  removeMeshesReleasingCurrent(removed);
+  removeMeshesReleasingCurrent(removed, keep);
   return removed;
 }
 
@@ -420,24 +439,52 @@ export function removeCatalogMeshes(ownerKey: string): string[] {
  *  produced. REFUSED, never skipped: a skipped record is invisible to `cotal meshes` AND to
  *  `cotal meshes rm`, so the operator could neither see it nor remove it by name — the only honest
  *  answer is the file's own name. */
+const MESH_REGISTRY_ERROR = "cotal:workspace:mesh-registry-error";
+
+/** A registry file that exists and could not be read or used. `file` names it, and `message` is the
+ *  sentence the CLI prints. */
+export class MeshRegistryError extends Error {
+  /** Brand for cross-package-safe detection, as {@link isMeshRegistryError} reads it. */
+  readonly brand = MESH_REGISTRY_ERROR;
+  readonly file: string;
+  /** A one-line account for a refusal, repeating no stored value, when calling the file an unreadable
+ *  registry record would not fit. */
+  readonly summary?: string;
+  /** The step that clears it, when it is not the restore or remove a damaged record takes. */
+  readonly remedy?: string;
+  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string }) {
+    super(message, options);
+    this.name = "MeshRegistryError";
+    this.file = file;
+    this.summary = options?.summary;
+    this.remedy = options?.remedy;
+  }
+}
+
+/** Detect a {@link MeshRegistryError} without `instanceof`, which two installed copies of this
+ *  package would break. */
+export function isMeshRegistryError(e: unknown): e is MeshRegistryError {
+  return typeof e === "object" && e !== null && (e as { brand?: unknown }).brand === MESH_REGISTRY_ERROR;
+}
+
 function assertMeshEntryShape(entry: MeshEntry, file: string): void {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry))
-    throw new Error(`${file} is not a usable mesh record: the document is not an object - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: the document is not an object - restore the record or remove it`);
   const missing = (["space", "server", "root", "mode", "ts"] as const).filter(
     (k) => typeof (entry as unknown as Record<string, unknown>)[k] !== "string" || ((entry as unknown as Record<string, unknown>)[k] as string).length === 0,
   );
   if (missing.length > 0)
-    throw new Error(`${file} is not a usable mesh record: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing - restore the record or remove it`);
   if (entry.mode !== "auth" && entry.mode !== "open" && entry.mode !== "user")
-    throw new Error(`${file} is not a usable mesh record: mode "${entry.mode}" is not one of auth, open, user - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: mode "${entry.mode}" is not one of auth, open, user - restore the record or remove it`);
   if (entry.origin !== undefined && entry.origin !== "up" && entry.origin !== "manual" && entry.origin !== "catalog")
-    throw new Error(`${file} is not a usable mesh record: origin "${entry.origin}" is not one of up, manual, catalog - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: origin "${entry.origin}" is not one of up, manual, catalog - restore the record or remove it`);
   if (entry.storeDir !== undefined && (typeof entry.storeDir !== "string" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))
-    throw new Error(`${file} is not a usable mesh record: storeDir "${entry.storeDir}" is not a non-empty absolute path - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: storeDir "${entry.storeDir}" is not a non-empty absolute path - restore the record or remove it`);
   try {
     spaceSegment(entry.space);
   } catch (e) {
-    throw new Error(`${file} is not a usable mesh record: ${(e as Error).message}`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: ${(e as Error).message}`);
   }
 }
 
@@ -452,16 +499,33 @@ function assertMeshEntryShape(entry: MeshEntry, file: string): void {
  *  callers act on "no meshes recorded" and an unread registry has not shown that. A record
  *  removed between listing and reading is absent, not damaged. */
 export function loadMeshes(): MeshEntry[] {
+  const { entries, unusable } = readMeshRegistry();
+  if (unusable[0]) throw unusable[0];
+  return entries;
+}
+
+/** The registry as {@link loadMeshes} reads it, except that each record this build cannot use is
+ *  returned beside the usable ones instead of thrown, so a report can name it and still list the
+ *  rest. A registry directory that exists and cannot be read throws a {@link MeshRegistryError}. */
+export function readMeshRegistry(): { entries: MeshEntry[]; unusable: MeshRegistryError[] } {
   let files: string[];
   try {
     files = readdirSync(meshesDir()).filter((f) => f.endsWith(".json"));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; // no registry yet
-    throw e;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], unusable: [] }; // no registry yet
+    throw new MeshRegistryError(meshesDir(), `the mesh registry ${meshesDir()} could not be read: ${(e as Error).message}`, { cause: e });
   }
   const bySpace = new Map<string, { entry: MeshEntry; canonical: boolean }>();
+  const unusable: MeshRegistryError[] = [];
   for (const f of files.sort()) {
-    const entry = readMeshFile(join(meshesDir(), f));
+    let entry: MeshEntry | undefined;
+    try {
+      entry = readMeshFile(join(meshesDir(), f));
+    } catch (e) {
+      if (!isMeshRegistryError(e)) throw e;
+      unusable.push(e);
+      continue;
+    }
     if (entry === undefined) continue;
     // Safe unguarded: readMeshFile's shape check ran `space` through `spaceSegment`, which is the
     // only throw site of `meshFileName`.
@@ -469,7 +533,7 @@ export function loadMeshes(): MeshEntry[] {
     const prev = bySpace.get(entry.space);
     if (!prev || (canonical && !prev.canonical)) bySpace.set(entry.space, { entry, canonical });
   }
-  return [...bySpace.values()].map((v) => v.entry);
+  return { entries: [...bySpace.values()].map((v) => v.entry), unusable };
 }
 
 function readMeshFile(file: string): MeshEntry | undefined {
@@ -480,7 +544,7 @@ function readMeshFile(file: string): MeshEntry | undefined {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     // No fallback: the writer is tmp-file + atomic rename, so an unparseable .json here is a
     // damaged or foreign document, and skipping it would hide it from `meshes rm` too.
-    throw new Error(`${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`);
+    throw new MeshRegistryError(file, `${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`, { cause: e });
   }
   assertMeshEntryShape(entry, file);
   return entry;
@@ -505,14 +569,30 @@ export function readMesh(space: string): MeshEntry | undefined {
  *  "no current". */
 export function getCurrent(): string | undefined {
   try {
-    return readFileSync(currentFile(), "utf8").trim() || undefined;
+    return readCurrent();
   } catch {
     return undefined;
   }
 }
 
+/** {@link getCurrent}, except that only an absent pointer is "unset": one that exists and cannot be
+ *  read, or is empty, throws a {@link MeshRegistryError} naming it, for a report that must not show it
+ *  as unset. {@link setCurrent} writes a name and {@link clearCurrent} removes the file, so an empty
+ *  pointer is damage, not a cleared selection. */
+export function readCurrent(): string | undefined {
+  let space: string;
+  try {
+    space = readFileSync(currentFile(), "utf8").trim();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
+  }
+  if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
+  return space;
+}
+
 export function setCurrent(space: string): void {
-  mkSecretDir(homeCotalDir());
+  prepareCotalHomeForWrite();
   writeSecretFile(currentFile(), space);
 }
 

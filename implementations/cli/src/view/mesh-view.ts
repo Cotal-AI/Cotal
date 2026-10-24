@@ -212,6 +212,13 @@ export class MeshView extends EventEmitter {
     this.error = e.message;
     this.dirty = true;
   };
+  /** A rebuilt connection clears the fault that dropped the old one, so the view reports itself
+   *  connected again instead of keeping that error for good. */
+  private readonly onConnection = (s: { connected: boolean }) => {
+    this.connected = s.connected;
+    if (s.connected) this.error = undefined;
+    this.dirty = true;
+  };
   private readonly onWarning = (e: Error) => {
     this.warning = e.message;
     this.dirty = true;
@@ -233,6 +240,7 @@ export class MeshView extends EventEmitter {
     // The error listener MUST be attached before start() — async faults surface as events.
     this.ep.on("error", this.onError);
     this.ep.on("warning", this.onWarning);
+    this.ep.on("connection", this.onConnection);
     this.ep.on("roster", this.onRoster);
     this.ep.on("presence", this.onPresence);
     await this.ep.start();
@@ -259,11 +267,15 @@ export class MeshView extends EventEmitter {
     this.pending.clear();
     this.ep.off("error", this.onError);
     this.ep.off("warning", this.onWarning);
+    this.ep.off("connection", this.onConnection);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
     clearTimeout(this.membershipTimer);
-    await this.membershipWatch?.stop().catch(() => undefined);
+    // The endpoint's stop deletes the watch's consumer over a live connection, and it is what settles
+    // the watch's own stop once the connection is closed for good, so it must not wait behind it.
+    const membership = this.membershipWatch?.stop().catch(() => undefined);
     await this.ep.stop();
+    await membership;
   }
 
   /** Read the broker-authoritative membership feed and follow it. A membership fault is never

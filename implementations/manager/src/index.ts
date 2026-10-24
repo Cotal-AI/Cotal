@@ -1,3 +1,4 @@
+import "./service-adapter.js"; // self-registers native service metadata and guarded lifecycle hooks
 import "./commands.js"; // self-registers the control-plane commands on import
 
 export {
@@ -5,6 +6,8 @@ export {
   READINESS_TIMEOUT_MS,
   type ManagerOptions,
   type ManagerStopOptions,
+  type ManagerServiceObservation,
+  type ManagerServiceIdentity,
   type ManagerMaintenanceState,
   type ManagerResumeIdentity,
   type ManagerResumeAgent,
@@ -24,7 +27,10 @@ export {
   type ResumeControlArgs,
 } from "./resume.js";
 export { SPAWN_INPUT_KEYS, type ManagerStaticReconciliationSweep } from "./manager-service-contract.js";
-export { managerClusterArtifacts } from "./manager-service-contract.js";
+export { managerBrowserContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
+export type { ManagerStatus, ManagerStopImpact } from "./manager-service-contract.js";
+export { measureManagerVitals, MANAGER_VITALS_MAX_MOUNTS, MANAGER_VITALS_MAX_MOUNT_BYTES } from "./vitals.js";
+export type { ManagerVitals, ManagerVitalsDeps } from "./vitals.js";
 export { RunHosting, type RunHostingContext } from "./run-hosting.js";
 export * as remoteManagerClient from "./remote-authority.js";
 export { registerRemoteManagerAuthority } from "./remote-register.js";

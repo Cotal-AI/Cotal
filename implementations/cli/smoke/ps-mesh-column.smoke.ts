@@ -11,37 +11,36 @@
  * Run: pnpm smoke:ps-mesh-column
  */
 import assert from "node:assert/strict";
-import { meshColumn } from "../src/commands/agents.js";
+import { meshCell } from "../src/commands/agents.js";
 import { MANAGER_CONTRACTS } from "../../manager/src/manager-service-contract.js";
-const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 let pass = 0, fail = 0;
-const check = (name: string, actual: string, expected: string): void => {
-  try { assert.equal(strip(actual), expected, `${name}: ${JSON.stringify(strip(actual))}`); pass++; console.log(`  ✓ ${name}`); }
+const check = (name: string, actual: { text: string }, expected: string): void => {
+  try { assert.equal(actual.text, expected, `${name}: ${JSON.stringify(actual.text)}`); pass++; console.log(`  ✓ ${name}`); }
   catch (error) { fail++; console.error(`  ✗ ${name}: ${(error as Error).message}`); }
 };
 // A current view: the mesh fact is a verdict and renders as it always has.
-check("current view, seat in roster and working", meshColumn({ mesh: "working", meshView: "current" }), "working · progress unknown");
-check("current view, seat in roster and idle", meshColumn({ mesh: "idle", meshView: "current" }), "idle");
-check("current view, seat in roster and waiting", meshColumn({ mesh: "waiting", meshView: "current" }), "waiting");
-check("current view, seat offline is a verdict", meshColumn({ mesh: "offline", meshView: "current" }), "mesh offline");
-check("current view, seat absent is a verdict", meshColumn({ mesh: "absent", meshView: "current" }), "not in roster");
+check("current view, seat in roster and working", meshCell({ mesh: "working", meshView: "current" }), "working · progress unknown");
+check("current view, seat in roster and idle", meshCell({ mesh: "idle", meshView: "current" }), "idle");
+check("current view, seat in roster and waiting", meshCell({ mesh: "waiting", meshView: "current" }), "waiting");
+check("current view, seat offline is a verdict", meshCell({ mesh: "offline", meshView: "current" }), "mesh offline");
+check("current view, seat absent is a verdict", meshCell({ mesh: "absent", meshView: "current" }), "not in roster");
 // A stale view: neither 'offline' nor 'absent' may be printed; the reason names the manager.
-check("stale view hides 'offline' behind mesh unknown", meshColumn({ mesh: "offline", meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
-check("stale view hides 'absent' behind mesh unknown", meshColumn({ mesh: "absent", meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
-check("stale view hides a last-known 'working' too (it is last-known, not current)", meshColumn({ mesh: "working", meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
+check("stale view hides 'offline' behind mesh unknown", meshCell({ mesh: "offline", meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
+check("stale view hides 'absent' behind mesh unknown", meshCell({ mesh: "absent", meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
+check("stale view hides a last-known 'working' too (it is last-known, not current)", meshCell({ mesh: "working", meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
 // An unpopulated view: 'absent' means nothing yet.
-check("unpopulated view hides 'absent' behind mesh unknown", meshColumn({ mesh: "absent", meshView: "unpopulated" }), "mesh unknown (manager's presence view not yet populated)");
-check("unpopulated view hides 'offline' behind mesh unknown", meshColumn({ mesh: "offline", meshView: "unpopulated" }), "mesh unknown (manager's presence view not yet populated)");
+check("unpopulated view hides 'absent' behind mesh unknown", meshCell({ mesh: "absent", meshView: "unpopulated" }), "mesh unknown (manager's presence view not yet populated)");
+check("unpopulated view hides 'offline' behind mesh unknown", meshCell({ mesh: "offline", meshView: "unpopulated" }), "mesh unknown (manager's presence view not yet populated)");
 // The rest of the matrix: every non-current view hides every mesh word, including the live ones.
 for (const mesh of ["working", "idle", "waiting"] as const) {
-  check(`unpopulated view hides '${mesh}' behind mesh unknown`, meshColumn({ mesh, meshView: "unpopulated" }), "mesh unknown (manager's presence view not yet populated)");
+  check(`unpopulated view hides '${mesh}' behind mesh unknown`, meshCell({ mesh, meshView: "unpopulated" }), "mesh unknown (manager's presence view not yet populated)");
 }
 for (const mesh of ["idle", "waiting"] as const) {
-  check(`stale view hides '${mesh}' behind mesh unknown`, meshColumn({ mesh, meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
+  check(`stale view hides '${mesh}' behind mesh unknown`, meshCell({ mesh, meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
 }
 // A row from a manager that predates the field renders as before (no invented state).
-check("no meshView (older manager): offline renders as before", meshColumn({ mesh: "offline" }), "mesh offline");
-check("no meshView (older manager): absent renders as before", meshColumn({ mesh: "absent" }), "not in roster");
+check("no meshView (older manager): offline renders as before", meshCell({ mesh: "offline" }), "mesh offline");
+check("no meshView (older manager): absent renders as before", meshCell({ mesh: "absent" }), "not in roster");
 // `--json` passthrough: a row carrying each meshView value validates against the compiled ps
 // output contract (additionalProperties: false, so an unknown field would be refused), a row
 // without the field validates too, and a value outside the enum is refused.

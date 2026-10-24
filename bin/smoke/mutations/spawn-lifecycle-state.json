@@ -21,9 +21,9 @@
   "mutations": [
     {
       "name": "follow drops the lifecycle details off a failed terminal, so the spawn caller sees a bare message",
-      "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "    const merged = details ?? (fromAccept ? [fromAccept] : undefined);\n    return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };",
-      "replace": "    return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message: raw } } };",
+      "file": "packages/core/src/endpoint-goal-follow.ts",
+      "find": "    const merged = details ?? (fromAccept ? [fromAccept] : undefined);\n    return { ...attributed, reply: { ...attributed.reply, ok: false, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };",
+      "replace": "    return { ...attributed, reply: { ...attributed.reply, ok: false, error: { code: terminal.state, message: raw } } };",
       "expectRed": "the lifecycle-blocked marker is on the reply the spawn caller sees",
       "cell": "the lifecycle-blocked marker is on the reply the spawn caller sees",
       "note": "The follow path used to take only `data.error`/`data.reason` as a string. Restoring that drop means the marker never reaches the spawn caller even when the manager committed it on the terminal. BUILD FIRST: the smoke imports `@cotal-ai/core` through dist/.",
@@ -31,20 +31,20 @@
     },
     {
       "name": "managerInvoke stops rendering the lifecycle suffix, so a thrown envelope becomes a bare code:message",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "            : renderLifecycleBlocked(`${e.code}: ${e.message}`, e),",
-      "replace": "            : `${e.code}: ${e.message}`,",
-      "expectRed": "and the rendered string names blockedOp, headState, opId, and remedy",
-      "cell": "...and the rendered string names blockedOp, headState, opId, and remedy",
+      "file": "packages/core/src/endpoint-envelope.ts",
+      "find": "    error: renderLifecycleBlocked(message, e),\n    code: e.code,",
+      "replace": "    error: message,\n    code: e.code,",
+      "expectRed": "...and the rendered string names blockedOp, gateState, opId, and remedy",
+      "cell": "...and the rendered string names blockedOp, gateState, opId, and remedy",
       "note": "Cell C drives a thrown envelope through the real managerInvoke. Without the suffix the structured details may still sit on the ControlReply, but the string an agent reads is the old opaque line. BUILD FIRST: MeshAgent is imported from dist/.",
-      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:spawn-lifecycle-state",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/connector-core build && pnpm smoke:spawn-lifecycle-state",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "cotal_spawn ignores ControlReply.details and prints only the raw error string",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? \"manager refused\", reply)}`);",
-      "replace": "          if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? \"manager refused\"}`);",
+      "find": "          if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? \"manager refused\", reply)}`);",
+      "replace": "          if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${reply.error ?? \"manager refused\"}`);",
       "expectRed": "cotal_spawn reports the lifecycle facts, not an opaque manager refusal",
       "cell": "cotal_spawn reports the lifecycle facts, not an opaque manager refusal",
       "note": "Cell D stubs spawn with a BARE message plus details, which is exactly the ControlReply shape before this fix. If the tool does not render the details, the operator sees the frozen-gate sentence with no opId and no remedy. BUILD FIRST: cotalToolSpecs is imported from dist/.",

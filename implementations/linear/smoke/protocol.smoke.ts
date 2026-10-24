@@ -13,7 +13,7 @@
  * Run: pnpm --filter @cotal-ai/linear test   (needs `pnpm build` of core and workspace first)
  */
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -23,7 +23,7 @@ process.env.COTAL_HOME = join(home, "cotal");
 process.env.HOME = home;
 const { LinearUpstream, DEFAULT_LIMITS } = await import("../src/upstream.js");
 const { credentialFor } = await import("../src/oauth.js");
-const { oauthStatePath } = await import("../src/account.js");
+const { assertPrivateFile, oauthStatePath } = await import("../src/account.js");
 const { LINEAR_MCP_ORIGIN } = await import("../src/origin.js");
 
 let pass = 0, fail = 0;
@@ -103,6 +103,15 @@ globalThis.fetch = (url, init) => {
 
 const tokenFile = join(home, "control.token");
 writeFileSync(tokenFile, "local-control-token\n", { mode: 0o600 });
+// The privacy guard reads POSIX mode bits only where they exist: a token other users can read is
+// refused there, and on Windows (where every file reads as 666) the ACL set at write is the guard.
+const openToken = join(home, "open.token");
+writeFileSync(openToken, "open-token\n");
+chmodSync(openToken, 0o644);
+let openRefused = false;
+try { assertPrivateFile(openToken); } catch { openRefused = true; }
+if (process.platform === "win32") check("win32: the guard does not read POSIX mode bits", !openRefused);
+else check("a token file other users can read is refused", openRefused);
 const upstream = new LinearUpstream({ name: "local-control", mode: "write", auth: "token", tokenFile }, { ...DEFAULT_LIMITS, maxConcurrent: 2, maxQueued: 2, maxTimeoutMs: 2000, defaultTimeoutMs: 2000 });
 try {
   const inv = await upstream.inventory();

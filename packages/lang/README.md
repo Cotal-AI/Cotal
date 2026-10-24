@@ -66,10 +66,10 @@ schema shorthand: an unreadable schema is refused (L4022), and non-conforming re
 
 ## Suites
 
-`pnpm test` in this directory runs every smoke: grammar, keys, journal, pins, scopes, sim,
-interpret, fuel, dryrun, examples, options, notify-fact, migrate, semantics (the pure fragment
-against node) and surface (the syntax table, the library tables, and that every example in the
-reference and the guide validates).
+`pnpm test` in this directory runs every smoke: grammar, keys, journal, fuzz-journal, pins,
+scopes, sim, interpret, fuel, dryrun, examples, options, notify-fact, migrate, semantics (the pure
+fragment against node), surface (the syntax table, the library tables, and that every example in
+the reference and the guide validates), conformance, transform, differential and engine.
 `smoke/mutations/*.json` are the `pnpm mutation-proof` targets.
 
 `pnpm test` builds, then `smoke/_run.ts` runs the 20 declared `smoke/*.smoke.ts` files, each in

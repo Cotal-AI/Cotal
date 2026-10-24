@@ -67,7 +67,9 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // refused at startup, and the refusal satisfied its own "exits when the broker is gone" assertion.
 // 25 → 15: the whole remaining untriaged set went the same way on 2026-10-01, ten suites run and
 // then gated. What is left is standing decisions plus the five BROKEN backup suites below.
-const EXPECTED_EXEMPTIONS = 15;
+// 15 → 16 on 2026-10-19: the Claude plugin refresh suite drives a real claude CLI, as the user-mode
+// manifest suite does.
+const EXPECTED_EXEMPTIONS = 16;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
 /** The BROKEN class carried `untriagedExemption`, which says nobody has looked. Someone had: each
@@ -86,6 +88,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:codex-tui-live": standing("needs a codex TUI session"),
   "smoke:jcode-live": standing("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
   "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
+  "smoke:claude-plugin-refresh:live": standing("drives the real claude CLI on PATH against a scratch Claude config"),
   "smoke:backup-usermode:live": brokenExemption("BROKEN: red; cause unconfirmed (measured on a host with a live stack); #1285; already-red so it cannot enter CI"),
   // These four are #643's to fix (backup live coverage that can fail), not an inventory mystery.
   "smoke:backup-perms:live": brokenExemption("BROKEN: red on CI at 2850a5a2e (backup-live.smoke.ts:125 zero-delivery New consumer preserves its creation frontier, 1 !== 2); #643; already-red so it cannot enter CI"),
@@ -205,8 +208,16 @@ const bodyOf = (name: string): string => (name === "smoke:ci" ? ciChainBody() : 
 const ROOTS = ["smoke:ci", "test"];
 const wfDir = join(ROOT, ".github", "workflows");
 const roots = new Set<string>(ROOTS.filter((r) => r in pkg.scripts));
-for (const f of readdirSync(wfDir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml")))
-  for (const s of suitesIn(readFileSync(join(wfDir, f), "utf8"))) if (s in pkg.scripts) roots.add(s);
+// A workflow can also run a list file through the shard runner (`COTAL_CI_SUITES: <file>` beside
+// `node bin/smoke/shard.mjs`), as the platforms job does. Every suite such a list names is a root.
+const listFiles = new Set<string>();
+for (const f of readdirSync(wfDir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))) {
+  const text = readFileSync(join(wfDir, f), "utf8");
+  for (const s of suitesIn(text)) if (s in pkg.scripts) roots.add(s);
+  for (const m of text.matchAll(/\bCOTAL_CI_SUITES\s*[:=]\s*["']?([^\s"']+)/g)) listFiles.add(m[1]);
+}
+const workflowLists = [...listFiles].sort().map((file) => ({ file, suites: readCiSuites(join(ROOT, file)) as string[] }));
+for (const { suites } of workflowLists) for (const s of suites) if (s in pkg.scripts) roots.add(s);
 
 const reached = new Set<string>();
 const frontier = [...roots];
@@ -367,6 +378,17 @@ if (missingChainEntries.length) {
   console.log(`    A duplicate costs a full run of that suite and hides which copy a merge added.`);
 } else {
   console.log(`  ✓ the smoke:ci chain file holds ${chain.length} suites, no duplicates`);
+}
+
+// A list a workflow runs is a chain too, so a name it holds must be a defined script.
+for (const { file, suites } of workflowLists) {
+  const missing = suites.filter((suite) => !(suite in pkg.scripts));
+  if (missing.length) {
+    fail++;
+    console.log(`  ✗ FAIL: ${file}, which a workflow runs, names ${missing.length} missing script(s): ${missing.join(", ")}`);
+  } else {
+    console.log(`  ✓ ${file}, which a workflow runs, names ${suites.length} defined script(s)`);
+  }
 }
 
 // An allowlist that outlives its entries rots into a place where gating a suite goes unnoticed.

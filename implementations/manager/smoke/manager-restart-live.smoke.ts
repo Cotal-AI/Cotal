@@ -3,9 +3,9 @@
  * "AUTH mesh + delivery daemon restart SUCCEEDS" assertion the manager-service smoke could only
  * cover as its LOUD no-daemon refusal.
  *
- * A REAL JWT-auth broker (system account) + a live delivery-admin eviction responder (the delivery
- * daemon's `evictPrincipal` op, served in-process here via the SAME core primitive the daemon uses:
- * `evictDeniedPrincipalWithCreds` over the two scoped $SYS creds). A Manager registers, accepts +
+ * A REAL JWT-auth broker (system account) + the shipped delivery-admin eviction rail, booted by the
+ * shared `bootDeliveryDaemon` fixture: `CotalEndpoint.handleDeliveryAdmin` executing core's
+ * `evictDeniedPrincipal(s)WithCreds` over the two scoped $SYS creds. A Manager registers, accepts +
  * terminates a goal under epoch 0, then RESTARTS in the same workspace root. On an AUTH mesh the
  * registration barrier's PHASE 2 must VERIFY-EVICT the superseded serve family before the epoch
  * advances — so the restart drives the manager → `ctl.delivery-admin` → real eviction chain end to
@@ -29,16 +29,15 @@ import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import type { ActionContext, CotalEndpoint as CotalEndpointType, EpCaller, ParsedEpRequest, ControlReply, ControlRequest } from "@cotal-ai/core";
+import type { ActionContext, EpCaller, ParsedEpRequest } from "@cotal-ai/core";
 import { workspaceSecretStore } from "@cotal-ai/workspace";
+import { bootDeliveryDaemon } from "./_boot-delivery.js";
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 process.env.COTAL_HOME = join(dir, "home");
 const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, DEV_OWNER,
-  mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
-  CotalEndpoint, CONTROL_DELIVERY_ADMIN,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
 } = await import("@cotal-ai/core");
 const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
@@ -61,11 +60,6 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-// The two scoped $SYS creds (mintable ONLY from the fresh auth's in-memory system seed) that the
-// delivery daemon's eviction executor rides — minted NOW, exactly as `cotal up` provisions them.
-const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
-const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
-
 const caller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
 const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
@@ -74,7 +68,7 @@ type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: num
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let mgr: InstanceType<typeof Manager> | undefined;
-let daemon: CotalEndpointType | undefined;
+let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   kids.push(srv);
@@ -85,35 +79,12 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   recordMesh({ space: SPACE, server: SERVERS, root: workspaceRoot, mode: "auth", ts: new Date().toISOString() });
 
-  // ── the delivery-admin eviction responder (the daemon's evictPrincipal op, in-process) ──
-  const dlvId = newIdentity();
-  daemon = new CotalEndpoint({
-    space: SPACE, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
-    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
-    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
-  });
-  daemon.on("error", () => {});
-  await daemon.start();
-  // The manager's #1694 binding requires the answer to name a real holder of the delivery
-  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
-  // `holdsDeliveryLease` below is truthful.
-  await daemon.acquireDeliveryLease(0).catch(() => {});
+  // ── the shipped delivery-admin rail (lease held and renewed, both eviction verbs served) ──
   let evictCalls = 0;
-  daemon.serveControl(CONTROL_DELIVERY_ADMIN, async (req: ControlRequest): Promise<ControlReply> => {
-    if (req.op === "reloadStoreIdentity") {
-      let holds = false;
-      try {
-        const own = await daemon!.readDeliveryLeaseEntry(0);
-        holds = own !== undefined && daemon!.ownsDeliveryLease(own.info);
-      } catch { holds = false; }
-      return { ok: true, data: { identity: workspaceSecretStore(workspaceRoot).identity, responder: daemon!.card.id, holdsDeliveryLease: holds } };
-    }
-    if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
-    evictCalls++;
-    const principal = String((req.args as { principal?: unknown })?.principal ?? "");
-    const result = await evictDeniedPrincipalWithCreds({ servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal });
-    return { ok: true, data: result };
-  }, { boundReply: true });
+  delivery = await bootDeliveryDaemon({
+    space: SPACE, servers: SERVERS, auth, reloadStoreIdentity: workspaceSecretStore(workspaceRoot).identity,
+    onEvict: () => { evictCalls++; },
+  });
 
   // ── incarnation 1 (epoch 0) ──
   mgr = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot });
@@ -169,7 +140,7 @@ try {
     { won: second.won, fact: second.fact });
 } finally {
   await mgr?.stop().catch(() => {});
-  await daemon?.stop().catch(() => {});
+  await delivery?.stop().catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
   // The scratch tree goes too. Its absence here is the defect: this suite passed, said so, and
   // left one directory behind on every green run — reproduced by count, not inferred. The pause

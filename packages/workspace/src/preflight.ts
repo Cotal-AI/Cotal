@@ -2,6 +2,7 @@ import { createConnection } from "node:net";
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
 import { loadMeshes, pruneMesh } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
+import { stoppedLoopbackListener } from "./pid.js";
 
 /**
  * Liveness verification for a resolved mesh target — the companion to {@link resolveMeshTarget}
@@ -35,7 +36,10 @@ export type PreflightFailure =
    *  NEVER a prune signal: a slow or jittery link is not a dead broker (#851). Distinct from
    *  `tls-trust`, whose evidence is an actual plaintext INFO greeting; a bare timeout has none, so
    *  it must not borrow that verdict's CA guidance. */
-  | "slow-link";
+  | "slow-link"
+  /** The first dial timed out and the process holding the loopback listener is stopped, so the
+   *  confirm budget is not spent on it. NEVER a prune signal: the broker is there, only paused. */
+  | "broker-stopped";
 
 /** Pure decision tree — separated from I/O so the whole branch tree is unit-testable (it's the
  *  riskiest logic: a wrong branch prunes a LIVE registry entry). Only a registry-OWNED source
@@ -47,6 +51,7 @@ export function classifyPreflightFailure(
   source: MeshTarget["source"],
   reason: "auth-required" | "stale-auth" | "unreachable" | "timeout",
   hasAuth: boolean,
+  inferred = false,
 ): { prune: boolean; kind: PreflightFailure } {
   // A timeout is never a stale-entry signal, whatever the source: the dial ran out of its own
   // budget, which says nothing about whether the broker is actually gone (#851).
@@ -64,8 +69,11 @@ export function classifyPreflightFailure(
   // live mesh's registry entry because a cred expired would misdirect the repair (the fix is
   // `doctor auth`, not re-registration) — the same misdiagnosis class as the gate-1 prune bug.
   if (reason === "stale-auth") return { prune: false, kind: "stale-auth" };
-  if (fromRegistry && hasAuth) return { prune: true, kind: "registry-creds-rejected" };
-  if (fromRegistry) return { prune: true, kind: "registry-open-now-auth" };
+  // An `inferred` auth-required read no rejection, only an auth greeting and a reset handshake. Like
+  // the tls-trust read in `preflightTarget`, that unauthenticated evidence names the failure but
+  // never deletes a record.
+  if (fromRegistry && hasAuth) return { prune: !inferred, kind: "registry-creds-rejected" };
+  if (fromRegistry) return { prune: !inferred, kind: "registry-open-now-auth" };
   if (hasAuth) return { prune: false, kind: "creds-rejected" };
   return { prune: false, kind: "open-wants-auth" };
 }
@@ -77,7 +85,7 @@ export function classifyPreflightFailure(
 export async function preflightTarget(
   target: MeshTarget,
   probeCreds?: string,
-): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean }> {
+): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean; pid?: number }> {
   // A user-mode target has no probe credential by design (its auth is a per-connect bearer) — a
   // credless probe would be DENIED by the callout and misclassified as a stale registry entry
   // (prune:true). Callers own the user connect; reaching here with one is a caller bug, fail loud.
@@ -99,6 +107,9 @@ export async function preflightTarget(
   const auth = { ...(creds ? { creds } : {}), ...(target.tlsRequired ? { tls: true as const } : {}) };
   let probe = await probeConnect(target.server, auth);
   if (probe.ok) return { ok: true };
+  // A stopped broker never answers, so its pid is named now instead of after the confirm budget.
+  const stopped = probe.reason === "timeout" ? stoppedLoopbackListener(target.server) : undefined;
+  if (stopped !== undefined) return { ok: false, kind: "broker-stopped", prune: false, pid: stopped };
   // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED
   // connect: TCP, INFO, then the JWT exchange — several round trips. A perfectly healthy broker
   // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely.
@@ -138,14 +149,15 @@ export async function preflightTarget(
       return { ok: false, kind: "tls-trust", prune: false };
   }
 
-  const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth));
+  const inferred = probe.reason === "auth-required" && probe.inferred === true;
+  const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth), inferred);
   return { ok: false, kind, prune };
 }
 
 /** Read the pre-auth NATS INFO greeting (plaintext, before any STARTTLS). Returns null if nothing
  *  usable answered. Used to distinguish a TLS-required NATS listener from a plaintext substitute
  *  without a TLS handshake. It does NOT establish mesh identity — INFO is unauthenticated. */
-async function readNatsInfoGreeting(
+export async function readNatsInfoGreeting(
   server: string,
   timeoutMs = 1_000,
 ): Promise<{ tls_required?: boolean } | null> {
@@ -232,6 +244,15 @@ export interface MeshSweep {
   offline: string[];
 }
 
+/** Whether `server` answers a liveness probe. A first miss is confirmed with a second, longer probe
+ *  before it counts, so a slow link reads as live. A miss whose loopback listener is a stopped
+ *  process counts at once. */
+export async function brokerAnswers(server: string): Promise<boolean> {
+  if (await isReachable(server)) return true;
+  // A stopped broker never answers, so the longer confirm is not spent on it.
+  return stoppedLoopbackListener(server) === undefined && await isReachable(server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
+}
+
 export async function pruneStaleMeshes(): Promise<MeshSweep> {
   const sweep: MeshSweep = { pruned: [], offline: [] };
   await Promise.all(
@@ -241,8 +262,7 @@ export async function pruneStaleMeshes(): Promise<MeshSweep> {
       // space-less control command may prepare hundreds of registrations, while only the command's
       // selected target is allowed to connect.
       if (m.origin === "catalog") return;
-      if (await isReachable(m.server)) return;
-      if (await isReachable(m.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS })) return;
+      if (await brokerAnswers(m.server)) return;
       // pruneMesh, not removeMesh: a liveness miss keeps the record (manual and up alike).
       (pruneMesh(m.space) ? sweep.pruned : sweep.offline).push(m.space);
     }),

@@ -44,6 +44,7 @@ const INNER_KINDS = new Set([
   "manager-goal-index-scan",
   "manager-admin-authorization",
   "manager-run-admission",
+  "manager-run-submission",
   "manager-run-attempt",
 ]);
 const MANAGED_AGENT_KINDS = new Set([

@@ -8,6 +8,7 @@ import {
   isConcreteChannel,
   assertValidChannel,
   channelInAllow,
+  eventChannelPrincipal,
   resolvePeer as resolvePeerInRoster,
   peerLabel,
   CotalEndpoint,
@@ -73,7 +74,7 @@ export function isLocalServer(servers: string): boolean {
 
 /** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
  *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
-function buildMeta(config: AgentConfig): Record<string, string> | undefined {
+function buildMeta(config: AgentConfig, processCwd: boolean): Record<string, string> | undefined {
   const meta: Record<string, string> = { ...(config.meta ?? {}) };
   if (config.model) meta.model = config.model;
   if (config.variant) meta.variant = config.variant;
@@ -84,7 +85,20 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
   // answer — and, like `connector`, it is overlaid LAST so an agent file cannot declare a host it
   // is not on. Advisory display metadata, never an authorization or routing input.
   meta.host = hostname();
+  // Snapshot the connector process directory when the session is constructed. This is display
+  // metadata, not a model harness's later shell directory or a routing/authorization input. A
+  // connector whose process directory is not the session's leaves it unknown until the harness
+  // reports one (`setCwd`); an agent-file value never stands in for it.
+  if (processCwd) meta.cwd = process.cwd();
+  else delete meta.cwd;
   return Object.keys(meta).length ? meta : undefined;
+}
+
+/** Connector-owned construction options, never read from an agent file. */
+export interface MeshAgentOptions {
+  /** The connector process directory is not this session's (one process hosts several sessions),
+   *  so `meta.cwd` stays unknown until the harness reports it through {@link MeshAgent.setCwd}. */
+  withholdProcessCwd?: boolean;
 }
 
 /** A message that has arrived for us, normalized for the agent to read. */
@@ -120,6 +134,14 @@ export interface InboxItem {
    *  Broker-derived, never read from the payload: above 1, an earlier delivery of this message went
    *  unacked past its ack wait and may have run, here or on another reader. */
   deliveryCount?: number;
+}
+
+/** A bounded, non-consuming view of the currently buffered inbox for presentation-only surfaces. */
+export interface InboxSnapshot {
+  /** Total buffered deliveries, including rows beyond {@link items}. */
+  unread: number;
+  /** Oldest buffered rows, copied without receive/ack handles. */
+  items: InboxItem[];
 }
 
 /** Reply correlation for outgoing messages (SPEC §5): `contextId` is the asker's conversation id,
@@ -232,6 +254,8 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
  *  suppression, oldest forgotten first, so a server producing novel error text on every request
  *  cannot grow the map. */
 const MAX_ENDPOINT_NOTICES = 16;
+/** How many present names a DM miss lists before it starts counting them instead. */
+const NAMED_SIMILAR = 5;
 /** Cadence of the turn-pending pull while connected. The relay is PULL-shaped by design (the
  *  manager holds no DM machinery and a pushed relay could not authenticate its sender), so this
  *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
@@ -518,7 +542,7 @@ export class MeshAgent extends EventEmitter {
   private presenceChain: Promise<void> = Promise.resolve();
 
   /** An explicit env scopes launch metadata and bearer subprocesses. Omitted preserves process inheritance. */
-  constructor(config: AgentConfig, env?: NodeJS.ProcessEnv) {
+  constructor(config: AgentConfig, env?: NodeJS.ProcessEnv, options: MeshAgentOptions = {}) {
     super();
     this.config = config;
     this.launchEnv = env === undefined ? undefined : { ...env };
@@ -560,7 +584,7 @@ export class MeshAgent extends EventEmitter {
         actor: config.userAuth?.actor,
         // Display-only discovery metadata so observers can show which harness an agent runs on
         // and (when pinned) which model. Each is omitted when unset rather than faked.
-        meta: buildMeta(config),
+        meta: buildMeta(config, !options.withholdProcessCwd),
       },
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
@@ -1537,6 +1561,18 @@ export class MeshAgent extends EventEmitter {
     return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
   }
 
+  /**
+   * Read a bounded presentation snapshot without draining, acknowledging, committing, holding or
+   * changing attention. Each item is a shallow copy: reassigning its fields leaves the live inbox
+   * unchanged, but nested values such as `mentions` are shared, so callers must treat items as
+   * read-only.
+   */
+  inboxSnapshot(limit = 3): InboxSnapshot {
+    if (!Number.isInteger(limit) || limit < 0 || limit > 8)
+      throw new Error(`inbox preview limit must be a whole number from 0 to 8, got ${limit}`);
+    return { unread: this.inbox.length, items: this.inbox.slice(0, limit).map((p) => ({ ...p.item })) };
+  }
+
   /** Local receive time of the oldest still-buffered automatic delivery, if any. */
   oldestAutomaticReceivedAt(): number | undefined {
     let oldest: number | undefined;
@@ -2020,6 +2056,24 @@ export class MeshAgent extends EventEmitter {
     return match && match[0] !== peer?.card.id ? { id: match[0], name: match[1] } : undefined;
   }
 
+  /** Why a DM target resolved to no one, under a current presence view. A target that names this
+   *  session says so, since the roster leaves it out of DM resolution. Present names that start with
+   *  the target are listed for the caller to choose from; none of them is ever picked. */
+  private noPeer(target: string): string {
+    const want = target.trim().toLowerCase();
+    if (target === this.id || want === this.config.name.toLowerCase())
+      return `"${target}" is this session: a DM goes to another peer, so nothing was sent. cotal_roster lists who is present.`;
+    const missing = `no peer "${target}" in space "${this.config.space}"`;
+    if (!want) return missing;
+    const names = [...new Set(this.ep.getRoster()
+      .filter((p) => p.card.id !== this.id && p.card.name.toLowerCase().startsWith(want))
+      .map((p) => p.card.name))];
+    if (!names.length) return missing;
+    const shown = names.slice(0, NAMED_SIMILAR).map((n) => JSON.stringify(n)).join(", ");
+    const more = names.length > NAMED_SIMILAR ? ` and ${names.length - NAMED_SIMILAR} more` : "";
+    return `${missing}. A name must match in full, so nothing was sent. Present names that start with it: ${shown}${more}. DM one by its full name or instance id.`;
+  }
+
   async dm(
     target: string,
     text: string,
@@ -2056,8 +2110,7 @@ export class MeshAgent extends EventEmitter {
       : this.heldSender(target, this.ep.presenceView().state === "current", peer);
     if (!peer && !held) {
       const after = this.ep.presenceView();
-      if (after.state === "current")
-        throw new Error(`no peer "${target}" in space "${this.config.space}"`);
+      if (after.state === "current") throw new Error(this.noPeer(target));
       throw this.cannotVerify(`peer "${target}"`, after, "The DM was not sent.");
     }
     // The only status we can truthfully attribute is the roster snapshot taken right before the
@@ -2282,8 +2335,13 @@ export class MeshAgent extends EventEmitter {
   async despawn(name?: string, opts?: { graceful?: boolean }): Promise<ControlReply> {
     await this.requireConnected();
     const graceful = opts?.graceful ?? true;
-    if (!name) // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
+    if (!name) {
+      // A conversation's host is the person's own app. No manager holds it, and nothing may stop it.
+      if (this.config.turnRelay === false)
+        return { ok: false, error: "this connection belongs to a conversation, not a managed seat, so it has no self to stop; disconnecting retires only this connection" };
+      // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
       return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
+    }
     const resolved = await this.managerTargetFor(name);
     if ("error" in resolved) return resolved.error;
     return this.managerInvoke("despawn", { graceful }, { target: resolved.target });
@@ -2307,7 +2365,7 @@ export class MeshAgent extends EventEmitter {
     });
   }
 
-  /** An explicit manager instance for a read or run call, under `spawn`'s rules: a lifecycle token,
+  /** An explicit manager instance for a manager call, under `spawn`'s rules: a lifecycle token,
    *  and in user-auth mode no other instance than the one this session is bound to. */
   private managerPin(instance: string | undefined): { instanceId?: string } | { error: ControlReply } {
     if (instance === undefined) return {};
@@ -2325,7 +2383,7 @@ export class MeshAgent extends EventEmitter {
   // ---- the turn relay (seat side) ------------------------------------------------------------
 
   private ensureTurnPoll(): void {
-    if (this.turnPollTimer !== undefined) return;
+    if (this.config.turnRelay === false || this.turnPollTimer !== undefined) return;
     const t = setInterval(() => {
       void this.pollTurns().catch((e: unknown) => this.notePullTrouble((e as Error).message));
     }, TURN_POLL_MS);
@@ -2339,7 +2397,7 @@ export class MeshAgent extends EventEmitter {
    *  A seat with no manager in its space, or no self-service reach, gets a refused invoke and
    *  simply has no relay — silence, not an error, because most joined sessions are exactly that. */
   private async pollTurns(): Promise<void> {
-    if (!this._connected || this._stopping || this.turnPollBusy) return;
+    if (this.config.turnRelay === false || !this._connected || this._stopping || this.turnPollBusy) return;
     this.turnPollBusy = true;
     this.yieldedSincePull.clear();
     try {
@@ -2503,6 +2561,7 @@ export class MeshAgent extends EventEmitter {
   async definePersona(def: {
     name: string;
     prompt: string;
+    instance?: string;
     model?: string;
     role?: string;
     agent?: string;
@@ -2512,6 +2571,8 @@ export class MeshAgent extends EventEmitter {
     announce?: string;
   }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     await this.requireConnected();
+    const pin = this.managerPin(def.instance);
+    if ("error" in pin) return pin.error;
     // Validate the destination BEFORE the write, and here rather than only in the tool's schema —
     // this is the API every host's tool surface funnels through, so a caller that reaches
     // definePersona directly gets the same guarantee. `announce` present must mean EXACTLY that
@@ -2549,7 +2610,7 @@ export class MeshAgent extends EventEmitter {
       allowSubscribe: def.allowSubscribe,
       allowPublish: def.allowPublish,
     };
-    const reply = await this.managerInvoke("define-persona", args);
+    const reply = await this.managerInvoke("define-persona", args, pin);
     if (!reply.ok || !def.announce) return reply;
     // The persona IS saved by this point (the manager only replies ok after it writes the file), so
     // a failed announcement must NOT be reported as a failed definition. Reporting it as one names
@@ -2698,8 +2759,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
-    if (activity !== undefined) await this.ep.setActivity(activity);
-    await this.ep.setStatus(status);
+    await this.ep.setStatus(status, activity);
   }
 
   /** Change only the activity line. Routing it through `setStatus` with the current status read the
@@ -2747,6 +2807,11 @@ export class MeshAgent extends EventEmitter {
     await this.inOrder(() => this.ep.setCardModel(this.config.model ?? model, this.config.variant ?? variant, provider));
   }
 
+  /** Report the session's working directory as its harness supplied it. Advisory display data. */
+  async setCwd(cwd: string): Promise<void> {
+    await this.inOrder(() => this.ep.setCardCwd(cwd));
+  }
+
   // ---- channel registry ----------------------------------------------------
 
   /** The boot-time "push" half of channel onboarding: a fenced, one-line description per
@@ -2766,14 +2831,24 @@ export class MeshAgent extends EventEmitter {
 
   /** A channel's registry config + effective replay policy, from the endpoint's live cache.
    *  Config only — never membership (that view is kept off agents on purpose). */
-  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean } {
+  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean; event?: "own" | "agent" } {
     const cfg = this.ep.getChannelConfig(channel);
     return {
       description: cfg?.description,
       instructions: cfg?.instructions,
       replay: this.ep.channelReplay(channel),
       registered: cfg !== undefined,
+      event: this.eventChannelOf(channel),
     };
+  }
+
+  /** Whether `channel` is an agent's event channel (`events.<owner>.<actor>`) and whose: this
+   *  session's own, or another agent's. Undefined for a chat channel. */
+  private eventChannelOf(channel: string): "own" | "agent" | undefined {
+    const principal = eventChannelPrincipal(channel);
+    if (!principal) return undefined;
+    const own = this.ep.principal;
+    return principal.owner === own.owner && principal.actor === own.actor ? "own" : "agent";
   }
 
   /** Channels we're currently subscribed to (live — reflects join/leave). */
@@ -2794,6 +2869,7 @@ export class MeshAgent extends EventEmitter {
       deliveryHealth?: "active" | "degraded" | "unknown";
       messages: number;
       mode: ChannelMode | "normal";
+      event?: "own" | "agent";
     }[]
   > {
     const mine = this.ep.joinedChannels();
@@ -2848,6 +2924,7 @@ export class MeshAgent extends EventEmitter {
     const rows: {
       channel: string; description?: string; replay: boolean; joined: boolean;
       durableUnclosed: boolean; deliveryHealth?: "active" | "degraded" | "unknown"; messages: number; mode: ChannelMode | "normal";
+      event?: "own" | "agent";
     }[] = (await this.ep.listChannels()).map((c) => {
       const joined = mine.some((p) => subjectMatches(p, c.channel));
       return {
@@ -2861,6 +2938,7 @@ export class MeshAgent extends EventEmitter {
         deliveryHealth: health(c.channel, joined),
         messages: c.messages,
         mode: this.channelMode(c.channel) ?? "normal",
+        event: this.eventChannelOf(c.channel),
       };
     });
     // A channel in refused-sub durable cleanup can have NO traffic AND no registry entry, so listChannels()
@@ -2877,6 +2955,7 @@ export class MeshAgent extends EventEmitter {
         deliveryHealth: undefined,
         messages: 0,
         mode: this.channelMode(ch) ?? "normal",
+        event: this.eventChannelOf(ch),
       });
     }
     return rows;

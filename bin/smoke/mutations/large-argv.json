@@ -1,0 +1,28 @@
+{
+  "suite": [
+    "implementations/cli/smoke/large-argv.smoke.ts"
+  ],
+  "guard": "a command that renders no TUI loads no ink or yoga-layout module, so a large argv cannot stall the CLI before the command runs",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:large-argv",
+  "executes": ["bin/dist/cotal.js"],
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/large-argv.json",
+  "why": [
+    "The suite runs bin/dist/cotal.js, which loads @cotal-ai/cli from dist, so the command builds",
+    "the CLI first and afterRestore rebuilds it, so no dist compiled from the mutant is left behind.",
+    "",
+    "The mutation restores the defect: a static ink import at the top of commands/console.ts. The",
+    "named assertion is the module-graph cell because it discriminates on every platform. The",
+    "640 KB argv cell also goes red on macOS, where the stall reproduces, and passes on Linux."
+  ],
+  "mutations": [
+    {
+      "name": "the defect restored: commands/console.ts imports ink at module top",
+      "file": "implementations/cli/src/commands/console.ts",
+      "find": "import { createElement } from \"react\";\n",
+      "replace": "import { createElement } from \"react\";\nimport \"ink\";\n",
+      "expectRed": "cotal --version loads no ink or yoga-layout module",
+      "cell": "cotal --version loads no ink or yoga-layout module",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

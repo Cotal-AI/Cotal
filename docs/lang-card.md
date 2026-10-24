@@ -14,16 +14,19 @@ resume on another with the recorded steps returning instantly.
 
 | Primitive | Call | Returns |
 |---|---|---|
-| `spawn` | `await spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork?, events? })` | agent handle |
+| `spawn` | `await spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? })` | agent handle |
 | `turn` | `await turn(agent, { name, deadline? })` | `{ status: "done" \| "blocked" \| "handoff", to?, note?, at }` |
 | `ask` | `await ask(agent, { name, schema, deadline?, attempts? })` | the record the agent published |
 | `checkpoint` | `await checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? })` | see below |
 | `sleep` | `await sleep("10m", { name? })` | `null` |
 | `wait` | `await wait(event, { name?, timeout? })` | the event value, `null` on timeout |
+| `waitUntil` | `await waitUntil(probe, { name, every, deadline, terminal? })` | the terminal observation |
 | `notify` | `await notify(agents, fact, { name? })` | `null` |
 | `monitor` | `await monitor(agent, { name? })` | `null` |
 
 `parallel`, `race`, `fanOut` and `conclave` are the four concurrency scopes (below).
+`waitUntil` calls `probe` every `every` until `terminal(observation)` holds (by default, until the
+observation is not `null`); an elapsed `deadline` throws L4023, which the program can catch.
 `await once(fn, { name })` runs `fn` so that the `ask` inside it is dispatched at most once: a
 resume that finds it begun and never settled opens a hold for a person to answer instead. Step names
 are kebab-case; where the reference says a name is required, it must be a string literal. Option
@@ -47,7 +50,8 @@ revision. A `checkpoint` is a durable pause raced against a durable timer:
 
 - resolved: `{ status: "resolved", value?, by?, at, artifact? }`
 - expired with `onExpiry: "proceed"`, or after an `"escalate"` hop expires too: `{ status: "expired", at }`
-- expired with the default `onExpiry: "fail"`: throws L4007
+- expired with the default `onExpiry: "fail"`: throws L4007, which says whether the deadline came
+  from the checkpoint's own `timeout` or from the run's default
 
 ```js
 const gate = await checkpoint("ship-gate", "Ship 1.4.0 to npm?", { timeout: "4h", onExpiry: "proceed" })
@@ -77,7 +81,10 @@ rule covers user functions declared `async`.
 `parallel` and `race` take branches unevaluated, as a record of thunks. The record keys are the
 branch keys and survive reordering; array branches are keyed by index, which shifts when you
 insert one (warning L3023). `fanOut(items, fn, { name, key? })` runs `fn(item, index)` per item;
-the branch key is `key(item)`, else the item's string `id`, else the fan-out is refused (L3021).
+the branch key is `key(item)`, else the item's string `id`, else the run refuses the fan-out when
+it reaches it (L3021). `cotal run validate` warns with the same code only for a list written in the
+`fanOut` call. A list held in a variable can change before the call, so only the run judges it:
+give its items an `id` or pass `key`, as below.
 
 ```js
 async function review(pr) {

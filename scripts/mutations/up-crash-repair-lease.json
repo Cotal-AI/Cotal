@@ -1,0 +1,52 @@
+{
+  "suite": [
+    "implementations/cli/smoke/up-crash-repair-lease-live.smoke.ts"
+  ],
+  "grades": "suite",
+  "guard": "a repair cotal up inside a crashed holder's lease TTL waits out a dead holder's row and refuses a row that is written again",
+  "command": "pnpm build >/dev/null && pnpm smoke:up-crash-repair-lease:live",
+  "progressPattern": "\u2713",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/up-crash-repair-lease.json",
+  "mutations": [
+    {
+      "name": "the manager refuses every lease conflict without waiting",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (!held || held.info.root !== info.root || (held.info.pid !== process.pid && probeLiveness(held.info.pid) !== \"dead\"))\n",
+      "replace": "      if (!held || held.info.root !== info.root || process.env.COTAL_4092_NEVER_SET === undefined)\n",
+      "expectRed": "M1 repair up after a manager SIGKILL exits 0",
+      "cell": "M1 repair up after a manager SIGKILL exits 0",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-crash-repair-lease:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the lease wait ignores a rewrite of the row",
+      "file": "packages/core/src/lease.ts",
+      "find": "    if (row.revision !== opts.revision) return \"rewritten\";\n",
+      "replace": "",
+      "expectRed": "M2 the new manager refused at the rewrite",
+      "cell": "M2 the new manager refused at the rewrite",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-crash-repair-lease:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "ensureDelivery launches over a dead daemon's lease without waiting",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "    if (previous !== undefined) {\n      const recorded",
+      "replace": "    if (previous !== undefined && process.env.COTAL_4092_NEVER_SET !== undefined) {\n      const recorded",
+      "expectRed": "D1 repair up after a broker SIGKILL exits 0",
+      "cell": "D1 repair up after a broker SIGKILL exits 0",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-crash-repair-lease:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "ensureDelivery launches over a rewritten lease",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "      if (waited === \"rewritten\")\n        throw new Error(",
+      "replace": "      if (waited === \"rewritten\" && process.env.COTAL_4092_NEVER_SET !== undefined)\n        throw new Error(",
+      "expectRed": "D2 the repair refused at the rewrite",
+      "cell": "D2 the repair refused at the rewrite",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-crash-repair-lease:live",
+      "afterRestore": "pnpm build"
+    }
+  ]
+}

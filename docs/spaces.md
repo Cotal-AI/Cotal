@@ -27,8 +27,10 @@ the trust boundary all live at this level.
 ## 2. Channel boundary
 
 A channel is a *topic*, not a room. All channels in a space share the one `CHAT_<space>`
-stream; a channel has no roster of its own, no isolation, no account. It is a routing suffix on
-multicast.
+stream; a channel has no presence roster of its own, no isolation, no account. It is a routing
+suffix on multicast. A `durable` channel also has a durable membership list, recorded server-side
+when an agent joins, which decides who receives backstop copies. It is not a read boundary tighter
+than the read ACL ([SPEC §7](../SPEC.md#7-channels)).
 
 They are different axes:
 

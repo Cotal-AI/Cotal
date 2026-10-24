@@ -35,6 +35,7 @@ import {
   assertGovernedSurfaceFor, assertGovernedPreEffect, type EpTraitEnforcement,
 } from "./endpoint-traits.js";
 import type { GuardObligation } from "./endpoint-guard.js";
+import { parseDescribeObservation, type DescribeRequestContext } from "./endpoint-describe-observation.js";
 
 // ---- the serve table ---------------------------------------------------------------------------
 
@@ -56,8 +57,16 @@ export interface EpServeContext {
   identity: EpServeIdentity;
   subject: ParsedEpRequest;
   request: EndpointRequest;
+  /** This process's `performance.now()` when the request arrived, taken before validation. A
+   *  host measures a request budget against it in this process only: it is never persisted, sent,
+   *  or compared with another process's clock. */
+  receivedAtMonotonicMs?: number;
   obligations?: readonly GuardObligation[];
+  /** Measure the complete success reply against this connection and a handler's byte ceiling. */
+  replyFits?: (data: unknown, ceiling: number) => boolean;
 }
+
+const describeContexts = new WeakMap<EpServeContext, DescribeRequestContext>();
 
 /** One served command: its handler plus the COMPILED §13.7 contracts (schema-profile
  *  {@link compileContract} — provenance-branded, so a fabricated `{validate, closureDigest}`
@@ -443,16 +452,28 @@ export function serveEndpoint(
 
   const pending = new Set<Promise<void>>();
   const enc = new TextEncoder();
+
+function successReply(id: string, data: unknown): EndpointReply {
+  return { v: 1, id, ok: true, ...(data !== undefined ? { data } : {}) };
+}
+
+function encodeReply(reply: EndpointReply): Uint8Array {
+  return enc.encode(JSON.stringify(reply));
+}
+
   const dec = new TextDecoder();
 
+  const needsDescribeContext = describe.public !== true;
   const handle = async (def: ActiveDef, msg: { subject: string; data: Uint8Array }): Promise<void> => {
+    const receivedAtMonotonicMs = performance.now();
     const parsed = parseEpSubject(msg.subject);
     if (!parsed || parsed.plane !== "request") return; // no sender: MUST NOT be handled (§13.2)
     let env: EndpointRequest | undefined;
     let dispatched = false;
     let reply: EndpointReply;
     try {
-      env = parseEndpointRequest(JSON.parse(dec.decode(msg.data)));
+      const originalEnvelope: unknown = JSON.parse(dec.decode(msg.data));
+      env = parseEndpointRequest(originalEnvelope);
       checkRequestSubjectAgreement(env, parsed);
       // §13.2 FIRST among the semantic gates, and deliberately ahead of the command's own class,
       // contract, and args: whether this instance is the addressee at all is settled before
@@ -505,7 +526,25 @@ export function serveEndpoint(
         if (parsed.target?.mode === "child" || parsed.target?.mode === "ledger")
           await assertTargetCurrent(env, opts.resolveTarget);
       }
-      const ctx: EpServeContext = { identity, subject: parsed, request: env, ...(obligations !== undefined ? { obligations } : {}) };
+      const requestId = env.id;
+      const ctx: EpServeContext = {
+        identity, subject: parsed, request: env, receivedAtMonotonicMs,
+        ...(obligations !== undefined ? { obligations } : {}),
+        replyFits: (data, ceiling) => {
+          const maxPayload = nc.info?.max_payload;
+          if (!Number.isSafeInteger(maxPayload) || maxPayload === undefined || maxPayload <= 0)
+            throw new EpEnvelopeError("unavailable", "the serving connection has no valid payload ceiling");
+          if (!Number.isSafeInteger(ceiling) || ceiling <= 0)
+            throw new EpEnvelopeError("failed-precondition", "reply byte ceiling must be a positive safe integer");
+          return encodeReply(successReply(requestId, data)).byteLength <= Math.min(ceiling, maxPayload);
+        },
+      };
+      if (def.command === "describe" && needsDescribeContext) {
+        const observed = parseDescribeObservation(space, msg.subject, originalEnvelope);
+        describeContexts.set(ctx, Object.freeze({ subject: msg.subject, fingerprint: observed.fingerprint,
+          identity: Object.freeze({ ...identity }), receivedAtMonotonicMs, replyExpected: observed.replyExpected,
+          ...(observed.deadlineMs === undefined ? {} : { deadlineMs: observed.deadlineMs }) }));
+      }
       dispatched = true;
       if (!env.replyExpected) {
         await def.handler(ctx);
@@ -516,7 +555,7 @@ export function serveEndpoint(
       // same fixed budget as args — an invalid reply is a server bug and fails loud, never
       // reaches the caller as success.
       assertOutputValid(def.validate.output, data);
-      reply = { v: 1, id: env.id, ok: true, ...(data !== undefined ? { data } : {}) };
+      reply = successReply(env.id, data);
     } catch (err) {
       if (env && !env.replyExpected) return; // a failed cast stays silent (§13.5 at-most-once)
       const error = err instanceof EpEnvelopeError
@@ -534,7 +573,7 @@ export function serveEndpoint(
     const outcome = reply.error?.outcome;
     let bytes: Uint8Array;
     try {
-      bytes = enc.encode(JSON.stringify(reply));
+      bytes = encodeReply(reply);
     } catch (err) {
       // A non-serializable payload or refusal detail (cycle, BigInt) must not silently drop the reply.
       const fallback: EndpointReply = { v: 1, id: reply.id, ok: false, error: { code: "internal", message: `the reply does not serialize: ${(err as Error).message}`, ...(outcome !== undefined ? { outcome } : {}) } };
@@ -582,7 +621,11 @@ export function serveEndpoint(
 
   return {
     async stop() {
-      await Promise.all(subs.map((s) => s.drain())); // no new deliveries
+      // No new deliveries. A drain settles on the server's PONG, and nats-core rejects no pending
+      // flush when the connection closes, so a close mid-drain would strand stop() forever: each
+      // drain is bounded by the connection's own closed() instead.
+      const gone = nc.closed().then(() => undefined);
+      await Promise.all(subs.map((s) => Promise.race([s.drain().catch(() => undefined), gone])));
       await Promise.allSettled([...pending]); // in-flight handlers finish before "stopped"
     },
   };
@@ -603,7 +646,7 @@ export interface DescribeView {
  *  not even a parameter here). The provider owns its own freshness bound. */
 export type DescribeAuthorization =
   | { public: true }
-  | { public?: false; view: (caller: EpCaller) => Promise<DescribeView | undefined> | DescribeView | undefined };
+  | { public?: false; view: (caller: EpCaller, context?: DescribeRequestContext) => Promise<DescribeView | undefined> | DescribeView | undefined };
 
 /** The describe answer: `public` says which path produced it (§13.7: the answer says so). */
 export interface DescribeAnswer {
@@ -682,7 +725,7 @@ function describeHandler(descriptor: DescribeDescriptor, authz: DescribeAuthoriz
       throw new EpEnvelopeError("internal", "describe has no snapshotted authorization view but is not public");
     let view: DescribeView | undefined;
     try {
-      view = await viewFn!(ctx.subject.caller);
+      view = await viewFn!(ctx.subject.caller, describeContexts.get(ctx));
     } catch (err) {
       throw new EpEnvelopeError("unavailable", `the trusted authorization view failed; describe fails closed, never answers from a weaker source (SPEC 13.7): ${(err as Error)?.message ?? String(err)}`);
     }

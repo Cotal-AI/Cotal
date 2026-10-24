@@ -6,9 +6,10 @@ A manifest (`cotal.yaml`, `kind: Mesh`) describes a whole team (its channels, it
 and who may read and post where) in one file. It is **channel-centric**: you list the
 channels, and under each one name the agents that may read and post; Cotal inverts that
 into one least-privilege credential per agent. The manifest is a convenience over the CLI;
-it adds no wire concepts. Today it is **single-space** (one `space:` per file).
+it adds no wire concepts. Today it is **single-space** (one `space:` per file). The file is
+UTF-8; one saved as UTF-16 is refused with `SCHEMA_INVALID`, saying to save it as UTF-8.
 
-The lifecycle (`cotal topology view -f` / `up -f` / `spawn -f` / `down -f`), ownership,
+The lifecycle (`cotal topology view -f` / `up -f` / `team deploy` / `team remove` / `down`), ownership,
 and teardown behavior are in the guide: [Define a team](define-a-team.md).
 
 ## Top level
@@ -17,8 +18,8 @@ and teardown behavior are in the guide: [Define a team](define-a-team.md).
 |---|---|---|
 | `apiVersion` | yes | Must be `cotal/v1`. |
 | `kind` | yes | Must be `Mesh`. |
-| `space` | yes | The space name (one per file; `spaces:` is not supported in v1). A space's auth is bound to one root; to run a non-default space in a checkout that already ran `cotal up` (which sets up `main`), use a fresh directory. |
-| `broker` | no | `servers` (comma-separated broker URLs: this sets the address/port; default `nats://127.0.0.1:4222`; **no embedded creds**), `host` (bind interface only, no scheme; does *not* set the port), `auth` (the auth mode: unset/`true`/`"static"` = per-agent JWT creds, the default; `false` = an open dev mesh; `"user"` = per-user auth, where people `cotal login` and every connect is authorized against the actor ledger; pair with `idp`), `idp` (with `auth: "user"`: the IdP auth base URL to pin on first enable; https, or http on a loopback IP literal such as `127.0.0.1`; **no embedded creds**, query or fragment). The port comes from `servers`/`--server`, never `host`/`--host`. |
+| `space` | yes | The space name (one per file; `spaces:` is not supported in v1): 1 to 200 letters, digits, underscores or hyphens, the names `space create` takes. Any other name is refused when the manifest is read, by `team check`, `team boot` and its `--dry-run`, and `up -f`. A space's auth is bound to one root; to run a non-default space in a checkout that already ran `cotal up` (which sets up `main`), use a fresh directory. |
+| `broker` | no | `servers` (comma-separated broker URLs: this sets the address/port; default `nats://127.0.0.1:4222`; **no embedded creds**; a `tls://` URL needs `--tls-cert` and `--tls-key` on `up -f`, or the start is refused, and with `--tls-cert` a `nats://` URL is refused, naming the `tls://` form), `host` (bind interface only, no scheme; does *not* set the port), `auth` (the auth mode: unset/`true`/`"static"` = per-agent JWT creds, the default; `false` = an open dev mesh; `"user"` = per-user auth, where people `cotal login` and every connect is authorized against the actor ledger; pair with `idp`), `idp` (with `auth: "user"`: the IdP auth base URL to pin on first enable; https, or http on a loopback IP literal such as `127.0.0.1`; **no embedded creds**, query or fragment). The port comes from `servers`/`--server`, never `host`/`--host`. |
 | `runtime` | no | Registered manager runtime name. `pty` is built in; optional providers such as `tmux`, `cmux`, `orca`, and `herdr` are installed with `cotal ext add`. |
 | `agent` | no | Default harness (`claude` / `opencode` / `hermes`) for agents that don't set their own. There is **no silent default**; an agent needs this or its own `agent:`. |
 | `personaPermissions` | no | `reject` (default): the manifest is the whole truth. `include`: a persona's own channel grants are inherited for channels the manifest doesn't declare. |
@@ -39,7 +40,7 @@ agents:
     cwd: repos/backend                  # relative to the manager workspace
     role: implementer
     instructions: Prefer the smallest change that works.
-  lead:                                 # 3) inline (no file): needs at least model or instructions
+  lead:                                 # 3) inline (no file): needs model, variant or instructions
     model: opus
     role: lead
     capabilities: [spawn]               # may spawn helpers
@@ -47,13 +48,14 @@ agents:
     prompt: Introduce yourself in #general and assign the first task.
 ```
 
-Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `model`, `variant`, `role`,
-`description`, `instructions`, `prompt`, `capabilities` (`spawn`,
+Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `model`, `variant`,
+`launchOptions` (connector-specific options, merged per key over the persona's `launchOptions:`),
+`role`, `description`, `instructions`, `prompt`, `events` (`false` is `--no-events`), `capabilities` (`spawn`,
 [what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
 `personaPermissions` (override the top-level policy). Model strings and variants pass to
 the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full id; for
-OpenCode use `provider/model` plus an optional variant (`cotal models --agent opencode`
+OpenCode use `provider/model` plus an optional variant (`cotal models --harness opencode`
 lists both). Persona file format: [agent files](agent-files.md).
 
 `cwd` is the agent's working directory on the **manager host**. A relative path resolves
@@ -98,9 +100,13 @@ unsupported `variant:` is refused.
 
 ## Channel grants
 
-A channel carries its registry card (`description`, `instructions`, `replay`, …;
-[SPEC §7](../SPEC.md#7-channels)) plus three lists of agent names, the same verbs Cotal
-uses everywhere ([channels & permissions](channels-and-permissions.md)):
+A channel carries its registry card ([SPEC §7](../SPEC.md#7-channels)): `description`,
+`instructions`, `replay`, `replayWindow` and `deliveryClass` (`live` / `durable`). A key the
+channel sets overrides the same key in `defaults`. `cotal team deploy` adds a channel to a running
+mesh only when its card sets `deliveryClass: live`. `cotal up -f` and `cotal team boot` seed
+either class, except on an open mesh, which runs no delivery daemon and refuses `durable`. The
+channel also carries three lists of agent names, the same verbs Cotal uses everywhere
+([channels & permissions](channels-and-permissions.md)):
 
 | Verb | ACL | Meaning |
 |---|---|---|
@@ -140,7 +146,8 @@ the resolved graph, inherited scopes included.
 ---
 
 For implementers: the channel-centric → per-agent inversion lives in
-[`resolve.ts`](../implementations/cli/src/lib/manifest/resolve.ts); the `spawn -f`
-classification and teardown in
-[`spawn-plan.ts`](../implementations/cli/src/lib/manifest/spawn-plan.ts) and
+[`resolve.ts`](../implementations/cli/src/lib/manifest/resolve.ts); the `team deploy`
+classification in [`spawn-plan.ts`](../implementations/cli/src/lib/manifest/spawn-plan.ts) and
+[`team-deploy-inspection.ts`](../implementations/cli/src/lib/team-deploy-inspection.ts); the
+teardown of an older `spawn -f` ledger in
 [`down-manifest.ts`](../implementations/cli/src/commands/down-manifest.ts).

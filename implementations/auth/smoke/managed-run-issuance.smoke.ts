@@ -344,7 +344,7 @@ try {
   await cell(5, async () => {
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["admin", "spawn"], allowSubscribe: [], allowPublish: [] });
     const secret = newActorToken(), lifecycleUid = mintLifecycleUid();
-    grantManagedActor(a.stateDir, { owner, actor: "denied", scope: ["run"], allowSubscribe: [], allowPublish: [], parent: `${owner}.norun`, lifecycleUid, tokenHash: secret.tokenHash });
+    grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, owner, actor: "denied", scope: ["run"], allowSubscribe: [], allowPublish: [], parent: `${owner}.norun`, lifecycleUid, tokenHash: secret.tokenHash });
     const conn = await dial("denied", secret.actorToken);
     const expected = { owner, actor: "denied", uid: lifecycleUid };
     await assert.rejects(issuedUserCaller(conn.nc, a.space, conn.nonce, expected), /Permissions Violation/);
@@ -365,7 +365,7 @@ try {
   await cell(9, async () => {
     const parent = grantActor(a.stateDir, { owner, actor: "changing", scope: ["admin", "run"], allowSubscribe: [], allowPublish: [] });
     const secret = newActorToken(), lifecycleUid = mintLifecycleUid();
-    grantManagedActor(a.stateDir, { owner, actor: "freshparent", scope: ["run"], allowSubscribe: [], allowPublish: [], parent: `${owner}.changing`, lifecycleUid, tokenHash: secret.tokenHash });
+    grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, owner, actor: "freshparent", scope: ["run"], allowSubscribe: [], allowPublish: [], parent: `${owner}.changing`, lifecycleUid, tokenHash: secret.tokenHash });
     const exchange = await post<{ token: string }>("/exchange", { owner, actor: "freshparent", actorToken: secret.actorToken, view: "manager-caller", managerInstanceId: state.instanceId });
     grantActor(a.stateDir, { ...parent, scope: ["admin"] });
     const nonce = mintLifecycleUid();
@@ -382,7 +382,7 @@ try {
     grantActor(a.stateDir, { owner: foreignOwner, actor: "foreignparent", scope: ["admin", "run"], allowSubscribe: [], allowPublish: [] });
     for (const [actor, parent] of [["no_parent", undefined], ["bad_parent", "malformed"], ["foreign_parent", `${foreignOwner}.foreignparent`], ["self_parent", `${owner}.self_parent`], ["missing_parent", `${owner}.absent`]] as const) {
       const secret = newActorToken(), lifecycleUid = mintLifecycleUid();
-      grantManagedActor(a.stateDir, { owner, actor, scope: ["run"], allowSubscribe: [], allowPublish: [], lifecycleUid, tokenHash: secret.tokenHash });
+      grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, owner, actor, scope: ["run"], allowSubscribe: [], allowPublish: [], lifecycleUid, tokenHash: secret.tokenHash });
       const exchanged = await post<{ token: string }>("/exchange", { owner, actor, actorToken: secret.actorToken, view: "manager-caller", managerInstanceId: state.instanceId });
       // Simulate a changed trusted row between exchange and mint, without copying any eligibility rule.
       const file = join(a.stateDir, "managed-actors", `${owner}.${actor}.json`);
@@ -400,9 +400,9 @@ try {
     const same = await dial("runner", grant.actorToken, d.nonce);
     assert.deepEqual(await issuedUserCaller(same.nc, a.space, same.nonce, { owner, actor: "runner", uid }), caller);
     const row = findManagedActor(a.stateDir, owner, "runner")!;
-    grantManagedActor(a.stateDir, { ...row, scope: ["run"], tokenHash: row.tokenHash! });
+    grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, scope: ["run"], tokenHash: row.tokenHash! });
     await assert.rejects(dial("runner", grant.actorToken, d.nonce), /Authorization Violation/);
-    grantManagedActor(a.stateDir, { ...row, tokenHash: row.tokenHash! });
+    grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, tokenHash: row.tokenHash! });
   });
   await cell(7, async () => {
     assert.ok(caller);
@@ -414,7 +414,7 @@ try {
       const row = findManagedActor(a.stateDir, owner, "runner")!;
       revokeManagedActor(a.stateDir, owner, "runner");
       await assert.rejects(session.store.resolve(ref, sourceIsLive), /no longer live/);
-      grantManagedActor(a.stateDir, { ...row, lifecycleUid: mintLifecycleUid(), tokenHash: row.tokenHash! });
+      grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, lifecycleUid: mintLifecycleUid(), tokenHash: row.tokenHash! });
       await assert.rejects(session.store.resolve(ref, sourceIsLive), /no longer live/);
     });
   });

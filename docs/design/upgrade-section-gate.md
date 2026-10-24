@@ -1,6 +1,6 @@
 # Design note: the upgrade-section gate
 
-**Status:** proposed, alongside `docs/UPGRADING.md` (see #1578).
+**Status:** historical design, alongside `docs/UPGRADING.md` (see #1578). The Attribution workflow and its required-status rule were removed on 22 October 2026. The script remains available for manual checks.
 **Scope:** one CI check, `scripts/upgrade-section-gate.mjs`, run as `smoke:upgrade-section`.
 
 ## The problem it addresses

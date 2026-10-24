@@ -114,8 +114,8 @@
     {
       "name": "the closed parser accepts any string where the token digest belongs",
       "file": "packages/core/src/remote-manager-authority.ts",
-      "find": "  if (typeof t.tokenHash !== \"string\" || !/^[0-9a-f]{64}$/.test(t.tokenHash))\n    enrollmentError(what, \"target.tokenHash must be a lowercase hex sha256 digest of the locally held actorToken\");\n",
-      "replace": "  if (typeof t.tokenHash !== \"string\" || t.tokenHash.length === 0)\n    enrollmentError(what, \"target.tokenHash must be a lowercase hex sha256 digest of the locally held actorToken\");\n",
+      "find": "  if (typeof value !== \"string\" || !/^[0-9a-f]{64}$/.test(value))\n",
+      "replace": "  if (typeof value !== \"string\" || value.length === 0)\n",
       "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-enrollment.smoke.ts",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FAIL: enrollment refuses a non-digest tokenHash (a plaintext token never passes as one)",

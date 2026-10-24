@@ -1,4 +1,5 @@
-import { rawDigest } from "./canonical.js";
+import { fromPublic } from "@nats-io/nkeys";
+import { rawDigest, canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
@@ -406,6 +407,17 @@ export interface RemoteManagedAgentRuntimeStatusRequest extends Omit<RemoteManag
 
 export type RemoteManagedAgentRuntimeRequest = RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest;
 
+/** SPEC §13.19's declaration-only serving request. Parsing grants no authority; the auth
+ *  and host owners must implement current registration, child, snapshot and clock checks. */
+export interface RemoteManagedAgentToolResultServingRequest extends RemoteManagerEnvelope {
+  v: 1;
+  kind: "manager-managed-agent-tool-result-serving";
+  accountPublicKey: string;
+  serveEpoch: number;
+  operation: "issue" | "renew";
+  target: { owner: string; actor: string; lifecycleUid: string };
+}
+
 /** The host's answer to a runtime create or status request: the request echo plus the host state. */
 export interface RemoteManagedAgentRuntimeResult {
   v: 1;
@@ -704,6 +716,34 @@ function parseRemoteManagedAgentRuntimeRequest<K extends RemoteManagedAgentRunti
   } as Extract<RemoteManagedAgentRuntimeRequest, { kind: K }>;
 }
 
+/** Parse the closed issue/renew request through the shared managed-agent envelope.
+ *  There is no dispatch, signer, resume operation or caller-selected profile in this slice. */
+export function parseRemoteManagedAgentToolResultServingRequest(raw: unknown): RemoteManagedAgentToolResultServingRequest {
+  const what = "managed agent tool-result serving";
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) enrollmentError(what, "must be an object");
+  let o: Record<string, unknown>;
+  try { o = JSON.parse(canonicalJson(raw)) as Record<string, unknown>; }
+  catch { enrollmentError(what, "must be interchangeable JSON"); }
+  const keys = new Set([...RUNTIME_REQUEST_KEYS, "operation", "accountPublicKey"]);
+  for (const key of Object.keys(o))
+    if (!keys.has(key)) enrollmentError(what, "carries an unknown field (the protocol is closed)");
+  if (o.operation !== "issue" && o.operation !== "renew") enrollmentError(what, "operation must be issue or renew");
+  try {
+    const envelope = parseManagedAgentEnvelope(o, what, "manager-managed-agent-tool-result-serving");
+    if (!/^[A-Za-z0-9_-]+$/.test(envelope.space)) enrollmentError(what, "space must be a literal routing token");
+    const target = Object.freeze(parseRetirementTarget(o.target, what));
+    const accountPublicKey = parseAccountPublicKey(o.accountPublicKey, what);
+    fromPublic(accountPublicKey);
+    for (const identity of Object.values(envelope.identities)) Object.freeze(identity);
+    Object.freeze(envelope.identities);
+    return Object.freeze({ v: 1, kind: "manager-managed-agent-tool-result-serving", ...envelope,
+      accountPublicKey, operation: o.operation, target });
+  } catch (error) {
+    if (error instanceof EpEnvelopeError) throw error;
+    enrollmentError(what, "has invalid identity coordinates");
+  }
+}
+
 /** Parse a runtime-create request without retaining unknown input fields. */
 export function parseRemoteManagedAgentRuntimeCreateRequest(raw: unknown): RemoteManagedAgentRuntimeCreateRequest {
   return parseRemoteManagedAgentRuntimeRequest(raw, "manager-managed-agent-runtime-create", "managed agent runtime-create");
@@ -812,6 +852,38 @@ export interface RemoteRunAdmissionResult {
   admission: import("./run-admission.js").RunAdmission;
 }
 
+/** Issuer-observed keyed start or caller-confined exact read. No caller/run identity in body. */
+export interface RemoteRunSubmissionRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
+  kind: "manager-run-submission";
+  subject: string;
+}
+export interface RemoteRunSubmissionResult {
+  v: 1;
+  kind: "manager-run-submission";
+  requestId: string;
+  winner: boolean;
+  view: import("./run-submission.js").RunSubmissionView;
+  admission?: import("./run-admission.js").RunAdmission;
+}
+
+/** Inspect or commit one exact issuer-observed served cancellation. Inspection is not a grant. */
+export interface RemoteRunCancelRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
+  kind: "manager-run-cancel";
+  stage: "inspect" | "commit";
+  subject: string;
+  cancel: import("./run-cancel.js").RunCancelInput;
+}
+
+export type RemoteRunCancelResult = {
+  v: 1;
+  kind: "manager-run-cancel";
+  requestId: string;
+  runId: string;
+} & (
+  | { stage: "inspect"; authority: import("./run-cancel.js").RunCancelAuthority }
+  | { stage: "commit"; result: import("./run-cancel.js").RunCancelCommit }
+);
+
 /** Revoke one admitted run through its issuing host. The authenticated holder, never the body,
  * supplies the owner and attribution. The admission supplies the run's owner. */
 export interface RemoteRunRevokeRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
@@ -894,6 +966,7 @@ export type PlatformControlInnerRequest =
   | RemoteManagerGoalIndexScanRequest
   | RemoteManagerAdminAuthorizationRequest
   | RemoteRunAdmissionRequest
+  | RemoteRunSubmissionRequest
   | RemoteRunAttemptRequest;
 
 /** Closed envelope for one platform control door call. It names no profile, permission, subject,
@@ -918,6 +991,7 @@ export type PlatformControlAuthorityResult<R extends PlatformControlInnerRequest
   : R extends RemoteManagerGoalIndexScanRequest ? RemoteManagerGoalIndexScanResult
   : R extends RemoteManagerAdminAuthorizationRequest ? RemoteManagerAdminAuthorizationResult
   : R extends RemoteRunAdmissionRequest ? RemoteRunAdmissionResult
+  : R extends RemoteRunSubmissionRequest ? RemoteRunSubmissionResult
   : R extends RemoteRunAttemptRequest ? RemoteRunAttemptResult
   : never;
 

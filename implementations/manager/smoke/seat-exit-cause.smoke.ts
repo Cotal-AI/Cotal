@@ -88,6 +88,9 @@ writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\n-
 interface ManagedLike {
   id: string; name: string; lifecycleUid: string; handle: AgentHandle;
   suppressCleanup: boolean; terminalizing: boolean; startedAt: number; spawner?: string;
+  // Every managed seat carries its launch spec; freeing the slot hands its subscribe grant to the
+  // teardown target.
+  launch: { allowSubscribe: string[] };
 }
 
 function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<string, ManagedLike> } {
@@ -102,7 +105,7 @@ function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<strin
   (manager as unknown as { attach: unknown }).attach = { stop: async () => {} };
   agents.set(handle.name, {
     id: `local.${handle.name}`, name: handle.name, lifecycleUid: `uid-${handle.name}`,
-    handle, suppressCleanup: false, terminalizing: false, startedAt: Date.now(),
+    handle, suppressCleanup: false, terminalizing: false, startedAt: Date.now(), launch: { allowSubscribe: [] },
   });
   return { manager, agents };
 }

@@ -14,8 +14,8 @@
   "mutations": [
     {
       "name": "endpoint-plane delete grants are omitted from the teardown credential",
-      "file": "packages/core/src/provision.ts",
-      "find": "    ...endpointPlaneStreamNames(space),\n    objectStoreStream(artifactBucket(space)),\n",
+      "file": "packages/core/src/space-deletion-targets.ts",
+      "find": "    ...endpointPlaneStreamNames(space), objectStoreStream(artifactBucket(space)),\n",
       "replace": "    objectStoreStream(artifactBucket(space)),\n",
       "expectRed": "STREAM.DELETE an endpoint record-ingress stream ALLOWED",
       "cell": "STREAM.DELETE an endpoint record-ingress stream ALLOWED"

@@ -1,5 +1,140 @@
 # @cotal-ai/lang
 
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+### Patch Changes
+
+- 86b2cd5: A `conclave` reached on a branch that is already cancelled now raises the cancellation before its entry begins, as every other effect does. Before, a race's losing branch that reached a conclave after the race was decided wrote a conclave entry and settled it `cancelled`, and a resume that re-entered a pending conclave on a cancelled branch opened and closed the room and could hand the race to the branch the live run had cancelled. Effects and conclaves now pass one shared set of admission checks (cancellation, the host's stop, the effect ceiling) before they begin.
+
+## 0.100.0
+
+### Minor Changes
+
+- 9f69a20: `ADMITTED_NODES`, `STRUCTURAL_NODES`, `RESERVED_NAMES`, `FORBIDDEN_GLOBALS` and `MUTATING_METHODS` are now exported as frozen arrays instead of `Set`s, and `CATALOG` is frozen. Code that imports the package could call `add` or `delete` on one of those sets, or assign a `CATALOG` title, and change what `validate` accepted or how its errors were titled for the rest of the process. The tables can no longer be changed: a write throws in strict-mode code, such as an ES module, and changes nothing elsewhere. This changes the exported type, so a caller that used `.has` or `.size` on one of these tables uses `.includes` or `.length` instead.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
+### Minor Changes
+
+- 1db940e: Add authenticated cooperative workflow cancellation through the manager endpoint. The original caller can cancel under a live issued generation; signerless hosts also verify interactive owner or admin authority through the issuing host. Replies distinguish the durable revocation marker from an observed local drive outcome, preserve unknown write outcomes and retain the first marker. Read-only status inspection remains available after revocation without permitting new drive or checkpoint-answer authority. The run show view displays revocation separately from recorded state and returns a partial result with exit 4 when the marker cannot be read, in human and JSON output.
+
+  Breaking: embedded RunHostDrive implementations must supply cancel(reason) separately from release(reason). Both language engines and the worker bridge propagate cooperative root cancellation. This does not preempt external tools, stop agent processes or prove resource cleanup. No new CLI or MCP convenience command is added.
+
+## 0.91.0
+
+## 0.90.1
+
+## 0.90.0
+
+## 0.89.0
+
+## 0.88.0
+
+## 0.87.0
+
+## 0.86.0
+
+### Patch Changes
+
+- add70b8: `validate()` and `transform()` now refuse a write to a `const` binding through a destructuring assignment (`[c] = [1]`, `({ c } = { c: 1 })`) or a `for...of` with no declaration (`for (c of xs)`) with L2003. These used to validate clean and fail with L2003 only when the line ran, after any effects dispatched before it.
+- e754d4f: `validate()` now refuses with L2032 a `waitUntil` probe or `terminal` predicate that writes a binding declared, or a value built, outside it. Both engines run them one level deeper than the call and refuse the write at run time, so such a program used to validate clean and then fail on the first observation of every run.
+
 ## 0.85.0
 
 ## 0.84.0

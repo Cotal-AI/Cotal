@@ -154,6 +154,15 @@
       "expectRed": "A9: the discard removed a directory that was not directly under the OS temp root",
       "note": "Leaves the prefix test in place, which is the point: the prefix is a hint anyone can satisfy by naming a directory, and the location is what makes the claim structural. Without this check a hand-set pointer at <anywhere>/cotal-launch-project/material.json takes its directory with it.",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
+    },
+    {
+      "name": "M11 the launch material directory is no longer a launch artifact",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "  artifacts.push(dirname(path));",
+      "replace": "",
+      "expectRed": "A11: the claude connector's launch material directory",
+      "note": "Restores #4089: the material is written and delivered, the seat works, and its directory stays in the OS temp dir after the seat exits because no launcher owns it. Claude is the first connector the loop grades, and the one whose file has to outlive startup.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     }
   ]
 }

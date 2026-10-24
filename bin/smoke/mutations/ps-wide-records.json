@@ -1,0 +1,23 @@
+{
+ "suite": [
+  "bin/smoke/spawn-detach-live.smoke.ts"
+ ],
+ "guard": "ps --wide labels each seat's record as its operational facts are labeled, and leaves out a field the seat leaves empty",
+ "command": "pnpm --filter cotal-ai... build && pnpm smoke:spawn-detach:live",
+ "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ps-wide-records.json",
+ "why": [
+  "The suite drives the built binary against a live manager, so the mutation rebuilds it and the restore rebuilds it back.",
+  "The suite stops at its first failed check, so it declares no completion marker: a red run never reaches the end."
+ ],
+ "mutations": [
+  {
+   "name": "ps --wide labels a record with the table headers",
+   "file": "implementations/cli/src/commands/agents.ts",
+   "find": ".map(([label, value]): [string, Cell] => [label.toLowerCase(), value])",
+   "replace": ".map(([label, value]): [string, Cell] => [label, value])",
+   "expectRed": "ps --wide adds operational facts without duplicating model or requested variant",
+   "cell": "ps --wide adds operational facts without duplicating model or requested variant",
+   "afterRestore": "pnpm --filter cotal-ai... build"
+  }
+ ]
+}

@@ -1,0 +1,3 @@
+# Native service custody guards and the byte-exact active-root reader regression the dormant
+# custody writer's shared shapes rely on. A package script only until this fragment.
+smoke:service-custody:auth

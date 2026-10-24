@@ -1,0 +1,3 @@
+# cotal who and cotal whoami on the structured output contract against an owned broker: the roster
+# filters, the managed column with no manager and an unanswering one, a denied roster, and whoami's grant states.
+smoke:who-roster

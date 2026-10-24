@@ -1,0 +1,3 @@
+# A classified failure raised after a command records its resolved space carries that space as
+# target.space and begins with Mesh: <space>; a target that names its own space is kept.
+smoke:operation-space

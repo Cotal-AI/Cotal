@@ -25,8 +25,8 @@
     {
       "name": "remove public canonical activation artifacts",
       "file": "implementations/manager/src/index.ts",
-      "find": "export { managerClusterArtifacts } from \"./manager-service-contract.js\";",
-      "replace": "",
+      "find": "export { managerBrowserContractSource, managerClusterArtifacts } from \"./manager-service-contract.js\";",
+      "replace": "export { managerBrowserContractSource } from \"./manager-service-contract.js\";",
       "expectRed": "public manager root exposes canonical activation artifacts",
       "cell": "public manager root exposes canonical activation artifacts",
       "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:public-remote-authority"

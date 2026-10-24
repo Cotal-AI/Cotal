@@ -57,6 +57,8 @@ export const AUTH_PROVIDER_NAME = "cotal" as const;
  *  segment is workspace's ONE guarded encoder (`spaceSegment`, shared with `userAuthStateDir`):
  *  a `.`/`..`/empty space is refused before any key or path exists, on both surfaces. */
 export const authCalloutKey = (space: string): string => `auth/${spaceSegment(space)}/callout.json`;
+/** Host-written client projection. Reading it never loads the callout account signing material. */
+export const authClientSentinelKey = (space: string): string => `auth/${spaceSegment(space)}/client-sentinel.creds`;
 export const authIssuerKey = (space: string): string => `auth/${spaceSegment(space)}/issuer.json`;
 export const authOwnerSecretKey = (space: string): string => `auth/${spaceSegment(space)}/owner-secret.json`;
 export const authServiceKeysKey = (space: string): string => `auth/${spaceSegment(space)}/service-keys.json`;
@@ -273,6 +275,9 @@ export interface PinnedIdp {
   audience: string;
   /** The pinned JWKS URL keys resolve from — the ONLY key path. */
   jwksUri: string;
+  /** The dedicated `aud` of `dm-reader` proofs (#4189), set only by editing the pin deliberately.
+   *  Never derived from `audience`, and refused when equal to it. Absent: no `dm-reader` exchange. */
+  dmReaderAudience?: string;
 }
 
 interface IdpFile extends PinnedIdp {
@@ -285,7 +290,9 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
   if (!f) return undefined;
   if (!f.url || !f.issuer || !f.audience || !f.jwksUri)
     throw new Error(`${join(dir, IDP_FILE)}: malformed IdP pin - re-pin with \`cotal up --user-auth --idp <url>\``);
-  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri };
+  if (f.dmReaderAudience !== undefined && (typeof f.dmReaderAudience !== "string" || !f.dmReaderAudience || f.dmReaderAudience === f.audience))
+    throw new Error(`${join(dir, IDP_FILE)}: dmReaderAudience must be a non-empty string that differs from audience`);
+  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri, ...(f.dmReaderAudience !== undefined ? { dmReaderAudience: f.dmReaderAudience } : {}) };
 }
 
 /** Pin-or-verify the space's IdP. First call REQUIRES a URL (there is no default IdP); later calls
@@ -295,13 +302,7 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
 export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
   const existing = loadPinnedIdp(dir);
   if (existing) return verifyPinnedIdp(dir, existing, idpUrl);
-  if (!idpUrl)
-    throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
-  // Same normalization + scheme guard as `cotal login` (https, or http on a loopback IP literal; no
-  // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
-  const url = normalizeIdpUrl(idpUrl);
-  const origin = new URL(url).origin;
-  const pin: PinnedIdp = { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
+  const pin = derivePinnedIdp(idpUrl);
   mkSecretDir(dir);
   try {
     writeSecretFileCreateOnly(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
@@ -313,6 +314,28 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
     return verifyPinnedIdp(dir, winner, idpUrl);
   }
   return pin;
+}
+
+/** The pin a first enable would write, derived without touching disk. Shared by
+ *  {@link ensurePinnedIdp} and {@link checkPinnedIdp} so the pre-effect check and the real pin can
+ *  never disagree on the required URL, its normalization or its error text. */
+function derivePinnedIdp(idpUrl: string | undefined): PinnedIdp {
+  if (!idpUrl)
+    throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
+  // Same normalization + scheme guard as `cotal login` (https, or http on a loopback IP literal; no
+  // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
+  const url = normalizeIdpUrl(idpUrl);
+  const origin = new URL(url).origin;
+  return { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
+}
+
+/** Read-only form of {@link ensurePinnedIdp}: the same refusals for a missing, malformed or
+ *  conflicting `--idp`, with no directory, pin or other write. `fresh` is true when no pin exists
+ *  yet, which is when a first enable must also prove the IdP serves a JWKS. */
+export function checkPinnedIdp(dir: string, idpUrl?: string): { pin: PinnedIdp; fresh: boolean } {
+  const existing = loadPinnedIdp(dir);
+  if (existing) return { pin: verifyPinnedIdp(dir, existing, idpUrl), fresh: false };
+  return { pin: derivePinnedIdp(idpUrl), fresh: true };
 }
 
 function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefined): PinnedIdp {

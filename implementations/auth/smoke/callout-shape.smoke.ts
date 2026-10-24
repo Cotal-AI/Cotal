@@ -79,6 +79,7 @@ async function run(cases: FakeMsg[]) {
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     space: "shape",
     token: { key: {} as never, issuer: "https://auth.test" },
+    recordIssuance: async () => {},
     authorizeActor: () => {},
     permissionsFor: () => ({}),
     log: () => {},
@@ -94,6 +95,7 @@ try {
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     space: "shape",
     token: { key: {} as never, issuer: "i" },
+    recordIssuance: async () => {},
     authorizeActor: () => {},
     permissionsFor: () => ({}),
   });

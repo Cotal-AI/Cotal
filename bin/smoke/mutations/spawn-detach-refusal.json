@@ -1,0 +1,40 @@
+{
+  "suite": [
+    "bin/smoke/spawn-detach-live.smoke.ts"
+  ],
+  "guard": "a detached spawn the manager refuses before its first effect is reported as a refusal (exit 2) carrying the manager's own reason, and nothing launches",
+  "command": "pnpm build && pnpm smoke:spawn-detach:live",
+  "completionMarker": "spawn-detach live e2e:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/spawn-detach-refusal.json",
+  "why": [
+    "A missing persona is refused before the manager reserves a name or writes a file, so SPEC 13.3",
+    "lets it say `not-executed`. Two halves have to hold for the operator to see that: the manager",
+    "has to state the outcome on the spawn goal's accept refusal, and the CLI has to print the",
+    "manager's reason. Each half gets its own row because either one failing leaves the other green.",
+    "",
+    "The suite imports the manager and the CLI from their dist, so every row builds first and",
+    "rebuilds the mutated package after restore."
+  ],
+  "mutations": [
+    {
+      "name": "the spawn goal's accept refusal drops its outcome, so a missing persona reads as an unknown launch",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        rejectAccept(new EpEnvelopeError(\"failed-precondition\", reply.error ?? \"spawn refused at accept\", details, effectStarted ? undefined : \"not-executed\"));",
+      "replace": "        rejectAccept(new EpEnvelopeError(\"failed-precondition\", reply.error ?? \"spawn refused at accept\", details));",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "a missing persona is a refusal the manager stated before execution, exit 2",
+      "cell": "a missing persona is a refusal the manager stated before execution, exit 2",
+      "note": "The shipped behavior before this change: the CLI printed an unconfirmed outcome and exit 3 for a launch that never started."
+    },
+    {
+      "name": "the CLI replaces the manager's refusal reason with a generic line",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "reply.error ? oneLine(reply.error) : \"the manager refused the launch before execution\", { target, native, remedy: \"nothing was launched; fix what the manager reported, then run the spawn again\" }",
+      "replace": "\"the manager refused the launch before execution\", { target, native, remedy: \"nothing was launched; fix what the manager reported, then run the spawn again\" }",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "expectRed": "...it shows the manager's reason, naming the persona file it looked for",
+      "cell": "...it shows the manager's reason, naming the persona file it looked for",
+      "note": "The outcome and exit code stay right, so the first cell stays green; only the reason, the path the manager looked for, disappears."
+    }
+  ]
+}

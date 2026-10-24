@@ -66,6 +66,7 @@ import {
   readRunRecord,
   writeRunStatus,
   EpEnvelopeError,
+  replyTargetUnmapped,
   unansweredRequest,
   type ActionContext,
   type CheckpointRef,
@@ -73,6 +74,7 @@ import {
   type CotalMessage,
   type EpAttributedReply,
   type EpCaller,
+  type EpError,
   type EpErrorCode,
   type EpVerbTarget,
   type GoalRef,
@@ -137,6 +139,7 @@ export interface RunMeshServices {
    * channel reads it mediates. A mediated run with no reader admits no channel effect.
    */
   readonly admission: () => Promise<RunAdmissionView>;
+  readonly cancellationObserved?: () => string | undefined;
 }
 
 /** Who this handler acts as, and where. All of it is the DRIVER's identity, not the program's. */
@@ -270,6 +273,16 @@ export class MeshHandler {
     return this.managerService;
   }
 
+  /** A silent pinned describe before submission is host reachability evidence, not seat death. */
+  private async relayManagerBeforeSubmit(host: string | undefined, ref: GoalRef, kind: "turn" | "ask" | "checkpoint", label: string): Promise<ResolvedService> {
+    try { return await this.manager(host); }
+    catch (err) {
+      if (host !== undefined && unansweredRequest(err) && (await readGoalStatus(await this.actionCtx(), ref)) === undefined)
+        throw new EffectError("L4002", kind, `${label}: placed host ${host} unreachable`);
+      throw err;
+    }
+  }
+
   /**
    * One manager call, with a SPEC 13.2 bind refusal REPAIRED rather than raised
    * ({@link invokeRepairingSplit}).
@@ -395,9 +408,10 @@ export class MeshHandler {
   /** The run's roster: every agent this run spawned, by name — the handle a handoff resolves to,
    *  the owner/actor address a `turn` targets (absent when the spawn's acceptance floor was
    *  never served; a `turn` on such an agent refuses loudly rather than guessing an address), and
-   *  the spawn goal whose terminal names the manager that allocated it.
+   *  the spawn goal whose terminal names the manager that allocated it, and, for a placed spawn,
+   *  the `host` instance it was placed on, which is where its turns are addressed.
    *  Seeded live by `spawn`, rebuilt at adoption from the journal's settled spawn entries. */
-  private readonly roster = new Map<string, { handle: AgentHandleValue; owner?: string; actor?: string; uid: string; goalId?: string; permits?: AgentPermits; spawnedAt?: number }>();
+  private readonly roster = new Map<string, { handle: AgentHandleValue; owner?: string; actor?: string; uid: string; goalId?: string; permits?: AgentPermits; spawnedAt?: number; host?: string }>();
   /** Turns this run has dispatched per handle composite, live and seeded — what a `turns` permit is spent against. */
   private readonly turnsTaken = new Map<string, number>();
   /** Handle composites a `monitor` registered, live and seeded — what makes `down(agent)` observable. */
@@ -491,7 +505,7 @@ export class MeshHandler {
         const handle = e.result as AgentHandleValue;
         if (typeof handle.agent !== "string") continue; // a garbled result seeds nothing; the turn that needs it refuses loudly
         const { name, uid } = parseAgentHandle(handle.agent);
-        const ext = e.external as { goalId?: unknown; owner?: unknown; actor?: unknown; permits?: unknown; spawnedAt?: unknown } | undefined;
+        const ext = e.external as { goalId?: unknown; owner?: unknown; actor?: unknown; permits?: unknown; spawnedAt?: unknown; host?: unknown } | undefined;
         this.roster.set(name, {
           handle,
           uid,
@@ -500,6 +514,7 @@ export class MeshHandler {
           ...(typeof ext?.actor === "string" ? { actor: ext.actor } : {}),
           ...(ext?.permits !== undefined ? { permits: readPermits(ext.permits, handle.persona) } : {}),
           ...(typeof ext?.spawnedAt === "number" ? { spawnedAt: ext.spawnedAt } : {}),
+          ...(typeof ext?.host === "string" ? { host: ext.host } : {}),
         });
         if (typeof handle.worktree === "string") this.worktreeHolders.set(handle.worktree, { name, uid });
         continue;
@@ -957,6 +972,8 @@ export class MeshHandler {
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ev = req.event;
+    if (!isWaitEvent(ev))
+      throw new Error(`wait() takes an event built by message(channel("<name>")), idle(channel("<name>"), duration), replied(agent) or down(agent), and was given ${JSON.stringify(ev) ?? String(ev)}`);
     const channel = ev.event === "replied" || ev.event === "down" ? undefined : ev.channel;
     if (channel !== undefined && !isConcreteChannel(channel)) {
       throw new Error(`wait() cannot await a wildcard channel ("${channel}"); an await names one channel`);
@@ -1355,6 +1372,11 @@ export class MeshHandler {
       typeof recorded?.goalId === "string" && (recorded.goalId === goalId || typeof recorded.adoptedFrom === "string")
         ? recorded
         : undefined;
+    const checkRecordedPlacement = (floor: Readonly<Record<string, unknown>> | undefined): void => {
+      if (req.placement !== undefined && floor?.host !== req.placement.instanceId)
+        throw new EffectError("L4000", "spawn", `spawn(${req.persona}) requested placement ${req.placement.instanceId} but the accepted seat's recorded host is ${typeof floor?.host === "string" ? floor.host : "unrecorded"}; an adopted or resumed seat cannot be moved by a new request`);
+    };
+    if (ext !== undefined) checkRecordedPlacement(ext);
     // A budget this host cannot meter is refused before anything is submitted: accepting it and
     // enforcing nothing would be the silent no-op the effect table exists to prevent.
     const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
@@ -1368,7 +1390,8 @@ export class MeshHandler {
     // of spawn are one path — the terminal is read under the bound goal, the handle comes from it,
     // a resume re-reads it, and a discharge despawns by it — so the hand-over is spent exactly
     // once and this step never mints a second seat for a persona it was handed one for.
-    const adopted = ext === undefined ? this.adoptable.get(req.persona)?.shift() : undefined;
+    const adoptions = ext === undefined ? this.adoptable.get(req.persona) : undefined;
+    const adopted = adoptions?.[0];
     if (adopted !== undefined) {
       const handle = adopted.result as AgentHandleValue | undefined;
       const floor = adopted.external as Readonly<Record<string, unknown>> | undefined;
@@ -1376,9 +1399,13 @@ export class MeshHandler {
         throw new Error(`spawn(${req.persona}): the migrated seat's entry carries no readable handle or goal; a garbled hand-over is refused rather than minted over`);
       if (req.worktree !== undefined && handle.worktree !== req.worktree)
         throw new Error(`spawn(${req.persona}) asks for worktree "${req.worktree}" but the seat the migration hands it holds ${handle.worktree === undefined ? "none" : `"${handle.worktree}"`}; an adopted seat keeps its tree, so the edited program names that tree or none`);
+      checkRecordedPlacement(floor);
+      // Refused validation leaves the hand-over queued; claim it before the first await.
+      adoptions!.shift();
       ext = {
         goalId: adopted.requestId,
         ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
+        ...(typeof floor?.host === "string" ? { host: floor.host } : {}),
         ...(handle.worktree !== undefined ? { worktree: handle.worktree } : {}),
         ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
         ...(req.permits !== undefined ? { permits: req.permits } : {}),
@@ -1450,6 +1477,9 @@ export class MeshHandler {
           ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
           ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
           ...(req.permits !== undefined ? { permits: req.permits } : {}),
+          // The placed instance hosts the seat, and only its resolver maps it: an adopted run
+          // re-addresses this seat's turns there from the journal alone.
+          ...(req.placement !== undefined ? { host: req.placement.instanceId } : {}),
           spawnedAt: this.now(),
         };
         await ctx.bind(ext);
@@ -1467,6 +1497,7 @@ export class MeshHandler {
         ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),
         ...(permits !== undefined ? { permits } : {}),
         ...(typeof ext.spawnedAt === "number" ? { spawnedAt: ext.spawnedAt } : {}),
+        ...(typeof ext.host === "string" ? { host: ext.host } : {}),
       });
       if (typeof handle.worktree === "string")
         this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });
@@ -1545,7 +1576,7 @@ export class MeshHandler {
           throw new Error(`turn(${name}#${uid}) addresses an agent that is not in this run's roster; a turn wakes an agent this run spawned`);
         throw new Error(`turn(${name}#${uid}) has no address: the spawn's acceptance floor was never served, so the seat's owner/actor coordinates are unknown`);
       }
-      const { owner, actor } = seat.address;
+      const { owner, actor, host } = seat.address;
       // The permits are the roster entry's, not the address's: a budget is spent per spawn, and
       // the address is only where this turn is sent.
       const entry = this.roster.get(name)!;
@@ -1576,13 +1607,19 @@ export class MeshHandler {
           throw new EffectError("L4001", "permit-wall-clock", `turn(${name}#${uid}): a ${deadlineMs}ms deadline runs past the agent's remaining wall clock (${remaining}ms of its ${entry.permits.wallClockMs}ms permit)`);
       }
       const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });
-      const submit = async (): Promise<EpAttributedReply> =>
-        this.invokeManager(await this.manager(), "turn",
+      let submitted = false;
+      const submit = async (): Promise<EpAttributedReply> => {
+        const service = submitted ? await this.manager(host)
+          : await this.relayManagerBeforeSubmit(host, ref, "turn", `turn(${name}#${uid})`);
+        // After invocation may have run, retain the existing goal reconciliation.
+        submitted = true;
+        return this.invokeManager(service, "turn",
           { payload, deadlineMs, ...(handoffFrom !== undefined ? { handoffFrom } : {}) }, {
             id: goalId,
             deadlineMs: TURN_ACCEPT_DEADLINE_MS,
             target: { mode: "owner", owner, actor, lifecycleUid: uid },
           });
+      };
 
       let reply: EpAttributedReply | undefined;
       try {
@@ -1596,9 +1633,11 @@ export class MeshHandler {
       // ordinary refusal made an L4002 the program can catch arrive as an uncatchable L4000.
       const refusal = (r: EpAttributedReply, resubmitted: boolean): Error => {
         const err = r.reply.error;
-        // `expired` is the serve boundary's "target is not a live managed agent": the seat is gone.
+        // `expired` is the serve boundary's "target is not a live managed agent". From the placed
+        // host that is the seat's own manager answering about it. From the class rail it is only
+        // the members this call reached, so the message does not claim more than that.
         if (err?.code === "expired")
-          return new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down before the relay began: ${err.message}`);
+          return new EffectError("L4002", "turn", `turn(${name}#${uid}) ${seatDownReading(err, host)} before the relay began: ${err.message}`);
         return new Error(resubmitted
           ? `turn(${name}#${uid}) landed but its acceptance could not be re-read: ${err?.message ?? "refused with no message"}`
           : `turn(${name}#${uid}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
@@ -1893,7 +1932,7 @@ export class MeshHandler {
     const entry = this.roster.get(name);
     if (entry === undefined || (uid !== undefined && entry.uid !== uid)) return { why: "not-in-roster" };
     if (entry.owner === undefined || entry.actor === undefined) return { why: "no-floor" };
-    return { address: { name, uid: entry.uid, owner: entry.owner, actor: entry.actor } };
+    return { address: { name, uid: entry.uid, owner: entry.owner, actor: entry.actor, ...(entry.host !== undefined ? { host: entry.host } : {}) } };
   }
 
   private async relayAsk(
@@ -1979,9 +2018,10 @@ export class MeshHandler {
     const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
     const actx = await this.actionCtx();
     if ((await readGoalStatus(actx, ref)) !== undefined) return;
+    const service = await this.relayManagerBeforeSubmit(seat.host, ref, kind, `${kind}(${step})`);
     let reply: EpAttributedReply;
     try {
-      reply = await this.invokeManager(await this.manager(), "turn",
+      reply = await this.invokeManager(service, "turn",
         { payload, deadlineAt }, {
           id: goalId,
           deadlineMs: TURN_ACCEPT_DEADLINE_MS,
@@ -1995,7 +2035,7 @@ export class MeshHandler {
     if (reply.reply.ok === false) {
       const err = reply.reply.error;
       if (err?.code === "expired")
-        throw new EffectError("L4002", kind, `${kind}(${step}) found ${name}#${uid} down before its relay began: ${err.message}`);
+        throw new EffectError("L4002", kind, `${kind}(${step}): ${name}#${uid} ${seatDownReading(err, seat.host)} before its relay began: ${err.message}`);
       if (err?.code === "deadline-exceeded" && this.now() >= deadlineAt) return;
       throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
     }
@@ -2203,6 +2243,9 @@ export class MeshHandler {
       // this handler runs as: that principal holds no chat row and would deny every conclave the
       // starting caller may in fact hold.
       const view = await this.services.admission();
+      const reason = this.services.cancellationObserved?.();
+      if (view.revoked !== undefined && reason !== undefined)
+        throw new Cancelled(reason);
       assertAdmittedPublish(view, plan.channel, view.admission.caller);
       assertAdmittedSubscribe(view, plan.channel);
     }
@@ -2659,8 +2702,19 @@ const lapseWindow = (lapsedSince: number | undefined, lastReadAt: number, now: n
   lapsedSince === undefined || now - lastReadAt > PRESENCE_GAP_MS ? now : lapsedSince;
 /** The budgets this host meters for an agent, read from the spawn's `permits` record. */
 type AgentPermits = { turns?: number; wallClockMs?: number };
-/** The seat an ask is told to: its roster identity, its address, and the schema it must meet. */
-type SeatAddress = { name: string; uid: string; owner: string; actor: string };
+/** The seat an ask is told to: its roster identity and address.
+ *  `host` pins a placed seat's turns to its placement instance; unplaced seats use the class rail. */
+type SeatAddress = { name: string; uid: string; owner: string; actor: string; host?: string };
+
+/** What an `expired` turn refusal shows. The placed host speaks for its own seat. A class-rail
+ *  target-unmapped refusal says only that no member the call reached maps the seat: in a space with
+ *  more than one manager a live seat on a member it missed answers the same as a dead one. */
+function seatDownReading(err: EpError, host: string | undefined): string {
+  if (host !== undefined) return `found the agent down on its placed host ${host}`;
+  return replyTargetUnmapped(err)
+    ? "found the agent down or unreachable (no manager the class rail reached maps it; a live seat on a member the call missed answers the same)"
+    : "found the agent down";
+}
 type AskSeat = SeatAddress & { schema: unknown };
 
 /** The restart budget this host asks the manager to enforce for a spawn. */
@@ -3050,6 +3104,16 @@ function compileMatch(pattern: string): RegExp {
     throw new Error(`wait()'s \`matches\` is a bounded regular expression, anchored like every pattern in this repo: ${(e as Error).message}`);
   }
   return new RegExp(pattern);
+}
+
+/** Is `ev` an event descriptor `wait` can observe? The program passes it as a value, so a string or
+ *  a constructor given the wrong argument arrives here unbuilt, and the channel and agent paths
+ *  below would fail on it with a host TypeError that names nothing the program wrote. */
+function isWaitEvent(ev: unknown): ev is WaitRequest["event"] {
+  if (ev === null || typeof ev !== "object") return false;
+  const e = ev as { event?: unknown; channel?: unknown; agent?: unknown };
+  if (e.event === "message" || e.event === "idle") return typeof e.channel === "string";
+  return (e.event === "replied" || e.event === "down") && typeof e.agent === "string";
 }
 
 function decodeMessage(data: Uint8Array): CotalMessage | undefined {

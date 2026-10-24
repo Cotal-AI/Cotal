@@ -17,7 +17,7 @@
  * run/program/journal records and the registration-policy records are the wrong place for a
  * record whose whole point is that the driver cannot influence it.
  */
-import type { JetStreamManager } from "@nats-io/jetstream";
+import type { JetStreamManager, StreamConfig } from "@nats-io/jetstream";
 import type { KV, Kvm } from "@nats-io/kv";
 import { canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
@@ -192,9 +192,47 @@ export async function revokeRunAdmission(kv: KV, endpoint: string, revocation: R
   }
 }
 
+/** One create-only cancellation dispatch. Unlike KV.create, put with expected sequence zero never
+ *  follows a failed create with a tombstone read and another write. The caller owns the guard and
+ *  records possible dispatch there; no awaited preparation follows it. */
+export async function commitRunCancellation(
+  kv: KV,
+  endpoint: string,
+  revocation: RunRevocation,
+  beforeDispatch: () => void,
+): Promise<"created" | "existed"> {
+  const snap = revocationSnapshot(revocation, revocation.runId);
+  if (snap.by.length === 0 || snap.reason.length === 0)
+    throw new Error("run cancellation must name who revoked it and why");
+  const key = revocationKey(endpoint, snap.runId);
+  const bytes = enc.encode(canonicalJson(snap));
+  beforeDispatch();
+  try {
+    await kv.put(key, bytes, { previousSeq: 0 });
+    return "created";
+  } catch (error) {
+    if (isCasLoss(error)) return "existed";
+    throw error;
+  }
+}
+
 export interface RunAdmissionView {
   readonly admission: RunAdmission;
   readonly revoked: RunRevocation | undefined;
+}
+
+/** Cancellation distinguishes absent authority from unreadable trusted state without parsing messages. */
+export async function readCancellationAdmission(jsm: JetStreamManager, space: string, endpoint: string, runId: string): Promise<RunAdmissionView> {
+  let entry: Awaited<ReturnType<typeof readLeader>>;
+  try { entry = await readLeader(jsm, space, admissionKey(endpoint, runId)); }
+  catch { throw new EpEnvelopeError("unavailable", "run-cancel admission is unreadable"); }
+  if (!entry) throw new EpEnvelopeError("permission-denied", "run-cancel request is not authorized");
+  try {
+    const admission = admissionSnapshot(entry.value);
+    if (admission.space !== space || admission.endpoint !== endpoint || admission.runId !== runId) throw new Error("coordinates differ");
+    const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));
+    return { admission, revoked: marker ? revocationSnapshot(marker.value, runId) : undefined };
+  } catch { throw new EpEnvelopeError("unavailable", "run-cancel admission or marker is unreadable"); }
 }
 
 /** The admission a host acts on: the record must exist, match its coordinates, and carry no
@@ -267,9 +305,19 @@ export function assertNotRevoked(view: RunAdmissionView): void {
     throw new EpEnvelopeError("permission-denied", `run ${view.admission.runId} was revoked by ${view.revoked.by} (${view.revoked.reason}); no further channel effect runs (SPEC 14.8)`);
 }
 
+/** Native admission-store inputs, without creation, verification or admitted authority. */
+export function admissionStoreDefinition(space: string) {
+  return {
+    bucket: admissionBucket(space),
+    createOptions: { allow_direct: false },
+    hardenAfterCreate: { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...WRITE_ONCE_PER_KEY },
+  };
+}
+
 /** Create-or-verify the admission store: `allow_direct=false`, file, no eviction. */
 export async function ensureAdmissionStore(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
-  const bucket = admissionBucket(space);
+  const definition = admissionStoreDefinition(space);
+  const bucket = definition.bucket;
   const stream = `KV_${bucket}`;
   // WRITE-ONCE PER KEY, AT THE BROKER. Both rows are create-only and the marker is permanent
   // (SPEC 14.8), and the create-only CAS enforces neither on its own: the `run-admitter` holds a
@@ -279,13 +327,20 @@ export async function ensureAdmissionStore(jsm: JetStreamManager, kvm: Kvm, spac
   // replacement leaves no marker for the deletion-marker read to catch. The three immutability
   // flags close rollup, message delete and purge; write-once closes the rest, so the admission a
   // host reads is the one that was admitted, and each run and each marker still gets its one write.
-  const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...WRITE_ONCE_PER_KEY };
+  const shape = definition.hardenAfterCreate;
   if (await jsm.streams.info(stream).catch(() => undefined) === undefined) {
-    await kvm.create(bucket, { allow_direct: false });
+    await kvm.create(bucket, definition.createOptions);
     const created = (await jsm.streams.info(stream)).config;
     await jsm.streams.update(stream, { ...created, ...shape });
   }
   const cfg = (await jsm.streams.info(stream)).config;
+  assertAdmissionStoreConfig(cfg, space);
+}
+
+/** Pure native admission-store invariant checks, without an admission or migration effect. */
+export function assertAdmissionStoreConfig(cfg: StreamConfig, space: string): void {
+  const definition = admissionStoreDefinition(space);
+  const bucket = definition.bucket, shape = definition.hardenAfterCreate;
   if (cfg.allow_direct !== false || cfg.storage !== "file" || (cfg.max_age ?? 0) !== 0 || (cfg.max_msgs ?? -1) > 0 || (cfg.max_bytes ?? -1) > 0
     || !Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== `$KV.${bucket}.>`)
     throw new Error(`the run admission store ${bucket} has a drifted shape (allow_direct=${String(cfg.allow_direct)}); an authority store is never silently adopted - reprovision it (SPEC 14.8)`);

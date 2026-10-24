@@ -241,6 +241,7 @@ try {
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     space,
     token: { key: publicKey as never, issuer: ISS },
+    recordIssuance: async () => {},
     authorizeActor: () => {},
     permissionsFor: calloutPermissions(
       ledgerAclResolver(isolatedCotalRoot),

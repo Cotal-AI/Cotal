@@ -6,6 +6,8 @@ import { remoteManagerRegistrationProof } from "../../auth/src/authority-client.
 export async function nativeRemoteManager(args: {
   space: string; servers: string; root: string; exchangeUrl: string;
   execution: "runtime" | "none";
+  runtime?: string;
+  ManagerClass?: typeof Manager;
   call: (request: any) => Promise<any>;
 }) {
   const state = r.loadOrCreateRemoteManagerIdentity(args.root, args.space);
@@ -34,10 +36,11 @@ export async function nativeRemoteManager(args: {
     enrollManagedAgent: async ({ target }) => { const q = r.remoteManagedAgentEnrollmentRequest(state, "cli", proof, epoch, target); return r.remoteManagedAgentEnrollmentMaterial(await args.call(q), q); },
     authorizeAdmin: async (caller) => { const q = r.remoteManagerAdminAuthorizationRequest(state, "cli", proof, epoch, caller); return r.remoteManagerAdminAuthorized(await args.call(q), q, owner); },
     scanGoalIndex: async () => { const q = r.remoteManagerGoalIndexScanRequest(state, "cli", proof, epoch); return r.remoteManagerGoalIndexEntries(await args.call(q), q, owner); },
-    ...(args.execution === "runtime" ? { runHosting: r.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: standing.accountPublicKey, processEpoch: epoch, requestRunAdmission: args.call, requestRunAttempt: args.call, requestRunRevoke: args.call, call: args.call }) } : {}),
+    ...(args.execution === "runtime" ? { runHosting: r.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: standing.accountPublicKey, processEpoch: epoch, requestRunAdmission: args.call, requestRunSubmission: args.call, requestRunAttempt: args.call, requestRunRevoke: args.call, call: args.call }) } : {}),
   };
-  const manager = new Manager({ space: args.space, servers: args.servers, workspaceRoot: args.root, execution: args.execution,
-    ...(args.execution === "none" ? { pooled: true } : { runtime: "pty" }), remoteAuthority: remote });
+  const ManagerClass = args.ManagerClass ?? Manager;
+  const manager = new ManagerClass({ space: args.space, servers: args.servers, workspaceRoot: args.root, execution: args.execution,
+    ...(args.execution === "none" ? { pooled: true } : { runtime: args.runtime ?? "pty" }), remoteAuthority: remote });
   await manager.start();
   return { manager, state, owner, epoch, remote };
 }

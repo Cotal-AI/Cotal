@@ -81,10 +81,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 
-/** Wrap a connection so every `request` is COUNTED by subject, and optionally DELAYED by
- *  `delayMs` before it is issued — a synthetic caller->broker RTT. Concurrency is tracked so the
- *  sequential-vs-batched question is answered by observation, not by reading the source. A request
- *  whose subject ends in `failHex` fails after 10ms instead, well before any delayed read answers. */
+/** Request counts, ordering, concurrency and injected-delay occupancy for one metered run. */
 interface Meter {
   total: number;
   bySubject: Map<string, number>;
@@ -93,6 +90,11 @@ interface Meter {
   /** Wall time during which at least one injected wait is open. Host/broker work after the wait is excluded. */
   delayOccupancyMs: number;
 }
+
+/** Wrap a connection so every `request` is COUNTED by subject, and optionally DELAYED by
+ *  `delayMs` before it is issued — a synthetic caller->broker RTT. Concurrency is tracked so the
+ *  sequential-vs-batched question is answered by observation, not by reading the source. A request
+ *  whose subject ends in `failHex` fails after 10ms instead, well before any delayed read answers. */
 function meteredConnection(nc: NatsConnection, meter: Meter, delayMs: number, failHex?: string): NatsConnection {
   let inFlight = 0;
   let delaying = 0;

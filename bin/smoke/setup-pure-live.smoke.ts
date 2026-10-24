@@ -1,12 +1,14 @@
 /**
- * LIVE e2e for setup's state-independence (CLI rework stage 2b): `cotal setup --yes` runs as a
- * REAL subprocess in a sandboxed COTAL_HOME with claude/opencode OFF the PATH, and must:
+ * LIVE e2e for setup's state-independence (CLI rework stage 2b): a scripted `cotal setup`, which
+ * names every input as a flag, runs as a REAL subprocess in a sandboxed COTAL_HOME with claude and
+ * opencode OFF the PATH and a stand-in `codex` on it, and must:
  *   A. exit 0 — configuring a machine never depends on (or mutates) running state;
  *   B. LAUNCH NOTHING — no broker appears on the default port, no manager pid file lands;
  *   C. WRITE the default persona, install @cotal-ai/web in a sandboxed config dir, and write the
  *      onboarded stamp, with persona/stamp writes announced on stderr;
  *   D. `setup --demo` on an onboarded machine writes the guided team;
- *   E. a REPEAT run (now onboarded) prints the status card, still launches nothing, and exits 0;
+ *   E. a REPEAT run with the same answers reports the space already set up, still launches nothing,
+ *      and exits 0;
  *   F. the removed `--open` flag and the deleted `go` command fail loud.
  * Run: pnpm smoke:setup-pure:live
  */
@@ -36,6 +38,9 @@ const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim(
 const realNpm = spawnSync("which", ["npm"], { encoding: "utf8" }).stdout.trim();
 symlinkSync(realNode, join(binDir, "node"));
 symlinkSync(realNpm, join(binDir, "npm"));
+// The application setup prepares the space for must be on PATH, or setup ends partial (exit 4).
+// A stand-in is enough: setup checks that the tool is there and launches nothing.
+writeFileSync(join(binDir, "codex"), "#!/bin/sh\necho codex 0.0.0\n", { mode: 0o755 });
 const env = {
   ...process.env,
   COTAL_HOME: home,
@@ -55,6 +60,8 @@ const cotal = (args: string[], cwd: string) =>
 // One project folder for the whole scenario — persona seeding roots at the INVOKING folder's
 // `.cotal/`, which is itself part of the contract under test.
 const proj = mkdtempSync(join(tmpdir(), "cotal-setup-proj-"));
+// A script names every input; a bare `cotal setup` without a terminal refuses.
+const SETUP = ["setup", "--destination", "local", "--harness", "codex", "--project", proj, "--space", DEFAULT_SPACE, "--yes"];
 
 // ── ANCHOR FIRST, and it is a containment boundary rather than a tidiness step ───────────────────
 // `findCotalRoot` (auth-paths.ts:399-407) walks UP from cwd and returns the first ancestor holding a
@@ -128,7 +135,7 @@ rmSync(pidProbe);
 ok("CONTROL: and detection clears once it is removed", !existsSync(pidProbe), { pidProbe });
 
 // A — first run: configure-only, non-interactive.
-const first = cotal(["setup", "--yes"], proj);
+const first = cotal(SETUP, proj);
 ok("first run exits 0", first.status === 0, { status: first.status, err: first.stderr.slice(-400) });
 
 // B — nothing launched: no manager pid file under the ANCHORED PROJECT ROOT — these cells resolve
@@ -150,24 +157,17 @@ for (const f of ["david.md", "sven.md", "me.md"]) {
 }
 ok("onboarded stamp written", existsSync(join(home, "onboarded.json")));
 const extManifest = JSON.parse(readFileSync(join(configHome, "cotal", "extensions", "extensions.json"), "utf8"));
-ok("web extension installed in sandboxed config", extManifest.extensions?.some((e: { commands?: { name?: string }[] }) => e.commands?.some((c) => c.name === "web")) === true);
+ok("web extension installed in sandboxed config", extManifest.extensions?.some((e: { pkg?: string }) => e.pkg === "@cotal-ai/web") === true, extManifest.extensions);
 ok("provenance announces default persona write", /→ wrote default persona: .*default\.md/.test(first.stderr), first.stderr.slice(-500));
 ok("provenance announces the onboarded stamp", /→ wrote onboarded stamp/.test(first.stderr));
-// The finale leads with the browser dashboard: `cotal web` is the watch step in the loop, and the
-// terminal console appears only as the alternative line after it. The command prefix is whatever
-// `displayCmd()` resolves to under the stripped PATH (here `cotal`), so the cells pin the step and
-// its order, not the prefix.
-{
-  const out = first.stdout + first.stderr;
-  const watch = out.match(/watch the mesh\s+.*web/);
-  const alt = out.match(/Terminal instead of a browser\?\s+.*console/);
-  ok("finale: the watch step in the loop is the browser dashboard", watch !== null, out.slice(-600));
-  ok("finale: the terminal console is the alternative named after it",
-    watch !== null && alt !== null && out.indexOf(alt[0]) > out.indexOf(watch[0]), out.slice(-600));
-}
+// The report ends with the one next step: start the space with `up`, from the project. The command
+// prefix is whatever `displayCmd()` resolves to under the stripped PATH, so the cell pins the step
+// and the folder, not the prefix.
+ok("the next step is `up`, run from the project",
+  new RegExp(`Next\\s+\\S.*\\bup\\s+Run from ${proj.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(first.stdout), first.stdout.slice(-600));
 
 // D — `--demo` on an already-configured machine adds the guided team without launching anything.
-const demo = cotal(["setup", "--demo"], proj);
+const demo = cotal([...SETUP, "--demo"], proj);
 ok("demo setup exits 0", demo.status === 0, { status: demo.status, err: demo.stderr.slice(-300) });
 for (const f of ["david.md", "sven.md", "me.md"]) {
   ok(`demo persona ${f} written`, existsSync(join(proj, ".cotal", "agents", f)));
@@ -175,19 +175,10 @@ for (const f of ["david.md", "sven.md", "me.md"]) {
 ok("demo provenance announces persona writes", /→ wrote persona: .*david\.md/.test(demo.stderr), demo.stderr.slice(-500));
 ok("demo setup still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFILE)) && !existsSync(runtimeArtifact("nats.log")));
 
-// E — repeat run: status card, still nothing launched, exit 0.
-const second = cotal(["setup"], proj);
+// E — repeat run with the same answers: already set up, still nothing launched, exit 0.
+const second = cotal(SETUP, proj);
 ok("repeat run exits 0", second.status === 0, { status: second.status, err: second.stderr.slice(-300) });
-ok("repeat run shows the status card", /cotal · status/.test(second.stdout + second.stderr), (second.stdout + second.stderr).slice(-300));
-// The card's watch hint matches the finale's order: `cotal web` is the watch step, the terminal
-// console sits in the `more:` line as the alternative.
-{
-  const out = second.stdout + second.stderr;
-  const cardWatch = out.match(/watch it:\s+.*web\s+\(browser dashboard\)/);
-  const more = out.match(/more:\s+.*console/);
-  ok("status card: the watch hint is the browser dashboard", cardWatch !== null, out.slice(-600));
-  ok("status card: the terminal console is in the more line", more !== null, out.slice(-600));
-}
+ok("repeat run reports the space already set up", new RegExp(`${DEFAULT_SPACE} is already set up for codex`).test(second.stdout), second.stdout.slice(-300));
 ok("repeat run still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFILE)) && !existsSync(runtimeArtifact("nats.log")));
 
 // F — removed surface fails loud.

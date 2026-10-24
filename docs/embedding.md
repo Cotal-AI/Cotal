@@ -33,6 +33,137 @@ the full `up` orchestration are **not** public runners: `up` also does broker br
 process and registry management, and lifecycle work, and `supervise`'s orchestration is private (see
 [Supervisor signing authority](#supervisor-signing-authority)).
 
+## Interactive Manager primary
+
+A trusted composition can pass `{ interactiveManagerSelection: "local-primary" }` as the third
+argument of `runAuthService(args, store, options)`. `AuthServiceRuntimeOptions` is exported by
+`@cotal-ai/auth`. The third argument still accepts the native daemon lifecycle hooks. No CLI
+flag or exchange field sets the policy, and unsupported runtime values refuse before startup effects. `openAuthAuthorityPlane` accepts the same option beside its fresh
+`localManager` reader; `OpenAuthAuthorityPlaneOptions` is exported too.
+
+The opt-in chooses the genuine local Manager up front for an unpinned human `manager-caller`
+exchange. It reads the persisted local identity and requires the existing open gate, serve
+principal, registration revision and status epoch checks. An absent, unreadable or noncandidate
+local Manager refuses without scanning or substituting remote Managers. Explicit selectors win,
+and managed-secret exchanges and launching or issued instance bindings keep their existing rules.
+The option adds no scopes, registry reads or inventory rows.
+
+This routes all unpinned interactive Manager control, not only `ps`: slot reads, stop, attach,
+input, spawn, models, hosted run verbs and generic Manager describe/invoke share the view. It
+chooses local even when the person has a live remote Manager. A host must decide whether that
+routing is appropriate; a local Manager without execution cannot forward a spawn or run to the
+person's remote Manager. The person selects that Manager explicitly for those operations.
+
+Absent the option, selection is unchanged. `startAuthService` still has no local Manager and
+keeps its remote-only composition. Supplying this programmatic option does not enable it in stock
+`up`, restart or recovery paths; a host must compose those paths separately after adopting the
+published API. `ps` still lists only the selected Manager's managed seats, not HTTP-hosted sessions.
+
+## Account connection census
+
+`mintAccountCensusCreds` creates a host-only SYS user with at most five minutes of authority.
+It can request CONNZ for one DATA account and subscribe only to an account-qualified reply prefix.
+It grants neither KICK nor account events. The host supplies a registered SYS signer; the helper
+does not find, persist or renew that signer, and the broker verifies its authority on connection.
+`observeAccountCensusWithCreds` requires this narrow scope and a pinned server key. It reads one
+bounded page. Malformed, incomplete, multiple-server or cluster-declared replies are unknown,
+with no connection list. A complete result describes only that server's observed account page.
+The host still needs independent topology and restore guarantees, deny-new, a fixed cutoff and
+lifecycle fencing before using an observation for retirement. These helpers do not grant service
+registration or terminal retirement.
+
+## Service authority contracts
+
+`@cotal-ai/core` exports closed service-authority request, proof and result types and their
+runtime parsers. The parsers bind a result to the submitted request and registration witness.
+`AuthProvider.serviceEndpointAuthority` is an optional provider hook for this protocol. A provider
+without the hook must refuse service setup. The user-auth provider implements the HTTP client,
+including `serviceEndpointInfo` for the DATA-account binding. It uses the pinned exchange origin,
+refuses redirects and does not retry an unknown mutation outcome. Server-side HTTP failures
+remain unconfirmed even when their bodies resemble a protocol denial. A registered snapshot must
+name the submitted closure set. Inline artifacts include each closure manifest as well as its
+documents, within the envelope byte limit; native per-closure walk limits still apply. The client does not transmit
+the local host capability or read callout signing material. Local setup needs the client sentinel
+projection written by `prepareServer`; a missing projection refuses rather than reading server secrets.
+
+`@cotal-ai/auth` exports host request and view types with `parseServiceHostRequest`. Parsing checks
+structure only, not owner consent, current grants or admission state. The host handlers and complete native
+service lifecycle are not implemented yet, so these interfaces do not enable service registration.
+The native endpoint gate also carries service approval and activation fields. Registration and
+serving guards retain those fields and refuse expired or revoked approval; these guards are not
+a replacement for the missing host lifecycle. Internal host gate transitions bind approval to a
+current native root and make activation monotonic. Registration completion is stamped in the
+reopen CAS; a definite abort preserves the previous stamp. They do not provide consent, public handlers
+or terminal retirement. Pre-activation registration requires an empty issuance family, including
+deleted records, and release rechecks fixed expiry after asynchronous work.
+
+`UserTokenIssuer.issueServiceRenewal` signs a separate registration-bound renewal proof.
+`validateServiceRenewalProof` checks its signature, fixed expiry and full witness binding.
+It is not a connect bearer. These primitives do not authenticate a current approval or native root;
+the host must do that before issuing or accepting authority. No client refresh loop is provided yet.
+
+`UserTokenIssuer.issueServiceAccess` signs a serve-only user bearer with the full registration
+witness and a fixed deadline of at most 60 seconds. Validation requires empty scope and rejects
+ordinary parent, manager, session and transfer claims. Ordinary exchange and permission construction
+refuse this view before actor lookup. Callout
+refuses it unless a sealed native service authority is configured. The private composition binds
+the current assignment, native root, registered serving grant and receipt before an encrypted
+response. Normal authority-plane startup does not enable it yet; public registration, restore
+readiness and coordinated root retirement remain required.
+
+Internal service-access reads retain native credential-root authorization and check the activated
+registration, assignment, current name and fixed expiry. They do not create a serving grant or
+release a native JWT. The private callout composition performs native issuance and final
+authorization when explicitly configured.
+
+Service serving-issuance evidence binds the authenticated broker user key, server key and client id.
+The native release fence rechecks that record and the gate after its CAS. Ordinary serving and
+credential-root records cannot use this service binding. This is not proof of broker acceptance;
+production authority-plane wiring and terminal retirement remain unfinished.
+
+`mintServiceCalloutJwt` is a host-only mint seam. It uses the native serving grant, the actual
+principal name and tags, the authenticated broker user key and a separate client inbox nonce.
+Expiry stays bounded by the original admission and access deadline. It does not authenticate the
+callout request, record natkey evidence or release an encrypted response; the host must do those.
+
+Native service receipts bind the same epcred connection and registration witness to the broker user
+key. Recording rechecks the evidence, receipt, native authority and fixed expiry. Expired service
+receipts are retained, not pruned on elapsed JWT time. Qualified retirement and production
+authority-plane wiring are still required before enabling the service path for clients.
+
+Internal service-name bindings are create-only and return owner and revision from one native read.
+The trusted host must authenticate the operator and verify the namespace claim before writing.
+Native auth, delivery and manager names keep their existing authority; they cannot be application
+service bindings. No transfer, release or public name-binding handler is implemented yet.
+
+Internal caller-policy storage uses the sealed native registry and binds each row to one account,
+space and grantee UID. Grant ids are immutable; an append cannot replace or reactivate one.
+Initial writes require no prior native key history. A deletion arriving after an absence read
+cannot recreate a policy or a pending service gate.
+Revocation begins with a revision-pinned deny-new intent that unrelated appends preserve.
+These are storage operations, not entitlement checks; the service endpoint host below is their only
+writer. The effective resolver and native caller issuance are described under the service endpoint
+host below. Receipts and terminal caller revocation remain unsupported.
+
+Scoped Describe callbacks also receive an optional immutable local context with the actual subject,
+complete-envelope fingerprint, serving identity and receive-relative deadline information.
+`parseDescribeObservation` shares native syntax and full-JSON fingerprint checks with trusted observers.
+Neither the context nor a fingerprint proves broker receipt to a remote authority. The remote
+observer and policy projection are not implemented yet. The client contract admits an explicit
+read-only `describe-view` operation using only service-access proof. It checks witness, observation,
+principal-policy basis and remaining validity, requires no-store responses, and bounds preparation,
+HTTP streaming and validation by the same local deadline. Cancellation cannot restart that deadline.
+The native handler and serving adapter are still required before this can authorize a remote view.
+
+`parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
+checks route, instance, target and journal containment using the native grant builders. The host
+still authenticates the granter and checks current grantee, parent and approval records.
+Cross-principal relative-target comparisons refuse when containment is unproved.
+
+`authorizeServeGrant` accepts a read-only `ServiceSpecReader`. A trusted provider can supply
+verified registration and contract reads without constructing a writable KV adapter. The function
+still derives the complete serving surface and creates the process-local grant.
+
 ## Owner-bound platform supervisors
 
 A host can start one user's supervisor without retaining that user's login. Pass
@@ -75,11 +206,21 @@ See [the issuance design](design/user-auth-run-start.md#platform-supervisor-regi
 Everything below is a real export of a published package, reachable from the package root (each
 package publishes `.` via `dist/index.{js,d.ts}` and ships `files: ["dist"]`).
 `@cotal-ai/connector-claude-code` also publishes `./mcp`, which hosts managed Claude Code sessions
-in one process ([Connect Claude](connect-claude.md#host-sessions-in-one-process)). Type-only names
-are marked; import them with `import type`.
+in one process ([Connect Claude](connect-claude.md#host-sessions-in-one-process)).
+`@cotal-ai/core` also publishes `./browser-control` and `./browser-validators-build`
+([Browser control](#browser-control)). Type-only names are marked; import them with `import type`.
 
 `CotalEndpoint` accepts `environment` as an explicit presence label. Pass `null` to omit the label
 without reading `COTAL_ENVIRONMENT`. Omitting the option preserves the process environment default.
+
+Shared connector sessions report `card.meta.host` and `card.meta.cwd` from the connector process
+when the session is constructed. They override agent-file values and are advisory display data.
+The directory is a startup snapshot, not a model harness's later shell directory. Neither field
+changes routing or access, and the connector reads no command-line arguments or environment dump
+for these values. A connector whose process can host several sessions passes
+`{ withholdProcessCwd: true }` as `MeshAgent`'s third argument and reports each session's directory
+with `setCwd` (`CotalEndpoint.setCardCwd`) once the harness supplies it; until then the field is
+absent. The reported path is kept byte for byte, whitespace included; an empty string leaves it unchanged. Claude Code sessions do this from their `SessionStart` hook.
 
 **Daemon runners and lifecycle**
 
@@ -89,13 +230,14 @@ without reading `COTAL_ENVIRONMENT`. Omitting the option preserves the process e
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
 | `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. `close` rejects when the context did not release its plane claim: the claim row was no longer its own, or the release write failed. The row then stays held, and the next start reclaims it through the liveness oracle. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. With `platformControl.host` it also has `registerHostIncarnation`, which registers the host process's own endpoint instance and returns the incarnation a delegated execution pins, `observeHostGate`, the read of that endpoint's issuance gate, and `awaitHostFence`, which resolves once a later registration or barrier fences an incarnation. `runAuthService` remains the CLI entry. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
-| `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. `close` rejects when the lease row is still held after it, by another holder or because the release did not commit, or when the release cannot be confirmed. The process runner remains the CLI entry. |
+| `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. `close` rejects when its lease release does not commit or cannot be confirmed, or when another holder's lease row is still there after it. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `retireManagerInstanceIdentity(root, space, expected)` | `@cotal-ai/workspace` | remove a persisted manager identity only if its complete instance id and serve identity still match `expected`. Returns `removed` or `absent`; refuses malformed, nonregular, and changed records. `absent` is not proof of ownership or successful teardown. The caller must separately prove stop and retirement ownership before using it. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
 | `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and either an explicit non-custodial runtime or `execution: "none"`. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. A signed-in human's manager gets that material from `managerServiceAuthority`. A platform-run control manager gets it from `AuthServiceHandle.platformControlAuthority` with the shipped `remoteManagerClient` builders, as the [platform control authority](design/platform-pooled-control-authority.md) design describes. |
-| `ManagerOptions.execution` | `@cotal-ai/manager` | omitted or `"runtime"` keeps runtime execution. Explicit `"none"` requires pooled, complete signerless authority and no `runtime` option. It constructs no Runtime and performs no connector inspection, seat launch or workflow hosting. |
+| `ManagerStatus` *(type)* | `@cotal-ai/manager` | verified status payload, including optional advisory `host` and `version` from the answering Manager. Older payloads may omit them. |
+| `ManagerOptions.execution` | `@cotal-ai/manager` | omitted or `"runtime"` keeps runtime execution. Explicit `"none"` accepts a genuine hosting user-auth root, or pooled complete signerless authority, with no `runtime` option. It constructs no Runtime and performs no connector inspection, seat launch or workflow hosting. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 | `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
 
@@ -110,15 +252,34 @@ the presence of these types is not an operational pooled renewal guarantee.
 An execution-free control Manager retains native registration, goal recovery, session-ledger,
 renewal and maintenance duties. Its status reports `execution: "none"`, `runtime: "none"`,
 `custody: "none"`, no children or connectors, and false `classSpawn`, `runHosting` and
-`terminalSessions`. The required status fields change the output digest and manager cluster
-revision to 25. Execution is recorded per instance. An incompatible record, retained seat/turn
-inventory or an older unclassified instance refuses boot before recovery.
+`terminalSessions`. Local NONE uses this existing status schema without a new wire field.
+Execution is recorded per instance. An incompatible record, retained seat/turn inventory or an
+older unclassified instance refuses boot before recovery. NONE refuses caller-driven writes,
+including persona definition, purge, transcript transfer, preservation and resume, and resolves
+no model adapter. It starts no transcript receiver or sweep. Autonomous registration, lease,
+renewal, session-ledger and goal maintenance still write their native control state.
 
 Select the genuine participant Manager with a host-issued, instance-pinned `manager-caller`
 view for workflow and terminal operations. That Manager retains the children, workflow journal
 and terminal sessions. The control instance neither adopts roster peers nor proxies user runs.
-Missing participant selection or authority refuses. This embedding capability adds no CLI flag
-or application routing.
+Missing participant selection or authority refuses. This capability adds no application routing.
+
+For a genuine local control instance, pass `execution: "none"` without `pooled`, `remoteAuthority`
+or `runtime`. Startup requires that space's local signing trust, provider pin and user-mode mesh
+record. It keeps the native persisted local instance and serve identity; local-primary selection
+uses the existing gate. An existing unclassified identity, including a preclaimed identity with no
+execution record, is refused. A NONE record cannot restart as runtime. Retained seat or turn
+inventory refuses before recovery. Do not remove identity or capability files to change modes.
+
+The public `cotal supervise --execution none --space <space>` composition supports the same local
+mode. It validates arguments before connector seeding, resolves no Runtime, and rejects startup
+workload flags and participant registrations. Omitted execution keeps the ordinary PTY behavior.
+This does not opt an auth service into local-primary, change scopes or broaden native ps.
+
+Runtime remains the default, but local startup now claims its native identity and execution
+record during admission, before later authentication and registration checks. A failed start
+can leave those files classified as runtime. Malformed identity or capability files also refuse
+earlier. These lifecycle timing changes do not change the instance's identity format or authority.
 
 With `renewStandingBundle` configured, the manager renews all five standing credentials together.
 It checks every returned credential for the held nkey and assigned account, test-connects each one,
@@ -151,7 +312,7 @@ the subject-token sanitizer. Endpoint names still use the separate DNS-label gra
 
 | symbol | purpose |
 |---|---|
-| `createCalloutAuth`, `startAuthCallout` | the NATS auth-callout responder. |
+| `createCalloutAuth`, `startAuthCallout` | the NATS auth-callout responder. It requires an awaited `recordIssuance`, which must durably record each success's broker user key before the response; the authority plane's `recordIssuance` is the stock one. |
 | `createUserTokenIssuer`, `pinnedJwksResolver` | mint and verify the Cotal user bearer. |
 | `createIdpBridge` | exchange a verified IdP JWT for a Cotal bearer (see [the callout contract](identity-and-auth.md#the-idp-callout-contract)). |
 | `deriveOwnerToken`, `validateUserToken` | owner derivation; strict bearer validation. |
@@ -188,9 +349,9 @@ include the account public key and lifecycle UID, space, broker URL, injected st
 The initial delivery credential must belong to the assigned account. The function returns only
 after the delivery responder is bound. `close()` withdraws serving and releases only the lease
 owned by that instance. It closes both membership connections even when a disconnected drain
-fails, so they cannot reconnect after closure. It rejects when the lease row is still there
-afterwards, held by another instance or left by a release that did not commit, or when the broker
-cannot confirm the release. If the delivery connection drops or is down while the release is in
+fails, so they cannot reconnect after closure. It rejects when its release does not commit or
+the broker cannot confirm it, or when another instance's lease row is still there afterwards.
+If the delivery connection drops or is down while the release is in
 flight, `close()` waits up to the broker-gone window (`COTAL_DELIVERY_BROKER_GONE_MS`, 15 seconds
 by default) from the drop for it to reconnect, and repeats the release once on the reconnected
 connection before it decides. `drain()` returns the same promise. A successor is refused while such
@@ -257,17 +418,31 @@ The host implements `GatewayHost`:
 
 - `account(auth)` returns the account the request authenticated as, read from the SDK's `AuthInfo`.
   It throws when the request has none, and the tool then runs nothing.
-- `open(account, name)` issues and starts a new connection under that name. It throws `NameTaken`
-  only when the issuer reports that the name exists. `cotal_connect` then tries `name_2`, `name_3`
-  and so on, up to `GATEWAY_NAME_ATTEMPTS` names. Any other error goes back to the caller and no
-  other name is tried. The collision check and the issue must be one atomic step per account, so
-  two conversations asking for one name at once get different names. Error messages reach the
-  caller and must not carry secrets.
+- `open(account, name, context?, selection?, approvalId?)` starts a connection only after the person
+  approves its permissions. `selection` is a proposal. Throw `ApprovalRequired` with the request ID,
+  approval page, expiry and proposal while they decide. The tool returns a structured pending result
+  and a readable link, with no connection handle. `approvalId` resumes one unchanged request when
+  `options.approvalResume` is enabled. It conveys no authority. Bind it to the authenticated account,
+  space, name and request generation. An issued approval cannot grant a replacement connection.
+  Throw `NameTaken` only for an authoritative name collision. A new request tries `name_2` and later
+  variants up to `GATEWAY_NAME_ATTEMPTS`; a resumed approval never renames. The collision check and
+  issue must be atomic. Other errors reach the caller without renaming and must not carry secrets.
 - `find(account, id)` and `close(account, id)` act only on a connection that account owns.
 
-`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. `GATEWAY_TOOLS`
-names the mesh tools the gateway offers. Spawn, despawn, persona, run, yield and reconnect belong
-to a supervised local seat and are left out. One tool list serves every connection, so no
+`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names
+the channels the new connection reads, may join and may post to, from the configuration its grant
+produced. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included. A native
+embedder whose host issues each conversation its own grant may pass `options.tools` from
+`NATIVE_GATEWAY_TOOLS`, which adds spawn, despawn, persona, run and reconnect but not yield.
+Registering a tool offers it to no connection by itself: a connection calls only the tools its
+host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
+capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
+builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Only the
+person's decision in the authority's authenticated UI is consent. The approved selection may differ
+from the proposal and must stay within their current authority. The empty approved selection still
+includes direct-message send and receive and own activity publication; disclose these before
+approval. A model flag, API bearer or ordinary tool approval cannot approve the request. Unsupported
+approval paths refuse before issuing a grant. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.
@@ -287,7 +462,7 @@ when its connection closes, also while the broker is unreachable; it listens for
 since the last read, and a wait that starts after one returns it at once. Every other routed tool
 except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, waitSeconds? })`
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, waitSeconds? })`
 serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
 never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
 401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
@@ -302,13 +477,117 @@ and names the local user. A client that cancels a call aborts its signal, so a c
 listening. The streams default to the process's own, and stdout then carries only MCP.
 
 An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
-`registerCotalGatewayTools`. The gateway calls `wake.signal(connection)` when a connection gets
-something that would end a `cotal_wait` while no wait holds it, and not again for that connection
-until `cotal_inbox` or `cotal_wait` reads. `signal` returns false when no client heard it. The
-gateway then signals that connection again when the embedder calls the function `wake.attach`
-received, which it does when a client starts listening. `cotal_connect` adds `wake.listening()` to
-its reply. `GATEWAY_INSTRUCTIONS` is `GATEWAY_CONNECTING` followed by `GATEWAY_LISTENING`, so an
-embedder can say how its conversations listen and keep how they connect.
+`registerCotalGatewayTools`. The gateway calls `wake.signal(connection, preview)` when a connection
+gets something that would end a `cotal_wait` while no wait holds it. A true result means a reader
+heard the signal, not that it received complete message content. The preview never consumes mail.
+`cotal_connect` adds `wake.listening(connection)` to its reply. An embedder delivering full content
+can return false from `wake.inboxNotice(connection)` to omit competing inbox-read advice from other
+tool results. Notification-only clients retain that advice.
+
+`wake.attach` receives a rearm callback. Call it without arguments when a replacement reader starts
+listening. Call it with one connection after confirmed inline delivery to reoffer that connection's
+remaining work. Pass `false` as its second argument to clear the latch without immediately retrying
+a refused handoff. Ordinary inbox reads and waits also clear the latch. An adapter offering complete
+inline messages can use `prepareInlineDelivery`: hold whole automatic messages, validate the final
+transport size, recheck the batch before admission, then settle it with the native result. A failed
+or unknown admission releases the hold without committing. Never settle successfully on a preview,
+socket write or queued native call. `GATEWAY_INSTRUCTIONS` combines `GATEWAY_CONNECTING` and
+`GATEWAY_LISTENING`, so an embedder can supply its own listening instructions.
+
+### Private tool results
+
+[SPEC §13.19](../SPEC.md#1319-private-tool-results) accepts a private, consent-bound read path for
+managed-agent tool results. It is not served or enabled. Core exports the closed
+`ToolResultConsent`, `ToolResultRevocation` and `ToolResultServingMaterial` contracts, their
+parsers, and the frozen `TOOL_RESULTS_CLUSTER` declaration. These parse structure and static
+bindings only. They do not verify a consent signature, establish human proof or read current
+revocation and lifecycle state. The serving material's grant coordinates are not a branded
+`EpServeGrant` and confer no authority. `parseToolResultAnswer` also checks the UTF-8 byte count;
+a schema's character limit alone is not the byte bound.
+
+`@cotal-ai/auth` exports `verifyToolResultHumanProof` for the consent prerequisite. It verifies
+an EdDSA IdP JWT against the existing issuer, audience and key pins, then requires integer-second
+`auth_time` no later than the decision and at most 300 seconds old, plus a signed `amr` array
+containing `pwd`. The host compares elapsed milliseconds without rounding its clock to seconds.
+JWT clock tolerance does not widen this window. Ordinary bearer exchange does
+not require these claims or turn them into consent authority.
+
+The loopback-only `POST /tool-result-human-proof/verify` takes only `{ idpToken, subject }` with
+the host's current capability and no Origin header. The host supplies its authenticated session
+subject. Success returns `{ authorized: true, sub, owner, authTime, exp }`; the owner derives from
+the verified subject, which must match the session. The door verifies proof only. It does not
+sign consent, issue credentials, register a service or serve private content. A host must still
+refuse platform keys and check current membership and lifecycle at consent admission.
+
+A host may opt into consent issuance with `startAuthService({ ..., toolResultConsents: { keyId,
+resolveAnchor } })`. Provision its Ed25519 nkey seed under `toolResultConsentKey(space)` in the
+injected private store as `{ ver: 1, keyId, seed }`. The resolver reads that space's current
+`consents` anchor with scope `tool-results`. Missing, corrupt, revoked or mismatched signing
+material refuses. Neither the private store nor the resolver belongs in a worker or client.
+
+The loopback-only `POST /tool-result-consent/issue` requires the current host capability and no
+Origin header. Its closed input is `{ id, idpToken, subject, accountPublicKey, holder, target,
+ttlMs }`. The host resolves those coordinates from its current authenticated membership and
+account assignment. `holder` carries `{ actor, lifecycleUid }`; `target` carries `{ owner,
+actor, lifecycleUid }`. Auth verifies the signed password proof and derives the owner itself,
+requires a current same-owner interactive holder and managed target, and caps the window at
+24 hours. It returns only `{ consent }`, after a create-only `consent.<id>` auth-store write.
+Duplicate ids refuse. A failed or lost acknowledgement returns no consent and never retries.
+The host must not label an unknown outcome completed or resubmit it automatically.
+Only the auth mint writer holds consent-KV publish authority. The environment admission writer
+and remote manager issuer do not inherit that grant. Create-only enforcement remains in the recorder.
+
+This door is absent from the public face. Without the opt-in signer it answers unavailable.
+It installs no serving material, revocation store, caller view, capture or result reader.
+
+Public tool arguments and results remain withheld. Auth and host issuance, Manager material,
+connector capture and the browser caller must each be landed and qualified in the
+[design's owner order](design/private-tool-results.md#9-owner-order), then carried by a stock
+release before activation. Without a complete authoritative revocation snapshot and an established,
+enforced clock-skew bound, the serving commands must answer `unavailable`.
+
+### Browser control
+
+`@cotal-ai/core/browser-control` describes and invokes an endpoint from a strict-CSP page. The page
+compiles no code: the host passes validators it generated at build time with
+`generateBrowserContracts` from `@cotal-ai/core/browser-validators-build` (Node only). The generator
+takes each cluster document with its recorded digest and schema roots, recomputes every digest and
+refuses a mismatch or a missing root before writing anything. It supports single-document closures
+only, so a command whose closure spans several documents refuses. The generated module imports
+Ajv's runtime helpers (`ajv/dist/runtime/*.js`), so the host's bundler must resolve `ajv` from
+where the host writes that module.
+
+`openBrowserManagerCaller` opens a Manager caller for ONE instance the person selected; there is no
+implicit selection. It takes the broker's websocket URL, the space, the principal and lifecycle the
+bearer is bound to, the instance, and the Manager's contracts generated from
+`managerBrowserContractSource()` (`@cotal-ai/manager`). Authority comes from an `acquire` callback
+that returns the person's own `manager-caller` bearer and the space's sentinel credential; an
+embedding's backend obtains the bearer from the stock exchange with the person's IdP proof. The
+bearer's space, principal, lifecycle and instance are checked before anything is dialled, and the
+describe is pinned to that instance. The view carries only the commands the person's ledger scope
+grants. `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands and
+`goal-result`, while operator reads such as `status` and `models` come only with `admin`; the broker
+refuses a command the view does not carry. The connection never reconnects on its own; `reopen`
+acquires again and re-checks every pin.
+
+`followGoal` submits a goal command once under an envelope id the host persisted before calling
+it, and follows the goal to its terminal with the stock goal follow. Live progress settles the goal
+only when it comes from the instance and epoch that accepted it; any other terminal settles nothing
+and prompts a read of the goal's own record. `reconcileGoal` reads an
+accepted goal back through the Manager's `goal-result` command, and `verifyGoalResultFact` checks
+the returned fact, including its outcome digest, through Web Crypto. Nothing here retries. Three
+outcomes stay distinct: an error reply is a refusal; a goal accepted but not seen to finish answers
+outcome `unknown` and is read back, never submitted again; a request no instance answered throws
+the stock unanswered error (`unansweredRequest`).
+
+`POST /manager-instances` on the auth service lists the signed-in person's own Manager instances. It
+takes `{ idpToken }`, verifies it as the human exchange does and answers
+`{ v: 1, owner, complete: true, instances: [{ instanceId, placement, state }] }`. `placement` is
+`remote` or `local`; `state` is the verdict the `manager-caller` exchange selects on (`candidate`,
+`not open`, `not registered`, `not this owner's`, `unknown`). A `candidate` is registration
+evidence, not proof that the instance answers; a describe pinned to it is. The route refuses
+browser-origin requests like every exchange route, so a page reaches it through its own backend,
+and a failed gate read answers 503, never an empty list.
 
 ### Remote manager client composition
 
@@ -326,6 +605,10 @@ registration. Pass its `[document, manifest]` pair as `contractArtifacts` to bot
 `remoteManagerClient.remoteManagerAuthorityRequest(state, actor, "activate", { registrationProof, contractArtifacts })`.
 The request builder takes each operation's coordinates as named fields of its last argument.
 The host still validates the artifact closure and current registration before activation.
+`managerBrowserContractSource()` returns the same document with its closure digest and each
+distinct schema root, the input `generateBrowserContracts` from
+`@cotal-ai/core/browser-validators-build` takes at a host's build. Its closure manifests are left
+out because they are not schemas; the generator recomputes every digest and refuses a mismatch.
 The namespace includes closed standing/run renewal, admission, maintenance, enrollment,
 retirement and goal-index scan helpers. `publicIdentities(state)` returns the `identities` record every request
 carries: the five public ids, in the order the host echoes them. `remoteRunHosting` builds the four `runHosting` callbacks from the registration
@@ -756,11 +1039,18 @@ manager path crosses. A spawn choice that only the manager's host can honour is 
 enrollment: `--resume`, a manifest agent's `continuity: exact`, `--cwd`, and any shared MCP server,
 whether from `--share-tools` or the config default (`--share-tools none` passes).
 
+A delegated manager also refuses a caller-supplied persona `config` override in `resolve-agent`,
+`spawn` and direct `Manager.startAgent` calls. The shared persona resolver refuses before checking
+or reading that path, with `failed-precondition` on the wire and one fixed execution-mode message.
+Pass a named catalog persona instead. This does not change locally executing managers. A resolved
+manifest can still use its own validated, host-materialized persona resource. The wire schemas
+accept no internal `resolved` field that could bypass the config refusal.
+
 The runtime creates one provider resource under `managedRuntimeKey(target)`, writes the handoff into
 it as one 0600 file and the persona beside it, and runs the stock bootstrap there:
 `cotal spawn --config <persona-file> --space <space> --name <actor> --expect-owner <owner> --expect-lifecycle-uid <uid>`
-with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds that argv. The
-`cotal` entry reads the file into memory, deletes it and drops the variable before it parses flags,
+with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds that argv.
+`cotal spawn` reads the file into memory, deletes it and drops the variable before it parses flags,
 prints help or loads extensions, so every outcome, a refusal of its own flags included, leaves no
 file. It refuses before any broker connection or exchange request when the
 space, owner, actor, or lifecycle UID differ from the expected values, and then runs the
@@ -865,7 +1155,9 @@ scopes the capability out. None is a wire concern.
    reads from a fixed on-disk path are the *static* `membership-observer.creds` and
    `connection-evictor.creds` ($SYS creds, minted at the `up` that provisions the account and renewed by `up --rotate-sys`) and `membership.json`
    (`{accountId}`, non-secret config); those, plus the private provisioning wrapper, keep immediate
-   live eviction and a fully-hosted feed a partial gap. Missing files degrade membership to
+   live eviction and a fully-hosted feed a partial gap. A host that re-mints the observer into the
+   injected store under the same system signer and scope has it adopted by the running feed at 75%
+   of its lifetime. Missing files degrade membership to
    traffic-only and make live eviction refuse (loudly). The supported delivery contract here is the
    Plane-3 durable backstop.
 2. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the
@@ -936,3 +1228,330 @@ transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for
 manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
 its own remote authority must supply that callback to revoke. No signer reaches the participant.
 CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).
+
+### Private tool-result prerequisites (not serving)
+
+`@cotal-ai/auth` exports `createToolResultRevocationCustody`,
+`recordToolResultRevocation`, `snapshotToolResultRevocations` and one-shot
+`consumeToolResultSnapshot`. These are host-only prerequisites, not material issuance,
+service registration or a browser/private-result path. `requireToolResultClockPrerequisite`
+always refuses `unavailable`: no native runtime clock-domain/generation/suspension proof
+exists, and no numeric delta is invented.
+
+Custody exclusively creates a **fresh** auth store after a private fsynced intent/generation.
+Existing stores or journals are never adopted. Only a standalone broker and owner-private local ext4 journal parent are supported. Only the creating process may use its sealed,
+non-reconnecting reader/writer custody. Unknown writes, missing/changed journals, stream
+identity/configuration drift or connection loss invalidate it. Crash/rebind recovery stays
+unavailable. Routine broker restart, upgrade, network loss or process restart therefore leaves
+gate 1 permanently unavailable for that space. Recognize this as `revocation custody lost; no reopen from current INFO`.
+No retirement/reprovision recovery protocol exists in this increment. Gate 2 cannot assume
+custody survives broker maintenance. The trusted composition supplies current authenticated consent/target authorizers
+and exclusively holds account/provisioning keys. Independently running privileged provisioners,
+uncontrolled legacy writers and existing roots have no qualified custody and are unsupported.
+This is not protection from a malicious host administrator or copied signing keys.
+The separate internal custody profile uses two non-expiring, non-reconnecting credentials,
+without planeCandidate or a renewal timer. With the two sealed scanners this is four standing
+connections across three profiles. The CREATE provisioner still expires and closes after CREATE.
+A leaked custody JWT plus user seed no longer has a 900-second expiry bound. Stopping the
+service closes its own sockets, not copied credentials. Signing-key removal invalidates copied
+credentials as well. This remains inside the trusted-process/account-signer residual.
+
+Revocation creates only `revocation.<targetDigest>.<consentId>` with native expected-last-subject
+sequence zero, no operation/TTL headers and independently fsynced acknowledgement receipts.
+Consent bytes must match the recorded target and expiry. Persistence uncertainty reports effect
+outcome `unknown`. Acknowledged writes report `executed` even if receipt or later custody checks
+fail. Refusals before publication report `not-executed`. No automatic repeat follows uncertainty.
+Markers persist indefinitely in this
+slice. A separate bounded-retention successor must prove consent expiry plus
+`EP_AUTH_MARKER_TTL_MS` and snapshot safety before a pruner/TTL may exist.
+
+A snapshot fixes T0 before IO and a leader W once, walks only through W, bounds count/bytes/time,
+and compares exact native sequence/subject/payload evidence to custody receipts. The committed-W
+artifact is a process-private invocation seal binding that evidence, account, generation and
+native created/config identity. It cannot be parsed, copied, reused or used after custody loss.
+No current INFO equality or operator safe flag establishes historical integrity. Journals are
+exclusive 0600 files with file and directory fsync, checked before/after IO, not adopted on restart.
+Clustered brokers and leader failover are unsupported. Any connection loss refuses; current INFO cannot restore custody.
+
+A short-lived create-only provisioner holds API discovery and exact auth-stream CREATE, then closes.
+Separate package-internal grants split revocation-only publish from INFO/MSG.GET reader authority.
+Retained issuance writers **already can enumerate** auth metadata. Raw ACLs cannot enforce CAS,
+DEL/TTL/schema/target conventions. Every raw MSG.GET profile carries SPEC13.9's caller-selected
+reply **foreign-subject response-injection** residual, even with only its own inbox subscription.
+Routine PR CI runs `smoke:tool-result-prerequisites`: bounded fixtures, broker-observed
+non-expiring exact grants, a no-renewal timer probe, census and actual KICK/key-removal
+refusals. It does not wait for credential expiry and is not serving acceptance.
+`pnpm smoke:tool-result-custody-lifetime` additionally waits `AUTHORITY_CLIENT_TTL_SEC + 15`
+seconds and checks unchanged identities plus record/snapshot success. Run it explicitly or
+through the manual/weekly Custody lifetime workflow. Historical lifetime receipts remain
+source-pinned evidence, not a grade for a composed successor.
+
+
+## Native service custody guards
+
+Ordinary lifecycle executors refuse a UID reservation carrying `kind: "native-service-uid"`.
+The reservation has closed `native`, `assignment` and `creation` objects. It is not an ordinary
+`{ owner, actor, mintedBy }` audit, and a reader must not project it into one. Its assignment
+binds the full account, space, owner, endpoint, instance and serve-duty tuple. The actor is derived
+from that tuple, and the creation operation and request digest remain fixed.
+
+These guards run before ordinary root reuse, activation, gate and head changes, mint finalization,
+and native retirement. Ordinary connect and currency reads also refuse service custody, including
+rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
+Closed head, gate and credential parsers continue to reject service markers. Without
+`serviceEndpoints`, no product path writes a service reservation or mints a marked root. The service
+access-view contract and the sealed native access/callout composition are shipped; only a context
+opened with `serviceEndpoints` composes them, with the service host's approval and registration
+described below. Lifecycle retirement and restore remain unwired.
+
+The package-internal service prerequisite reader is separate from ordinary connect and lifecycle
+currency readers. It leader-reads immutable UID custody, the exact active service head, native
+`gate.<uid>` open at generation1, and the exact active root credential. All three custody mirrors
+must match the full reservation digest. Service head `managerInstance` equals immutable assignment
+`instanceId`, and native `processEpoch` is fixed at1. These are not ordinary enrollment coordinates
+or the separate endpoint gate/witness registration epochs. Creating/cancelling heads and their
+RootPlan recovery obligations remain outside this read-only active path. Missing or malformed
+native gate evidence cannot be replaced by an endpoint gate. This is no writer, bootstrap, root
+mint/abort, rotation, cancellation or terminal-retirement authority, and not an atomic multi-key
+snapshot. Positive fixtures raw-seed synthetic marked records, not production service admission.
+The account is trusted host configuration. Sealed readers do not attest the broker account or
+detect a cross-account pair of legitimately constructed handles. The authority plane constructs the
+service callout's registry, reader and contract reads from its own data account.
+
+A package-internal custody writer is not exported; in the product only the service endpoint host's
+decide and revoke reach it, and the proposals they act on come only from the owner-proved public
+authority route of a context opened with `serviceEndpoints`. Bootstrap
+writes the reservation, the pending-root endpoint gate, a creating head, a frozen activation native
+gate opened at generation1, a RootPlan fixed once by head CAS, the planned active root, an
+identical-bytes native gate touch and the active head stamp. It rechecks the endpoint gate at open
+and before the plan, root and stamp writes. Cancellation denies the endpoint gate first, then
+writes the cancelling head and freezes the native gate under the cancel operation. An unstamped
+planned root is fenced by a create of revoked bytes or by CAS of the exact active row. A stamped
+root is retained, and every cancellation result is nonterminal. An absent reservation leaves
+endpoint deny residue and reports unconfirmed; a foreign or deleted reservation refuses without a
+write. Each write is a per-key create or revision CAS under a sealed host whose genuine plane-claim
+hold is re-read before and after the write, plus a fatal latch. That is local readiness control,
+not broker writer exclusion, so a paused writer can still land one late conditional write. Each
+request is bounded by the remaining original deadline. In bootstrap, once the plan step has fixed
+or read the RootPlan, requests are also bounded by its expiry. Cancellation keeps only its own
+deadline, so an accepted cancellation can still proceed after the root expires. At its bound the
+writer stops waiting for a request but does not cancel it at the broker. The writer issues every
+endpoint-gate request itself, so no endpoint-gate request starts after an invocation returns, and
+it re-reads the endpoint gate before every plan, root and stamp write attempt. Bootstrap's final
+active-root proof is several read-only reads behind one bounded wait. If that wait ends at its
+bound, the remaining reads can still run after the invocation returns; none of them writes.
+Bootstrap holds instead of reporting an active root whose expiry its final synchronous check
+observes, with no await between that check and the return. The result can still be stale by the
+time the caller acts on it. The caller supplies that deadline and the
+reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
+alias or rotates a root.
+
+A second package-internal module builds service host operations on that writer: register
+admission, decide (approve or refuse), revoke, a create-only name binding, and the operation and
+proposal reads. It shares the
+writer's sealed host, plane-claim hold check and fatal latch, and each invocation opens its own
+custody host over a per-invocation effect registry. That host writes only the invocation's scope,
+the exact keys discovery located before the effect registry opened, and the effect registry is
+handed the same key set so a broker grant can match it. A step that needs a key outside the scope
+holds as `scope-mismatch` before anything is issued; replaying the same request discovers what is
+stored and scopes it. Each effect registry rides its own connection, whose credential may publish
+only on that key set's subjects (subject confinement, not operation confinement; the engine itself
+only creates and CASes those keys), never renews or reconnects, and expires at the invocation's original deadline
+rounded up to the whole second. With agreeing clocks and timely scheduling the broker's
+whole-second timer closes it within about 1999 ms after that deadline; that is granularity, not a
+guaranteed close time, and no close proves an earlier write cannot still settle. Losing the
+connection fences the invocation. Discovery's credential has no write at all. The module's records and their write order are in SPEC §13.1. Results name their operation once a binding exists or may exist: `pending`, `held` and
+`refused` all carry `operationId`. A result can carry `debt`, the capacity releases its operation
+still owed as far as that invocation observed. A result without `debt` does not mean nothing is
+owed; the operation read is the authoritative view of the debt. A `held` result by itself implies
+neither a binding nor an authorized granter: a tripped engine, or a granter without a current
+interactive row, gets one `held` answer for a register, decide or revoke before any read of the
+request's keys. `denied` means the invocation wrote nothing, and either the request can never bind
+or the invocation's own read found no binding. That read is point-in-time; another invocation of the
+same request already in flight can still bind it later. A revoke result reports `denyNew` when it
+has evidence: an endpoint-gate read, which gives `unknown` when the read failed or found another
+assignment's gate row, or an assignment that is already fenced, which gives `landed`. The early `held` answers of a tripped engine and of a
+granter without a current interactive row carry no `denyNew`, and a result without `denyNew` says
+nothing about deny-new. Completed results
+say whether this invocation applied them or returned a stored record. A stored approval returns
+unchanged, and its `approvedGateRevision` is null unless its own gate CAS was observed. The index
+does not export this module; the typed request, result and view parsers in the service host contract
+are public.
+
+`openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
+to host these operations; it is off by default. `cotal up --user-auth --service-endpoints` sets it
+on the stock auth service. With it, the plane and the
+hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
+four caller-policy operations and the three reads (`proposal-read`, `operation-read` and
+`name-read`) in process. A hosted context rejects it as
+`unavailable` while it is not ready. The host authenticates no caller: the embedder must
+authenticate the operator or owner granter it passes. The stock service does that on
+`POST /service-endpoint-host`: the body is `{ idpToken, request }` with no granter, and the route
+verifies the token and derives the granter. A decision, an `owner-request` revoke, the four
+caller-policy operations and the reads run as the proved owner on either face; `name-bind`, any
+other revoke and the admission operations are the operator's, served on the loopback face under the
+exchange capability only, with the proved subject as the audit id (the admission operations have no
+engine handler yet and answer `unsupported`). Mint requestIds unpredictably: they share one
+space-wide namespace. `cotal service-endpoint` drives that route as the signed-in user
+([docs/cli.md](cli.md#service-endpoint)). Register admission is reachable only through the public
+route below. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
+the endpoint's name binding once, with your `claimReference`, and only the identical request recovers
+it; nothing updates, transfers or releases a name. The host checks no domain control, so verify the
+claim, or delegate a namespace you control, before you bind. The host runs over the plane's claim hold, data account and
+actor ledger directory. A restore or missing startup refuses the plane open, which unwinds and
+releases the claim. If that unwind cannot close an effect connection, it stops there: the claim
+stays held, the plane's clients, scanners and cleanup timer stay live, and there is no handle to
+retry. Only the process exiting ends them, after which the existing crash reclaim applies. Its discovery connection is an ordinary renewing read-only client: a broker loss
+fails its reads until the stock client reconnects, and those calls answer `unavailable` with nothing
+written. A renewal failure closes it permanently, and the host stays unavailable until the plane is
+opened again. Both plane fatal paths trip the host, and either one trips it even while the
+plane closes, without making the plane fatal. Plane close refuses new host calls from the
+moment it is called, waits for every call that already entered, from entry through discovery and
+effect open, closes discovery and then releases the claim. An effect connection that failed to
+close stays owned past its call: close closes it again first, and rejects with the claim still held
+while it stays open, so you can retry close. Until a retry succeeds or the process exits, discovery,
+the administrative rail, both scanners and the remaining clients stay live, so no successor can
+take over the claim.
+
+With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
+route answers 404. `GET` returns the receiver's account and space, the exact `iss` its service
+access bearers carry, and the public Ed25519 keys `GET /jwks` publishes. `POST` takes a `{request, proof}`
+envelope of at most 2 MiB. An IdP proof derives the owner, who needs a current interactive cli or web
+row; register needs one, and so may activate. A service's renewal proof authorizes activate, renew
+and status, and its access bearer authorizes ready and status; neither is owner authority. A typical
+sequence: the service registers and gets `approval-required`; you bind its name with an operator
+`name-bind`; the owner approves with `decide`; the service replays the same register and gets
+`registered` with its witness and snapshot; it activates and gets a `credential` with an access bearer
+of at most 60 s and a renewal proof of at most 24 h, neither outliving the native root or approval;
+it connects to the broker with the bearer through the composed native service callout, binds its
+responder, calls `ready`, and renews before the bearer expires. The auth provider's
+`serviceEndpointInfo` and `serviceEndpointAuthority` hooks are the client, and accept a service proof
+as well as the signed-in login.
+
+The `credential` answer carries no store access and no serve grant, so a service turns it into the
+process-local grant `serveEndpoint` consumes with `authorizeGuestServeGrant({ accountPublicKey,
+result, registration, authenticity })`: the parsed result, the service's own embedded closure, and
+the pinned issuer's `iss` and published keys. The issuer and keys come from the registered
+space's authority URL the service already pins, tenant path included: the auth provider's
+`serviceEndpointInfo` answer carries them, and a service passes `serveAuthenticityOf(info)` as
+`authenticity`; an authority that does not publish them yet makes that call refuse, so the
+service does not serve on a bearer it cannot verify.
+It verifies the access bearer's EdDSA signature under the published key its `kid` names and the
+same closed claims the host's token validator checks, so a bearer the issuer did not sign for
+this witness brands nothing; the closure is bound to the service's own embedded contract, not to
+the bearer. It refuses
+another account, a bearer from another issuer, space, subject or key, one that names another
+witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
+that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.
+
+For a serving connection, `serviceEndpointRenewal({ store, dir, witness })` returns that loop as a
+bearer function: pass its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
+first pull activates on the signed-in login and every later pull renews on the stored renewal proof.
+If that proof has expired, as after a machine was off for more than a day, the next pull replays the
+same activate request on the signed-in login, which mints again while the root and the approval stand.
+It keeps one activate and one renew requestId per witness, written to `store` before the first send,
+and replays them, with fresh material each time, for as long as the root and the approval allow.
+Concurrent pulls share one request. `credential()` is that same pull answering the validated
+`credential` result without its renewal proof, which never leaves the source, as a copy per caller;
+it is what `authorizeGuestServeGrant` takes. `bearer()` and `credential()` share one pull, so the
+two in flight together send one request under the same persisted ids, and an ended or closed
+source refuses both the same way. It owns no timer. A transport failure, `rate-limited`, a missing
+or rejected sign-in, or a store failure leaves it `unavailable`, and the next pull replays the same
+request; any other denial from the space ends it, and later pulls send nothing. `state()` reports
+expiries only, errors are fixed sentences, and `close()` aborts a pull in flight.
+
+Every effectful request is keyed by its requestId and body. Keep one requestId per operation and
+witness, store it with the witness and the renewal material before you send it, and reuse it with
+the same body after a restart: a replay is safe, a changed body under the same requestId is a
+`conflict`, and one instance accepts at most 64 distinct requests, so fresh keys per refresh or
+restart exhaust it. A register requestId stays bound to the body and proposal its first answer
+admitted: after approval, replay that exact request, and after a refusal or expiry, propose again
+under a new requestId. A 503 means the request may be bound: replay the same request, or read its
+status with `target: { kind: "operation", operation, requestId }`; the selector names the operation
+since this release, and the old `{ kind: "operation", requestId }` no longer parses. An owner reads
+status only while it holds an interactive row, and a service proof reads only its own instance.
+`registered` and `ready` in a status mean only that the request's registration is current. A
+pre-activation re-registration sends `expected: { state: "registered", witness }` and yields a new
+witness; a register that another request overtakes before its barrier freezes answers `conflict`,
+so read the instance and expect its current witness. A register whose gate moved under it without a
+new registration, such as a freeze another barrier then aborted, also answers `conflict` with the
+witness unchanged: if the instance still shows the witness you sent, replay the same request. A
+register held inside the native barrier, or while another invocation of the same request is still
+running, answers 503; replay the same request. Once a service has activated, its registration
+can no longer change. Commands must be ephemeral and declare
+no governed trait.
+
+`caller-grant` takes an owner granter with an interactive row who holds the approved instance, and a
+grantee is a current exact owner, actor and lifecycle UID. A managed grantee also needs its actual
+same-owner parent chain, with each current ancestor holding active covering grants for the same
+service approval. The operation records those immutable grant ids and lifecycle UIDs in `parentRefs`
+and rechecks them before append. An admin scope never substitutes for endpoint caller rights. Every
+capability must name that instance with `instanceOnly: true`, carry no journal access and no `any` or
+`ledger` target, and sit within the approval's caller ceiling. The answer is `granted` with the grant
+as stored. Ordinary user-auth agent connects now derive their endpoint rows from this policy through
+core's native grant builder, including reserved Describe for each authorized exact instance. The
+callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
+approval and ceiling, then checks the policy evidence again after signing and native-key recording.
+The original connection expiry is at most 60 seconds from issuance, and capped by root and approval
+expiry. These are fresh leader reads,
+not a linearized revoke fence. Existing issued connections keep their original expiry, and caller
+revocation remains deny-new, not terminal absence proof.
+One instance indexes at most 256 grants over its life, including attempts refused after indexing, and
+a full index answers `resource-exhausted`; a new instance is the remedy. `caller-revoke` admits the
+grant's source owner, its grantee owner and an operator. It answers `pending` with
+`denyNew: "landed"` and `notBefore`, in epoch seconds, 71 s after the broker time of the grant's
+cutoff marker. It never answers `revoked`, and the result parser refuses that arm.
+`caller-policy-read` gives an owner its own grantees, and another owner's grantee only filtered to a
+service it holds; `caller-policy-list` needs a service selector.
+
+Caller grants need `max_payload >= 2098176` (2 MiB plus 1 KiB), `max_control_line >= 4096`,
+and an auth stream with `max_msg_size: -1`. Broker generation accepts an explicit
+`serverConfig(broker, accounts, { ...options, maxPayload: 2098176 })`; omission leaves the native
+1 MiB default unchanged. No startup path raises limits automatically.
+
+For a **standalone broker only**, pass `serviceEndpoints.callerPayload.observerCreds` to
+`startAuthService` (or the corresponding authority-plane option). The callback returns fresh
+host-private credentials from the broker owner's
+`mintServiceCallerPayloadObserverCreds({ pub: broker.sys.pub, signingSeed: broker.sys.signingSeed })`.
+Keep that registered SYS signer with the broker owner, never in the data account, a sandbox or a
+participant client. The helper returns an in-memory, at-most-60-second VARZ-only credential.
+The stock root does this itself: `cotal up` retains the system-account signing seed in the root's
+secret store at space creation and at `--rotate-sys`, and the auth service started with
+`--service-endpoints` composes `callerPayload` from it when the record names the trust record's
+system account and the seed derives it; a root with no retained seed opens the engine and door
+without caller issuance and logs why.
+The callback only supplies credentials, owns no authority resource, and may finish after its
+10-second observation deadline has refused the operation. It is not a cancellation callback.
+
+Startup authenticates native VARZ, matches the observer and data connection's broker incarnation,
+checks config/system-account evidence and live stream limits, then writes an exact-key assertion
+bound to that broker, configuration and genuine plane claim. Configured clusters, gateways and
+leaf links refuse, regardless of connected peer count. This is not multi-broker proof. A default
+1 MiB broker fails startup with the required byte limit and creates no assertion.
+
+Positive caller issuance repeats the observation and checks the exact assertion revision, complete
+plane hold and effective authority again before native JWT release. Withdrawal, config changes or
+claim loss refuse new issuance. Reopening needs an explicit bootstrap to reassert for the new claim;
+a prior-plane broker-bound assertion cannot authorize another append. Legacy assertion syntax still
+parses for existing trusted storage fixtures but alone never enables production caller issuance.
+Shutdown drains in-flight observations and closes their owned connections before releasing the claim.
+Reads and revokes do not need a positive assertion. A revoke whose policy row would not fit holds
+`payload-precondition` without writing it, and a failed live-limit check withdraws the assertion.
+
+Give each caller operation a fresh random requestId, record it with the exact body before you send
+it, and replay that body after a lost reply, a 503 or a `held` answer. Never switch to a new requestId
+while an earlier answer is unknown. A settled `refused` or `expired` ends the attempt, and a grant
+replayed after its 10-minute window adopts a grant that landed and otherwise answers `expired`.
+
+Caller issuance is generic, not tied to Linear: the same provider-independent contract discovery and
+invoke path works for ordinary and managed user-auth callers. Controlled policy append currently
+requires the application's approved service-host instance. Native control endpoints retain their
+existing ledger/scope and typed authority contracts, not fabricated application approvals. Scoped
+Describe is not available, and complete terminal retirement and restore remain unsupported. A host revoke refuses new activation, renewal, readiness
+and connections, but a connection already open keeps its original expiry of at most 60 s. Approval
+runs service bootstrap and revoke runs cancellation, while complete observer evidence and writer
+exclusion remain unavailable. Do not seed service reservations in an existing space, adopt old
+service-shaped rows, or use ordinary retirement to make them terminal. A signing-key or raw-store
+holder can bypass helper guards, so schema rejection alone does not make mixed-version writers safe.
+Restore must quarantine service work until a separately supported reconciliation protocol is
+available.

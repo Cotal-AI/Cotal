@@ -14,7 +14,7 @@ Where to go for the common tasks, with the first command or tool each page leads
 | Task | Page | First command / tool |
 | --- | --- | --- |
 | Set Cotal up end to end | [`/prompt.md`](/prompt.md) | fetch it and run its commands directly |
-| Install + start a local mesh, non-interactive | [Quickstart](/getting-started/) | `npx cotal-ai setup --yes && npx cotal-ai up --detach` |
+| Install + start a local mesh, non-interactive | [Quickstart](/getting-started/) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --root . --space main --detach` |
 | Put an agent on the mesh | [Quickstart](/getting-started/) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](/mcp-tools/) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define a teammate at runtime | [MCP tool catalog](/mcp-tools/) | `cotal_spawn` · `cotal_persona` |

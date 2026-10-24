@@ -63,8 +63,8 @@
     {
       "name": "the delivery log is opened before the argv is validated",
       "file": "implementations/cli/src/lib/delivery-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), \"a\");\n",
-      "replace": "  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), \"a\");\n  const [node, ...self] = selfArgv();\n",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openPrivateAppend(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openPrivateAppend(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)));\n  const [node, ...self] = selfArgv();\n",
       "cell": "CELL: the refused delivery start left no delivery log behind",
       "expectRed": "CELL: the refused delivery start left no delivery log behind",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"

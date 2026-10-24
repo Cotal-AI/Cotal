@@ -5,13 +5,18 @@
  * Covers: the live-process guard (a running recorded pid refuses cleanup; a STALE or corrupt
  * pidfile does not; an EPERM-unsignalable pid DOES), the `store` removal set (JetStream store
  * only), the `all` removal set (store + auth + every derived local cred + crash residue: stale
- * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the already-clean
- * no-op, and that `clean all` drops only registry entries rooted at THIS project (a named open
- * mesh must never delete the default space's entry).
+ * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the store the last broker
+ * served when `.cotal/nats` holds none, the refusal of a store directory that holds anything else
+ * (with nothing in it removed) and `up`'s warning about one, the refusal of a store folder another
+ * space's streams or registration name, the dry run, the already-clean no-op,
+ * that `clean all` drops only registry entries rooted at THIS project (a named open mesh must never
+ * delete the default space's entry), and that a `clean all` removing the space trust says earlier
+ * full backups no longer restore into the root.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +27,13 @@ const home = mkdtempSync(join(tmpdir(), "cotal-clean-home-"));
 process.env.COTAL_HOME = home;
 
 await import("../src/index.js"); // register the base local-process lifecycle descriptors
+// The binary also imports @cotal-ai/delivery, which registers delivery over the workspace's custody
+// descriptor. This package does not depend on it, so the suite registers that descriptor itself, and
+// `clean` and bare `down` see the delivery daemon as the binary's do.
+const { registry } = await import("@cotal-ai/core");
+registry.register((await import("@cotal-ai/workspace")).DELIVERY_PROCESS);
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
+const { warnForeignStoreEntries } = await import("../src/lib/store-dir.js");
 const { down, pidfileState } = await import("../src/commands/down.js");
 const { isReachable } = await import("@cotal-ai/core");
 const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent, spaceMaterialDir, spaceSegment, renewalRecordPath, defaultStartToken } = await import("@cotal-ai/workspace");
@@ -215,7 +226,7 @@ try {
   const customRoot = meshRoot();
   const customStore = mkdtempSync(join(tmpdir(), "cotal-store-"));
   mkdirSync(join(customStore, "jetstream"));
-  writeFileSync(join(customStore, "stream.dat"), "x");
+  writeFileSync(join(customStore, "jetstream", "stream.dat"), "x");
   // Cleanup resolves its target before deleting it, and REPORTS what it actually removed — so the
   // report names the resolved store, which is the spelling that matters for a destructive op. Pin
   // the canonical form now, while the dir still exists to resolve. (A substring check against the
@@ -229,6 +240,13 @@ try {
     () => removeLocalState(customRoot, { includeAuth: false, storeDir: customRoot }),
     /unsafe store cleanup target/,
   );
+  // A store in the project folder, as `up --store-dir .` makes, names its own entries to remove by hand.
+  mkdirSync(join(customRoot, "jetstream"));
+  await assert.rejects(
+    () => removeLocalState(customRoot, { includeAuth: false, storeDir: customRoot }),
+    (error: Error & { code?: string; remedy?: string }) => error.code === "CONFLICT" && error.remedy === `stop the space with cotal down, then remove the store's own entries by hand: rm -r ${join(realpathSync.native(customRoot), "jetstream")}`,
+  );
+  check("a store in the project folder refuses CONFLICT, naming its entries to remove by hand", existsSync(join(customRoot, "jetstream")));
   const controlTree = join(customRoot, ".cotal", "manifests");
   mkdirSync(join(controlTree, "jetstream"), { recursive: true });
   await assert.rejects(
@@ -236,6 +254,104 @@ try {
     /unsafe store cleanup target/,
   );
   rmSync(customRoot, { recursive: true, force: true });
+
+  // --- a store directory that holds anything else is refused, and nothing in it is removed -----
+  // `up --store-dir` starts on a folder that already holds files, so a store cleanup must not take
+  // them with the store. A planted `jetstream/` beside them does not make the folder a store.
+  const foreignRoot = meshRoot();
+  const shared = mkdtempSync(join(tmpdir(), "cotal-shared-"));
+  mkdirSync(join(shared, "jetstream", "$G"), { recursive: true });
+  writeFileSync(join(shared, "report.txt"), "keep");
+  mkdirSync(join(shared, "photos"));
+  writeFileSync(join(shared, "photos", "a.jpg"), "keep");
+  const sharedEntries = ["jetstream", "report.txt", join("photos", "a.jpg")];
+  for (const dryRun of [false, true])
+    await assert.rejects(
+      () => removeLocalState(foreignRoot, { includeAuth: false, storeDir: shared, dryRun }),
+      /also holds photos, report\.txt, which no Cotal store writes; nothing was removed/,
+    );
+  check("foreign entries: clean store and its dry run refuse, naming them, and remove nothing", sharedEntries.every((entry) => existsSync(join(shared, entry))));
+  const decoy = mkdtempSync(join(tmpdir(), "cotal-decoy-"));
+  mkdirSync(join(decoy, "jetstream"));
+  writeFileSync(join(decoy, "jetstream", "stream.dat"), "x");
+  writeFileSync(join(decoy, "notes.txt"), "keep");
+  await assert.rejects(() => removeLocalState(foreignRoot, { includeAuth: false, storeDir: decoy }), /also holds notes\.txt/);
+  check("foreign entries: a planted jetstream/ beside a file is not a store", existsSync(join(decoy, "notes.txt")) && existsSync(join(decoy, "jetstream", "stream.dat")));
+  if (process.platform !== "win32") {
+    const linked = mkdtempSync(join(tmpdir(), "cotal-linked-"));
+    writeFileSync(join(linked, ".cotal-store-id"), `${randomUUID()}\n`);
+    symlinkSync(shared, join(linked, "jetstream"));
+    await assert.rejects(() => removeLocalState(foreignRoot, { includeAuth: false, storeDir: linked }), /also holds jetstream,/);
+    check("foreign entries: a jetstream link is not a store entry", existsSync(join(linked, "jetstream")) && existsSync(join(shared, "report.txt")));
+    rmSync(linked, { recursive: true, force: true });
+  }
+  writeFileSync(join(foreignRoot, ".cotal", "nats", "notes.txt"), "keep");
+  await assert.rejects(() => removeLocalState(foreignRoot, { includeAuth: true }), /also holds notes\.txt/);
+  check("foreign entries: in .cotal/nats, clean all removes nothing, identity included", existsSync(join(foreignRoot, ".cotal", "nats", "notes.txt")) && existsSync(join(foreignRoot, ".cotal", "auth", "auth.json")));
+  const warnings: string[] = [];
+  const consoleError = console.error;
+  console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+  try {
+    warnForeignStoreEntries(shared);
+    warnForeignStoreEntries(join(foreignRoot, ".cotal", "agents", "missing"));
+    rmSync(join(foreignRoot, ".cotal", "nats", "notes.txt"));
+    warnForeignStoreEntries(join(foreignRoot, ".cotal", "nats"));
+  } finally {
+    console.error = consoleError;
+  }
+  check("up --store-dir: warns once, naming the entries beside the store, and not for a store or a new path", warnings.length === 1 && /--store-dir .* also holds photos, report\.txt; /.test(warnings[0] ?? ""), warnings);
+  rmSync(foreignRoot, { recursive: true, force: true });
+  rmSync(shared, { recursive: true, force: true });
+  rmSync(decoy, { recursive: true, force: true });
+
+  // --- a store folder another space uses is refused, and nothing in it is removed -------------
+  // nats-server takes no lock on its store folder, so another space's broker can share one. That
+  // space's streams in it, or its registration naming it, make a cleanup refuse.
+  const tenantRoot = meshRoot();
+  const tenancy = mkdtempSync(join(tmpdir(), "cotal-tenancy-"));
+  for (const [account, space] of [["ACDEMO", "demo"], ["ACOTHER", "other"]])
+    for (const stream of ["CHAT", "DM", "TASK"]) mkdirSync(join(tenancy, "jetstream", account, "streams", `${stream}_${space}`), { recursive: true });
+  for (const dryRun of [false, true])
+    await assert.rejects(
+      () => removeLocalState(tenantRoot, { includeAuth: false, space: "demo", storeDir: tenancy, dryRun }),
+      /also belongs to space other \(streams CHAT_other, DM_other, TASK_other\), and removing it would delete that data too; nothing was removed/,
+    );
+  await assert.rejects(() => removeLocalState(tenantRoot, { includeAuth: true, storeDir: tenancy }), /space other \(streams CHAT_other/);
+  check("another space's streams: clean store, its dry run and clean all refuse, naming them, and remove nothing", existsSync(join(tenancy, "jetstream", "ACOTHER")) && existsSync(join(tenantRoot, ".cotal", "auth", "auth.json")));
+  rmSync(join(tenancy, "jetstream", "ACOTHER"), { recursive: true });
+  const tenantRegistered = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-tenancy-root-")));
+  recordMesh({ space: "regd", server: "nats://127.0.0.1:1", root: tenantRegistered, mode: "auth", origin: "up", storeDir: tenancy, ts: "2026-10-24T00:00:00.000Z" });
+  await assert.rejects(() => removeLocalState(tenantRoot, { includeAuth: false, space: "demo", storeDir: tenancy }), (error: Error) => error.message.includes(`also belongs to space regd at ${tenantRegistered},`));
+  removeMesh("regd");
+  const removedOwn = await removeLocalState(tenantRoot, { includeAuth: false, space: "demo", storeDir: tenancy });
+  check("another space's registration naming the folder refuses too; a folder with only this space's streams is removed", !existsSync(tenancy) && removedOwn.length === 1, removedOwn);
+  rmSync(tenantRoot, { recursive: true, force: true });
+  rmSync(tenantRegistered, { recursive: true, force: true });
+
+  // --- the broker's own ocsp folder is part of the store ----------------------------------------
+  // nats-server makes `ocsp` in its store directory on every configuration reload, as a restore's
+  // does, so `up` does not warn about it and `clean store` removes it with the store.
+  const ocspRoot = meshRoot();
+  mkdirSync(join(ocspRoot, ".cotal", "nats", "ocsp"));
+  const ocspWarnings: string[] = [];
+  console.error = (...args: unknown[]) => { ocspWarnings.push(args.join(" ")); };
+  try { warnForeignStoreEntries(join(ocspRoot, ".cotal", "nats")); }
+  finally { console.error = consoleError; }
+  const ocspRemoved = await removeLocalState(ocspRoot, { includeAuth: false });
+  check("ocsp: up does not warn about the broker's ocsp folder, and clean store removes it with the store",
+    ocspWarnings.length === 0 && ocspRemoved[0] === ".cotal/nats (JetStream store: jetstream, ocsp)" && !existsSync(join(ocspRoot, ".cotal", "nats")), { ocspWarnings, ocspRemoved });
+  rmSync(ocspRoot, { recursive: true, force: true });
+
+  // --- --dry-run lists what store/all would remove and removes nothing ------------------------
+  const dryRoot = meshRoot();
+  writeFileSync(join(dryRoot, ".cotal", "nats", ".cotal-store-id"), `${randomUUID()}\n`);
+  const listed = await removeLocalState(dryRoot, { includeAuth: true, dryRun: true });
+  check("dry run: lists the store with its entries", listed[0] === ".cotal/nats (JetStream store: .cotal-store-id, jetstream)", listed);
+  check("dry run: removes nothing", existsSync(join(dryRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(dryRoot, ".cotal", "auth", "auth.json")) && DERIVED.every((f) => existsSync(join(dryRoot, ".cotal", f))));
+  const removedAfterDry = await removeLocalState(dryRoot, { includeAuth: true });
+  check("dry run: lists what the real run then removes", JSON.stringify(listed) === JSON.stringify(removedAfterDry), { listed, removedAfterDry });
+  await assert.rejects(() => clean({ positionals: ["history"], values: { "dry-run": true }, raw: [] }), /--dry-run previews clean store and clean all only/);
+  rmSync(dryRoot, { recursive: true, force: true });
 
   const empty = mkdtempSync(join(tmpdir(), "cotal-empty-"));
   check("already clean: removes nothing, throws nothing", (await removeLocalState(empty, { includeAuth: true })).length === 0);
@@ -279,6 +395,11 @@ try {
   check("probe: garbage pidfile is 'bad pidfile'", pidfileState(join(probeDir, "junk.pid")).note === "bad pidfile");
   writeFileSync(join(probeDir, "self.pid"), String(process.pid));
   check("probe: a live pid reads alive", pidfileState(join(probeDir, "self.pid")).liveness === "alive");
+  // The probe reads through the shared `readPidfile`, so a record it cannot read throws naming it.
+  mkdirSync(join(probeDir, "dir.pid"));
+  let unreadable = "";
+  try { pidfileState(join(probeDir, "dir.pid")); } catch (e) { unreadable = (e as Error).message; }
+  check("probe: an unreadable pidfile throws naming its path", unreadable.includes(join(probeDir, "dir.pid")), unreadable);
   if (process.platform !== "win32") {
     writeFileSync(join(probeDir, "init.pid"), "1");
     check("probe: an unsignalable pid (EPERM) reads ALIVE", pidfileState(join(probeDir, "init.pid")).liveness === "alive");
@@ -293,8 +414,8 @@ try {
   // A named OPEN mesh has no .cotal/auth, so a space-name lookup would resolve to the default
   // space ("main") and delete an unrelated mesh's registry entry - the drop must key on root.
   const openRoot = mkdtempSync(join(tmpdir(), "cotal-open-"));
-  mkdirSync(join(openRoot, ".cotal", "nats"), { recursive: true });
-  writeFileSync(join(openRoot, ".cotal", "nats", "s.dat"), "x");
+  mkdirSync(join(openRoot, ".cotal", "nats", "jetstream"), { recursive: true });
+  writeFileSync(join(openRoot, ".cotal", "nats", "jetstream", "s.dat"), "x");
   const otherRoot = mkdtempSync(join(tmpdir(), "cotal-other-"));
   const entry = (space: string, root: string) =>
     ({ space, server: "nats://127.0.0.1:1", root, mode: "open" as const, ts: "2026-07-09T00:00:00.000Z" });
@@ -302,16 +423,111 @@ try {
   recordMesh(entry("main", otherRoot));
   setCurrent("named-open");
   const cwd = process.cwd();
+  const consoleWarn = console.error;
+  const notes: string[] = [];
+  console.error = (...args: unknown[]) => { notes.push(args.map(String).join(" ")); };
   process.chdir(openRoot);
   try {
     await clean({ positionals: ["all"], values: { force: true }, raw: [] });
   } finally {
+    console.error = consoleWarn;
     process.chdir(cwd); // chdir out BEFORE the rm (Windows EBUSY on a deleted cwd)
   }
   check("all: drops THIS root's registry entry, not the default space's", loadMeshes().map((m) => m.space).join(",") === "main", loadMeshes());
   check("all: releases the `current` pointer it held", getCurrent() !== "named-open", getCurrent());
+  check("all: an open root holds no space trust, so it says nothing about backups", !notes.some((note) => note.includes("full backups")), notes);
   rmSync(openRoot, { recursive: true, force: true });
   rmSync(otherRoot, { recursive: true, force: true });
+
+  // A full backup is bound to the space trust, so a `clean all` that removes it says, in its dry run
+  // and in its receipt, that the full backups taken before it no longer restore into this root.
+  const trustRoot = meshRoot();
+  notes.length = 0;
+  console.error = (...args: unknown[]) => { notes.push(args.map(String).join(" ")); };
+  process.chdir(trustRoot);
+  try {
+    await clean({ positionals: ["all"], values: { "dry-run": true }, raw: [] });
+    await clean({ positionals: ["all"], values: { force: true }, raw: [] });
+  } finally {
+    console.error = consoleWarn;
+    process.chdir(cwd);
+  }
+  check("all: removing the space trust says, in the dry run and the receipt, that earlier full backups no longer restore here",
+    notes.length === 2 && /full backups taken before this clean would no longer restore into this root/.test(notes[0] ?? "") && /full backups taken before this clean no longer restore into this root.*Take a new full backup/.test(notes[1] ?? ""), notes);
+  rmSync(trustRoot, { recursive: true, force: true });
+
+  // A user-auth space's state directory holds its pinned IdP and its actor ledger. `clean all` names
+  // them, in its dry run and in its receipt, with what a later up needs.
+  const userAuthRoot = meshRoot();
+  const userAuthDir = join(userAuthRoot, ".cotal", "auth", spaceSegment("demo"));
+  mkdirSync(join(userAuthDir, "actors"), { recursive: true });
+  writeFileSync(join(userAuthDir, "idp.json"), "{}");
+  writeFileSync(join(userAuthDir, "actors", "u_a.anna.json"), "{}");
+  const userAuthOut: string[] = [];
+  notes.length = 0;
+  const consoleOut = console.log;
+  console.log = (...args: unknown[]) => { userAuthOut.push(args.map(String).join(" ")); };
+  console.error = (...args: unknown[]) => { notes.push(args.map(String).join(" ")); };
+  process.chdir(userAuthRoot);
+  try {
+    await clean({ positionals: ["all"], values: { "dry-run": true }, raw: [] });
+    await clean({ positionals: ["all"], values: { force: true }, raw: [] });
+  } finally {
+    console.log = consoleOut;
+    console.error = consoleWarn;
+    process.chdir(cwd);
+  }
+  const labeled = `.cotal/auth/${spaceSegment("demo")} (IdP trust and actor ledger)`;
+  check("all: a user-auth space's state directory is named as its IdP trust and actor ledger, in the dry run and the receipt",
+    userAuthOut.some((line) => line.includes(`would remove ${labeled}`)) && userAuthOut.some((line) => line.includes(`removed ${labeled}`)), userAuthOut);
+  check("all: the dry run and the receipt say every actor grant is lost and what a later up needs",
+    /would remove the IdP trust and the actor ledger.*would need cotal up --user-auth --idp <auth base URL>/.test(notes[0] ?? "") && /removed the IdP trust and the actor ledger.*every actor grant is lost.*needs cotal up --user-auth --idp <auth base URL>/.test(notes[2] ?? ""), notes);
+  check("all: the receipt names the up a user-auth space needs for its fresh identity",
+    userAuthOut.some((line) => line.includes("minted on the next `cotal up --user-auth --idp <auth base URL>`")), userAuthOut);
+  check("all: the user-auth state directory is gone", !existsSync(userAuthDir));
+  rmSync(userAuthRoot, { recursive: true, force: true });
+
+  // Without --store-dir, clean reads the record a start reads: while the default store holds no data,
+  // the store the last broker served, named in the broker config `up` wrote, is this root's store.
+  const printed: string[] = [];
+  const consoleLog = console.log;
+  const cleanStore = async (root: string, values: Record<string, boolean>) => {
+    console.log = (...args: unknown[]) => { printed.push(args.map(String).join(" ")); };
+    process.chdir(root);
+    try { await clean({ positionals: ["store"], values, raw: [] }); }
+    finally { console.log = consoleLog; process.chdir(cwd); }
+  };
+  const servedStore = (root: string) => {
+    const store = mkdtempSync(join(tmpdir(), "cotal-served-"));
+    mkdirSync(join(store, "jetstream"));
+    writeFileSync(join(store, "jetstream", "stream.dat"), "x");
+    writeFileSync(join(root, ".cotal", "auth", "server.conf"), `jetstream { store_dir: ${JSON.stringify(store)} }\n`);
+    return realpathSync.native(store);
+  };
+  const servedRoot = meshRoot();
+  rmSync(join(servedRoot, ".cotal", "nats"), { recursive: true });
+  const served = servedStore(servedRoot);
+  await cleanStore(servedRoot, { "dry-run": true });
+  check("store: with no data in .cotal/nats, the dry run names the store the last broker served", printed.some((line) => line.includes(`would remove ${served} (JetStream store`)) && existsSync(served), printed);
+  printed.length = 0;
+  await cleanStore(servedRoot, { force: true });
+  check("store: and removes it, instead of saying there is nothing to clean", !existsSync(served) && printed.some((line) => line.includes(`removed ${served}`)), printed);
+  rmSync(servedRoot, { recursive: true, force: true });
+  const bothRoot = meshRoot();
+  const other = servedStore(bothRoot);
+  printed.length = 0;
+  await cleanStore(bothRoot, { force: true });
+  check("store: while .cotal/nats holds data, as a start would open, that store is removed and the other is kept", !existsSync(join(bothRoot, ".cotal", "nats")) && existsSync(join(other, "jetstream", "stream.dat")), printed);
+  rmSync(bothRoot, { recursive: true, force: true });
+  rmSync(other, { recursive: true, force: true });
+
+  // A retained bare `down` reaches its pidfile sweep only for one registration that `cotal up`
+  // started at this root, and refuses when another registration names the same broker address
+  // (docs/cli.md, `down`). `up` records `origin: "up"` and the broker it started, so every stack the
+  // `down` cells below stop is recorded that way, each on its own closed loopback port. "main" keeps
+  // port 1 from the `clean all` cells above.
+  const upEntry = (space: string, root: string, port: number) =>
+    ({ ...entry(space, root), server: `nats://127.0.0.1:${port}`, origin: "up" as const });
 
   // --- `down` must NOT erase the record of a process it cannot stop (EPERM) -------------------
   // The e2e chain the cleanup guard protects: an unsignalable live broker + `cotal down` +
@@ -321,7 +537,7 @@ try {
     const downRoot = meshRoot();
     writeFileSync(join(downRoot, ".cotal", "nats.pid"), "1"); // pid 1: alive, unsignalable as non-root
     writeFileSync(join(downRoot, ".cotal", "nats.pid.identity"), `1 ${defaultStartToken(1)}`); // #969: pin what a real up pins, so the graded refusal is the EPERM one
-    recordMesh(entry("eperm-mesh", downRoot));
+    recordMesh(upEntry("eperm-mesh", downRoot, 2));
     process.exitCode = 0;
     const cwd2 = process.cwd();
     process.chdir(downRoot);
@@ -344,7 +560,7 @@ try {
     writeFileSync(join(blockedRoot, ".cotal", "manager.pid"), "1");
     writeFileSync(join(blockedRoot, ".cotal", "manager.pid.identity"), `1 ${defaultStartToken(1)}`);
     writeFileSync(join(blockedRoot, ".cotal", "nats.pid"), String(blockedBroker.pid));
-    recordMesh(entry("blocked-down", blockedRoot));
+    recordMesh(upEntry("blocked-down", blockedRoot, 3));
     process.exitCode = 0;
     process.chdir(blockedRoot);
     try {
@@ -374,7 +590,7 @@ try {
   // #969: a real `up` pins the pid to its process start; the planted record must match that shape
   // or the identity gate correctly refuses it as a legacy record.
   writeFileSync(join(openRoot2, ".cotal", "nats.pid.identity"), `${broker.pid} ${defaultStartToken(broker.pid ?? 0)}`);
-  recordMesh(entry("named-open-2", openRoot2)); // "main" (unrelated root) is still recorded from above
+  recordMesh(upEntry("named-open-2", openRoot2, 4)); // "main" (unrelated root) is still recorded from above
   setCurrent("named-open-2");
   process.exitCode = 0;
   const cwd3 = process.cwd();

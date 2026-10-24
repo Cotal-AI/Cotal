@@ -126,16 +126,20 @@ export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
 /**
  * Name an injected store: its declared identity, else the coordinate in `COTAL_SECRET_STORE`. The
  * manager and the delivery daemon both call this, because the store challenge compares their two
- * answers and a second copy of the rule could name one shared store two ways.
+ * answers and a second copy of the rule could name one shared store two ways. The coordinate goes
+ * through the parser the challenge answer goes through, so a value the rail would refuse is
+ * refused here, at start, naming the variable.
  */
 export function injectedSecretStoreIdentity(store: SecretStore): SecretStoreIdentity {
   if (store.identity !== undefined) return parseSecretStoreIdentity(store.identity);
-  const coordinate = process.env.COTAL_SECRET_STORE;
-  if (!coordinate)
+  try {
+    return parseSecretStoreIdentity({ kind: "injected", coordinate: process.env.COTAL_SECRET_STORE });
+  } catch (cause) {
     throw new Error(
-      "an injected SecretStore must declare its identity or name its coordinate in COTAL_SECRET_STORE so the manager and the delivery daemon name the same authority (never a silent local-root fallback)",
+      "an injected SecretStore must declare its identity or name a non-blank coordinate in COTAL_SECRET_STORE so the manager and the delivery daemon name the same authority (never a silent local-root fallback)",
+      { cause },
     );
-  return { kind: "injected", coordinate };
+  }
 }
 
 /**

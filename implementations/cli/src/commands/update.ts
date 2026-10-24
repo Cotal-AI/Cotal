@@ -1,11 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
 import {
+  CommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
   claimGlobalNpmUpdateLock,
+  launcherInstallRoot,
   loadExtensionsManifest,
   SEEDED_EXTENSIONS,
   type InstalledExtension,
@@ -14,8 +17,10 @@ import {
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
+import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
+import { seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -31,6 +36,7 @@ import {
   type ControlTarget,
   type MeshTarget,
 } from "@cotal-ai/workspace";
+import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { legacyManagerReport } from "../lib/legacy-manager-report.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
@@ -38,6 +44,8 @@ const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
 
 export const updateFlags: readonly FlagSpec[] = [
   { name: "self", type: "boolean", description: "install the validated latest cotal-ai globally, then reconcile through it" },
+  { name: "check", type: "boolean", description: "read version availability and the recorded extension inventory; install and restart nothing" },
+  jsonFlag, plainFlag,
   ...targetFlags,
 ];
 
@@ -62,6 +70,8 @@ export interface UpdateRuntime {
   claimUpdatePass(): () => void;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
+  /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
+  checkout(): boolean;
   npm(args: string[], inherit?: boolean): CommandResult;
   spawn(file: string, args: string[], env: NodeJS.ProcessEnv, inherit?: boolean): CommandResult;
   spawnGlobal(
@@ -86,13 +96,23 @@ const runtime: UpdateRuntime = {
   parentPid: process.ppid,
   nodePath: process.execPath,
   version: cliVersion,
-  reconcile: () => runSeed({ force: true }),
   refreshConnectors: refreshConnectorInstalls,
+  reconcile: async () => {
+    await runSeed({ force: true });
+    const completion = refreshOwnedCompletions();
+    if (completion.changed.length || completion.preserved.length) process.stdout.write(`${renderReport({ sections: [
+      { title: "Owned shell completion", blocks: [
+        { kind: "fields", rows: [["Changed files", String(completion.changed.length)], ["Preserved integrations", String(completion.preserved.length)]] },
+        { kind: "lines", lines: [...completion.preserved.map((entry) => ({ text: `${entry.shell}: ${entry.reason}`, tone: "waiting" as const })), { text: "Startup files were not rewritten. Run cotal completion to inspect local integration.", tone: "hint" }] },
+      ] },
+    ] }, "rich", terminalWidth(process.stdout))}\n`);
+  },
   reportRunningManager: (target) => reportRunningManagers(target),
   extensions: () => loadExtensionsManifest().extensions,
   claimUpdatePass: () => claimExtensionUpdatePass(),
   claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root),
   selfArgv,
+  checkout: () => seedWriterKind() === "checkout",
   npm: runNpm,
   spawn: runProcess,
   spawnGlobal: runGlobalProcess,
@@ -104,8 +124,52 @@ const runtime: UpdateRuntime = {
 };
 
 export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Promise<void> {
+  validateUpdateArguments(args);
+  if (args.values.check === true) return checkUpdate(args, rt);
+  // The installer's own tree changes nothing a running manager reads, so its modes are repaired
+  // before the continuity check rather than only when the reconcile is allowed to run.
+  const install = launcherInstallRoot();
+  const repaired = install ? repairInstallModes(install) : 0;
+  if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's install at ${install}`));
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
   if (code !== 0) process.exitCode = code;
+}
+
+/** Check mode is installation metadata only; target and mutation inputs are never ignored. */
+export function validateUpdateArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  if (args.values.check === true) {
+    if (args.values.self || args.values.space !== undefined || args.values.server !== undefined || args.values.creds !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "update --check reads this installation and takes no --self or mesh selection");
+  } else if (args.values.json || args.values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "structured and plain update reports require --check; the installer keeps its native progress output");
+}
+
+function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
+  const current = rt.version();
+  const warnings: OutputWarning[] = [];
+  let extensions: { package: string; version: string; firstParty: boolean; matchesCli: boolean | null }[] | null;
+  try {
+    extensions = rt.extensions().map((entry) => {
+      if (!entry || typeof entry.pkg !== "string" || typeof entry.version !== "string" || !STRICT_SEMVER.test(entry.version)) throw new Error("invalid extension version entry");
+      const firstParty = entry.pkg.startsWith("@cotal-ai/");
+      return { package: entry.pkg, version: entry.version, firstParty, matchesCli: firstParty ? entry.version === current : null };
+    });
+  } catch {
+    extensions = null;
+    warnings.push({ code: "EXTENSION_INVENTORY_UNREADABLE", target: null, message: "The extension inventory could not be read. It was not repaired or treated as empty." });
+  }
+  const latest = latestVersion(rt);
+  if (!latest.ok) warnings.push({ code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
+  const comparison = latest.ok ? compareSemver(latest.version, current) : null;
+  const result = { kind: "update-check", current, latest: latest.ok ? latest.version : null, updateAvailable: comparison === null ? null : comparison > 0, extensions, scope: "registry version and recorded installation versions", installationChanged: false, processesRestarted: false };
+  writeResult(presentationOf(args.values), {
+    command: "update", target: null, result, warnings,
+    ...(warnings.length ? { completeness: "partial" as const, partial: { message: "Some update information could not be established.", remedy: "Check registry access or the unreadable inventory and repeat update --check." } } : {}),
+  }, (r) => ({ sections: [
+    { title: "Update availability", blocks: [{ kind: "fields", rows: [["Running CLI", r.current], ["Registry latest", r.latest ?? "not established"], ["CLI update", r.updateAvailable === null ? { text: "unknown", tone: "waiting" } : r.updateAvailable ? { text: "available", tone: "waiting" } : comparison === 0 ? "matches latest tag" : "running version is ahead of latest tag"]] }] },
+    { title: "Recorded extensions", blocks: [r.extensions === null ? { kind: "lines", lines: [{ text: "Inventory unavailable. No repair was attempted.", tone: "waiting" }] } : r.extensions.length ? { kind: "table", columns: [{ key: "package", label: "Package" }, { key: "version", label: "Recorded version" }, { key: "state", label: "Generation" }], rows: r.extensions.map((entry) => ({ package: entry.package, version: entry.version, state: !entry.firstParty ? { text: "third party", tone: "hint" } : entry.matchesCli ? { text: "matches running CLI", tone: "ok" } : { text: "differs from running CLI", tone: "waiting" } })) } : { kind: "lines", lines: ["No extensions in the recorded inventory."] }, { kind: "lines", lines: [{ text: "Version records only. Package contents, signatures and running processes were not checked. No installation was reconciled or restarted.", tone: "hint" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal update", description: "Reconcile the current generation through the existing guarded updater" }, ...(r.updateAvailable ? [{ command: "cotal update --self", description: rt.checkout() ? "Install the verified latest CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the verified latest CLI and reconcile its generation" }] : []), { command: "cotal status", description: "Inspect this machine and its selected space" }] }] },
+  ] }));
 }
 
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
@@ -261,9 +325,11 @@ function isNoMeshRefusal(e: unknown): boolean {
  *  outlives its broker and reconnects when it returns, so a refused connection alone leaves its
  *  custody in place; a supervisor whose argv names this space or none, a peer that accepts, answers
  *  or stalls, a mesh registered by hand, or a `--server` the operator named may still have a manager
- *  behind it. */
-async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
-  if (!localMeshesForRoot(target.root).some((m) => m.space === target.space && m.server === target.server)) return false;
+ *  behind it. A project that only ran setup has no registry entry yet; its implicit local default
+ *  is eligible for the same process and listener checks, but an explicit server is not. */
+export async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
+  const registered = localMeshesForRoot(target.root).some((m) => m.space === target.space && m.server === target.server);
+  if (!registered && target.source !== "local-space") return false;
   if (supervisorMayServe(target.space)) return false;
   return assertEndpointUnreachable(target.server).then(() => true, () => false);
 }
@@ -395,13 +461,20 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
   return "legacy";
 }
 
+/** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
+ *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
 function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string } {
-  const result = rt.npm(["view", "cotal-ai@latest", "version", "--json"]);
-  if (result.status !== 0) return { ok: false, error: failure(result) };
+  const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
-    return { ok: true, version: parseNpmVersion(result.stdout) };
-  } catch (e) {
-    return { ok: false, error: message(e) };
+    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false"]);
+    if (result.status !== 0) return { ok: false, error: failure(result) };
+    try {
+      return { ok: true, version: parseNpmVersion(result.stdout) };
+    } catch (e) {
+      return { ok: false, error: message(e) };
+    }
+  } finally {
+    rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
@@ -487,12 +560,11 @@ function targetArgv(target: Record<string, unknown>): string[] {
 }
 
 function reportVersion(current: string, latest: string, rt: UpdateRuntime): void {
-  rt.out(c.bold("cotal-ai binary"));
-  if (compareSemver(latest, current) > 0) {
-    rt.out(c.yellow(`! cotal-ai ${current} -> ${latest} available`) + c.dim(" - run: cotal update --self"));
-  } else {
-    rt.out(c.green(`✓ cotal-ai ${current} is up to date`));
-  }
+  const available = compareSemver(latest, current) > 0;
+  rt.out(renderReport({ sections: [
+    { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest], ["Update", available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] },
+  ] }, "rich", terminalWidth(process.stdout)));
 }
 
 function childBinding(rt: UpdateRuntime):
@@ -564,7 +636,7 @@ function runNpm(args: string[], inherit = false): CommandResult {
 }
 
 function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv, inherit = false): CommandResult {
-  const result = spawnSync(file, args, inherit ? { stdio: "inherit", env } : { encoding: "utf8", env });
+  const result = withInstallUmask(() => spawnSync(file, args, inherit ? { stdio: "inherit", env } : { encoding: "utf8", env }));
   return {
     status: result.status,
     stdout: `${result.stdout ?? ""}`,
@@ -586,11 +658,11 @@ async function runGlobalProcess(
   let published = false;
   let preservePending = false;
   try {
-    const child = spawn(file, args, {
+    const child = withInstallUmask(() => spawn(file, args, {
       env,
       windowsVerbatimArguments,
       ...(inherit ? { stdio: "inherit" as const } : {}),
-    });
+    }));
     let error = "";
     let stdout = "";
     let stderr = "";

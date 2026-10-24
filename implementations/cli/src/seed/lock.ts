@@ -58,15 +58,24 @@ export function isAuthenticSeedChild(): boolean {
   return found.state === "active" && found.owner.pid === parent && found.owner.nonce === nonce;
 }
 
-/** The mid-reconcile journal: which package is being mutated, in which phase, under which lock nonce. */
+/** The mid-reconcile journal: which package is being mutated, in which phase, under which lock nonce.
+ *  `failed` is why the run that wrote it failed; a cursor without it was left by a run that stopped. */
 export interface ReconcileCursor {
   readonly nonce: string;
   readonly package: string;
   readonly phase: "copy" | "add";
+  readonly failed?: string;
 }
 
 export function writeCursor(cursor: ReconcileCursor): void {
   writeJsonAtomic(reconcileCursorPath(), cursor);
+}
+
+/** Record on the cursor the run under `nonce` wrote that the run failed, and why. A cursor another run
+ *  left is kept as it is. */
+export function markCursorFailed(nonce: string, reason: string): void {
+  const cursor = readCursor();
+  if (cursor?.nonce === nonce) writeCursor({ ...cursor, failed: reason });
 }
 
 /** Read + SCHEMA-validate the cursor: a torn write, or a parsed-but-malformed one (missing/invalid
@@ -78,7 +87,8 @@ export function readCursor(): ReconcileCursor | undefined {
   if (
     typeof cursor.nonce !== "string" ||
     !SEED_BUILTINS.includes(cursor.package) ||
-    (cursor.phase !== "copy" && cursor.phase !== "add")
+    (cursor.phase !== "copy" && cursor.phase !== "add") ||
+    (cursor.failed !== undefined && typeof cursor.failed !== "string")
   ) {
     throw new Error(`corrupt seed cursor ${reconcileCursorPath()}: unexpected shape - repair with \`cotal ext seed --repair\` (or --reset)`);
   }

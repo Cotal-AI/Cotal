@@ -39,11 +39,14 @@ if (!Number.isInteger(nodeMajor) || nodeMajor < MIN_NODE_MAJOR) {
       `older Node, npm silently skips the broker binary and the CLI cannot start.\n\n` +
       remedy,
   );
-  // A delegated child's handoff file holds its actor token and is taken before anything else on a
-  // supported Node, so this refusal must not leave it on disk either. Unlink only, never read.
+  // A delegated seat's spawn takes its handoff file, which holds its actor token, before anything
+  // else on a supported Node, so this refusal must not leave it on disk either. Any other command
+  // leaves the file. The leading global flags take no value, so the first other word is the command.
+  // Unlink only, never read.
   const { unlinkSync } = await import("node:fs");
+  const command = process.argv.slice(2).find((arg) => !arg.startsWith("-"));
   for (const [key, path] of Object.entries(process.env)) {
-    if (key.toUpperCase() !== "COTAL_MANAGED_HANDOFF_FILE" || !path) continue;
+    if (key.toUpperCase() !== "COTAL_MANAGED_HANDOFF_FILE" || !path || (command !== "spawn" && command !== "sp")) continue;
     try {
       unlinkSync(path);
     } catch (e) {
@@ -53,5 +56,14 @@ if (!Number.isInteger(nodeMajor) || nodeMajor < MIN_NODE_MAJOR) {
   }
   process.exit(1);
 }
+
+// Node warns once, as it loads its own color helpers, when FORCE_COLOR and NO_COLOR are both set.
+// The CLI resolves that pair itself (`cotal config` shows FORCE_COLOR winning and NO_COLOR
+// outranked), so that one runtime warning is dropped before anything loads. Every other warning
+// still prints.
+const emitWarning = process.emitWarning.bind(process) as (...args: unknown[]) => void;
+process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
+  if (warning !== "The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.") emitWarning(warning, ...rest);
+}) as typeof process.emitWarning;
 
 await import("./run.js");

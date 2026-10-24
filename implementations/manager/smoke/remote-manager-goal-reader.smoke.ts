@@ -101,6 +101,7 @@ import {
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
+  issuedUserCaller,
   waitForDeliveryLease,
   epRequestSubject,
   parseGoalResultFact,
@@ -494,11 +495,12 @@ try {
 
   check("two distinct owners established via IdP (ownerA !== ownerB)", typeof ownerA === "string" && typeof ownerB === "string" && ownerA !== ownerB, { ownerA, ownerB });
 
-  // Grant actors for both owners on the host
-  grantActor(hostDir, { owner: ownerA, actor: "cli", scope: ["spawn", "role:default", "supervise"], allowSubscribe: [], allowPublish: [] });
+  // Grant actors for both owners on the host. The manager registers as `cli` and enrolls each seat
+  // under that row, so the row delegates the worker role the operator's spawn asks for.
+  grantActor(hostDir, { owner: ownerA, actor: "cli", scope: ["spawn", "role:default", "supervise", "role:worker"], allowSubscribe: [], allowPublish: [] });
   grantActor(hostDir, { owner: ownerA, actor: "operator", scope: ["spawn", "role:worker"], allowSubscribe: [], allowPublish: [] });
 
-  grantActor(hostDir, { owner: ownerB, actor: "cli", scope: ["spawn", "role:default", "supervise"], allowSubscribe: [], allowPublish: [] });
+  grantActor(hostDir, { owner: ownerB, actor: "cli", scope: ["spawn", "role:default", "supervise", "role:worker"], allowSubscribe: [], allowPublish: [] });
   grantActor(hostDir, { owner: ownerB, actor: "operator", scope: ["spawn", "role:worker"], allowSubscribe: [], allowPublish: [] });
 
   const callout = await loadCalloutAuth(hostStore, space);
@@ -652,18 +654,21 @@ try {
     }
     const payload = JSON.parse(Buffer.from(credentials.bearer.split(".")[1]!, "base64url").toString("utf8"));
     check(`owner ${label} selects its own live remote manager`, payload.act.managerInstanceId === instanceId);
-    const caller: EpCaller = { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid };
-    const nc = await connect({ servers: server, ...standaloneConnectOpts({ bearer: credentials.bearer, sentinelCreds: credentials.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
+    // An interactive manager-caller view is issued: its ep rows name the generation the callout
+    // issued for this connection, so the caller is read back from the connection, not from the bearer.
+    const connectOpts = standaloneConnectOpts({ bearer: credentials.bearer, sentinelCreds: credentials.sentinelCreds, tls: false });
+    const nc = await connect({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });
     if (label === "A") ncA = nc; else ncB = nc;
+    const caller: EpCaller = await issuedUserCaller(nc, space, connectOpts.name as string, { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid });
     const service = await resolveService(nc, space, "manager", caller, { instanceId, deadlineMs: 5000 });
     check(`owner ${label} resolves the actual remote manager`, service !== undefined);
     callers.push({ nc, caller, service, instanceId, goalId: mintLifecycleUid() });
   }
 
   for (const [index, entry] of callers.entries()) {
-    // Real acceptance and terminal production, without a successful child launch.
-    // Stock remote enrollment currently refuses missing host auth material. The declared
-    // test connector also refuses launch, so this proof cannot create an untracked child.
+    // Real acceptance and terminal production, without a successful child launch: the manager
+    // accepts the goal, and the declared test connector refuses launch, so the goal settles
+    // failed and this proof cannot create an untracked child.
     const accepted = await invokeCommand(entry.nc, space, entry.service, "spawn", { name: `worker_${index}`, role: "worker", agent: "remote-reader-test", events: false }, { id: entry.goalId, deadlineMs: 5000 });
     const acceptance = accepted.reply.ok ? accepted.reply.data as { goalId?: string; fingerprint?: string } : undefined;
     check(`owner ${index} receives a real accepted goal`, acceptance?.goalId === entry.goalId && typeof acceptance.fingerprint === "string");

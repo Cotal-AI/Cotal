@@ -131,6 +131,12 @@ watch is bound. Its lease turns ready earlier than that, so a renewal owner can 
 is done. The refusal says the daemon has not finished starting and adopts nothing. The next renewal
 pass or the daemon's own 75% re-read adopts the re-signed credentials.
 
+After an adoption the daemon reconnects with the new credentials 250ms after its reply. A
+delivery-admin request it reads in the meantime is answered once that reconnect completes, or
+after 5s. A reply sent while the connection is down would be lost, and its caller, such as a
+manager evicting its predecessor right after its boot renewal, would wait out its whole 15s request
+timeout.
+
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
 without taking the single-flight lease because another daemon holds it, or because a crashed
 holder's lease has not expired yet. A lease write the credential is not allowed to make is reported
@@ -152,14 +158,15 @@ responder does not bind gets the same not-bound warning as at startup instead. T
 itself when it cannot reach the broker, and a starved host can make a running broker look
 unreachable. Without the restart, every retirement that needs the daemon would fail until someone
 ran `cotal up` again. A failed restart is logged and retried after the 30-second lease TTL. A daemon
-that exits cleanly or on SIGTERM or SIGINT stays stopped. So does one that `cotal down delivery`
+that exits cleanly or on SIGTERM or SIGINT stays stopped. So does one that bare `cotal down`
 stops, also when the daemon is too starved to exit on SIGTERM and `down` kills it, when it is a
-replacement that is still starting, and when the stop lands between two restart attempts. Detached
+replacement that is still starting, and when the stop lands between two restart attempts. A legacy
+stack has no command that stops only the daemon. Detached
 `up` exits after launching and restarts nothing; a bare `cotal up` relaunches a missing daemon there.
 
 Ctrl-C on a foreground `up`, and a broker that exits under it, stop the daemon with the same stop
-`cotal down delivery` uses. It holds the reservation `down` takes, so a concurrent
-`cotal down delivery` is refused while it runs. It sends SIGKILL to a daemon that has not exited 15
+bare `cotal down` uses for it. It holds the reservation `down` takes, so the delivery stop of a
+concurrent `cotal down` is refused while it runs. It sends SIGKILL to a daemon that has not exited 15
 seconds after SIGTERM, and removes the daemon's credential only once its death is confirmed. A
 record whose pid now belongs to another program is cleared without a signal. If the broker exits
 while that stop is running, `up` waits for the stop to finish before it exits.

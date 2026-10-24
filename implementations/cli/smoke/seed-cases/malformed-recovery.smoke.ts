@@ -1,4 +1,4 @@
-import { existsSync, rmSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { boot, existsSync, rmSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
 
 try {
   // ── 4e. a malformed ({}) recovery journal + a damaged NON-main artifact recovers conservatively ──
@@ -12,7 +12,7 @@ try {
     if (existsSync(bundle)) {
       rmSync(bundle, { force: true });
       writeJson(join(seedDir(cfg), "reconcile.recovery.json"), {}); // parses, but names no obligation
-      const auto = cotal(cfg, ["ext", "list"]);
+      const auto = boot(cfg);
       check("malformed recovery: an auto boot fails loud (a marker exists)", auto.status !== 0 && /interrupted/i.test(auto.stderr), auto.stderr);
       const rep = cotal(cfg, ["ext", "seed", "--repair"]);
       check("malformed recovery: --repair recovers conservatively and restores the non-main artifact", rep.status === 0 && existsSync(bundle), rep.stderr);

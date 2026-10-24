@@ -309,8 +309,8 @@
     {
       "name": "the stdio server sends no default instructions",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "  const server = new McpServer({ name: \"cotal\", version: \"0.0.0\" }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });",
-      "replace": "  const server = new McpServer({ name: \"cotal\", version: \"0.0.0\" });",
+      "find": "  const server = new McpServer({ name: \"cotal\", version: DOCS_VERSION }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });",
+      "replace": "  const server = new McpServer({ name: \"cotal\", version: DOCS_VERSION });",
       "expectRed": "the stdio server sends the default instructions",
       "cell": "the stdio server sends the default instructions"
     },

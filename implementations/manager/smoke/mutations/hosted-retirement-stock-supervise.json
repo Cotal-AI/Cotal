@@ -41,8 +41,8 @@
     {
       "name": "remote manager bypasses host-owned admin authorization",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.remoteAuthority)\n      return this.remoteAuthority.authorizeAdmin({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });",
-      "replace": "    if (this.remoteAuthority)\n      return true;",
+      "find": "      return this.remoteAuthority.authorizeAdmin({ owner: asked.owner, actor: asked.actor, lifecycleUid: asked.uid });",
+      "replace": "      return asked !== undefined;",
       "expectRed": "narrowed host admin scope refuses before the manager operation runs",
       "cell": "narrowed host admin scope refuses before the manager operation runs",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"

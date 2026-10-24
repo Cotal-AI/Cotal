@@ -142,7 +142,6 @@ export const jcodeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       COTAL_CONTROL_SOCKET: control.path,
@@ -197,8 +196,20 @@ export const jcodeConnector: Connector = {
         `jcode connector: launch options are not supported by the Harness API host (first option: ${launchOptions[0][0]})`,
       );
 
+    // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
+    // Its directory is a launch artifact the launcher removes once the child has exited.
+    const artifacts: string[] = [];
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+
     // The fork's provenance is the seat's own record of it, written when the host forks.
-    return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(opts.resume ? { resumeRecordPath: jcodeForkRecordPath(seatHome) } : {}) };
+    return {
+      command: HOST_COMMAND,
+      args: [HOST_ENTRY],
+      env,
+      control,
+      ...(opts.resume ? { resumeRecordPath: jcodeForkRecordPath(seatHome) } : {}),
+      ...(artifacts.length > 0 ? { artifacts } : {}),
+    };
   },
 };
 

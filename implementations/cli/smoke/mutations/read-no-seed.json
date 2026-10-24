@@ -1,0 +1,85 @@
+{
+  "suite": [
+    "implementations/cli/smoke/read-no-seed.smoke.ts"
+  ],
+  "guard": "a read runs past the seed gate and writes no seed store or manifest, a command that is not a read still meets the gate, a subcommand's own declaration decides, and a read never loads a built-in installed at another version than the binary's",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/read-no-seed.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/read-no-seed.json",
+  "why": [
+    "The suite drives the built binary from a source checkout, where the seed gate refuses to seed, so each mutation rebuilds and the restore rebuilds back."
+  ],
+  "mutations": [
+    {
+      "name": "a read meets the seed gate",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (cmd && readsOnly(cmd, sub)) return true;",
+      "replace": "  if (cmd && readsOnly(cmd, sub) && name === \"\") return true;",
+      "expectRed": "status is a read: it runs past the seed gate, exit 0",
+      "cell": "status is a read: it runs past the seed gate, exit 0",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a subcommand takes its command's declaration",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  return sub ? sub.reads === true : cmd.reads === true;",
+      "replace": "  return cmd.reads === true;",
+      "expectRed": "ext add @acme/none is not a read: the seed gate runs first and refuses from a source checkout",
+      "cell": "ext add @acme/none is not a read: the seed gate runs first and refuses from a source checkout",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "status is not declared a read",
+      "file": "implementations/cli/src/index.ts",
+      "find": "    reads: true,\n    run: status,",
+      "replace": "    run: status,",
+      "expectRed": "status is a read: it runs past the seed gate, exit 0",
+      "cell": "status is a read: it runs past the seed gate, exit 0",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "ext list is not declared a read",
+      "file": "implementations/cli/src/index.ts",
+      "find": "usage: \"cotal ext list [--json|--plain]\", outputs: [\"json\", \"plain\"], reads: true },",
+      "replace": "usage: \"cotal ext list [--json|--plain]\", outputs: [\"json\", \"plain\"] },",
+      "expectRed": "ext list is a read: it runs past the seed gate, exit 0",
+      "cell": "ext list is a read: it runs past the seed gate, exit 0",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a built-in at another version loads",
+      "file": "implementations/cli/src/ext-loader.ts",
+      "find": "  if (skew) throw new Error(skew);",
+      "replace": "  if (skew && ref.name === \"\") throw new Error(skew);",
+      "expectRed": "status names the older built-in and the command that brings it to this version",
+      "cell": "status names the older built-in and the command that brings it to this version",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a fresh machine is pointed at ext seed",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "none installed \u00b7 ${displayCmd()} setup",
+      "replace": "none installed \u00b7 ${displayCmd()} ext seed",
+      "expectRed": "status on a fresh machine points at cotal setup for the connectors",
+      "cell": "status on a fresh machine points at cotal setup for the connectors",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a read declaration is dropped from the installed command cache",
+      "file": "packages/workspace/src/extensions.ts",
+      "find": "    reads: cmd.reads,\n",
+      "replace": "",
+      "cell": "an installed bare read runs past the seed gate",
+      "expectRed": "an installed bare read runs past the seed gate",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a cached read declaration is dropped from the lazy command stub",
+      "file": "implementations/cli/src/ext-loader.ts",
+      "find": "    reads: cached.reads,\n",
+      "replace": "",
+      "cell": "an installed bare read runs past the seed gate",
+      "expectRed": "an installed bare read runs past the seed gate",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

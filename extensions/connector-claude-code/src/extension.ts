@@ -195,9 +195,6 @@ export const claudeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: [...mcpServerEnvKeys(shared), ...nativeEnvKeys, ...CLAUDE_MCP_KEYS], envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
-      // shells, builds and third-party CLIs this session runs no longer inherit live authority.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
@@ -276,6 +273,10 @@ export const claudeConnector: Connector = {
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
     const artifacts: string[] = [];
+    // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
+    // shells, builds and third-party CLIs this session runs no longer inherit live authority. Its
+    // directory is the first artifact, so a later writeLaunchArtifact failure removes it too.
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
     // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
     // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
     // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved

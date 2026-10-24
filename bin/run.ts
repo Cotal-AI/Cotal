@@ -12,11 +12,13 @@
 // NOTE: registration order across these imports is NOT guaranteed (tsx's entry interop can
 // evaluate the smaller daemon graphs first) — display order is a non-goal here; `help` ranks
 // its groups explicitly (GROUP_ORDER in @cotal-ai/cli).
-import { runCli } from "@cotal-ai/cli"; // self-registers the base surface incl. spawn (foreground + --detach) / stop / ps / attach
+import { runCli, stdoutError } from "@cotal-ai/cli"; // self-registers the base surface incl. spawn (foreground + --detach) / stop / ps / attach
 import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervisor daemon
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
 import "@cotal-ai/runtime"; // self-registers `run` — the workflow-run operator surface (start/resume/ps/journal/answer)
 import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
+import "./docs.js"; // self-registers `docs`; the docs bundle loads only when `docs` runs
+import "./daemon/command.js"; // self-registers `daemon`: the local machine daemon's authenticated control endpoint (Linux)
 // Self-registers the `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event
 // frame instead of `[unrenderable part kind "ag-ui.frame"]`.
 //
@@ -32,13 +34,11 @@ import "@cotal-ai/connector-core/agui-render";
 import { registry } from "@cotal-ai/core";
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
-// or a shell's process substitution (`source <(cotal completion bash)`). Node otherwise turns the
+// or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
 // closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
-// 0. Registered before any command can write.
-process.stdout.on("error", (e: NodeJS.ErrnoException) => {
-  if (e.code === "EPIPE") process.exit(0);
-  throw e;
-});
+// 0. A command that must close something first, such as a chat session, owns stdout's errors while
+// it runs, and this listener stands down for it. Registered before any command can write.
+process.stdout.on("error", stdoutError);
 
 // The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
 // install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party
@@ -46,7 +46,7 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
 // materializes each lazily when a command resolves it; the default agent is `COTAL_DEFAULT_AGENT`
 // (else claude), resolved manager-side. The old `"cotal"` default-agent alias is gone with them.
 //
-// Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is
+// Bare `cotal` prints the entry screen; explicit `cotal setup` runs guided setup. The published binary is
 // the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
 // runtimes, connectors, and local process components all self-register from those packages. Library
 // roots keep the explicit-import model.

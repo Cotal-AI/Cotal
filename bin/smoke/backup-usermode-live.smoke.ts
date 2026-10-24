@@ -21,7 +21,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -184,7 +184,7 @@ try {
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
   check("device login established", sub === userId, { sub, userId });
-  // The operator actor needs scope "admin": `channels set` rides the "channel-writer" view and the
+  // The operator actor needs scope "admin": `channel set` rides the "channel-writer" view and the
   // preserve cut speaks ctl.admin. EVERY ledger write happens BEFORE the backup — the ledger is an
   // authority input, so a re-grant after the artifact would itself be trust drift.
   await must("actor grant cli (scope incl. admin)",
@@ -195,7 +195,7 @@ try {
   // The uid is minted into a NAMED value rather than inline, because the assertion below compares
   // against it. See the comment on that cell for why nothing weaker works.
   const RETAINED_UID = mintLifecycleUid();
-  const retained = await cotalAuthProvider.grantAgent({
+  const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
     store: workspaceSecretStore(root), dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
     scope: [], allowSubscribe: [CHANNEL], allowPublish: [CHANNEL], role: "worker", parent: `${OWNER}.cli`,
     lifecycleUid: RETAINED_UID,
@@ -222,8 +222,8 @@ try {
   check("the retained agent's ledger row carries the lifecycle uid THIS grant minted",
     retainedRow?.lifecycleUid === RETAINED_UID, { row: retainedRow?.lifecycleUid, minted: RETAINED_UID });
   await must("seed channel registry",
-    ["channels", "set", "preserved", "--desc", "survives user-mode restore", "--space", SPACE]);
-  await must("user-mode send seeds a CHAT message", ["send", "msg", CHANNEL, SEEDED_TEXT, "--space", SPACE]);
+    ["channel", "set", "preserved", "--desc", "survives user-mode restore", "--space", SPACE]);
+  await must("user-mode send seeds a CHAT message", ["send", "--channel", CHANNEL, SEEDED_TEXT, "--space", SPACE]);
   const seededTexts = textsOf(await chatHistory());
   check("the seeded message is on the wire before the cut", seededTexts.includes(SEEDED_TEXT), seededTexts);
 
@@ -258,7 +258,7 @@ try {
   // THE IDENTITY PLANE, not just the broker: a user-mode connect has to go login → exchange →
   // bearer → callout on the RESTORED mesh, and land on the wire as the derived principal.
   const afterText = "posted after the user-mode restore";
-  await must("the restored mesh serves a USER-MODE connect", ["send", "msg", CHANNEL, afterText, "--space", SPACE]);
+  await must("the restored mesh serves a USER-MODE connect", ["send", "--channel", CHANNEL, afterText, "--space", SPACE]);
   const restored = await chatHistory();
   const restoredTexts = textsOf(restored);
   check("the seeded message survived the restore", restoredTexts.includes(SEEDED_TEXT), restoredTexts);
@@ -270,7 +270,7 @@ try {
     /^u_[a-z2-7]{26}\.cli$/.test(afterFrame?.from.id ?? ""), afterFrame?.from);
   check("…and that principal is the logged-in owner's cli actor",
     afterFrame?.from.id === principalKey(OWNER, "cli").key, { got: afterFrame?.from.id, want: principalKey(OWNER, "cli").key });
-  const listed = await must("channels list on the restored mesh", ["channels", "list", "--space", SPACE]);
+  const listed = await must("the channel list on the restored mesh", ["channel", "--space", SPACE]);
   check("the seeded channel registry entry survived the restore", /#preserved/.test(listed.out), listed.out);
 
   // Same-principal resume of the retained agent's AUTHORITY: the preserved material must still
@@ -286,10 +286,20 @@ try {
   check("…and the resumed principal is the derived owner.actor key",
     adopted.ok && principalKey(OWNER, "worker").key === `${OWNER}.worker`);
 
+  // A user-mode artifact holds no workflow runs, so the store this restore set aside holds their only
+  // copy: the preview names them, and the cleanup deletes that store only with --discard-history.
+  const previousStore = (JSON.parse(readFileSync(journalPath, "utf8")) as { restore?: { previousSource?: { identity: { path: string } } } }).restore?.previousSource?.identity.path ?? "";
+  const cleanupPreview = await cotal(["backup", "cleanup-fallback", active.restore!.attemptId, "--dry-run"]);
+  check("the cleanup-fallback preview names the workflow runs only the previous store holds",
+    cleanupPreview.status === 0 && cleanupPreview.out.includes(`the previous store at ${previousStore} holds the only copy of the workflow runs`), cleanupPreview.out);
+  const unconsented = await cotal(["clean", "restore-fallback", "--attempt", active.restore!.attemptId, "--force"]);
+  check("…and the cleanup refuses without --discard-history, keeping that store",
+    unconsented.status !== 0 && previousStore !== "" && existsSync(previousStore) && unconsented.out.includes("--discard-history"), unconsented.out);
+
   // ---------- F. one drift refusal, on a second restore ----------
   console.log("F) owner-secret drift before a second restore must fail CLOSED");
   await must("retire the first restore's fallback",
-    ["clean", "restore-fallback", "--attempt", active.restore!.attemptId, "--force"]);
+    ["clean", "restore-fallback", "--attempt", active.restore!.attemptId, "--force", "--discard-history"]);
   await must("second preserve cut", ["down", "--preserve-state"]);
   check("the second cut is ready", readJournal().state === "ready");
   const journalBefore = readFileSync(journalPath, "utf8");
@@ -301,7 +311,7 @@ try {
     // the artifact's authority fingerprint can no longer match the current trust state.
     writeFileSync(ownerSecretPath, JSON.stringify({ ver: 1, secretB64: Buffer.alloc(32, 7).toString("base64") }, null, 2));
     const drifted = await cotal(["up", "--restore", artifact, "--detach", "--server", SERVER, "--space", SPACE]);
-    check("owner-secret drift refuses the restore", drifted.status !== 0, drifted.out);
+    check("owner-secret drift refuses the restore with exit 2, not an unknown outcome", drifted.status === 2, drifted.out);
     check("…naming the authority-fingerprint mismatch",
       /authority fingerprint does not match current trust state/.test(drifted.out), drifted.out);
     check("…leaving the ready journal byte-identical", readFileSync(journalPath, "utf8") === journalBefore);

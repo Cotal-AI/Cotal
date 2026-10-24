@@ -120,7 +120,7 @@ try {
   const deliver = (root: string, ...flags: string[]): Promise<{ out: string; signer?: string }> =>
     new Promise((done) => {
       jwts.length = 0;
-      const child = spawn(join(repoRoot, "node_modules", ".bin", "tsx"), [join(repoRoot, "bin", "cotal.ts"), "deliver", ...flags, "--dev-mint", "--server", server], { cwd: join(scratch, root), env });
+      const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repoRoot, "bin", "cotal.ts"), "deliver", ...flags, "--dev-mint", "--server", server], { cwd: join(scratch, root), env });
       let out = "";
       child.stdout.on("data", (d) => (out += d));
       child.stderr.on("data", (d) => (out += d));

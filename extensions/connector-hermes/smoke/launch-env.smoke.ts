@@ -16,6 +16,7 @@ import { skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { CHANNEL_GUIDANCE, ORIENTATION_BOOTSTRAP } from "@cotal-ai/connector-core";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -47,7 +48,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 167;
+const EXPECTED_CELLS = 168;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -332,6 +333,11 @@ assert.equal(existsSync(mgdFresh), false, "a profile directory that did not exis
 const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
 setupProfile(mgdSet, { model: "vendor/some-model" });
 assert.match(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^model: "vendor\/some-model"$/m, "a resolved model is written as a quoted scalar");
+const mgdPersona = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-persona-"));
+setupProfile(mgdPersona, { model: "vendor/some-model", persona: "I review changes." });
+const soul = readFileSync(join(mgdPersona, "SOUL.md"), "utf8");
+assert.ok(soul.includes(ORIENTATION_BOOTSTRAP) && soul.includes(CHANNEL_GUIDANCE), "a managed persona's SOUL.md carries the shared orientation and channel guidance");
+rmSync(mgdPersona, { recursive: true, force: true });
 rmSync(mgdNone, { recursive: true, force: true });
 rmSync(mgdSet, { recursive: true, force: true });
 

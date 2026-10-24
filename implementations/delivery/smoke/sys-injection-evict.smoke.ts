@@ -258,6 +258,7 @@ try {
     dataAccount: { pub: accA.account.pub, signingSeed: accA.account.signingSeed },
     space: spaceA,
     token: { key: issuer.localKeySet(), issuer: ISS },
+    recordIssuance: async () => {},
     authorizeActor: ledgerAuthorizeConnect(ledgerDir),
     permissionsFor: calloutPermissions(ledgerAclResolver(ledgerDir)),
     log: () => {},

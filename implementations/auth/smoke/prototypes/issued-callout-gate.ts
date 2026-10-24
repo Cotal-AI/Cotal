@@ -37,9 +37,9 @@ async function prepare(msg: CalloutMsg, opts: StartAuthCalloutOpts) {
   };
   await startAuthCallout(single, {
     ...opts,
-    permissionsFor(token, connectionName) {
+    permissionsFor(token, connectionName, readerId) {
       context = { token, connectionName };
-      return opts.permissionsFor(token, connectionName);
+      return opts.permissionsFor(token, connectionName, readerId);
     },
   }).done;
   if (!response) return undefined; // The unchanged handler dropped an untrusted request.

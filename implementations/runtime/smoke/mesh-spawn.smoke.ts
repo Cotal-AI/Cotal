@@ -72,7 +72,7 @@ import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMi
 // Package imports, not sibling source paths: this package's typecheck pins rootDir to its own tree,
 // so a source import from another package fails TS6059. The fixture entries that mutate core or
 // lang source therefore rebuild that package before the suite runs and after the restore.
-import { runMediatorGrants, PLACEMENT_COMMANDS } from "@cotal-ai/core";
+import { runMediatorGrants, runDriverCaller, PLACEMENT_COMMANDS, PLACED_LIFECYCLE_COMMANDS } from "@cotal-ai/core";
 import { PRIMITIVES } from "@cotal-ai/lang";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -1304,11 +1304,25 @@ log("winner", out.index);
   const added = pinned.publish.filter((r) => !legacy.publish.includes(r));
   const instRows = added.filter((r) => r.includes(".inst."));
   // Item B, grant present: naming a target mints the inst rail for EXACTLY describe, resolve-cwd
-  // and spawn on the one validated instance. Killed by M8 (removes `resolve-cwd` from the set).
-  c("an explicit placement target mints the instance rail for exactly describe, resolve-cwd and spawn",
-    added.length === 3 && instRows.length === 3
-      && PLACEMENT_COMMANDS.every((cmd) => instRows.some((r) => r.includes(`.inst.${EP}.zyxwvutsrqponmlkjihgfedcba.${cmd}.`))),
-    { added });
+  // and spawn, plus `turn` with its target pinned to the caller's own owner, on the one validated
+  // instance and nothing else. The expected rows are spelled from the subject grammar, and the
+  // command lists and the count are literals: a builder or a constant that loses a row, gains one,
+  // or names another owner or instance cannot also move what this compares against. Killed by M8
+  // (removes `resolve-cwd` from the set).
+  const PIID = "zyxwvutsrqponmlkjihgfedcba";
+  const gc = runDriverCaller("sp-g1");
+  const tail = `${gc.owner}.${gc.actor}.${gc.uid}.*`;
+  const expected = [
+    ...PLACEMENT_COMMANDS.map((cmd) => `cotal.${GSPACE}.ep.inst.${EP}.${PIID}.${cmd}.${tail}`),
+    ...PLACED_LIFECYCLE_COMMANDS.map((cmd) => `cotal.${GSPACE}.ep.inst.${EP}.${PIID}.${cmd}.owner.${gc.owner}.${tail}`),
+  ].sort();
+  c("an explicit placement target mints the instance rail for exactly describe, resolve-cwd, spawn and the caller-owner turn",
+    [...PLACEMENT_COMMANDS].join(",") === "describe,resolve-cwd,spawn" && [...PLACED_LIFECYCLE_COMMANDS].join(",") === "turn"
+      && added.length === 4 && instRows.length === 4
+      && JSON.stringify([...added].sort()) === JSON.stringify(expected)
+      && instRows.every((r) => r.startsWith(`cotal.${GSPACE}.ep.inst.${EP}.${PIID}.`))
+      && instRows.filter((r) => r.includes(".turn.")).every((r) => r.includes(`.turn.owner.${gc.owner}.${tail}`)),
+    { added, expected });
   // Item B, reach bounded: no class-anycast row, no wildcard instance, no second instance, and the
   // legacy cwd-omitted profile is byte-identical. Killed by M9 (restores the class `one` route).
   c("placement reach adds no anycast fallback, no wildcard and no second instance, and legacy grants are unchanged",

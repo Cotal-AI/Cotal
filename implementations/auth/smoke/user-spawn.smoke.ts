@@ -946,14 +946,52 @@ try {
     }
   }
   const missing = await cliResult(["invoke", "manager", "attach", "--name", "missing", "--space", SPACE]);
+  // The manager answers the attach target's inspection with not-found; a denied ps scan would be a
+  // PERMISSION_DENIED that no instance answered.
   check("a nonexistent generic --name target is refused by its inspect resolution, not the denied manager ps scan",
-    !missing.timedOut && missing.status !== 0 && /could not resolve "missing"|no agent/i.test(missing.plain), missing);
+    !missing.timedOut && missing.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(missing.plain) && /Native command:\s+attach/.test(missing.plain) &&
+      /Native code:\s+not-found/.test(missing.plain) && /Answering instance:/.test(missing.plain), missing);
+  // The broker refuses the publish, so the call is not executed and no manager instance answers it.
+  const brokerDenied = (r: { plain: string; status: number | null; timedOut: boolean }) =>
+    !r.timedOut && r.status === 2 && /Code:\s+PERMISSION_DENIED/.test(r.plain) && /Native code:\s+permission-denied/.test(r.plain) &&
+      /Native outcome:\s+not-executed/.test(r.plain) && !/Answering instance:/.test(r.plain);
   const deniedRead = await cliResult(["invoke", "manager", "ps", "--space", SPACE, "--timeout", "1000"]);
-  check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer",
-    !deniedRead.timedOut && deniedRead.status !== 0 && /permission-denied: .*REFUSED BY THE BROKER/.test(deniedRead.plain), deniedRead);
+  check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer", brokerDenied(deniedRead), deniedRead);
   const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE, "--timeout", "1000"]);
-  check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer",
-    !deniedAdmin.timedOut && deniedAdmin.status !== 0 && /permission-denied: .*REFUSED BY THE BROKER/.test(deniedAdmin.plain), deniedAdmin);
+  check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer", brokerDenied(deniedAdmin), deniedAdmin);
+  // `who` asks the same denied manager.read for the managed column. The roster is still this bearer's
+  // to read, so the denial labels that column rather than failing or partialling the run.
+  const deniedWho = await cliResult(["who", "--json", "--space", SPACE]);
+  const deniedWhoEnvelope = (() => { try { return JSON.parse(deniedWho.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; completeness: string; result: { managers: string; items: { name: string; managed: boolean | null }[] } | null; warnings: { code: string }[] }; } catch { return undefined; } })();
+  check("who labels the census this bearer may not ask as denied, with every agent's managed unknown",
+    deniedWhoEnvelope?.result?.managers === "denied" && deniedWhoEnvelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && deniedWhoEnvelope.result.items.some((row) => row.name === "alpha") && deniedWhoEnvelope.result.items.every((row) => row.managed === null), deniedWho);
+  check("that label is not a part left unread: who exits 0, ok and complete",
+    !deniedWho.timedOut && deniedWho.status === 0 && deniedWhoEnvelope?.outcome === "ok" && deniedWhoEnvelope.completeness === "complete", deniedWho);
+
+  // The same narrow bearer has no admin grant and no human delivery ACL mirror. History must
+  // use its real channel grant, include its own send and refuse a channel outside that grant.
+  grantActor(dir, { ...cliRow0, scope: [] });
+  try {
+  const nativeText = `narrow native history ${Date.now()}`;
+  const postedHistory = await cliResult(["send", "-c", "general", nativeText, "--space", SPACE]);
+  check("narrow user sends its own history fixture message", postedHistory.status === 0 && !postedHistory.timedOut, postedHistory);
+  const parseHistory = (r: { out: string }) => {
+    try { return JSON.parse(r.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as {
+      outcome: string; result: { items: { text: string; channel: string | null }[] } | null;
+      error?: { code: string }; warnings: { code: string }[];
+    }; } catch { return undefined; }
+  };
+  const narrowHistory = await cliResult(["history", "general", "--json", "--space", SPACE]);
+  check("native narrow user history reads its own message without capabilities or a delivery ACL row",
+    narrowHistory.status === 0 && !narrowHistory.timedOut && parseHistory(narrowHistory)?.result?.items.some((m) => m.text === nativeText && m.channel === "general") === true,
+    narrowHistory);
+  const deniedHistory = await cliResult(["history", "ops.secret", "--json", "--space", SPACE]);
+  check("native narrow user history refuses a channel outside its grant without content",
+    deniedHistory.status === 2 && parseHistory(deniedHistory)?.error?.code === "PERMISSION_DENIED" && parseHistory(deniedHistory)?.result === null,
+    deniedHistory);
+  } finally {
+    grantActor(dir, cliRow0); // subsequent manager tests still need the original spawn grant
+  }
 
   // The mutation proof runs this same fixture with only the native endpoint setup and B1g. It is
   // not a substitute: the full smoke still runs every section below. It keeps the old-guard red
@@ -1108,7 +1146,7 @@ try {
     // The row's lifecycleUid ALSO rides the endpoint options: invokeService's caller triple is
     // (owner, actor, uid) and refuses without it (SPEC 13.1 — no alias-keyed fallback).
     const uid = mintLifecycleUid();
-    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: acl?.allowSubscribe ?? [], allowPublish: acl?.allowPublish ?? [], lifecycleUid: uid });
+    const g = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner, actor, scope, allowSubscribe: acl?.allowSubscribe ?? [], allowPublish: acl?.allowPublish ?? [], lifecycleUid: uid });
     const ex = await agentExchange(actor, g.actorToken, owner);
     if (ex.status !== 200 || !ex.body.token) throw new Error(`ctlCaller ${owner}.${actor}: exchange HTTP ${ex.status} ${ex.body.error ?? ""}`);
     const ep = new CotalEndpoint({
@@ -1343,9 +1381,44 @@ try {
 
   // Narrow the auditor back to [spawn] (upsert) — its NEXT exchange mints owner-mode-only rows, so a
   // cross-owner op loses the any-mode reach (the callout re-reads the ledger per exchange).
-  await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
+  await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const narrowedAttach = await epTargeted(auditor, "attach", "alpha");
   check("narrowing the auditor's scope bites its cross-owner reach on the next exchange", narrowedAttach.ok === false, narrowedAttach);
+
+  // ---------- D2. a spawn-scoped view reads status, counting only its own owner's seats ----------
+  // The auth service offers this co-located Manager to every owner, so OWNER_B's manager-caller view
+  // reaches the Manager that runs OWNER's seats. Its spawn scope lets it read the launch options, and
+  // the count it reads is OWNER_B's seats, as its `ps` would list them. Admin reach counts every seat.
+  console.log("D2) a spawn-scoped view of the shared Manager counts only its own owner's seats");
+  {
+    const viewStatus = async (actor: string, scope: string[]): Promise<number | string> => {
+      const g = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER_B, actor, scope, allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
+      const info = loadAuthServiceInfo(dir)!;
+      const res = await fetch(`${info.url}/exchange`, {
+        method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+        body: JSON.stringify({ owner: OWNER_B, actor, actorToken: g.actorToken, view: "manager-caller" }),
+      });
+      const ex = await res.json() as { token?: string; error?: string };
+      if (!res.ok || !ex.token) return `exchange HTTP ${res.status} ${ex.error ?? ""}`;
+      const { lifecycleUid: uid, managerInstanceId } = (decodeJwt(ex.token) as { act: { lifecycleUid: string; managerInstanceId: string } }).act;
+      const nc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: ex.token, sentinelCreds: g.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
+      try {
+        const svc = await resolveService(nc, SPACE, "manager", { owner: OWNER_B, actor, uid }, { instanceId: managerInstanceId, deadlineMs: 10_000 });
+        const r = await invokeCommand(nc, SPACE, svc, "status", undefined, { deadlineMs: 10_000 });
+        return r.reply.ok ? (r.reply.data as { agentCount: number }).agentCount : `refused ${r.reply.error?.code}`;
+      } catch (e) {
+        return `refused ${(e as Error).message.slice(0, 200)}`;
+      } finally {
+        await nc.close();
+      }
+    };
+    const total = psList(manager!).length, own = psList(manager!, OWNER_B).length;
+    check("D2 fixture: the shared Manager runs a seat of another owner", total > own, { total, own });
+    const spawnCount = await viewStatus("launchview", ["spawn"]);
+    check("a spawn-scoped view of the shared Manager reads status and counts only its own owner's seats", spawnCount === own, { spawnCount, own, total });
+    const adminCount = await viewStatus("launchadmin", ["spawn", "admin"]);
+    check("...and an admin-scoped view of the same owner counts every seat", adminCount === total, { adminCount, total });
+  }
 
   // ---------- E. the event plane, at the real door, under BOTH rules ----------
   // Two rules meet here and the ORDER is the finding. The delegation envelope says a peer may hand
@@ -1582,7 +1655,7 @@ try {
     { printedScope: flagOf("scope"), printedLabel: flagOf("label"), row: liveRow },
   );
   // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
-  const vg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
+  const vg = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const mgdViewRes = await fetch(`${svc.url}/exchange`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${svc.cap}` },
@@ -1630,7 +1703,7 @@ try {
   check("the admin-view tap sees a DM between two OTHER principals (the god view)", sawDm, tapped.slice(-3));
   // channel-purger view: publish two chat messages on a scratch channel, purge them via clearChannel
   // over a one-shot purger-view bearer (the standalone user-mode connect path).
-  const wg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "writer", scope: [], allowSubscribe: ["viewtest"], allowPublish: ["viewtest"], lifecycleUid: mintLifecycleUid() });
+  const wg = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER, actor: "writer", scope: [], allowSubscribe: ["viewtest"], allowPublish: ["viewtest"], lifecycleUid: mintLifecycleUid() });
   const wx = await agentExchange("writer", wg.actorToken, OWNER);
   const writer = new CotalEndpoint({
     space: SPACE, servers: SERVER, bearer: wx.body.token!, sentinelCreds: wg.sentinelCreds,
@@ -1690,11 +1763,11 @@ try {
   console.log("P) a predecessor lifecycle's still-unexpired bearer is DENIED after a same-alias re-grant");
   {
     // Lifecycle A: grant + exchange -> a valid bearer BOUND to A's row uid.
-    const gA = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "phoenix", scope: [], allowSubscribe: ["general"], allowPublish: [], lifecycleUid: mintLifecycleUid() });
+    const gA = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER, actor: "phoenix", scope: [], allowSubscribe: ["general"], allowPublish: [], lifecycleUid: mintLifecycleUid() });
     const exA = await agentExchange("phoenix", gA.actorToken, OWNER);
     check("P: lifecycle A's exchange mints a bearer", exA.status === 200 && typeof exA.body.token === "string", exA);
     // Same-alias RE-GRANT rotates the row to lifecycle B (fresh uid + fresh secret) - the respawn shape.
-    const gB = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "phoenix", scope: [], allowSubscribe: ["general"], allowPublish: [], lifecycleUid: mintLifecycleUid() });
+    const gB = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER, actor: "phoenix", scope: [], allowSubscribe: ["general"], allowPublish: [], lifecycleUid: mintLifecycleUid() });
     // A's captured actorToken is dead (tokenHash rotated) - the OLD guarantee, still holding:
     const exStale = await agentExchange("phoenix", gA.actorToken, OWNER);
     check("P: lifecycle A's captured actorToken is denied at exchange after the re-grant", exStale.status === 401, exStale.status);
@@ -1720,7 +1793,7 @@ try {
     check("P: lifecycle B's exchange is refused while A is still active (R1 takeover barrier)", exB.status === 401 && /active at uid/.test(exB.body.error ?? ""), { status: exB.status, error: exB.body.error });
     // A CLEAN alias beside the blocked rotation proves the equality gate blocks only stale
     // incarnations: a fresh lifecycle's chain works end-to-end (secret -> bearer -> connect).
-    const gC = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "phoenix2", scope: [], allowSubscribe: ["general"], allowPublish: [], lifecycleUid: mintLifecycleUid() });
+    const gC = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER, actor: "phoenix2", scope: [], allowSubscribe: ["general"], allowPublish: [], lifecycleUid: mintLifecycleUid() });
     const exC = await agentExchange("phoenix2", gC.actorToken, OWNER);
     check("P: a fresh alias's exchange mints (the barrier pins the ALIAS's active lifecycle, not the owner)", exC.status === 200 && typeof exC.body.token === "string", exC);
     const liveEp = new CotalEndpoint({
@@ -1804,7 +1877,7 @@ try {
 
   // Owner-equal event-plane admission through the real typed door, over a non-admin bearer.
   const ownerUid = mintLifecycleUid();
-  const ownerGrant = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "eventowner",
+  const ownerGrant = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER, actor: "eventowner",
     scope: ["spawn"], allowSubscribe: ["general"], allowPublish: ["general", `events.${OWNER}.>`], lifecycleUid: ownerUid });
   const ownerExchange = await agentExchange("eventowner", ownerGrant.actorToken, OWNER);
   if (ownerExchange.status !== 200 || !ownerExchange.body.token) throw new Error("event owner exchange failed");
@@ -1829,7 +1902,7 @@ try {
   }
   const participantCaller = async (actor: string, owner: string, scope: string[]) => {
     const uid = mintLifecycleUid();
-    const grant = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope,
+    const grant = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner, actor, scope,
       allowSubscribe: ["general"], allowPublish: ["general", `events.${owner}.>`], lifecycleUid: uid });
     const exchange = await agentExchange(actor, grant.actorToken, owner);
     if (exchange.status !== 200 || !exchange.body.token) throw new Error("participant caller exchange refused");
@@ -1883,7 +1956,9 @@ try {
   // (the old 40 was already one short in focus mode; inferred from that run, not run at the base).
   // 42/125 -> 50/133: B1g's eight #2312 cells (precondition, two controls, five refusals).
   // 50/133 -> 57/140: seven owner-equal event-plane admission and grant cells.
-  const EXPECTED = endpointCliFocus ? 57 : 140;
+  // Main adds three shared-Manager status cells; the redesign adds five focused CLI cells.
+  // These combined expectations still require an actual integrated run.
+  const EXPECTED = endpointCliFocus ? 62 : 148;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

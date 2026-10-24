@@ -4,21 +4,13 @@
 // open/dev mesh — one server, every space's streams visible to a bare connection. Under auth a
 // server hosts a single account/space, so this is really an open-mode admin capability.
 
-import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { DEFAULT_SERVER } from "./endpoint.js";
-import {
-  parseSubject, chatStream, dmStream, taskStream, inboxStream, dlvStream,
-  presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket,
-  deliveryBucket, managerBucket,
-  artifactBucket,
-  isTransferStream,
-  mintLifecycleUid,
-  objectStoreStream,
-} from "./subjects.js";
+import { DEFAULT_SERVER, dialerFor } from "./endpoint.js";
+import { parseSubject, isTransferStream, mintLifecycleUid } from "./subjects.js";
+import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { idFromCreds, newIdentity } from "./identity.js";
-import { endpointPlaneStreamNames } from "./endpoint-binding.js";
 import { mintCreds, type SpaceAuth } from "./provision.js";
 
 /** Connect opts for a possibly-scoped cred: an authenticator plus the per-id `inboxPrefix` a scoped
@@ -50,7 +42,7 @@ export interface ListSpacesOptions {
  *  short-lived connection (bare, or with `creds`) and closes it. Per-space stats are best-effort:
  *  a stream/bucket that can't be inspected just leaves its counts at 0. */
 export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInfo[]> {
-  const nc = await connect({
+  const nc = await dialerFor(opts.servers ?? DEFAULT_SERVER)({
     servers: opts.servers ?? DEFAULT_SERVER,
     timeout: opts.timeoutMs ?? 2000,
     reconnect: false,
@@ -109,7 +101,7 @@ async function listTransferStreams(nc: NatsConnection, space: string): Promise<s
 }
 
 async function withSpaceConnection<T>(servers: string | undefined, creds: string | undefined, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-  const nc = await connect({
+  const nc = await dialerFor(servers ?? DEFAULT_SERVER)({
     servers: servers ?? DEFAULT_SERVER,
     reconnect: false,
     maxReconnectAttempts: 0,
@@ -144,29 +136,9 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; auth
     // Delete EVERY stream + KV bucket `setupSpaceStreams` creates — otherwise `down` leaves the DLV/INBOX
     // streams and the members/acl/membership/delivery/manager buckets orphaned (a space leak), and since
     // `teardown` is the sole STREAM.DELETE holder, nothing else could ever reap them.
-    const streams = [
-      chatStream(opts.space),
-      dmStream(opts.space),
-      taskStream(opts.space),
-      inboxStream(opts.space),
-      dlvStream(opts.space),
-      `KV_${presenceBucket(opts.space)}`,
-      `KV_${channelBucket(opts.space)}`,
-      `KV_${membersBucket(opts.space)}`,
-      `KV_${aclBucket(opts.space)}`,
-      `KV_${membershipBucket(opts.space)}`,
-      `KV_${deliveryBucket(opts.space)}`,
-      `KV_${managerBucket(opts.space)}`,
-      ...endpointPlaneStreamNames(opts.space),
-      // The artifact Object Store's backing stream. It must be named HERE and not swept by
-      // prefix: `$O.<bucket>.>` lives outside the `cotal.<space>.>` grammar, so a subject-based
-      // sweep of the space never sees it. Teardown is the sole STREAM.DELETE holder, so a stream
-      // missing from this list is not merely un-deleted - nothing in the system can ever reap it.
-      objectStoreStream(artifactBucket(opts.space)),
-    ];
-    // Each manager instance that received a carried resume holds its own transfer bucket, so those
-    // streams are found by name shape; a teardown credential deletes the ones named at its mint.
-    streams.push(...await listTransferStreams(nc, opts.space));
+    // The same closed target list mints teardown's exact grants. Transfer streams are enumerated
+    // under this account and filtered to this space, never inferred from a prefix alone.
+    const streams = spaceDeletionStreams(opts.space, await listTransferStreams(nc, opts.space));
     const survived: string[] = [];
     for (const s of streams)
       await jsm.streams.delete(s).catch((e: unknown) => {

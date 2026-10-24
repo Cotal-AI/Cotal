@@ -49,6 +49,7 @@ import {
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   WORKFLOW_STEER,
+  CHANNEL_GUIDANCE,
   AguiEmitter,
   AguiEmitterHolder,
   eventPlaneStopped,
@@ -576,12 +577,10 @@ export const cotal: Plugin = async () => {
    * rather than publishes, which no amount of repairing presence afterwards can take back.
    *
    * THE PROMPT HOOK'S MODEL RECORD IS TRACKED TOO, at its own call site, because it publishes
-   * presence without passing through this helper. An earlier version left it out and argued it was
-   * harmless: it cannot choose a status, it republishes whichever one the endpoint holds, and its
-   * record is submitted before departure's, so departure is the later write. That conclusion may
-   * well be right, but it rests on how the endpoint's KV writes are ordered, which is an assumption
-   * about a layer this file does not own. Tracking it costs one call and makes the ordering true by
-   * construction, so nothing here depends on that assumption being correct.
+   * presence without passing through this helper. Its record cannot choose a status and is submitted
+   * before departure's, but whether departure is then the later write depends on how the endpoint
+   * orders its KV writes, a layer this file does not own. Tracking it makes that ordering true by
+   * construction.
    *
    * WHICH LEAVES A WEAKER PROPERTY THAN THE FENCE HAS, and the difference is worth being plain
    * about. Admission is closed by MEMBERSHIP: a door is fenced by being in the intake table, so one
@@ -645,15 +644,13 @@ export const cotal: Plugin = async () => {
    * so this routine can be killed part way through and that is expected. What must NOT depend on
    * finishing is the cheap step: publishing offline presence. Behind the join it is lost whenever a
    * drain outlives the grace window; in front of it, it lands unless the kill arrives first, and the
-   * queued work then gets whatever time the runtime allows. It used to say ALWAYS lands, which the
-   * bounded intake wait added later made untrue: that wait sits in front of this publish, so a kill
-   * inside it takes the publish with it.
+   * queued work then gets whatever time the runtime allows. The bounded intake wait sits in front of
+   * this publish, so a kill inside that wait takes the publish with it.
    *
    * WHAT THAT BUYS IS DELIBERATELY UNDERSTATED HERE. Departure becomes an EXPLICIT publish ATTEMPT
    * rather than something a reader has to infer, and that is the whole of the claim. It is NOT that a stale
-   * live entry would otherwise survive: losing the connection purges the presence record on its own,
-   * so that outcome is not this ordering's to take credit for. A cell built to grade the difference
-   * passed with the order reversed, twice, which is how the overclaim was caught rather than shipped.
+   * live entry would otherwise survive: losing the connection purges the presence record on its own
+   * under either order, so that outcome is not this ordering's to take credit for.
    *
    * So this is best effort by construction, and says so rather than claiming the work completes.
    * The endpoint stays up until `agent.stop()`, so a drain that finishes BEFORE that still publishes.
@@ -692,22 +689,16 @@ export const cotal: Plugin = async () => {
     // publish has no deadline of its own, no result anyone reads, and a kill inside it takes it.
     // Waiting unboundedly instead is the worse of the two, because departure would go back to being
     // inferred from a dropped connection.
-    // `allSettled` STATES THE INVARIANT INSTEAD OF ENUMERATING IT. `Promise.all` rejects the moment
-    // ONE call does, without waiting for the others, and settleWithin counts any settlement including
-    // a rejection as done, so departure published while another call was still parked. That is
-    // reachable rather than theoretical: setStatus begins with a connection assertion and this
-    // helper's own check is a read before an await, so a stop landing in between produces exactly
-    // such a rejection. The first repair wrapped each element by hand to absorb it, which was the
-    // same defect one level up: a hand-rolled map can absorb SOME elements, and a review proved by
-    // live mutation that absorbing only the ends passed every cell the suite had. `allSettled` waits
-    // for every element and never rejects, so partial absorption stops being a state this code can
-    // express and no cell has to stand in for the universal claim.
+    // `allSettled` WAITS FOR EVERY ADMITTED CALL AND NEVER REJECTS, so the bounded wait covers all
+    // of them. `Promise.all` rejects the moment ONE call does, without waiting for the others, and
+    // settleWithin counts any settlement including a rejection as done, so departure would publish
+    // while another call was still parked. That rejection is reachable: setStatus begins with a
+    // connection assertion and this helper's own check is a read before an await, so a stop landing
+    // in between produces it.
     const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, "admitted intake at teardown");
     // The generic line above already says the work is uncancelled and may land late. This adds the
     // part specific to THIS site: the teardown stops waiting and moves on to the departure publish,
-    // so a straggler here can publish or SEND around it rather than merely out of order. An earlier
-    // version of the generic line claimed the abandoned work was terminally silent, and this note
-    // existed to contradict it; the contradiction is gone now that the line itself is accurate.
+    // so a straggler here can publish or SEND around it rather than merely out of order.
     if (!settled) {
       log(
         `admitted work outlived the ${INTAKE_SETTLE_MS}ms intake bound: the teardown stops waiting and ` +
@@ -860,10 +851,9 @@ export const cotal: Plugin = async () => {
    * takes the position of the END of the store, so anything written in between is passed over
    * rather than published.
    *
-   * The guard for that is `swapping`, inside `drive`, NOT a parameter here. An earlier version took
-   * a `drivePending` flag so the swap could ask this function not to drive, which closed this door
-   * and left the inbox, wake and mention-wake doors open beside it, because adopting also clears
-   * `busy`. One guard where this connector submits the turn covers those doors together.
+   * The guard for that is `swapping`, inside `drive`. Adopting also clears `busy`, so the inbox,
+   * wake and mention-wake doors can start a turn mid-cutover as well as this function can, and one
+   * guard where this connector submits the turn covers those doors together.
    */
   function adoptSession(id: string, reason: string): void {
     if (sessionID === id) return;
@@ -1039,7 +1029,7 @@ export const cotal: Plugin = async () => {
       const body: { parts: typeof parts; system?: string } = { parts };
       // persona once, as system (no --append-system-prompt). Append the orientation bootstrap so the
       // agent is told to orient first — gated on persona so we never replace OpenCode's default system.
-      if (!primed && persona) body.system = `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}`;
+      if (!primed && persona) body.system = `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${CHANNEL_GUIDANCE}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}`;
       if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
       busy = true;
       // Arm BEFORE the await: a turn-end signal can land before the server request resolves, and

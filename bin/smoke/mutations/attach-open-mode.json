@@ -104,8 +104,8 @@
     {
       "name": "a registered sealed mesh with no seed is probed and connected as open",
       "file": "packages/workspace/src/connect.ts",
-      "find": "  if (target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `\u2717 mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,\n    );\n  }",
-      "replace": "  if (false && target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `\u2717 mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,\n    );\n  }",
+      "find": "  if (target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `✗ mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,",
+      "replace": "  if (false && target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `✗ mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,",
       "expectRed": "connecting to a sealed mesh whose seed is gone refuses by name, and says the mesh is NOT open",
       "cell": "connecting to a sealed mesh whose seed is gone refuses by name, and says the mesh is NOT open",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build",

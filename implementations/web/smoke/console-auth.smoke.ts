@@ -663,72 +663,11 @@ check("…and does not short-circuit to a plain string comparison",
 check("…and the LENGTH-MISMATCH branch still does the work before failing, so a wrong length costs the same as a wrong value",
   secretEqualsSrc.includes("timingSafeEqual(ab, ab)"), { secretEqualsSrc });
 
-// ── 6. THE SESSION FILE'S MODE, DRIVEN AGAINST A REAL FILE ──────────────────────────────────────
-// This file holds the launch URL and the readiness nonce, so its mode is a credential boundary. No
-// cell reached it at all: deleting the descriptor chmod, or writing 0644, went 68/68 green. And the
-// bug it guards is specifically the STALE file — `mode:` on writeFileSync applies at CREATION only,
-// so the interesting case is a pre-existing permissive file, not a fresh one.
-{
-  const writeBlock = webTs.slice(
-    webTs.indexOf('    const sfd = openSync(sessionPath, "w", 0o600);'),
-    webTs.indexOf("    process.once(\"exit\", () => rmSync(sessionPath, { force: true }));"),
-  );
-  check("the session-file write block was lifted out of the shipped source", writeBlock.includes("openSync("),
-    { len: writeBlock.length });
-  check("CONTROL: a block that is not in the file lifts nothing",
-    webTs.indexOf('    const sfd = openSyncNothing(') === -1);
-
-  const dir = mkdtempSync(join(tmpdir(), "cotal-web-session-"));
-  const sessionPath = join(dir, "web.session");
-  // PRE-CREATE IT PERMISSIVE. This is the whole point: a fresh file would pass even with the chmod
-  // deleted, so a cell that only ever writes a new file proves nothing about the defect.
-  // fchmod ON THE DESCRIPTOR, because `mode:` at creation is masked by the process umask — under
-  // `umask 077` the "permissive" fixture was created 0600 and the non-vacuity cell below failed
-  // before any shipped code ran. A suite whose result depends on the operator's umask is not a
-  // suite; the fixture has to set the mode it claims to set.
-  {
-    const pfd = openSync(sessionPath, "w");
-    try { fchmodSync(pfd, 0o644); writeFileSync(pfd, "stale"); } finally { closeSync(pfd); }
-  }
-  check("NON-VACUITY: the stale file really is permissive before the shipped block runs",
-    (statSync(sessionPath).mode & 0o777) === 0o644, (statSync(sessionPath).mode & 0o777).toString(8));
-
-  const source = ts.transpileModule(`globalThis.__write = () => { ${writeBlock} };`,
-    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  // THE MODE AT THE INSTANT OF THE WRITE, not afterwards. Swapping the chmod and the write leaves the
-  // final mode 0600 and the final content correct — so a cell that inspects the file afterwards
-  // passes while the secret was written into a WORLD-READABLE file and narrowed a moment later. A
-  // credential exposed for an instant is exposed. This wrapper records the descriptor's mode at the
-  // moment the bytes go in.
-  let modeAtWrite: number | undefined;
-  const recordingWrite = (fd: number, data: string) => {
-    modeAtWrite = fstatSync(fd as number).mode & 0o777;
-    return writeFileSync(fd, data);
-  };
-  const ctx: Record<string, unknown> = {
-    openSync, fchmodSync, writeFileSync: recordingWrite, closeSync, JSON,
-    sessionPath, launchUrl: "http://127.0.0.1:7799/?k=x", gate: { readinessNonce: "n" }, bound: { address: "127.0.0.1", port: PORT },
-    globalThis: undefined, console,
-  };
-  ctx.globalThis = ctx;
-  runInContext(source, createContext(ctx), { filename: "web.ts (session write)" });
-  (ctx.__write as () => void)();
-
-  check("the secret is written into an ALREADY-0600 descriptor — narrowed BEFORE the bytes, not after",
-    modeAtWrite === 0o600, { modeAtWrite: modeAtWrite?.toString(8) });
-  check("the shipped write NARROWS a stale permissive session file to 0600 (mode is enforced on every write, not only at creation)",
-    (statSync(sessionPath).mode & 0o777) === 0o600, (statSync(sessionPath).mode & 0o777).toString(8));
-  // BOTH FIELDS. The file is a two-field credential and only one of them was asserted: dropping
-  // `readiness` from the written JSON left the mode cells and the launch-URL cell green at 110/110,
-  // while the parent's reader derived `undefined` — measured — so `--detach` would send no readiness
-  // header, poll a surface that correctly refuses it, and time out. Parse once, assert both.
-  const written = JSON.parse(readFileSync(sessionPath, "utf8")) as Record<string, unknown>;
-  check("…and the file still holds the launch URL it was asked to write",
-    written.launchUrl === "http://127.0.0.1:7799/?k=x", written);
-  check("…AND the readiness nonce, the second credential `--detach` polls with (without it the parent sends no header and never sees ready)",
-    written.readiness === "n", written);
-  rmSync(dir, { recursive: true, force: true });
-}
+// ── 6. RETIRED: THE LEGACY SESSION FILE'S MODE ───────────────────────────────────────────────────
+// This section lifted the inline `web.session` write out of `web.ts`. That file is now written only
+// by `web()` without a service lifecycle, which no command reaches: the `web` service preset writes
+// its own owner-private session record create-only beside its ready file. The legacy writer,
+// `writeWebSession`, delegates to core's `writePrivateRecord`.
 
 // ── 7. THE SESSION FILE IS SWEPT WITH THE PROCESS ───────────────────────────────────────────────
 // The exit handler removes `web.session`, but an exit handler does not run on SIGKILL, and the file

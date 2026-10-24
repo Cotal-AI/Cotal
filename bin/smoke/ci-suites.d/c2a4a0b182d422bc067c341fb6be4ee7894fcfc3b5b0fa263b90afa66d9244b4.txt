@@ -1,0 +1,3 @@
+# The static chat-session pure rules: alias draw, open-input refusals, the R-A2 retire guard and the
+# served contract rows. No broker.
+smoke:manager-chat-session

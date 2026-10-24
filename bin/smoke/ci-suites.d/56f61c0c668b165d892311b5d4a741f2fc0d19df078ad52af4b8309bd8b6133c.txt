@@ -1,0 +1,2 @@
+# Keyed run submission client provider: broker denial for legacy-only issued rights and provider HTTP transport.
+smoke:keyed-submission-client-provider:auth

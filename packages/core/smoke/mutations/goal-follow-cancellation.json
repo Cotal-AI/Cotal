@@ -7,7 +7,7 @@
   "mutations": [
     {
       "name": "direct flush await misses abort before gate release",
-      "file": "packages/core/src/endpoint-invoke.ts",
+      "file": "packages/core/src/endpoint-goal-follow.ts",
       "find": "      const preparing = activeNc;\n      try { await bounded(() => preparing.flush(), deadline); }\n",
       "replace": "      const preparing = activeNc;\n      try { await preparing.flush(); }\n",
       "expectRed": "aborted follower settles before gate release with not-executed during held flush",
@@ -16,7 +16,7 @@
     },
     {
       "name": "direct submit await hangs on unresponded in-flight broker request",
-      "file": "packages/core/src/endpoint-invoke.ts",
+      "file": "packages/core/src/endpoint-goal-follow.ts",
       "find": "    try { attributed = await bounded(() => submit(work.signal), deadline); }",
       "replace": "    try { attributed = await submit(work.signal); }",
       "expectRed": "aborted follower settles with unknown outcome during pending broker submit",

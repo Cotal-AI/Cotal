@@ -1,19 +1,17 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 import {
   agentFilePath,
   assertValidName,
   loadAgentFile,
+  oneLine,
   personaDir,
-  saveAgentFile,
-  type AgentDef,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { isWorkspaceTargetError, loadMeshes, renderWorkspaceError, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
+import { renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { listPersonas, listPersonaNames } from "../lib/personas.js";
+import { catalogFolderProblem, listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -77,15 +75,7 @@ export async function personas(args: ParsedArgs): Promise<void> {
  * here; it stays what it always was, an input to the live `--running` overlay.
  */
 function targetRoot(values: { space?: string; server?: string }): string {
-  try {
-    return resolveMeshTarget(process.cwd(), { space: values.space, server: values.server }).root;
-  } catch (e) {
-    if (isWorkspaceTargetError(e)) {
-      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
-      process.exit(1);
-    }
-    throw e;
-  }
+  return personaCatalog(values).root;
 }
 
 /** Argument completion: subcommands, then persona names for `show`/`rm`. */
@@ -102,8 +92,7 @@ export function personasComplete(argv: string[]): CompletionResult {
     { name: "force", type: "boolean" },
   ] as const;
   const flag = completingFlagValue(argv, flags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
-  if (flag?.name === "from" || flag?.name === "creds") return { items: [], directive: "default" };
+  if (flag?.name === "from") return { items: [], directive: "default" };
 
   const positionals = positionalsForCompletion(argv, flags);
   const subs: CompletionResult = {
@@ -121,22 +110,27 @@ export function personasComplete(argv: string[]): CompletionResult {
     // Complete from the TARGET mesh's catalog, matching what the subcommand will actually open —
     // a <TAB> that offers a name the command then reports as missing is worse than no completion.
     // Resolved offline (no probe), and FAIL CLOSED: with no single target, offer nothing rather
-    // than throw into the operator's shell (the same posture as `spawnComplete`).
+    // than throw into the operator's shell (the same posture as `spawnComplete`). A catalog folder
+    // that cannot be read fails the completion instead, naming it.
+    let root: string;
     try {
-      const root = resolveMeshTarget(process.cwd(), {
+      root = personaCatalog({
         space: completedFlagValue(argv, flags, "space"),
         server: completedFlagValue(argv, flags, "server"),
       }).root;
-      return { items: listPersonaNames(root).map((value) => ({ value })), directive: "nofiles" };
     } catch {
       return { items: [], directive: "nofiles" };
     }
+    return { items: listPersonaNames(root).map((value) => ({ value })), directive: "nofiles" };
   }
   return { items: [], directive: "nofiles" };
 }
 
 async function list(verbose: boolean, running: boolean, values: ConnectValues): Promise<void> {
   const root = targetRoot(values);
+  // A catalog folder that is a file or a looping link is not an empty catalog.
+  const folder = catalogFolderProblem(personaDir(root));
+  if (folder) throw folder;
   const entries = listPersonas(root);
   if (!entries.length) {
     console.log(
@@ -146,42 +140,46 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     return;
   }
   // `--running` is an explicit live overlay: connect, snapshot who's present, and mark each persona.
-  // Fails loud if the mesh is unreachable (presentNames exits) — never a silent best-effort.
-  const present = running ? await presentNames(values) : undefined;
-  const pad = Math.max(...entries.map((e) => e.name.length));
+  // Fails loud if the mesh is unreachable (presentNames exits) — never a silent best-effort. The
+  // marks follow the mesh they were read from, as every other report that reads one begins.
+  const overlay = running ? await presentNames(values) : undefined;
+  const present = overlay?.names;
+  if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+  // A catalog travels with a cloned repo, so every value read from it is shown with its control
+  // characters escaped, as `persona` and `persona show` show them.
+  const pad = Math.max(...entries.map((e) => oneLine(e.name).length));
   for (const e of entries) {
+    const name = oneLine(e.name).padEnd(pad);
     if (e.error) {
-      console.log(`${c.red(e.name.padEnd(pad))}  ${c.red("⨯ unparseable")} ${c.dim(e.error)}`);
+      // A parser diagnostic spans lines, the reason and then an excerpt with a caret under the
+      // fault, so each line is escaped and printed on its own.
+      const [reason = "", ...excerpt] = e.error.trimEnd().split(/\r?\n/).filter((line) => line.trim());
+      console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(reason))}`);
+      for (const line of excerpt) console.log(c.dim(`    ${oneLine(line)}`));
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○")) : undefined;
-    const meta = [d.role && c.cyan(d.role), d.model && c.dim(`model=${d.model}`), d.owner && c.dim(`owner=${d.owner}`), live]
+    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
+    const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
-    console.log(`${c.bold(e.name.padEnd(pad))}  ${meta}`.trimEnd());
+    console.log(`${c.bold(name)}  ${meta}`.trimEnd());
+    if (e.link !== undefined) console.log(c.yellow(`  ! ${oneLine(e.path)} is a link to ${oneLine(e.link)}; persona show, edit and remove refuse a link`));
     const desc = d.description ?? firstLine(d.persona);
-    if (desc) console.log(c.dim(`  ${truncate(desc, 100)}`));
-    if (verbose && d.persona) console.log(d.persona.replace(/^/gm, "    ") + "\n");
+    // The preview wraps under its indent at the terminal's width, so none of it is cut off. Verbose
+    // prints the whole body next, so a summary that is its first line is not printed twice.
+    if (desc && !(verbose && desc.trim() === firstLine(d.persona))) for (const line of wrapWords(oneLine(desc), terminalWidth(process.stdout) - 2)) console.log(c.dim(`  ${line}`));
+    if (verbose && d.persona) console.log(d.persona.split(/\r?\n/).map((line) => `    ${oneLine(line)}`).join("\n") + "\n");
   }
 }
 
 /** Snapshot the names currently present on the mesh — the live overlay behind `personas list
- *  --running`. Presence is a KV watch that replays asynchronously after connect (no synced signal),
- *  so let the roster settle (snapshot once its size holds steady) under a hard deadline so it never
- *  hangs. A name is "running" when an agent of exactly that name is present and not offline. */
-async function presentNames(values: ConnectValues): Promise<Set<string>> {
-  const { ep } = await openTransient(values, "personas");
+ *  --running` — with the space they were read from. The transient endpoint reads the roster once at
+ *  start. A name is "running" when an agent of exactly that name is present and not offline. */
+async function presentNames(values: ConnectValues): Promise<{ space: string; names: Set<string> }> {
+  const { ep, space } = await openTransient(values, "personas");
   try {
-    let last = -1;
-    let stable = 0;
-    for (let i = 0; i < 20 && stable < 3; i++) {
-      const n = ep.getRoster().length;
-      stable = n === last ? stable + 1 : 0;
-      last = n;
-      await new Promise((r) => setTimeout(r, 75));
-    }
-    return new Set(ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name));
+    return { space, names: new Set(ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name)) };
   } finally {
     await ep.stop();
   }
@@ -189,56 +187,48 @@ async function presentNames(values: ConnectValues): Promise<Set<string>> {
 
 function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
-  if (!existsSync(path)) return notFound(name, path);
-  // Print the file verbatim — the canonical card (frontmatter + persona body).
+  // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
+  const path = personaPath(targetRoot(values), name);
+  const bytes = requirePersonaSource(path).bytes;
+  validatePersona(bytes, path);
+  // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
+  // byte and nothing else, so `show p > p.md` copies it. A catalog travels with a cloned repo, so on
+  // a terminal its control characters are escaped, as `persona show` shows them, under its path.
+  if (!process.stdout.isTTY) {
+    process.stdout.write(bytes);
+    return;
+  }
   console.log(c.dim(path));
-  process.stdout.write(readFileSync(path, "utf8"));
+  process.stdout.write(bytes.toString("utf8").split(/\r?\n/).map(oneLine).join("\n"));
 }
 
-/** `cotal personas edit <name>` — open the card in $EDITOR (or $VISUAL), then re-validate on exit
- *  so a save that breaks the frontmatter fails loud instead of silently shipping a bad card. */
-function edit(name: string | undefined, values: { space?: string; server?: string }): void {
+/** `cotal personas edit <name>` — open the card in the `editor` preference ($VISUAL, then $EDITOR,
+ *  then the saved one), validate a private draft, then compare and commit through the shared local writer. */
+async function edit(name: string | undefined, values: { space?: string; server?: string }): Promise<void> {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
-  if (!existsSync(path)) return notFound(name, path);
-  const editor = process.env.VISUAL || process.env.EDITOR;
-  if (!editor) {
-    console.error(c.red("no editor set - export EDITOR (or VISUAL), e.g. export EDITOR=vim"));
-    process.exit(1);
-  }
-  // Hand the terminal to the editor (inherit stdio so it draws). $EDITOR may carry flags
-  // (e.g. "code --wait"), so go through the shell.
-  const res = spawnSync(`${editor} "${path}"`, { stdio: "inherit", shell: true });
-  if (res.error) {
-    console.error(c.red(`couldn't launch editor "${editor}": ${res.error.message}`));
-    process.exit(1);
-  }
-  if (res.status !== 0) {
-    console.error(c.red(`editor exited ${res.signal ? `on ${res.signal}` : `with status ${res.status}`} - not saved`));
-    process.exit(1);
-  }
-  // Re-validate: a save that breaks the frontmatter must fail loud, not ship a broken card.
-  try {
-    loadAgentFile(path);
-  } catch (e) {
-    console.error(c.red(`⨯ "${name}" is now unparseable - fix it:`));
-    console.error(c.dim(`  ${(e as Error).message}`));
-    process.exit(1);
-  }
-  console.log(c.green(`✓ saved "${name}"`));
+  const catalog = personaCatalog(values);
+  const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
+  if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
+  else if (edit.action === "unchanged") console.log(c.dim(`"${name}" is unchanged, so nothing was saved`));
+  else console.log(c.yellow(`edit cancelled: the editor exited with status ${edit.status}, so nothing was saved${edit.draft ? `; your draft is kept in ${edit.draft}` : ""}`));
 }
 
-function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean; space?: string; server?: string }): void {
+async function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean; space?: string; server?: string }): Promise<void> {
   if (!name) return usage();
   if (!NAME_RE.test(name)) {
     console.error(c.red(`invalid persona name "${name}": use letters, digits, "_" or "-"`));
     process.exit(1);
   }
   assertValidName(name); // shared reserved-character guard (also rejects "/")
+  const reserved = reservedPersonaName(name);
+  if (reserved) {
+    console.error(c.red(reserved));
+    process.exit(1);
+  }
 
   const path = agentFilePath(targetRoot(v), name);
-  if (existsSync(path) && !v.force) {
+  const expected = readPersonaSource(path);
+  if (expected && !v.force) {
     console.error(c.red(`persona "${name}" already exists - pass --force to overwrite`));
     console.error(c.dim(path));
     process.exit(1);
@@ -268,8 +258,8 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
   }
   const subscribe = v.subscribe.split(",").map((s) => s.trim()).filter(Boolean);
 
-  const def: AgentDef = { name, role: v.role, model: v.model, persona, subscribe };
-  saveAtomic(path, def);
+  const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
+  commitPersona(path, expected, bytes);
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}`));
 }
@@ -277,36 +267,18 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   const path = agentFilePath(targetRoot(values), name);
-  if (!existsSync(path)) return notFound(name, path);
+  const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
     console.error(c.dim(`cotal personas rm ${name} --force`));
     process.exit(1);
   }
-  rmSync(path);
+  commitPersona(path, expected, undefined);
   console.log(c.green(`✓ removed persona "${name}"`));
-}
-
-/** Write through a sibling temp file + rename so a concurrent reader never sees a half-written
- *  card (rename is atomic within the same directory). `saveAgentFile` creates the parent dir. */
-function saveAtomic(path: string, def: AgentDef): void {
-  const tmp = join(dirname(path), `.${def.name}.tmp-${process.pid}`);
-  saveAgentFile(tmp, def);
-  renameSync(tmp, path);
 }
 
 function firstLine(s?: string): string | undefined {
   return s?.split("\n").find((l) => l.trim())?.trim();
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
-}
-
-function notFound(name: string, path: string): never {
-  console.error(c.red(`no persona "${name}"`));
-  console.error(c.dim(path));
-  process.exit(1);
 }
 
 function usage(): never {

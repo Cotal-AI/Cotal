@@ -1,14 +1,35 @@
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { DEFAULT_SPACE } from "@cotal-ai/core";
-import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
+import { authDir, findCotalRoot, soleSpaceOf, stackJournalPath } from "./auth-paths.js";
 import { recordedRuntimeSpaces } from "./local-process.js";
+import { canonicalRoot, homeCotalDir, meshesForRoot } from "./mesh-registry.js";
+import { preparedSpaceAt } from "./prepared-spaces.js";
 
-/** The space this folder operates on: its `.cotal/auth` space if set up, else the default.
- *  Commands resolve it through here so they always match the folder's mesh instead of assuming the
- *  global default. A root that has grown to hold SEVERAL space accounts makes this question
- *  ambiguous, and {@link soleSpaceOf} fails loud there rather than picking one - such a caller has
- *  to name its space (`--space`). */
+/** The space this folder operates on: its `.cotal/auth` space if set up, else the space
+ *  `cotal space create` prepared here, else the default. Commands resolve it through here so they
+ *  always match the folder's mesh instead of assuming the global default. A root that has grown to
+ *  hold SEVERAL space accounts makes this question ambiguous, and {@link soleSpaceOf} fails loud
+ *  there rather than picking one - such a caller has to name its space (`--space`). */
 export function resolveSpace(cwd: string): string {
-  return soleSpaceOf(authDir(findCotalRoot(cwd))) ?? DEFAULT_SPACE;
+  const root = findCotalRoot(cwd);
+  return soleSpaceOf(authDir(root)) ?? preparedSpaceAt(root)?.space ?? DEFAULT_SPACE;
+}
+
+/** Whether this project's `.cotal/` holds records but names no space: no account, prepared space,
+ *  registration, stack journal, daemon record or broker configuration. That is the folder of a
+ *  prepared space that was forgotten or moved, or one where only a persona was written. A `.cotal/`
+ *  that is empty, or none, names nothing. */
+export function rootNamesNoSpace(root: string): boolean {
+  const control = join(root, ".cotal");
+  let entries: string[];
+  try { entries = readdirSync(control); } catch { return false; }
+  if (!entries.length || canonicalRoot(control) === canonicalRoot(homeCotalDir())) return false;
+  try {
+    if (soleSpaceOf(authDir(root)) !== undefined) return false;
+  } catch { return false; }
+  return !preparedSpaceAt(root) && !meshesForRoot(root).length && !existsSync(stackJournalPath(root)) && !recordedRuntimeSpaces(root).length
+    && !existsSync(join(control, "server-open.conf")) && !existsSync(join(authDir(root), "server.conf"));
 }
 
 /**
@@ -41,3 +62,10 @@ export function resolveRuntimeSpace(cwd: string): string {
   if (recorded.length === 1) return recorded[0].space; // dead residue, unambiguous: still this folder's space
   return resolveSpace(cwd);
 }
+
+/** What a space's broker store holds, all of which removing the store removes, as `reset store` and
+ *  `reset space` do. They are named, not listed: a stopped broker is the only reader of its store. */
+export const STORE_CONTENTS = ["workflow runs and their journals", "channel history", "stored messages", "every other record the broker kept there"];
+
+/** {@link STORE_CONTENTS} as one phrase. */
+export const storeContentsText = (items: readonly string[]) => `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;

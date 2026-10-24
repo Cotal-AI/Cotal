@@ -1,9 +1,9 @@
-import { readFileSync, readdirSync, join, REPO, check, cotal, freshCfg, seedDir, readJson, writeJson, listNames, manifestPath, track, finishScenario } from "./harness.js";
+import { readFileSync, readdirSync, join, REPO, boot, check, cotal, freshCfg, seedDir, readJson, writeJson, listNames, manifestPath, track, finishScenario } from "./harness.js";
 
 try {
   // This binary can protect its own writes, not change a pre-guard released executable.
   const cfg = track(freshCfg());
-  cotal(cfg, ["ext", "list"]);
+  boot(cfg);
   const stamp = join(seedDir(cfg), "stamp.json");
   const currentStamp = readFileSync(stamp);
   writeJson(stamp, { generation: "99.0.0" });
@@ -11,7 +11,7 @@ try {
   const manifestBefore = readFileSync(manifestPath(cfg));
   const storeBefore = readdirSync(join(seedDir(cfg), "store")).sort().join(",");
 
-  const r = cotal(cfg, ["ext", "list"]);
+  const r = boot(cfg);
   const said = `${r.stdout}${r.stderr}`;
   check("downgrade: an older binary REFUSES a store stamped newer", r.status !== 0, r.status);
   check("downgrade: the refusal names both generations", /is older than the seed store's generation 99\.0\.0/.test(said), said.slice(0, 300));

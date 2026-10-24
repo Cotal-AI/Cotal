@@ -165,9 +165,6 @@ export const codexConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CODEX_ENV_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
-      // host drops even that once it has read it, so a shell this seat runs inherits neither.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -275,7 +272,14 @@ export const codexConnector: Connector = {
     // signal-less runtime. Minted here, held in memory by the manager, served by the host.
     env.COTAL_CONTROL_SOCKET = control.path;
 
-    return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control };
+    // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
+    // host drops even that once it has read it, so a shell this seat runs inherits neither. Written
+    // after every refusal above, and its directory is a launch artifact the launcher removes once the
+    // child has exited (core launch-artifacts).
+    const artifacts: string[] = [];
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+
+    return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(artifacts.length > 0 ? { artifacts } : {}) };
   },
 };
 

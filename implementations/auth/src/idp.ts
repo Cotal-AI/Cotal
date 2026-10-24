@@ -25,7 +25,7 @@
  *  5. the issuer mints (which re-asserts every claim shape — the issuer ↔ validator inverse).
  */
 import { decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
-import type { CryptoKey, JWTVerifyGetKey } from "jose";
+import type { CryptoKey, JWTPayload, JWTVerifyGetKey } from "jose";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
@@ -91,6 +91,11 @@ export interface CreateIdpBridgeOpts {
    *  emits a conformant credential id. (`validateUserToken` stays tolerant of an absent claim so
    *  the CONNECT boundary owns the signed deny-new denial for pre-cut/forged tokens.) */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  /** The dedicated `aud` of `dm-reader` proofs (#4189), from the same pinned IdP issuer and keys.
+   *  Explicit operator config: it is never derived from, or defaulted to, `idp.audience`, and
+   *  construction refuses it when it equals `idp.audience`, so every exact-audience verifier of
+   *  ordinary proofs refuses a `dm-reader` proof. Absent: the bridge refuses the `dm-reader` view. */
+  dmReaderAudience?: string;
 }
 
 /** A successful exchange: the minted bearer plus what a caller needs to cache/refresh it. */
@@ -119,11 +124,31 @@ export interface IdpBridge {
   }): Promise<ExchangeResult>;
 }
 
-/** Verify an external IdP JWT against the pinned config and return its `sub` AND `exp`. Same pinning
- *  posture as `validateUserToken`, minus the Cotal claim shape (an IdP token has no `ver`/`act`; its
- *  lifetime is the IdP's session policy — but it must expire and must not be post-dated). The `exp` is
- *  returned so `exchange` can CAP the minted Cotal bearer to the upstream proof's remaining life. */
-export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number }> {
+/** Verified IdP claims. Optional password provenance is retained only when well-shaped;
+ * ordinary exchanges do not require it or gain consent authority from it. */
+export interface VerifiedIdpToken {
+  sub: string;
+  exp: number;
+  auth_time?: number;
+  amr?: readonly string[];
+}
+
+/** The one `purpose` value a purpose-bound proof may carry (#4189). */
+export const DM_READER_PURPOSE = "dm-reader";
+
+/** A verified `dm-reader` proof: the human, the proof's expiry, and the three claims that bind it to
+ *  one reader incarnation in one space. */
+export interface DmReaderProof {
+  sub: string;
+  exp: number;
+  actor: string;
+  lifecycle: string;
+  space: string;
+}
+
+/** The pinning shared by every IdP proof: alg, key path, exact issuer, exact single `audience`,
+ *  a bounded lifetime and a string subject. Returns the verified payload. */
+async function verifyPinnedIdpJwt(token: string, idp: IdpConfig, audience: string): Promise<JWTPayload & { exp: number; iat: number; sub: string }> {
   const header = decodeProtectedHeader(token);
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
     throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
@@ -132,7 +157,7 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ s
   const { payload } = await jwtVerify(token, idp.key as JWTVerifyGetKey, {
     algorithms: ["EdDSA"],
     issuer: idp.issuer,
-    audience: idp.audience,
+    audience,
     clockTolerance: CLOCK_TOLERANCE_SEC,
   });
 
@@ -140,14 +165,68 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ s
   // passes) — exact means the token's audience set is exactly {configured}: the plain string, or
   // a singleton array of it. A multi-audience session proof minted for other services too must
   // not be exchangeable here.
-  if (payload.aud !== idp.audience && !(Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === idp.audience))
+  if (payload.aud !== audience && !(Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === audience))
     throw new Error("idp token: aud must be exactly the configured audience - a multi-audience session proof is rejected");
   if (typeof payload.exp !== "number") throw new Error("idp token: exp is required - an IdP session proof must expire");
   if (typeof payload.iat !== "number") throw new Error("idp token: iat is required");
   if (payload.iat > Math.floor(Date.now() / 1000) + CLOCK_TOLERANCE_SEC) throw new Error("idp token: iat is in the future");
   if (typeof payload.sub !== "string" || !payload.sub)
     throw new Error("idp token: sub must be a non-empty string user id - no coercion at a trust boundary");
-  return { sub: payload.sub, exp: payload.exp };
+  return payload as JWTPayload & { exp: number; iat: number; sub: string };
+}
+
+/** Verify an external IdP JWT against the pinned config and return its `sub` AND `exp`. Same pinning
+ *  posture as `validateUserToken`, minus the Cotal claim shape (an IdP token has no `ver`/`act`; its
+ *  lifetime is the IdP's session policy — but it must expire and must not be post-dated). The `exp` is
+ *  returned so `exchange` can CAP the minted Cotal bearer to the upstream proof's remaining life.
+ *  A token carrying a `purpose` claim is refused: a purpose-bound proof is accepted only by the one
+ *  exchange its purpose names, never as a general human proof (#4189). */
+export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<VerifiedIdpToken> {
+  const payload = await verifyPinnedIdpJwt(token, idp, idp.audience);
+  if (Object.hasOwn(payload, "purpose"))
+    throw new Error("idp token: a token carrying a purpose claim is not a general human proof - it is accepted only by the exchange its purpose names");
+  return {
+    sub: payload.sub, exp: payload.exp,
+    ...(typeof payload.auth_time === "number" && Number.isSafeInteger(payload.auth_time) && payload.auth_time >= 0
+      ? { auth_time: payload.auth_time } : {}),
+    ...(Array.isArray(payload.amr) && payload.amr.length > 0 && payload.amr.every(method => typeof method === "string" && method.length > 0)
+      ? { amr: Object.freeze([...payload.amr] as string[]) } : {}),
+  };
+}
+
+/** Verify a `dm-reader` proof (#4189): the same pinned issuer and keys as every IdP proof, the
+ *  dedicated `audience`, `purpose` exactly {@link DM_READER_PURPOSE}, and non-empty string `actor`,
+ *  `lifecycle` and `space` claims. Matching those claims to the request is the exchange's job. */
+export async function verifyDmReaderProof(token: string, idp: IdpConfig, audience: string): Promise<DmReaderProof> {
+  const payload = await verifyPinnedIdpJwt(token, idp, audience);
+  if (payload.purpose !== DM_READER_PURPOSE)
+    throw new Error(`dm-reader proof: purpose must be "${DM_READER_PURPOSE}" - an absent, unknown or malformed purpose is refused`);
+  for (const claim of ["actor", "lifecycle", "space"] as const)
+    if (typeof payload[claim] !== "string" || !payload[claim])
+      throw new Error(`dm-reader proof: the ${claim} claim must be a non-empty string`);
+  return { sub: payload.sub, exp: payload.exp, actor: payload.actor as string, lifecycle: payload.lifecycle as string, space: payload.space as string };
+}
+
+/** A private-result consent proof, not consent or permission to read any result. */
+export interface ToolResultHumanProof {
+  readonly sub: string;
+  readonly exp: number;
+  readonly authTime: number;
+}
+
+/** Verify the pinned signed proof before applying the consent-only, five-minute password rule.
+ * The host clock returns integer milliseconds and is read after verification;
+ * no rounding or JWT tolerance widens this window. */
+export async function verifyToolResultHumanProof(
+  token: string, idp: IdpConfig, now: () => number = Date.now,
+): Promise<ToolResultHumanProof> {
+  const verified = await verifyIdpToken(token, idp);
+  const at = verified.auth_time;
+  const ms = now();
+  if (!Number.isSafeInteger(ms) || ms < 0 || at === undefined || at * 1000 > ms || ms - at * 1000 > 300_000 ||
+      !verified.amr?.includes("pwd") || verified.exp * 1000 <= ms)
+    throw new Error("tool-result consent requires a fresh signed password proof");
+  return Object.freeze({ sub: verified.sub, exp: verified.exp, authTime: at });
 }
 
 /**
@@ -201,10 +280,29 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
     throw new Error("idp bridge: an authorizeActor ledger hook is required - there is no allow-by-default");
   if (typeof opts.mintConnectCredential !== "function")
     throw new Error("idp bridge: a mintConnectCredential hook is required (SPEC 13.1, R1) - the v0.4 bridge must stamp every bearer's incarnation root credential; a claimless mint would silently disable deny-new in any composition without the connect arm");
+  const dmReaderAudience = opts.dmReaderAudience;
+  if (dmReaderAudience !== undefined) {
+    if (typeof dmReaderAudience !== "string" || !dmReaderAudience)
+      throw new Error("idp bridge: dmReaderAudience must be a non-empty string when present");
+    if (dmReaderAudience === opts.idp.audience)
+      throw new Error("idp bridge: dmReaderAudience must differ from idp.audience - a dm-reader proof on the ordinary audience would pass every exact-audience verifier of ordinary proofs");
+  }
   return {
     exchange: async (idpToken, req) => {
+      if (req.view === "service-endpoint") throw new Error("service-endpoint requires the dedicated service authority exchange");
       assertValidOwnerToken(req.actor);
-      const { sub, exp: idpExp } = await verifyIdpToken(idpToken, opts.idp);
+      // A dm-reader view rides ONLY a dm-reader proof, and a dm-reader proof rides only that view:
+      // the generic verifier refuses its audience and its purpose claim, and the dedicated verifier
+      // refuses an ordinary token's audience and missing purpose.
+      let dmProof: DmReaderProof | undefined;
+      if (req.view === "dm-reader") {
+        if (dmReaderAudience === undefined)
+          throw new Error('the "dm-reader" view needs a dedicated proof audience (dmReaderAudience), and this bridge has none configured');
+        dmProof = await verifyDmReaderProof(idpToken, opts.idp, dmReaderAudience);
+        if (dmProof.actor !== req.actor) throw new Error("dm-reader proof: its actor claim is not the requested actor");
+        if (dmProof.space !== opts.space) throw new Error("dm-reader proof: its space claim is not this bridge's space");
+      }
+      const { sub, exp: idpExp } = dmProof ?? await verifyIdpToken(idpToken, opts.idp);
       // The (issuer, sub) → derivation-input encoding lives in ONE place (deriveOwnerForIdpSubject),
       // shared with the operator grant command — the ledger's grant-time owner and the exchange-time
       // owner must be the same bytes or every grant silently misses.
@@ -237,11 +335,16 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         throw new Error(
           `idp bridge: the grant for actor "${req.actor}" carries no lifecycleUid - re-grant it (bearers are lifecycle-bound from v0.4)`,
         );
+      if (dmProof && dmProof.lifecycle !== grant.lifecycleUid)
+        throw new Error("dm-reader proof: its lifecycle claim is not the current grant's - an old lifecycle's proof mints nothing");
       // Cap the minted bearer's lifetime to the IdP proof's REMAINING life: the Cotal bearer must not
       // outlive the session proof it rests on. Otherwise a near-expired (or stolen just-before-expiry)
       // IdP JWT would exchange for a full MAX_TOKEN_TTL_SEC bearer, widening authority past the upstream
       // proof and defeating the "revocation bites when the IdP session lapses" model. An already-lapsed
-      // proof cannot mint anything (fail-loud).
+      // proof cannot mint anything (fail-loud). The relative TTL alone is not that cap: the hooks below
+      // await before the issuer reads its clock, so `notAfter` carries the proof's ABSOLUTE expiry
+      // (and a session-caller's session expiry) to signing time, and the issuer refuses once it passes.
+      let notAfter = Math.floor(idpExp);
       const idpRemaining = idpExp - Math.floor(Date.now() / 1000);
       if (idpRemaining <= 0)
         throw new Error("idp bridge: the IdP session proof has expired - cannot mint a bearer");
@@ -251,6 +354,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         if (!req.verifySession) throw new Error('view "session-caller" needs the identity plane\'s session decision - refusing to mint');
         session = await req.verifySession({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid });
         ttlSec = Math.min(ttlSec, Math.max(1, session.exp - Math.floor(Date.now() / 1000)));
+        notAfter = Math.min(notAfter, session.exp);
       }
       // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
       // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
@@ -271,10 +375,11 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         ...(session ? { session } : {}),
         ...(req.transferWriter ? { transferWriter: req.transferWriter } : {}),
         ttlSec,
+        notAfter,
       });
       const { exp } = decodeJwt(token);
       if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp - issuer contract violated");
-      return { token, owner, exp, ...(req.managerInstanceId ? { managerInstanceId: req.managerInstanceId } : {}) };
+      return { token, owner, exp };
     },
   };
 }

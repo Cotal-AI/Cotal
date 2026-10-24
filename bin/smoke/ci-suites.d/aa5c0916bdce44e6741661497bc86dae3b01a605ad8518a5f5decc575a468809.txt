@@ -1,0 +1,2 @@
+# The smoke runner must not start mutation infrastructure, including through ordinary CI shards.
+smoke:ci-policy

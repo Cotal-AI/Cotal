@@ -95,5 +95,5 @@ window-based. A failed server start is detected early via POSIX `ps` where prese
 (Windows, a ps-less container) death is never assumed — the same failure surfaces at the bounded
 startup window, with the server's own stderr either way.
 
-See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
+See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.

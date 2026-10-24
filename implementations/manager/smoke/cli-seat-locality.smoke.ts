@@ -199,6 +199,16 @@ try {
   check("stop on a nonexistent name exits non-zero", ghost.status !== 0, { status: ghost.status, out: ghost.out.slice(-300) });
   check("...and the error says the space was SEARCHED, not just that one manager missed",
     /no managed agent .* on any of the \d+ reachable manager instance/.test(ghost.out), ghost.out.slice(-400));
+  // The same miss with `--on` refuses TARGET_NOT_FOUND, exit 2; the unpinned form refuses the same way.
+  check("...as a TARGET_NOT_FOUND refusal, exit 2, naming both managers and `cotal ps`",
+    ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes(IID1) && ghost.out.includes(IID2) && ghost.out.includes("run cotal ps to see the agents each manager runs"), ghost.out.slice(-600));
+  const misses = await Promise.all([
+    cotal(["stop", "--name", "no-such-seat", "--space", space, "--server", SERVERS, "--json"], root1),
+    cotal(["input", "no-such-seat", "hello", "--space", space, "--server", SERVERS, "--json"], root1),
+    cotal(["attach", "no-such-seat", "--space", space, "--server", SERVERS], root1),
+  ]);
+  check("stop --json and input --json print the refusal envelope, and attach refuses the same way, each exit 2",
+    misses.every((r) => r.status === 2 && /TARGET_NOT_FOUND/.test(r.out)) && misses.slice(0, 2).every((r) => r.out.includes('"outcome":"refused"')), misses.map((r) => ({ status: r.status, out: r.out.slice(-400) })));
 
   console.log(`\n4. THE CLAIM: bare \`cotal stop --name <seat>\` locates each seat and stops it (x${SEATS.length})`);
   const results: { seat: string; status: number | null; out: string }[] = [];
@@ -210,8 +220,12 @@ try {
   console.log(`   stops succeeded: ${results.length - failed.length}/${results.length}`);
   check(`ALL ${SEATS.length} stops exit 0 WITHOUT --on (seat-locality found the hosting manager every time)`,
     failed.length === 0, failed.map((f) => ({ seat: f.seat, out: f.out.slice(-220) })));
-  check("...and each says so", results.every((r) => r.out.includes(`stopped ${r.seat}`)),
-    results.filter((r) => !r.out.includes(`stopped ${r.seat}`)).map((r) => r.seat));
+  // The redesigned stop prints an "Agent stop acknowledged" receipt whose `Agent:` row names the seat.
+  const saysStopped = (r: { seat: string; out: string }): boolean => {
+    const out = r.out.replace(/\x1b\[[0-9;]*m/g, "");
+    return out.includes("Agent stop acknowledged") && new RegExp(`Agent:\\s+${r.seat}\\s`).test(out);
+  };
+  check("...and each says so", results.every(saysStopped), results.filter((r) => !saysStopped(r)).map((r) => r.seat));
 
   await wait(2000);
   const psAfter = await cotal(["ps", "--space", space, "--server", SERVERS], root1);
