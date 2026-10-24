@@ -390,6 +390,8 @@ let P = "";
   await wf(["journal", rid]);
   c("show names the branch the race took on its row", rendered("/race:doppel#0", "ok, eins won"), lines().filter((l) => l.includes("/race:doppel#0")).join(" | "));
   c("and lists the winning branch's answer as answered", lines().some((l) => l.includes("/checkpoint:eins#0") && l.includes("answered") && !l.includes("not acted on")), lines().filter((l) => l.includes("checkpoint:eins")).join(" | "));
+  c("and names on the losing branch's cancelled row the branch that won and the race",
+    rendered("/race:doppel#0/b:zwei/checkpoint:zwei#0", "cancelled, eins won /race:doppel#0"), lines().filter((l) => l.includes("checkpoint:zwei")).join(" | "));
   const rows = ((await envelopeOf(["journal", rid]))?.result as { view?: { journal?: Array<{ step?: string; winner?: string; lostRace?: string }> } } | undefined)?.view?.journal ?? [];
   c("show --json carries the winner on the race row and lostRace on every row of the losing branch, and only there",
     rows.some((r) => r.step === "/race:doppel#0" && r.winner === "eins")
@@ -397,6 +399,10 @@ let P = "";
       && rows.filter((r) => r.step?.startsWith("/race:doppel#0/b:zwei/")).every((r) => r.lostRace === "/race:doppel#0")
       && rows.every((r) => r.step?.startsWith("/race:doppel#0/b:zwei/") || r.lostRace === undefined),
     rows);
+  // An answer at the losing branch's checkpoint used to read only "that step has already settled".
+  const late = await wf(["answer", rid, "/race:doppel#0/b:zwei/checkpoint:zwei#0"], { by: "smoke", value: '"B"' }).then(() => undefined, (e: Error) => e);
+  c("an answer at the losing branch's cancelled checkpoint says the race cancelled it and which branch won",
+    late?.message === `run ${rid} has no open checkpoint at /race:doppel#0/b:zwei/checkpoint:zwei#0: that step was cancelled because branch eins won the race /race:doppel#0`, late?.message);
 
   // Which branch a second, concurrent answer lands in is decided by the broker, so the not-acted-on
   // lines are read from the rows a lost race leaves: one resolved and one cancelled after it
@@ -759,7 +765,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 79;
+const DECLARED = 81;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

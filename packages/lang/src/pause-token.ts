@@ -6,18 +6,23 @@
 import { holdRequestId } from "./keys.js";
 import { journalEntryKeyString, type JournalEntry } from "./journal.js";
 
-/** No open checkpoint (or ask) answers to this address in this run. */
+/** No open checkpoint (or ask) answers to this address in this run. A `cancelled` step names the
+ *  race it lost and the branch that won it, when a race cancelled it. */
 export class CheckpointNotOpen extends Error {
   constructor(
     readonly runId: string,
     readonly stepKey: string,
-    readonly why: "unknown" | "settled" | "not-a-checkpoint" | "no-identity",
+    readonly why: "unknown" | "settled" | "cancelled" | "not-a-checkpoint" | "no-identity",
+    readonly lostRace?: { readonly race: string; readonly winner?: string },
   ) {
     super(
       `run ${runId} has no open checkpoint at ${stepKey}: ${
         {
           unknown: "no step is recorded under that key",
           settled: "that step has already settled",
+          cancelled: lostRace === undefined ? "that step was cancelled"
+            : lostRace.winner === undefined ? `that step was cancelled when the race ${lostRace.race} settled`
+            : `that step was cancelled because branch ${lostRace.winner} won the race ${lostRace.race}`,
           "not-a-checkpoint": "that step is neither a checkpoint nor an ask",
           "no-identity": "that step is pending but carries no request id, so the checkpoint it is waiting on cannot be named",
         }[why]
@@ -25,6 +30,21 @@ export class CheckpointNotOpen extends Error {
     );
     this.name = "CheckpointNotOpen";
   }
+}
+
+/** The innermost settled race whose losing branch holds `stepKey`, with the branch that won it. A
+ *  race records its losers on its scope entry and settles `{ branches, value: { index, value } }`,
+ *  where `index` names the winning branch. */
+function lostRaceOf(entries: readonly JournalEntry[], stepKey: string): { race: string; winner?: string } | undefined {
+  let found: { race: string; winner?: string } | undefined;
+  for (const e of entries) {
+    if (e.kind !== "race" || e.state !== "settled" || e.cancel === undefined) continue;
+    const race = journalEntryKeyString(e);
+    if (!e.cancel.losers.some((branch) => stepKey.startsWith(`${race}/b:${branch}/`)) || (found && found.race.length >= race.length)) continue;
+    const index = (e.result as { value?: { index?: unknown } } | undefined)?.value?.index;
+    found = { race, ...(typeof index === "string" ? { winner: index } : {}) };
+  }
+  return found;
 }
 
 /** No accepted answer at this address that an amendment could be filed beside, or (`unrecorded`)
@@ -95,7 +115,10 @@ export function openCheckpointToken(
   if (entry === undefined) throw new CheckpointNotOpen(runId, stepKey, "unknown");
   if (!records.some((e) => e.hold !== undefined) && entry.kind !== "checkpoint" && entry.kind !== "ask")
     throw new CheckpointNotOpen(runId, stepKey, "not-a-checkpoint");
-  if (entry.state !== "pending") throw new CheckpointNotOpen(runId, stepKey, "settled");
+  if (entry.state !== "pending") {
+    if (entry.status === "cancelled") throw new CheckpointNotOpen(runId, stepKey, "cancelled", lostRaceOf(entries, stepKey));
+    throw new CheckpointNotOpen(runId, stepKey, "settled");
+  }
   const token = stepPauseToken(records);
   if (token === undefined) throw new CheckpointNotOpen(runId, stepKey, "no-identity");
   return token;
