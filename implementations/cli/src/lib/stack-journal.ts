@@ -293,15 +293,16 @@ export function maintenanceStackView(root: string, space: string): ControllerSta
 
 /** Take the root's maintenance lock for one whole-stack operation. Every whole-stack operation
  *  holds it for its whole run, and a dead holder is reclaimed only when its PID is proven dead. A
- *  live holder is a known refusal that names its PID; nothing was read or changed.
+ *  live holder is a known refusal that names its PID; nothing was read or changed. `operation`, such
+ *  as `restore`, is recorded in the lock so another command it refuses can say what holds the root.
  *  Taking the lock creates the root's `.cotal/maintenance` folders when they are missing. A command
  *  that then ends refused or failed releases the lock if it still holds it, and removes the folders
  *  the lock created while they are still empty, so a refusal leaves the folder as it found it. */
-export function acquireStackOperationLock(root: string): MaintenanceLock {
+export function acquireStackOperationLock(root: string, operation?: string): MaintenanceLock {
   const paths = maintenancePaths(root);
   const created = [paths.versionDir, paths.maintenanceDir, paths.cotalDir].filter((dir) => !existsSync(dir));
   let lock: MaintenanceLock;
-  try { lock = acquireMaintenanceLock(root); }
+  try { lock = acquireMaintenanceLock(root, operation ? { operation } : {}); }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     let holder: number | undefined;

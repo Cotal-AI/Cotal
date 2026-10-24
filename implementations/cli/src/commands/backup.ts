@@ -23,12 +23,14 @@ import {
   CommandFailure, isCommandFailure, isMaintenanceError, jsonFlag, plainFlag, presentationOf, writeResult, type Report,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
+  assessRestoreClaim,
   assertStoreIdentity,
   authDir,
   claimMaintenanceReady,
   cutController,
   getSpaceAuth,
   readMaintenanceJournal,
+  readMaintenanceLockHolder,
   recordMaintenanceClaimResources,
   recoverStaleMaintenanceClaim,
   readStoreIdentity,
@@ -36,6 +38,7 @@ import {
   releaseMaintenanceLock,
   sameStoreIdentity,
   workspaceSecretStore,
+  type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
   restoreLeftOut,
@@ -88,6 +91,8 @@ function selection(value: string | undefined): SpaceBackupSelection {
   throw new CommandFailure("refused", "USAGE_INVALID", "--only supports full or registry");
 }
 
+const BACKUP_CREATE_LOCK = { operation: "backup create" };
+
 function localOwner(id: string): ProcessOwner {
   return { pid: process.pid, host: hostname(), startedAt: new Date().toISOString(), id };
 }
@@ -105,9 +110,34 @@ function backupInterruptNotice(root: string, attemptId: string, destination: str
 /** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
 function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
   if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with cotal down --preserve-state, then create the backup" });
+  // A restore that still runs is named and waited for; only a stale one is rolled back.
+  if (record.state === "restore-ready") {
+    const assessment = assessRestoreClaim(record, { unrecordedOwnersDead: attemptProcessesGone(root) });
+    if (assessment !== "stale") return heldClaim(root, record.restore.attemptId, record.claim, "backup create", assessment);
+  }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
     remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with cotal status",
+  });
+}
+
+/** Another operation holds this root's maintenance lock. A backup or restore attempt whose claim that
+ *  process holds is named by its claim, which `backup recover` knows; otherwise the lock names the
+ *  operation, its process and when it took the lock. Nothing was claimed or copied. */
+function lockHeld(root: string, retry: string): CommandFailure {
+  const holder = readMaintenanceLockHolder(root);
+  let journal: ReturnType<typeof readMaintenanceJournal>;
+  try { journal = readMaintenanceJournal(root); } catch { journal = undefined; }
+  const held = journal?.state === "claimed" ? { attemptId: journal.claim.attemptId, claim: journal.claim }
+    : journal?.state === "restore-ready" ? { attemptId: journal.restore.attemptId, claim: journal.claim } : undefined;
+  if (holder && held && held.claim.coordinator.pid === holder.owner.pid && held.claim.coordinator.host === holder.owner.host)
+    return heldClaim(root, held.attemptId, held.claim, "backup create", "live");
+  const who = holder
+    ? `${holder.operation ? `a ${holder.operation}` : "another maintenance operation"}, process ${holder.owner.pid}, has held this root's maintenance lock since ${holder.owner.startedAt}`
+    : "another maintenance operation holds this root's maintenance lock";
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup create is refused: ${who}; nothing was changed`, {
+    target: { root, ...(holder ? { holderPid: holder.owner.pid, holderStartedAt: holder.owner.startedAt, ...(holder.operation ? { holderOperation: holder.operation } : {}) } : {}) },
+    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then run ${retry} again; cotal status shows this root's maintenance state`,
   });
 }
 
@@ -466,7 +496,8 @@ export async function backup(args: ParsedArgs): Promise<void> {
   const observed: BackupObservation = { mutationAttempted: false, cleanupConfirmed: false };
   try { await createBackup(args, observed); }
   catch (error) {
-    const target = { directory: resolve(args.positionals[1]!), attemptId: observed.attemptId ?? null, priorClaimAttemptId: observed.priorClaimAttemptId ?? null };
+    // A refused create journaled no attempt, so it names none that `backup recover` could not find.
+    const target = { directory: resolve(args.positionals[1]!), attemptId: observed.mutationAttempted ? observed.attemptId ?? null : null, priorClaimAttemptId: observed.priorClaimAttemptId ?? null };
     if (observed.published) {
       const failure = new CommandFailure("partial", "OPERATION_PARTIAL", "the private artifact was published, but final maintenance cleanup was not confirmed; its receipt is retained", { target, changed: [{ kind: "published-backup", directory: observed.published.directory }], remedy: "inspect this original artifact and retained maintenance attempt before another create; do not delete an unreviewed fallback or claim" });
       writeResult(presentationOf(args.values), { command: "backup create", target, result: { ...observed.published, cleanupConfirmed: observed.cleanupConfirmed }, failure }, backupCreateView);
@@ -537,7 +568,12 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   observed.attemptId = attemptId;
   const deadline = new Date(Date.now() + OPERATION_TIMEOUT_MS);
   const clonePath = join(ensurePrivateAttemptsDir(root).path, `${attemptId}-clone`);
-  let lock = acquireMaintenanceLock(root);
+  let lock: MaintenanceLock;
+  try { lock = acquireMaintenanceLock(root, BACKUP_CREATE_LOCK); }
+  catch (error) {
+    if (isMaintenanceError(error) && error.code === "lock-held") throw lockHeld(root, retryCreate(args));
+    throw error;
+  }
   let ready: MaintenanceReadyRecord;
   let clone: ReturnType<typeof createAttemptClone> | undefined;
   let broker: IsolatedBroker | undefined;
@@ -666,7 +702,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     if (clone) try { clone.cleanup(); } catch (cause) {
       residue.push(`clone: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
-    if (!lock) lock = acquireMaintenanceLock(root);
+    if (!lock) lock = acquireMaintenanceLock(root, BACKUP_CREATE_LOCK);
     try {
       if (claimed && !residue.length) releaseMaintenanceClaim(lock, attemptId);
     } finally {

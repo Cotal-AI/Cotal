@@ -1627,8 +1627,8 @@ stopped, the clean runs. After a healthy committed restore,
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
 completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a
 restore that left history or workflow runs out it also requires `--discard-history`, as
-`backup cleanup-fallback` does. After an
-`--accept-missing-source` restore there is no old store, so it only retires the journal.
+`backup cleanup-fallback` does, and its refusal names the flag without printing the command help.
+After an `--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
 
@@ -1795,7 +1795,11 @@ preserved source, or the maintenance attempt tree.
 
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
 A root with no preserved cut refuses and names `cotal down --preserve-state`. A cut in another state
-refuses and names that state and its space. A destination that already exists is a `CONFLICT`
+refuses and names that state and its space. A create during a restore that still runs refuses
+`LIFECYCLE_BLOCKED` (exit 2), names that restore attempt, its process and when it started, and says
+to wait for it. A create that finds the root's maintenance lock held, such as by another
+`backup create`, names the operation that holds it, its pid and since when it has held the lock.
+Neither refusal journaled anything, so it names no attempt of its own. A destination that already exists is a `CONFLICT`
 refusal, because create writes only a new directory. A destination whose folder does not exist
 refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
 folder. A destination inside the preserved store refuses `USAGE_INVALID` (exit 1), and one in a
@@ -1867,8 +1871,9 @@ removes only its unchanged retained old-store identity; it never removes the res
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
 starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
-and workflow runs included, and a full restore of an artifact with no workflow runs leaves the runs
-out, so its old store holds the only copy of them. Its `--dry-run` warns with
+and workflow runs included. A full restore of an artifact with no workflow runs leaves the runs out,
+and a full restore of an artifact made before the state it replaced was preserved leaves out what
+was written after the artifact. In each case its old store holds the only copy of them. Its `--dry-run` warns with
 `HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, and the cleanup refuses
 `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 That refusal names the flag and does not print the command help.
@@ -1902,7 +1907,11 @@ confirm that any seat joined. Its `restored` and `recreatedEmpty` fields name th
 restore brought back and the ones it recreated empty. A registry restore brings back channel settings only, so chat and DM
 history and workflow runs start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
 names the store the restore set aside, which holds the only copy of them. Its next step says
-that `backup cleanup-fallback` deletes that store only with `--discard-history`.
+that `backup cleanup-fallback` deletes that store only with `--discard-history`. A full restore of
+an artifact made before the state it replaced was preserved, such as a backup taken before a later
+`cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
+after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
+store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
 `up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
@@ -1972,8 +1981,9 @@ It requires the same space. A full restore also requires the trust state the art
 under; a registry restore, `--only registry` of a full artifact included, does not check it. The
 whole pre-commit window holds a journaled
 liveness claim (coordinator, watchdogs, brokers, and a deadline 30 minutes after the restore
-began). While the claim is live, ordinary `up`, a repeated restore and `backup recover` refuse
-`LIFECYCLE_BLOCKED` (exit 2) and name the restore process and the deadline. A command that finds
+began). While the claim is live, ordinary `up`, a repeated restore, `backup create` and
+`backup recover` refuse `LIFECYCLE_BLOCKED` (exit 2) and name the restore process, when it started
+and the deadline. A command that finds
 the root's maintenance lock held refuses the same way and names the pid that holds it. The attempt
 is stale once the restore process and every recorded owner are proven dead on this host, and
 either the deadline has passed or every broker the root started is proven gone. A broker's
