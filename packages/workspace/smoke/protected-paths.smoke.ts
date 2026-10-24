@@ -323,7 +323,7 @@ if (process.getuid?.() !== 0) {
     symlinkSync(record, link);
     thrown = undefined;
     try { readLocalRecordSource(link); } catch (error) { thrown = error; }
-    assert.equal((thrown as CommandFailure | undefined)?.message, "the local record source could not be opened without following links", "a link keeps the no-follow refusal");
+    assert.equal((thrown as CommandFailure | undefined)?.message, `the local record source ${link} could not be opened without following links`, "a link keeps the no-follow refusal and names the link");
     assert.equal(readLocalRecordSource(join(base, "absent.json")), undefined, "an absent file is no record");
   } finally {
     try { chmodSync(join(base, "shut"), 0o700); } catch { /* already restored */ }
