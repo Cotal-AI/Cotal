@@ -462,7 +462,7 @@ accepts("semicolon-free source is ordinary", 'const a = await spawn("x")\nlog(a)
 // The TITLE is part of the error, and it was naming a rule this language does not have: an author
 // reading "Missing semicolon" over semicolon-free code that the validator accepts everywhere else
 // is being told the opposite of what is true.
-ok("L1008 is titled for the hazard, not for a semicolon rule that does not exist", CATALOG.L1008 === "Newline hazard", CATALOG.L1008);
+ok("L1008 is titled for invalid syntax and the hazard, not for a semicolon rule that does not exist", CATALOG.L1008 === "Invalid syntax or newline hazard", CATALOG.L1008);
 accepts("explicit terminators are fine too", 'const a = await spawn("x");\nlog(a);\n');
 // Source that does not parse, a NUL byte included, keeps L1008, and its fix used to say there is no
 // automatic semicolon insertion, the opposite of the rule above.
