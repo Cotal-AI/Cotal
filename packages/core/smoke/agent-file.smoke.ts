@@ -234,5 +234,15 @@ for (const [label, text] of [["CRLF", lf.replaceAll("\n", "\r\n")], ["a BOM", "\
   ok(`a file with ${label} reads as the LF file`, JSON.stringify(read) === JSON.stringify(plain), read);
 }
 
+// 11) A file saved as UTF-16, as Windows PowerShell 5.1 writes it, is refused by its encoding, with
+//     or without the byte-order mark, instead of as a missing frontmatter fence.
+for (const [label, bytes] of [["UTF-16LE", Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(lf, "utf16le")])], ["UTF-16BE", Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(lf, "utf16le").swap16()])], ["UTF-16LE with no BOM", Buffer.from(lf, "utf16le")]] as const) {
+  const file = join(dir, `${label.replaceAll(" ", "-")}.md`);
+  writeFileSync(file, bytes);
+  let error = "";
+  try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+  ok(`a ${label} file is refused by its encoding`, error === `agent file ${file}: it is saved as UTF-16, and Cotal reads only UTF-8; save it as UTF-8`, error);
+}
+
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

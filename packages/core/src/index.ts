@@ -55,6 +55,7 @@ export * from "./presence-ages.js";
 export * from "./process-runtime.js";
 export * from "./presence-text.js";
 export * from "./one-line.js";
+export * from "./text-encoding.js";
 export * from "./link.js";
 export * from "./identity.js";
 export * from "./secret-store.js";

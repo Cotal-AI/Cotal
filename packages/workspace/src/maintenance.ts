@@ -681,8 +681,14 @@ function fsyncDirectory(path: string): void {
 
 function ensureDirectory(path: string, harden: boolean): void {
   if (!existsSync(path)) {
-    mkdirSync(path, { mode: 0o700 });
-    fsyncDirectory(dirname(path));
+    // A concurrent first operation on this root can create it between the check and the mkdir; the
+    // checks below verify what is there, and the lock then names that operation.
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      fsyncDirectory(dirname(path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
   }
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink())
@@ -922,6 +928,17 @@ function removeReaper(path: string, token: string): void {
     }
   } catch (error) {
     if (errno(error) !== "ENOENT") throw error;
+  }
+}
+
+/** Whether a live process holds `root`'s maintenance lock, read without taking it: the holder's
+ *  status as {@link acquireMaintenanceLock} would judge it, or `undefined` when no lock is held. */
+export function maintenanceLockHolder(root: string): OwnerStatus | undefined {
+  try {
+    return localProcessOwnerStatus(readLockFile(maintenancePaths(root).lock).owner);
+  } catch (error) {
+    if (errno(error) === "ENOENT") return undefined;
+    throw error;
   }
 }
 

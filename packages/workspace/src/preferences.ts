@@ -1,8 +1,8 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { acquireLock, globalConfigDir, token, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
-import { localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
+import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 
 /**
@@ -120,7 +120,7 @@ export const PREFERENCE_KEYS: readonly PreferenceKey[] = KEYS.map((k) => k.key);
 
 function specOf(key: string): KeySpec {
   const spec = KEYS.find((k) => k.key === key);
-  if (!spec) throw new CommandFailure("refused", "USAGE_INVALID", `unknown preference "${key}"; valid keys: ${PREFERENCE_KEYS.join(", ")}`);
+  if (!spec) throw new CommandFailure("refused", "USAGE_INVALID", `unknown preference "${key}"; valid keys: ${PREFERENCE_KEYS.join(", ")}`, { remedy: "run `cotal config` to see each key and its value" });
   return spec;
 }
 
@@ -150,6 +150,8 @@ const invalid = (problem: string): CommandFailure =>
     remedy: `fix or remove ${preferencesPath()}; nothing resets it`,
   });
 
+const SPACE_NAME_REMEDY = "run `cotal space` for the names of the spaces this machine knows";
+
 /** Why a space name cannot hold preferences, or undefined. */
 export function preferenceSpaceProblem(space: string): string | undefined {
   return space && token(space) === space ? undefined : `"${space}" is not a space name: use letters, digits, - and _`;
@@ -170,9 +172,13 @@ function checkScope(where: string, value: unknown, perSpaceOnly: boolean): Parti
 
 /** Validate a parsed preferences document. Anything unexpected refuses; nothing is dropped. */
 function parsePreferences(text: string): Preferences {
+  const encoding = utf16Problem(text);
+  if (encoding) throw invalid(`${encoding}; save it as UTF-8`);
   let doc: unknown;
   try {
-    doc = JSON.parse(text);
+    // A hand edit on Windows can begin the file with a UTF-8 byte-order mark, which RFC 8259 lets a
+    // reader ignore; the next write leaves it out.
+    doc = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch (e) {
     throw invalid(`not JSON (${(e as Error).message})`);
   }
@@ -234,13 +240,26 @@ export function preferencesFolderWarning(): { warning: OutputWarning; remedy: st
   }
 }
 
+/** Refuse a preferences path that is a FIFO, a device or a folder: opening one would block or fail,
+ *  and preferences are kept only in a regular file. */
+function assertPreferencesRegular(path: string): void {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat && !stat.isFile())
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences file ${path} is not a regular file, such as a FIFO or a device; preferences are kept only in a regular file, so nothing was read or changed`, {
+      target: { path },
+      remedy: `remove ${path}, or replace it with a regular file`,
+    });
+}
+
 /** The saved preferences. A missing file is no preferences at revision 0; a file that does not
  *  validate refuses with `SCHEMA_INVALID`, and is never reset. A linked file refuses with
- *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}). */
+ *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}), and so does a FIFO or another file
+ *  that is not regular (see {@link assertPreferencesRegular}). */
 export function readPreferences(): Preferences {
   let text: string;
   try {
     assertPreferencesNotLinked(preferencesPath());
+    assertPreferencesRegular(preferencesPath());
     text = readFileSync(preferencesPath(), "utf8");
   } catch (e) {
     if (isCommandFailure(e)) throw e;
@@ -275,12 +294,13 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
   const spec = specOf(key);
   if (scope.space !== undefined) {
     const problem = preferenceSpaceProblem(scope.space);
-    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
-    if (!spec.perSpace) throw new CommandFailure("refused", "USAGE_INVALID", `${key} has no per-space value; set it for the user`);
+    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: SPACE_NAME_REMEDY });
+    if (!spec.perSpace) throw new CommandFailure("refused", "USAGE_INVALID", `${key} has no per-space value; set it for the user`, { remedy: "run it again without --space" });
   }
   if (value !== undefined) {
     const problem = preferenceValueProblem(key, value);
-    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
+    const space = scope.space === undefined ? "" : ` --space ${scope.space}`;
+    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: `give ${key} a value of that form; \`cotal config unset ${key}${space}\` returns it to its default` });
   }
   const dir = globalConfigDir();
   assertPreferencesFolderProtected();
@@ -294,7 +314,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     if (code === "EACCES" || code === "EPERM" || code === "EROFS")
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences folder ${dir} cannot be ${existsSync(dir) ? "written" : "created"} (${code}); nothing was changed`, {
         target: { path: dir },
-        remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${dir}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
+        remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${shellPath(dir)}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
       });
     throw e;
   }
@@ -331,7 +351,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
  */
 export function removeSpacePreferences(space: string, expectedRevision: number): { removed: Partial<Record<PreferenceKey, string>>; revision: number } {
   const problem = preferenceSpaceProblem(space);
-  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: SPACE_NAME_REMEDY });
   // A space with nothing saved needs no write, so no lock and no configuration folder.
   const before = readPreferences();
   if (!Object.keys(before.spaces[space] ?? {}).length) return { removed: {}, revision: before.revision };

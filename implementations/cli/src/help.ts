@@ -5,6 +5,7 @@
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, getCurrent, preparedSpaceAt, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { c, hang } from "./ui.js";
@@ -173,7 +174,7 @@ export function printEntry(commands: readonly Command[]): void {
       const preferences = cachedPreferences();
       const harness = resolvePreference("harness", { space, preferences }).value;
       context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
-      if (prepared) start = canonicalRoot(prepared.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${prepared.root}`;
+      if (prepared) start = canonicalRoot(prepared.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${shellWord(prepared.root)}`;
     }
   } catch {
     unreadable = true;

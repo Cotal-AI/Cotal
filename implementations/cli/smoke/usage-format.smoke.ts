@@ -5,7 +5,9 @@
  * `usage:` line or a lowercase "refusing to clean store without --force"; and `help service nosuch`
  * refused without listing the subcommands. A missing `--yes` is the exception: its refusal and remedy
  * are the whole fix, so it prints without the help. A mistyped word that is near a command, leading
- * flag, subcommand or option names it.
+ * flag, subcommand or option names it. Under `--plain` or a locale without UTF-8, which have no
+ * refusal mark, the error is the classified report instead, still followed by the help; it used to
+ * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
  *
  * A folder whose `.cotal` is a file refuses every command with `CONFLICT`, naming that file, before
  * anything runs. A removed working folder refuses every command but help, version, docs and
@@ -36,10 +38,11 @@ const neutral = join(home, "neutral");
 mkdirSync(neutral);
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
-const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[], cwd = neutral) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
+// The locale decides the refusal's shape, so the host's is replaced with a UTF-8 one.
+const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !["FORCE_COLOR", "NO_COLOR", "LC_ALL", "LC_CTYPE"].includes(k)));
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", LANG: "C.UTF-8" };
+const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
@@ -48,6 +51,20 @@ const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
 
 const parser = run(["status", "--bogus"]);
 check("control: a parser usage error has the documented shape", usageShape(parser, /Unknown option '--bogus'/), shown(parser));
+
+// A refusal points the way the command reads its words: a word that starts with "-" goes after
+// --, an option value that starts with "-" is written --name=value, a short option takes its value
+// after a space, and an option typed with a typographic dash is named with hyphens.
+const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
+check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
+const dashValue = run(["history", "--from", "-bob"]);
+check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
+const shortEquals = run(["send", "-c=general", "hello"]);
+check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
+for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
+  const r = run(["status", typed]);
+  check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
+}
 
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
@@ -67,6 +84,46 @@ check("help with an unknown subcommand names it and lists the command's subcomma
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
 
+// --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
+// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
+}
+const nearHelp = run(["space", "creat", "--help"]);
+check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
+for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+  const r = run([...args]);
+  check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
+}
+
+// A subcommand's help gives its whole usage, name argument included, and only its own options.
+for (const [args, usage, foreign] of [
+  [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
+  [["help", "channel", "show"], "cotal channel show <name> ", /--purge|--desc/],
+  [["help", "persona", "create"], "cotal persona create <name> ", /--yes/],
+  [["help", "history", "clear"], "cotal history clear ", /--grep|--follow/],
+  [["help", "meshes"], "cotal meshes ", undefined],
+  [["help", "personas"], "cotal personas ", undefined],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} prints the usage ${usage.trim()} and no other subcommand's options`, r.status === 0 && r.stdout.includes(`Usage\n  ${usage}`) && !foreign?.test(r.stdout), shown(r));
+}
+
+// No mark at all: the report names the outcome in words, and `!` stays the warning mark.
+const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>
+  r.status === 1 && r.stdout === "" && /^Request refused$/m.test(r.stderr) && /Code: +USAGE_INVALID/.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/[✗↳]|^! /m.test(r.stderr);
+const ascii = { LANG: "C" };
+const plainOwn = run(["config", "get", "bogus", "--plain"]);
+check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));
+const asciiOwn = run(["config", "get", "bogus"], ascii);
+check("under a locale without UTF-8 a command's own usage refusal is the report, then the help", reportShape(asciiOwn, /unknown preference "bogus"/), shown(asciiOwn));
+const plainParser = run(["status", "--bogus", "--plain"]);
+check("under --plain a parser usage error is the plain report, then the help", reportShape(plainParser, /Unknown option '--bogus'/), shown(plainParser));
+const asciiParser = run(["status", "--bogus"], ascii);
+check("under a locale without UTF-8 a parser usage error is the report, then the help", reportShape(asciiParser, /Unknown option '--bogus'/), shown(asciiParser));
+const asciiUnknown = run(["frobnicate"], ascii);
+check("under a locale without UTF-8 an unknown command is the report, with no warning mark", asciiUnknown.status === 1 && /^Request refused$/m.test(asciiUnknown.stderr) && /unknown command: frobnicate/.test(asciiUnknown.stderr) && !/^! /m.test(asciiUnknown.stderr), shown(asciiUnknown));
 // A missing --yes outside a terminal is not a grammar mistake: the refusal and a remedy that names
 // --yes are the whole fix, so the command's help is left out, as `down` already did.
 const project = join(home, "proj");
@@ -81,7 +138,7 @@ for (const [args, message, remedy] of [
   [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run cotal reset store nosuch --yes"],
   [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run cotal reset space nosuch --yes"],
 ] as const) {
-  const r = run([...args], project);
+  const r = run([...args], {}, project);
   check(`${args.join(" ")} without --yes prints its refusal and remedy without the help`, confirmShape(r, message, remedy), shown(r));
 }
 

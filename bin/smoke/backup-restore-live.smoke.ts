@@ -287,12 +287,18 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     }
     rmSync(existingStore, { recursive: true });
     if (mode === "open") {
+      // Another process on the recorded address is refused before the resume or the restore journals
+      // or starts anything, so the cut stays ready for the run after it leaves.
       const occupied = await occupy(port);
       const blocked = run("up", "--detach", "--server", server, "--space", space);
-      assert.notEqual(blocked.status, 0);
-      assert.match(blocked.stderr, /refuses the (?:unproven )?occupied listener/);
-      const degraded = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string };
-      assert.equal(degraded.state, "resume-degraded");
+      assert.equal(blocked.status, 2, `${blocked.stdout}${blocked.stderr}`);
+      assert.match(blocked.stderr, /to have no listener; the resumed broker needs that address, so nothing was started/);
+      assert.equal(readMaintenanceJournal(root)?.state, "ready", "a refused resume leaves the cut ready");
+      const blockedRestore = run("backup", "restore", artifact, "--json");
+      const envelope = JSON.parse(blockedRestore.stdout) as { error?: { code?: string } };
+      assert.equal(blockedRestore.status, 2, `${blockedRestore.stdout}${blockedRestore.stderr}`);
+      assert.equal(envelope.error?.code, "CONFLICT");
+      assert.equal(readMaintenanceJournal(root)?.state, "ready", "a refused restore leaves the cut ready");
       await closeServer(occupied);
     }
     must("ordinary same-principal resume", run("up", "--detach", "--server", server, "--space", space));
@@ -396,11 +402,13 @@ async function occupiedRestoreScenario(): Promise<void> {
     assert.equal(run("down", "--preserve-state").status, 0);
     assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
     occupied = await occupy(port);
+    // The restore probes the address its broker will bind before anything moves, so another listener
+    // there is refused and the cut stays ready.
     const blocked = run("up", "--restore", artifact, "--detach", "--server", server, "--space", space);
-    assert.notEqual(blocked.status, 0);
-    assert.match(blocked.stderr, /refuses the (?:unproven )?occupied listener/);
+    assert.equal(blocked.status, 2, `${blocked.stdout}${blocked.stderr}`);
+    assert.match(blocked.stderr, /to have no listener; the restored broker needs that address, so the preserved cut was not changed/);
     const journal = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string };
-    assert.equal(journal.state, "degraded");
+    assert.equal(journal.state, "ready");
     assert.equal(existsSync(join(root, ".cotal", "nats.pid")), false);
   } finally {
     if (occupied) await closeServer(occupied).catch(() => {});

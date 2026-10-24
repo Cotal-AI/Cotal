@@ -6,12 +6,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, cotalDirLink, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, preparedSpaceAt, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, stackAdoptionBlock, stackElsewhereRemedy, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, serviceOperationId, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, stackAdoptionBlock, stackElsewhereRemedy, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { shellWord } from "./endpoint-errors.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -23,6 +24,12 @@ export const STACK_ADAPTER: Readonly<Record<StackRole, string>> = { broker: "nat
 
 export const STACK_MODES = ["auth", "open", "user"] as const;
 export type StackMode = (typeof STACK_MODES)[number];
+
+/** The stack roles of `space` whose recorded processes run now. A signal handler reads it, so it
+ *  only reads records and process state. */
+export function runningStackRoles(space: string): StackRole[] {
+  return STACK_ROLES.filter((role) => serviceInstances(space, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
+}
 
 /** Which roles a mode can ever plan. An open stack has no delivery; only a user stack has an auth
  *  service. A role outside its mode stays `not-attempted` with no instance, and validation refuses
@@ -202,7 +209,7 @@ export function adoptStackJournal(root: string, space: string): string {
   const lock = acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") });
   try {
     const found = journalRecordedElsewhere(canonical);
-    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${canonical} without --adopt` });
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${shellWord(canonical)} without --adopt` });
     if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with cotal space create ${found.journal.space} --adopt --root ${canonical}` });
     const block = stackAdoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
     if (block) throw new CommandFailure("refused", "CONFLICT", `${block.message}; it was not adopted and nothing was written`, { target: { root: canonical, recordedRoot: found.recordedRoot, space }, remedy: block.remedy });
@@ -314,8 +321,9 @@ export function acquireStackOperationLock(root: string): MaintenanceLock {
   return lock;
 }
 
-/** An earlier operation that had no recorded outcome, and the member evidence it was settled from. */
-export interface StackSettlement { operation: StackJournal["operation"]; members: { role: StackRole; instanceId: string; process: "running" | "gone" }[] }
+/** An earlier operation that had no recorded outcome, and the member evidence it was settled from.
+ *  `unstarted` names the members it applies to that have no instance record. */
+export interface StackSettlement { operation: StackJournal["operation"]; members: { role: StackRole; instanceId: string; process: "running" | "gone" }[]; unstarted: StackRole[] }
 
 const UNSETTLED_PHASES: readonly StackJournal["operation"]["phase"][] = ["planned", "applying", "unknown"];
 
@@ -362,7 +370,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : observed === "unresolved-launch" ? `${inspect(row.name)}; ${abandonLaunchRemedy(row.name)}` : inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -433,6 +441,27 @@ export const RESUME_REMEDY = "once the command that sent the stop has exited, `c
 /** The remedy a refusal over a retained, published member stop names. */
 export const abandonRemedy = (requestId: string): string => `once its process and the down that sent the request have exited, \`cotal down --abandon-stop ${requestId} --yes\` abandons it`;
 
+/** The remedy a refusal over a member launch whose record names no process names. */
+export const abandonLaunchRemedy = (instanceId: string): string => `once the up that launched it has exited, \`cotal down --abandon-launch ${instanceId} --yes\` records it failed; a process that launch started without recording it is not excluded`;
+
+/** Record `failed`, on an operator's explicit request, the member launch `instanceId` whose record
+ *  names no process, under that member's definition lock, before a `down` classifies the members.
+ *  The caller holds the root's maintenance lock. No member with that instance refuses
+ *  `TARGET_NOT_FOUND`, and nothing is written. */
+export function abandonUnresolvedStackLaunch(journal: StackJournal, instanceId: string): { role: StackRole; row: ServiceInstanceSnapshot } {
+  const store = serviceDefinitionStore(journal.space);
+  for (const role of STACK_ROLES.filter((entry) => stackRoleApplies(journal.mode, entry))) {
+    const definition = store.read(STACK_DEFINITION[role]), launch = definition?.record.value.launch;
+    if (!definition || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root) continue;
+    const hold = store.pin(definition);
+    try {
+      const row = serviceInstances(journal.space, definition.name).find((entry) => entry.name === instanceId);
+      if (row) return { role, row: abandonUnresolvedLaunch(row) };
+    } finally { hold.release(); }
+  }
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack has an instance with that ID; nothing was abandoned", { target: { root: journal.root, space: journal.space, instanceId }, remedy: `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --space ${journal.space}\` for a member's instances` });
+}
+
 /** Abandon the one member stop that retains `requestId`, on an operator's explicit request, under that
  *  member's definition lock, before a `down` classifies the members. The caller holds the root's
  *  maintenance lock. A native stop is abandoned through its adapter, and a broker's or another
@@ -468,9 +497,11 @@ export function settleStackOperation(lock: MaintenanceLock, snapshot: StackJourn
   const journal = snapshot.journal, operation = journal.operation;
   if (!stackOperationUnsettled(journal) || operation.kind !== "up" && operation.kind !== "down") return { snapshot };
   if (lock.root !== journal.root) throw new CommandFailure("refused", "CONFLICT", "the held maintenance lock belongs to another root; the earlier operation was not settled", { target: { root: journal.root } });
-  const members = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role)).flatMap((role) => classifyStackMember(journal, role, true) ?? []);
-  const settled = writeStackJournal(journal.root, snapshot, { ...journal, members: withSettledMembers(journal, { operation, members }).members.map((row) => row.state !== "planned" && row.state !== "unknown" ? row : members.some((member) => member.role === row.role) ? { ...row, state: "unknown", code: "OPERATION_UNKNOWN" } : { ...row, state: "not-attempted", code: undefined }), operation: { ...operation, phase: "failed" }, updatedAt: new Date().toISOString() });
-  return { snapshot: settled, settled: { operation, members } };
+  const roles = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role));
+  const members = roles.flatMap((role) => classifyStackMember(journal, role, true) ?? []);
+  const settlement = { operation, members, unstarted: attemptedRoles(journal).filter((role) => !members.some((member) => member.role === role)) };
+  const settled = writeStackJournal(journal.root, snapshot, { ...journal, members: withSettledMembers(journal, settlement).members.map((row) => row.state !== "planned" && row.state !== "unknown" ? row : members.some((member) => member.role === row.role) ? { ...row, state: "unknown", code: "OPERATION_UNKNOWN" } : { ...row, state: "not-attempted", code: undefined }), operation: { ...operation, phase: "failed" }, updatedAt: new Date().toISOString() });
+  return { snapshot: settled, settled: settlement };
 }
 
 /** The journal with each journaled replacement resolved, and each member row that has no recorded
@@ -504,17 +535,65 @@ function resolveReplacement(journal: StackJournal, row: StackMember): StackMembe
 /** The read-only classification `settleStackOperation` would record, for a preview. Writes nothing. */
 export function previewStackSettlement(journal: StackJournal): StackSettlement | undefined {
   if (!stackOperationUnsettled(journal) || journal.operation.kind !== "up" && journal.operation.kind !== "down") return undefined;
-  return { operation: journal.operation, members: STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role)).flatMap((role) => classifyStackMember(journal, role, false) ?? []) };
+  const roles = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role));
+  const members = roles.flatMap((role) => classifyStackMember(journal, role, false) ?? []);
+  return { operation: journal.operation, members, unstarted: attemptedRoles(journal).filter((role) => !members.some((member) => member.role === role)) };
+}
+
+/** The members the journal's operation planned, as a `--no-manager` up plans no manager. */
+function attemptedRoles(journal: StackJournal): StackRole[] {
+  return STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role) && journal.members.some((row) => row.role === role && row.state !== "not-attempted"));
+}
+
+/** An earlier `up` that ended with no recorded outcome before every member it planned started, or
+ *  a `down` that ended so before every member stopped, with the members on each side as their
+ *  processes show. A member with no instance record counts as stopped, and `noManager` says the up
+ *  planned no manager, as `up --no-manager` does. Read-only. Undefined when the last
+ *  operation settled, when it reached its end anyway, or when a member's process is neither running
+ *  nor proven gone. */
+export function unfinishedStackOperation(journal: StackJournal): { kind: "up" | "down"; id: string; running: StackRole[]; stopped: StackRole[]; noManager: boolean } | undefined {
+  const { kind, id } = journal.operation;
+  if (!stackOperationUnsettled(journal) || kind !== "up" && kind !== "down") return undefined;
+  const running: StackRole[] = [], stopped: StackRole[] = [];
+  for (const role of attemptedRoles(journal)) {
+    const observed = serviceInstances(journal.space, STACK_DEFINITION[role]).map((row) => observeServiceProcess(row.record.value));
+    if (observed.includes("running")) running.push(role);
+    else if (observed.every(processGone)) stopped.push(role);
+    else return undefined;
+  }
+  if (kind === "up" ? !stopped.length : !running.length) return undefined;
+  return { kind, id, running, stopped, noManager: kind === "up" && stackRoleApplies(journal.mode, "manager") && !running.includes("manager") && !stopped.includes("manager") };
 }
 
 /** The one-line notice a command prints after it settled an earlier operation. */
 export function stackSettlementNotice(settled: StackSettlement): string {
   const gone = settled.members.filter((row) => row.process === "gone").map((row) => row.role), running = settled.members.filter((row) => row.process === "running").map((row) => row.role);
-  return `the earlier ${settled.operation.kind} ${settled.operation.id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"})`;
+  const { kind, id } = settled.operation;
+  // An up whose members all run, or a down whose members are all gone, reached its end anyway.
+  if (kind === "up" && !gone.length && !settled.unstarted.length) return `the earlier up ${id} was interrupted before it recorded an outcome; every member is running (${running.join(", ")})`;
+  if (kind === "down" && !running.length) return `the earlier down ${id} was interrupted before it recorded an outcome; every member is stopped`;
+  return `the earlier ${kind} ${id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"}${settled.unstarted.length ? `; not started: ${settled.unstarted.join(", ")}` : ""})`;
 }
 
 export function newStackOperation(kind: "up" | "down", withAgents = false): StackJournal["operation"] {
   return { id: randomUUID(), kind, phase: "planned", recordedAt: new Date().toISOString(), withAgents };
+}
+
+/** Whether the stack's last `up` completed with its manager not attempted, as `up --no-manager`
+ *  records it, so the stack runs no manager by choice. */
+export function stackStartedWithoutManager(journal: StackJournal): boolean {
+  return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+}
+
+/** Whether an `up` on this root is starting the stack's manager for `space` now: the journal records
+ *  an unsettled `up` that planned the manager, and a live process holds the root's maintenance lock,
+ *  as every whole-stack operation does for its whole run. An `up` that died there is not starting. */
+export function stackManagerStarting(root: string, space: string): boolean {
+  try {
+    const journal = readStackJournal(root)?.journal;
+    if (journal?.space !== space || journal.operation.kind !== "up" || !stackOperationUnsettled(journal)) return false;
+    return journal.members.some((row) => row.role === "manager" && row.state === "planned") && maintenanceLockHolder(root) === "alive";
+  } catch { return false; }
 }
 
 /** Whether this root records a controller stack for `space` with no live manager instance. False
@@ -552,6 +631,17 @@ export function stackDefinitionsAt(space: string, root: string): ServiceDefiniti
   });
 }
 
+/** The folder `space`'s saved stack broker starts in, when that folder is gone: it holds neither its
+ *  stack journal nor the broker configuration the definition names, whatever a still-running broker
+ *  wrote back into it. Undefined otherwise, or when the definition cannot be read. */
+export function goneStackRoot(space: string): string | undefined {
+  try {
+    const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
+    if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || typeof launch.options.root !== "string" || typeof launch.options.config !== "string") return undefined;
+    return existsSync(stackJournalPath(launch.options.root)) || existsSync(launch.options.config) ? undefined : launch.options.root;
+  } catch { return undefined; }
+}
+
 /** Remove the controller stack definitions saved for `space` at `root`, with their stopped instance
  *  records, as `service remove` does, so that another folder can start a stack under the same name.
  *  A definition saved for another root is left alone. Nothing is removed while the root holds
@@ -568,7 +658,8 @@ export function releaseStackDefinitions(root: string, space: string): { released
   try {
     for (const row of owned) removableServiceInstances(space, row.name);
   } catch (error) {
-    const route = existsSync(root) ? `stop the stack with cotal down --yes in ${root}, then run cotal space forget ${space} again`
+    const route = goneStackRoot(space) === root ? `its folder is gone; cotal down --space ${space} --yes stops the stack and removes them`
+      : existsSync(root) ? `stop the stack with cotal down --yes in ${root}, then run cotal space forget ${space} again`
       : isCommandFailure(error) && error.remedy || `inspect them with cotal service --space ${space}`;
     return { released: [], kept: { names, why: `${(error as Error).message}; ${route}` } };
   }

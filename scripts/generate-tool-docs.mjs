@@ -226,7 +226,8 @@ lines.push("|---|---|---|");
 for (const s of specs) {
   const a = ANNOTATIONS[s.name];
   const short = s.title.replace(/^Cotal: /, "");
-  lines.push(`| [\`${s.name}\`](#${s.name.replace(/_/g, "")}) | ${short} | ${a.effect} |`);
+  // GitHub and the docs site both slug the `cotal_x` heading as cotal_x, underscores kept.
+  lines.push(`| [\`${s.name}\`](#${s.name}) | ${short} | ${a.effect} |`);
 }
 lines.push("");
 

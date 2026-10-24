@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
-import { assertValidChannel, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { assertValidChannel, assertValidRole, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
@@ -11,10 +11,11 @@ import { completedFlagValue, completingFlagValue, positionalsForCompletion } fro
 import { readPersonas } from "../lib/personas.js";
 import {
   commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
-  requirePersonaSource, serializePersona, validatePersona, type PersonaCatalog,
+  requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { yesRequired } from "../lib/confirmation-required.js";
 import { checkHarness } from "./config.js";
 
 export const personaFlags = [
@@ -73,8 +74,10 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return;
   }
   if (sub === "create") {
+    const reserved = reservedPersonaName(name!);
+    if (reserved) throw new CommandFailure("refused", "USAGE_INVALID", reserved, { remedy: "choose another name" });
     const expected = readPersonaSource(path);
-    if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`);
+    if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with cotal persona edit ${name}, or remove it with cotal persona remove ${name} first` });
     const bytes = createSource(name!, path, values);
     commitPersona(path, expected, bytes);
     return receipt(presentation, catalog, name!, path, "created");
@@ -85,13 +88,16 @@ export async function persona(args: ParsedArgs): Promise<void> {
   }
   if (sub === "remove") {
     const expected = requirePersonaSource(path);
+    // The seeded default is what a bare `cotal spawn` launches, so removing it says so.
+    const seeded = name === "default";
+    const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare cotal spawn launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`removing '${name}' at ${path} requires --yes without an interactive terminal`, { remedy: `confirm with cotal persona remove ${name} --yes` });
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with cotal persona remove ${name} --yes` });
       let confirmed = false;
       if (presentation === "plain") {
-        confirmed = (await prompts.askLine(`Remove '${name}' at ${path}?\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
+        confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
       } else {
-        const answer = await prompts.confirm({ message: `Remove '${name}' at ${path}?`, initialValue: false });
+        const answer = await prompts.confirm({ message: question, initialValue: false });
         confirmed = !prompts.isCancel(answer) && answer;
       }
       if (!confirmed) {
@@ -100,7 +106,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
       }
     }
     commitPersona(path, expected, undefined);
-    return receipt(presentation, catalog, name!, path, "removed");
+    return receipt(presentation, catalog, name!, path, "removed", seeded);
   }
   throw usage(`unknown persona action '${sub}'`);
 }
@@ -120,10 +126,22 @@ function createSource(name: string, path: string, values: Values): Buffer {
     const def = validatePersona(bytes, source);
     // The file's own name is known, so name it and the create that keeps it.
     if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy: `create it under its own name with cotal persona create ${def.name} --file ${values.file}, or set its name to '${name}'` });
+    // A role is an address `send -r` reaches, so a role it would refuse is refused here.
+    if (def.role !== undefined) {
+      if (/[\u0000-\u001f\u007f]/u.test(def.role)) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${source}: role takes a label without control characters`);
+      try { assertValidRole(def.role); }
+      catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${source}: ${(error as Error).message}`); }
+    }
     return bytes;
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
   if (values.harness !== undefined) checkHarness(values.harness);
+  if (values.role !== undefined) {
+    // A control character is refused before the role check, which would echo the value.
+    if (/[\u0000-\u001f\u007f]/u.test(values.role)) throw usage("--role takes a label without control characters");
+    try { assertValidRole(values.role); }
+    catch (error) { throw usage(`--role: ${(error as Error).message}`); }
+  }
   const body = values.prompt ?? readInput(values.from!).toString("utf8");
   if (!body.trim()) throw usage("persona body is empty");
   // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than
@@ -148,7 +166,9 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
   const malformed = entries.filter(entry => entry.error);
   writeResult(presentation, {
     command: "persona", target: catalog, result: { kind: "personas", items }, completeness: malformed.length ? "partial" : "complete",
-    warnings: malformed.map(entry => ({ code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}` })),
+    warnings: malformed.map(entry => entry.notRegular
+      ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
+      : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}${entry.encoding ? `: ${entry.encoding}; save it as UTF-8` : ""}` }),
     ...(malformed.length ? { partial: { message: "some persona definitions could not be read" } } : {}),
   }, result => ({ sections: [
     { title: "Personas", blocks: [
@@ -168,11 +188,12 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
   ] }));
 }
 
-function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string): void {
-  writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona-written", action, name, path } }, result => ({ sections: [
+function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string, seededDefault = false): void {
+  writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona-written", action, name, path, ...(seededDefault ? { seededDefault } : {}) } }, result => ({ sections: [
     { title: result.action === "removed" ? "Persona removed" : result.action === "created" ? "Persona created" : "Persona saved", blocks: [
       { kind: "lines", lines: [{ text: result.name, tone: "ok", mark: "✓" }] },
       { kind: "fields", rows: [["File", result.path], ["Running agents", "unchanged"]] },
+      ...(seededDefault ? [{ kind: "lines" as const, lines: ["This was the seeded default persona, which a bare cotal spawn launches. A local cotal up in this root, cotal space create or cotal setup writes a fresh copy."] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
       { command: "cotal p", description: "Browse the local catalog" },
