@@ -2,7 +2,8 @@
  * `space delete` names a prepared space for what it is, and `space forget` and `help space delete`
  * say what applies. Deleting a space that is prepared and not running used to say "no registered
  * space has this exact name", `space forget` called a space started before "never started", and the
- * delete help described `-y` with the `add` text first.
+ * delete help described `-y` with the `add` text first. The `space` listing said "No spaces
+ * registered" above the prepared space it listed, under a `SPACE  Project` header.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. No broker is
  * started and nothing is deleted.
@@ -40,6 +41,12 @@ const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdo
 
 const created = run(["space", "create", "b4b", "--root", root]);
 check("rig: the space is prepared and not started", created.status === 0, shown(created));
+
+// The listing shows the prepared space, so it does not also say that no space is registered, and its
+// headers are in the same case as the registered table's.
+const listing = run(["space"]);
+check("the space listing names a prepared space without saying none is registered", listing.status === 0 && /Prepared, not started/.test(listing.stdout) && /\bb4b\b/.test(listing.stdout) && !/No spaces registered/.test(listing.stdout) && /No space has been started or registered yet/.test(listing.stdout), shown(listing));
+check("the prepared table's headers are Space and Project", /^\s*Space\s+Project\s*$/m.test(listing.stdout) && !/SPACE/.test(listing.stdout), shown(listing));
 
 const preview = run(["space", "delete", "b4b", "--dry-run", "--json"]);
 check("a delete preview of a prepared space refuses as unavailable, exit 2", preview.status === 2 && preview.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preview));

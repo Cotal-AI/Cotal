@@ -110,7 +110,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--json` and `--plain` (2026-10): the refresh on the structured output contract.
   sync: { flags: ["idp:string", "json:boolean:j", "plain:boolean"], positionals: false },
   // `--json` and `--plain` (2026-10): `use` reports or changes the selection on the structured output contract.
-  use: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  // `--clear` (2026-10) removes the selection, so a command targets its folder's space again.
+  use: { flags: ["clear:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // Bare status is the infrastructure inventory; `status <agent> [--on]` inspects one incarnation.
   // `--components` (2026-08) is the historical health pass the bare service inventory replaces.
   status: { flags: ["all:boolean", "components:boolean", "creds:string", "json:boolean:j", "on:string", "plain:boolean", "server:string", "space:string:s", "verbose:boolean:v"], positionals: true },

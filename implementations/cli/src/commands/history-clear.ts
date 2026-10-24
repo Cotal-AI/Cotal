@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
@@ -21,7 +21,27 @@ export async function historyClear(values: Values): Promise<void> {
     writeResult(presentation, { command: "history", target: { space: selected.space, broker: brokerLabel(selected.server) }, result: { kind: "history-clear-preview", dryRun: true, streams, includeDms: values.dms === true, authorization: "not-checked", retainedCounts: "not-checked", purged: false } }, (result): Report => ({ sections: [{ title: "History clear preview", blocks: [{ kind: "fields", rows: [["Space", selected.space], ["Broker", brokerLabel(selected.server)], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"], ["Streams", result.streams.join(", ")], ["Authorization and counts", "not checked"]] }, { kind: "lines", lines: ["Offline target preview only. No connection, purge, agent stop, identity reset or caller issuance was attempted."] }] }] }));
     return;
   }
-  if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", yesRequired("history clear", presentation === "json"), { remedy: "preview the space-wide scope with cotal history clear --dry-run before confirming it" });
+  if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), { remedy: `preview the space-wide scope with cotal history clear${values.dms ? " --dms" : ""} --dry-run, then confirm it with cotal history clear${values.dms ? " --dms" : ""} --yes` });
+  const conn = await connectOrThrow(values, "purger");
+  const target = { space: conn.space, broker: brokerLabel(conn.server), includeDms: values.dms === true };
+  recordOperationSpace(conn.space);
+  if (!values.yes) {
+    const answer = await prompts.confirm({ message: `Permanently clear all retained channel history${values.dms ? " and DM history" : " (DMs kept)"} in ${oneLine(conn.space)} at ${oneLine(target.broker)}? Agents and identity are not reset.`, initialValue: false });
+    if (prompts.isCancel(answer) || !answer) {
+      writeResult(presentation, { command: "history", target, result: { kind: "history-clear", confirmed: false, purged: false }, noOp: true }, (): Report => ({ sections: [{ title: "History kept", blocks: [{ kind: "lines", lines: ["No stream was purged. Agents, identity and retained messages were left unchanged."] }] }] }));
+      return;
+    }
+  }
+  let user: Awaited<ReturnType<typeof userViewAuth>> | undefined;
+  try { user = conn.bearer ? await userViewAuth(conn, "purger") : undefined; }
+  catch (error) {
+    if (isConnectRefusal(error)) throw error.failure();
+    const remedy = credentialRefusalMessage(error);
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "the existing per-action purger view was not issued; no history purge was submitted", { target, ...(remedy ? { remedy } : {}) });
+  }
+  const material = user ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds } : conn.creds ? { creds: conn.creds } : {};
+  const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ ...material, tls: conn.tls }), maxReconnectAttempts: 0 });
+  const streams = [chatStream(conn.space), ...(values.dms ? [dmStream(conn.space)] : [])];
   const acknowledged: PurgeReceipt[] = [];
   let submitted: string | undefined;
   // A signal from the confirmed clear on ends it where it is, and says what was purged.

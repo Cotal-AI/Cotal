@@ -5,6 +5,7 @@ import {
   type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
+  ConfirmationRequired,
   CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
@@ -218,7 +219,7 @@ function registryView(result: { action: string; name?: string; space: string; re
 
 async function confirmRemoval(name: string, space: string, values: Values, presentation: Presentation): Promise<boolean> {
   if (values.yes) return true;
-  if (presentation === "json" || !canPrompt()) throw usage(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`);
+  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with cotal channel remove ${name}${values.purge ? " --purge" : ""} --yes` });
   const question = `Remove #${name} from ${space}? ${values.purge ? "Its retained history will also be deleted." : "Its retained history will be kept."} Access grants and members are unchanged.`;
   if (presentation === "plain") return (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
   const answer = await prompts.confirm({ message: question, initialValue: false });
