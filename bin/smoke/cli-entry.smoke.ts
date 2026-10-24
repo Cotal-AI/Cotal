@@ -11,6 +11,7 @@
  * user and password is refused by every command that takes one, without repeating it. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`. A command an official
  * extension adds, run or asked for help before that extension is added, names the package to add.
+ * FORCE_COLOR with NO_COLOR prints no Node warning about the pair.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -186,6 +187,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("version prints the binary version", /^cotal-ai \d+\.\d+\.\d+/.test(version.stdout), shown(version));
   check("--version and -V print the same", same(version, cotal(["--version"])) && same(version, cotal(["-V"])));
   refused("-v is not the version flag", cotal(["-v"]), /-v is not the version flag - run `cotal version` or `cotal -V`/);
+  // Node warns once about FORCE_COLOR with NO_COLOR. The entry drops that warning and keeps the rest:
+  // a probe that warns once the CLI is running still prints.
+  const probeDir = mkdtempSync(join(tmpdir(), "cotal-entry-probe-"));
+  cleanup.push(probeDir);
+  writeFileSync(join(probeDir, "probe.mjs"), 'setTimeout(() => process.emitWarning("probe-warning"), 100);\n');
+  const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
+  check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",
+    both.status === 0 && !both.stderr.includes("'NO_COLOR' env is ignored") && both.stderr.includes("Warning: probe-warning"), shown(both));
 }
 
 // ── Structured output: one envelope on stdout, the usage refusal included ────────────────────────
