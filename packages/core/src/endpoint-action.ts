@@ -1226,8 +1226,8 @@ export interface GoalIndexEntry {
    *  the winner is still in flight, and the honest answers are only "here is what the winner
    *  allocated" or a refusal. OPTIONAL for read compatibility with entries written before this
    *  field existed; absent means the floor was never persisted and a reader must refuse rather
-   *  than invent one. `owner` is optional for the same reason, and because a turn's floor leaves
-   *  it to the note: a reader that has to name the owner refuses when the floor did not record it. */
+   *  than invent one. `owner` is optional for the same reason: a reader that has to name the owner
+   *  refuses when the floor did not record it. */
   allocated?: { name: string; owner?: string; actor: string; uid: string; readinessDeadlineMs?: number };
   /** An OPAQUE relay payload the accepting endpoint must be able to serve back after a restart —
    *  the durable half of a goal whose work is handed to another process (a seat's `turn` rides

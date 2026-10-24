@@ -584,7 +584,9 @@ retires the seat, and the next `turn` is the catchable L4002. The policy also co
 own death. On a static mesh, when the manager ends without stopping the seat (a crash, or a pty seat
 that ended with its manager), the next manager of the same instance restarts the seat the same way
 and counts that as one restart. A turn the dead manager had accepted for the seat is served to the
-restarted seat, so the interrupted turn runs again and finished turns do not. A seat whose budget
+restarted seat, so the interrupted turn runs again and finished turns do not. A turn an older
+manager accepted is not served again, because its record does not name the seat's owner, and it
+ends at its deadline as L4003. A seat whose budget
 is spent, or whose persona file or credential changed or expired while no manager ran, is retired instead. A policy this host cannot enforce
 (an unknown key, a user-mode seat, or a runtime that cannot respawn a name in place) is refused
 at the spawn rather than accepted and ignored. `events: false` is the workflow form of
