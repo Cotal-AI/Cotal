@@ -496,6 +496,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`${argv.slice(0, 3).join(" ")} refuses a name that differs from x only in case`,
       r.status === 2 && r.stderr.includes("persona 'X' differs from the existing 'x' only in case") && r.stderr.includes("CONFLICT") && readdirSync(agents).join() === "x.md", { ...shown(r), files: readdirSync(agents) });
   }
+  // `personas list -v` prints each body once: a summary that is the body's first line is skipped.
+  const verbose = cotal(["personas", "list", "-v"], (home) => {
+    persona(home);
+    writeFileSync(join(home, "..", ".cotal", "agents", "d.md"), "---\nname: d\ndescription: Reviews pull requests.\n---\nReviews pull requests.\nThen it reports.\n");
+  }, noSeed);
+  check("personas list -v prints a body's first line once, with or without a matching description",
+    verbose.status === 0 && verbose.stdout.split("Reviews pull requests.").length === 2 && verbose.stdout.includes("    Then it reports.") && verbose.stdout.split(/^ +hi$/m).length === 2, shown(verbose));
   // An empty --model is refused by name.
   for (const [argv, model] of [[["persona", "create", "q"], ""], [["persona", "create", "q"], " "], [["personas", "new", "q"], ""]] as const) {
     const r = cotal([...argv, "--model", model, "--prompt", "body", "--subscribe", ""], persona, noSeed);

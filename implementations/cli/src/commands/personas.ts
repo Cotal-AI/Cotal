@@ -160,8 +160,9 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       .join("  ");
     console.log(`${c.bold(name)}  ${meta}`.trimEnd());
     const desc = d.description ?? firstLine(d.persona);
-    // The preview wraps under its indent at the terminal's width, so none of it is cut off.
-    if (desc) for (const line of wrapWords(oneLine(desc), terminalWidth(process.stdout) - 2)) console.log(c.dim(`  ${line}`));
+    // The preview wraps under its indent at the terminal's width, so none of it is cut off. Verbose
+    // prints the whole body next, so a summary that is its first line is not printed twice.
+    if (desc && !(verbose && desc.trim() === firstLine(d.persona))) for (const line of wrapWords(oneLine(desc), terminalWidth(process.stdout) - 2)) console.log(c.dim(`  ${line}`));
     if (verbose && d.persona) console.log(d.persona.split(/\r?\n/).map((line) => `    ${oneLine(line)}`).join("\n") + "\n");
   }
 }
