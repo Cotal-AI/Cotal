@@ -417,7 +417,7 @@ remain running beside the marker. Preserve the unknown outcome. A later explicit
 request can read the same marker and a current holder, then report its own observed result.
 
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
-from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
+from the project folder. An empty `--by` or `--reason` is refused `USAGE_INVALID` before anything is written, naming the empty flag. The
 admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
 takeover or manager restart continues the run. An open checkpoint or `ask` stays listed under

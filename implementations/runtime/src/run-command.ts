@@ -1130,6 +1130,13 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     }
   }
   // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.
+  // An empty --by or --reason on an otherwise whole revoke names that flag and prints no help.
+  if (verb === "revoke" && values.local === true) {
+    for (const [flag, what] of [["by", "who revokes the run"], ["reason", "why it is revoked"]] as const) {
+      if (values[flag] !== undefined && !values[flag].trim())
+        throw new CommandFailure("refused", "USAGE_INVALID", `--${flag} is empty; nothing was written`, { remedy: `name ${what}: cotal run revoke ${a} --local --by <who> --reason <text>`, selfContained: true });
+    }
+  }
   if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");

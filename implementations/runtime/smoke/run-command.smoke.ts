@@ -673,10 +673,14 @@ let P = "";
   const store = { create: async () => { created = true; return 0; } } as unknown as Parameters<typeof revokeRunAdmission>[0];
   const writer = await revokeRunAdmission(store, EP, { version: 1, runId: eid, by: "", reason: "", revokedAt: Date.now() })
     .then(() => undefined, (e: Error) => e);
-  c("revoke refuses an empty --by and --reason",
-    eid !== "" && isCommandFailure(refused) && refused.code === "USAGE_INVALID" && refused.message.includes("run revoke requires --local --by <actor> --reason <text>")
+  c("revoke refuses an empty --by and --reason, naming --by, with no help",
+    eid !== "" && isCommandFailure(refused) && refused.code === "USAGE_INVALID" && refused.message === "--by is empty; nothing was written" && refused.selfContained === true
       && writer !== undefined && writer.message.includes("by and reason must be non-empty") && !created,
     { command: refused?.message ?? captured(), writer: writer?.message, created });
+  const blankReason = await wf(["revoke", eid], { by: "smoke-operator", reason: "  " }).then(() => undefined, (e: Error) => e);
+  c("a blank --reason is refused naming --reason, with the command to run instead",
+    isCommandFailure(blankReason) && blankReason.code === "USAGE_INVALID" && blankReason.message === "--reason is empty; nothing was written"
+      && blankReason.remedy === `name why it is revoked: cotal run revoke ${eid} --local --by <who> --reason <text>`, blankReason);
 
   reset();
   await withStderr(() => wf(["ps"])).catch(() => undefined);
@@ -775,7 +779,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 84;
+const DECLARED = 85;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
