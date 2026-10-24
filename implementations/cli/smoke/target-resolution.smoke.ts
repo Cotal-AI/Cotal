@@ -4,7 +4,9 @@
  * terminal the command asks which space, uses the answer for that one run and leaves the selection
  * alone; a script, `--json` and `--no-input` refuse with `TARGET_AMBIGUOUS` and the remedy apart from
  * the message. A manifest's declared space is the target of `up -f` and `spawn -f`, so a `--space`
- * that names another space is refused before anything is written. In a folder whose records name no
+ * that names another space is refused before anything is written. `up -f --json` checks its manifest
+ * first: one that does not validate refuses `SCHEMA_INVALID` with its problem, and a valid one refuses
+ * `UNSUPPORTED`, naming only `--json` to omit. In a folder whose records name no
  * space, as after `space forget`, `whoami` and `spawn --dry-run` keep exit 0 under the held default's
  * heading, say it was assumed, and name the folder and that space in their target.
  *
@@ -196,6 +198,14 @@ const QUESTION = "Which one?";
     const contradicted = run(["up", "-f", "user.yaml", "--open"], fresh);
     check("up -f refused after its lock, for a flag the manifest contradicts, leaves the folder as it found it",
       contradicted.status === 1 && /--open contradicts this manifest's broker\.auth/.test(contradicted.stderr) && entries() === "list.yaml,user.yaml", { ...shown(contradicted), entries: entries() });
+    // up -f always takes the retained launcher, so --json is refused after its manifest is checked.
+    const invalidJson = run(["up", "-f", "list.yaml", "--dry-run", "--json"], fresh);
+    check("up -f --dry-run --json with a manifest that does not validate refuses SCHEMA_INVALID, exit 1, naming the problem",
+      invalidJson.status === 1 && envelope(invalidJson)?.error?.code === "SCHEMA_INVALID" && /list\.yaml:4:\d+: [^;]+ \(at broker\.servers\)$/.test(envelope(invalidJson)?.error?.message ?? "") &&
+        envelope(invalidJson)?.target?.issues?.map((issue: { path: string[] }) => issue.path.join(".")).join() === "broker.servers" && entries() === "list.yaml,user.yaml", { ...shown(invalidJson), entries: entries() });
+    const validJson = run(["up", "-f", "user.yaml", "--dry-run", "--json"], fresh);
+    check("up -f --dry-run --json with a valid manifest refuses UNSUPPORTED, exit 2, naming only the flag to omit",
+      validJson.status === 2 && envelope(validJson)?.error?.code === "UNSUPPORTED" && envelope(validJson)?.error?.remedy === "omit --json" && entries() === "list.yaml,user.yaml", { ...shown(validJson), entries: entries() });
     const json = run(["up", "--json", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("up --json on the retained launcher refuses UNSUPPORTED, exit 2, and leaves the folder as it found it",
       json.status === 2 && envelope(json)?.error?.code === "UNSUPPORTED" && entries() === "list.yaml,user.yaml", { ...shown(json), entries: entries() });
