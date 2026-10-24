@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "no
 import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
-import { localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
+import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 
 /**
@@ -310,7 +310,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     if (code === "EACCES" || code === "EPERM" || code === "EROFS")
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences folder ${dir} cannot be ${existsSync(dir) ? "written" : "created"} (${code}); nothing was changed`, {
         target: { path: dir },
-        remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${dir}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
+        remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${shellPath(dir)}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
       });
     throw e;
   }

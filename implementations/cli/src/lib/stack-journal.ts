@@ -11,6 +11,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
+import { shellWord } from "./endpoint-errors.js";
 import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
@@ -202,7 +203,7 @@ export function adoptStackJournal(root: string, space: string): string {
   const lock = acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") });
   try {
     const found = journalRecordedElsewhere(canonical);
-    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${canonical} without --adopt` });
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${shellWord(canonical)} without --adopt` });
     if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with cotal space create ${found.journal.space} --adopt --root ${canonical}` });
     const block = stackAdoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
     if (block) throw new CommandFailure("refused", "CONFLICT", `${block.message}; it was not adopted and nothing was written`, { target: { root: canonical, recordedRoot: found.recordedRoot, space }, remedy: block.remedy });
@@ -569,6 +570,17 @@ export function stackDefinitionsAt(space: string, root: string): ServiceDefiniti
   });
 }
 
+/** The folder `space`'s saved stack broker starts in, when that folder is gone: it holds neither its
+ *  stack journal nor the broker configuration the definition names, whatever a still-running broker
+ *  wrote back into it. Undefined otherwise, or when the definition cannot be read. */
+export function goneStackRoot(space: string): string | undefined {
+  try {
+    const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
+    if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || typeof launch.options.root !== "string" || typeof launch.options.config !== "string") return undefined;
+    return existsSync(stackJournalPath(launch.options.root)) || existsSync(launch.options.config) ? undefined : launch.options.root;
+  } catch { return undefined; }
+}
+
 /** Remove the controller stack definitions saved for `space` at `root`, with their stopped instance
  *  records, as `service remove` does, so that another folder can start a stack under the same name.
  *  A definition saved for another root is left alone. Nothing is removed while the root holds
@@ -585,7 +597,8 @@ export function releaseStackDefinitions(root: string, space: string): { released
   try {
     for (const row of owned) removableServiceInstances(space, row.name);
   } catch (error) {
-    const route = existsSync(root) ? `stop the stack with cotal down --yes in ${root}, then run cotal space forget ${space} again`
+    const route = goneStackRoot(space) === root ? `its folder is gone; cotal down --space ${space} --yes stops the stack and removes them`
+      : existsSync(root) ? `stop the stack with cotal down --yes in ${root}, then run cotal space forget ${space} again`
       : isCommandFailure(error) && error.remedy || `inspect them with cotal service --space ${space}`;
     return { released: [], kept: { names, why: `${(error as Error).message}; ${route}` } };
   }
