@@ -74,6 +74,19 @@ for (const args of [["space", "create", "--help"], ["history", "general", "--hel
   check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
 }
 
+// A subcommand's help gives its whole usage, name argument included, and only its own options.
+for (const [args, usage, foreign] of [
+  [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
+  [["help", "channel", "show"], "cotal channel show <name> ", /--purge|--desc/],
+  [["help", "persona", "create"], "cotal persona create <name> ", /--yes/],
+  [["help", "history", "clear"], "cotal history clear ", /--grep|--follow/],
+  [["help", "meshes"], "cotal meshes ", undefined],
+  [["help", "personas"], "cotal personas ", undefined],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} prints the usage ${usage.trim()} and no other subcommand's options`, r.status === 0 && r.stdout.includes(`Usage\n  ${usage}`) && !foreign?.test(r.stdout), shown(r));
+}
+
 // A missing --yes outside a terminal is not a grammar mistake: the refusal and a remedy that names
 // --yes are the whole fix, so the command's help is left out, as `down` already did.
 const project = join(home, "proj");

@@ -26,7 +26,7 @@
  */
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { registry, type Command } from "@cotal-ai/core";
+import { commandUsage, registry, type Command, type Subcommand } from "@cotal-ai/core";
 import { GLOBAL_FLAGS } from "@cotal-ai/workspace";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
@@ -486,6 +486,22 @@ for (const cmd of commands) {
   for (const f of cmd.flags ?? []) {
     assert.ok(f.name && (f.type === "string" || f.type === "boolean"), `flag spec sane on ${cmd.name} --${f.name}`);
   }
+}
+
+// Help: every listed command's usage and every listed subcommand's starts with its whole `cotal …`
+// path, and a subcommand of a command with flags names its own, so `help channel set` neither drops
+// the channel name nor offers `--purge`.
+for (const cmd of commands.filter((c) => !c.hidden)) {
+  assert.ok(commandUsage(cmd).startsWith(`cotal ${cmd.name}`), `usage of \`${cmd.name}\` starts with cotal ${cmd.name}`);
+  const walk = (path: string, subs: readonly Subcommand[] = []): void => {
+    for (const sub of subs.filter((s) => !s.hidden)) {
+      const at = `${path} ${sub.name}`;
+      assert.ok(sub.usage?.startsWith(`cotal ${at}`), `\`${at}\` declares a usage that starts with cotal ${at}`);
+      if (cmd.flags?.length) assert.ok(sub.flagNames, `\`${at}\` names its own options`);
+      walk(at, sub.subcommands);
+    }
+  };
+  walk(cmd.name, cmd.subcommands);
 }
 
 console.log(`✓ flag-inventory smoke passed (${commands.length} commands)`);
