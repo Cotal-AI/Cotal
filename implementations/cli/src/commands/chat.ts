@@ -15,6 +15,7 @@ import {
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
 import { openRoutingChatSession } from "../chat/open-session.js";
@@ -95,12 +96,19 @@ export function chatAdmission(mode: MeshTarget["mode"], label: string, channel: 
 }
 
 /** Admit through the one adapter the mode names. Each adapter refuses a target of another mode. */
-function admit(target: MeshTarget, admission: ChatAdmission): Promise<AdmittedChatSession> {
+function admit(target: MeshTarget, admission: ChatAdmission, reopen: (channel: string) => string): Promise<AdmittedChatSession> {
   switch (admission.mode) {
-    case "open": return openRoutingChatSession(target, admission);
-    case "auth": return openStaticChatSession(target, admission);
-    case "user": return openUserChatSession(target, admission);
+    case "open": return openRoutingChatSession(target, { ...admission, reopen });
+    case "auth": return openStaticChatSession(target, { ...admission, reopen });
+    case "user": return openUserChatSession(target, { ...admission, reopen });
   }
+}
+
+/** The command that opens a session on a channel with the flags this one was started with, such as
+ *  `--stdio` and `--space`, so a refusal that names it keeps the session's front end and mesh. */
+export function reopenCommand(args: Pick<ParsedArgs, "raw" | "positionalIndices">): (channel: string) => string {
+  const flags = args.raw.filter((_, index) => !args.positionalIndices?.includes(index));
+  return (channel) => ["cotal", "chat", channel, ...flags].map(shellWord).join(" ");
 }
 
 /** The exit code of a session that ended by leaving, end of input, expiry or loss. Only a confirmed
@@ -218,7 +226,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
       process.exitCode = before;
       return;
     }
-    session = await admit(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel));
+    session = await admit(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), reopenCommand(args));
   } catch (e) {
     signals.release();
     throw e;
