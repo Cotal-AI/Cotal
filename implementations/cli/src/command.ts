@@ -51,6 +51,7 @@ import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choic
 import { canPrompt } from "./commands/meshes-wizard.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { didYouMean, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
+import { UnusableFile } from "./lib/unusable-file.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
 /** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
