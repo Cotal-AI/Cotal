@@ -52,6 +52,7 @@ import { preservedSourceState, restoreNextStep, maintenanceNextStep } from "../l
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { journalRecordedElsewhere, readStackJournal, stackOperationBlock, STACK_DEFINITION, type StackJournal, type StackOperationBlock } from "../lib/stack-journal.js";
 import { cotalLinkHere, linkedCotalRemedy } from "../lib/paths.js";
+import { storeWriteProblem } from "../lib/store-dir.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
@@ -889,6 +890,14 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
   };
 }
 
+/** Why the broker of the stack at `root` cannot start on its store: the one its stack journal recorded,
+ *  or `.cotal/nats`. */
+function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
+  let recorded: string | undefined;
+  try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
+  try { return storeWriteProblem(recorded ?? join(root, ".cotal", "nats")); } catch { return undefined; }
+}
+
 async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, gaps: Gaps, hints: string[]): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
@@ -915,7 +924,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // of the codes and point the others at a command that does not fix them. The section states the
     // selection, and Next gives its repair once.
     const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-    hints.push(remedy ?? message);
+    // A start in a root whose broker store this account cannot write fails there, so its next step is
+    // the store's, as `up` names it.
+    const store = e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing ? rootStoreProblem(e.details.root) : undefined;
+    hints.push(store ? `${store.message}; ${store.remedy}` : remedy ?? message);
     return { resolved: false, code: e.code, message };
   }
   const target = selected.target;

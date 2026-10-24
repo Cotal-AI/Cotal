@@ -66,6 +66,22 @@ export function assertStoreDirArgument(value: string, root: string): void {
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy: "name a store directory this account can create, or create it with the right owner first" }); }
 }
 
+/** Why a broker could not start JetStream on the store `storeDir`: this account cannot write the
+ *  folder it writes first, `jetstream` inside the store once a broker made it, or else the store
+ *  itself. nats-server tests that folder when it starts and exits, naming the cause only in its log.
+ *  The sentence and the next step, or undefined when it can write it or neither folder exists. */
+export function storeWriteProblem(storeDir: string): { path: string; message: string; remedy: string } | undefined {
+  const jetstream = join(storeDir, "jetstream");
+  const path = statIfPresent(jetstream)?.isDirectory() ? jetstream : statIfPresent(storeDir)?.isDirectory() ? storeDir : undefined;
+  if (path === undefined) return undefined;
+  try { accessSync(path, constants.W_OK | constants.X_OK); return undefined; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
+    return { path, message: `the broker store ${path} is not writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it writable by you, for example with chmod -R u+w ${path}` };
+  }
+}
+
 /** The `store_dir` a broker configuration names for `storeDir`: relative to `root` when the store
  *  lies inside it, since the broker runs from the root. A project folder renamed while its broker runs
  *  then keeps that broker writing into the renamed folder, and nothing creates the old path again. A

@@ -622,7 +622,11 @@ The generated broker configuration is owner-private (`0600`) in open and authent
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
 `.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
 keeps its mode. A `.cotal`, or a root without one, that this account cannot write refuses with
-`PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. The broker log `.cotal/nats.log` and the auth service,
+`PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. A
+broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
+or the store itself before a broker has made one, and `chmod -R u+w`. Without that check the broker
+exited and named the cause only in its log. `status` names the same step for a stopped space whose
+store `up` would refuse. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
