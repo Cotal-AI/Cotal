@@ -1735,7 +1735,8 @@ prepared record and stack journal at the same root name its broker address, stor
 reset keeps both, so a later `up` starts it again in the same mode. No reset changes a stack's mode;
 [up](#up) names the way to run another one. After `reset space` of a user-auth space, that
 `up` needs `--user-auth --idp <auth base URL>`, as described below. A stack none of whose members ever started has
-no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
+no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. So does a prepared space
+no stack has run for, which also names `cotal space forget`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
 `cotal down` from its root. A member that exited without a recorded stop, as after a crash, is
@@ -1744,8 +1745,10 @@ reset then accepts it. Only a member that no completed `down` recorded that way 
 then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
 a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
-`reset space`, with `--store-dir <dir>` when the registration records a custom store. A reset of
-such a space refuses `TARGET_NOT_FOUND` and names that step.
+`reset space`, with `--store-dir <dir>` when the registration records a custom store. Once stopped,
+such a space has no record here, like a mistyped name, so a reset of either refuses
+`TARGET_NOT_FOUND`, says no registered or prepared space has that exact name, and names `cotal space`
+and then that step.
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and
