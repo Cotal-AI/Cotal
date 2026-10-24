@@ -4292,8 +4292,9 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
 }
 
 /** Read, parse and check a channels file: `explicit` is a `--channels` path, else the root's default
- *  `.cotal/channels.json`. One that is missing, unreadable or not JSON is a usage refusal, and one
- *  whose content the registry would not take is a schema refusal; each names the file. */
+ *  `.cotal/channels.json`. A `--channels` path that is missing, unreadable or not JSON is a usage
+ *  refusal. A default file that is not JSON, and either file whose content the registry would not
+ *  take, is a schema refusal. Each names the file. */
 function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   const remedy = explicit ? "fix the file, or omit --channels" : `fix or remove ${path}`;
   let text: string;
@@ -4301,7 +4302,7 @@ function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
   let value: unknown;
   try { value = JSON.parse(text); }
-  catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy }); }
+  catch (error) { throw new CommandFailure("refused", explicit ? "USAGE_INVALID" : "SCHEMA_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy }); }
   const problem = channelsFileProblem(value);
   if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `the channels file ${path} is invalid: ${problem}`, { remedy });
   return value as ChannelRegistryFile;

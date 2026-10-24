@@ -754,6 +754,12 @@ if (process.platform === "linux") {
   check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
     refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
+  // So does one that is not JSON at all: the default file's content is invalid, not the command line.
+  writeFileSync(defaultSeed, '{"channels":');
+  const unparsedDefault = await json(["up", "--open", "--server", server], fresh);
+  check("a default .cotal/channels.json that is not JSON refuses SCHEMA_INVALID too, with the same remedy, before a store or a registration",
+    refused(unparsedDefault, 1, "SCHEMA_INVALID") && (unparsedDefault.env?.error?.message ?? "").includes(`${defaultSeed} is not valid JSON`) && unparsedDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(unparsedDefault));
   unlinkSync(defaultSeed);
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
