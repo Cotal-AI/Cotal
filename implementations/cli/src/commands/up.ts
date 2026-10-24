@@ -168,6 +168,7 @@ import {
   recordOperationSpace,
   retainSystemSigningSeed,
 } from "@cotal-ai/workspace";
+import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -356,7 +357,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
-  if (serverProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${serverProblem}; nothing was started or written`, { remedy: "pass the address the local broker listens on, for example --server nats://127.0.0.1:4222" });
+  if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the address the local broker listens on, for example ${serverExample(String(args.values.server))}`);
   // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
   // before the controller stack writes its journal or trust.
   const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
@@ -418,6 +419,16 @@ function upServerProblem(server: string): string | undefined {
   if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
   if (url.hostname.startsWith("[")) return IPV6_UNSERVED("--server");
   return undefined;
+}
+
+/** The `--server` a refusal gives as its example: 127.0.0.1 on the port the user passed, or a
+ *  placeholder when the value names none. */
+function serverExample(server: string): string {
+  let port: string | undefined;
+  try { port = new URL(server).port || undefined; } catch { port = undefined; }
+  port ??= /:(\d{1,5})\/?$/.exec(server)?.[1];
+  const valid = port !== undefined && Number(port) >= 1 && Number(port) <= 65535;
+  return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://127.0.0.1:${valid ? Number(port) : "<port>"}`;
 }
 
 /** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */

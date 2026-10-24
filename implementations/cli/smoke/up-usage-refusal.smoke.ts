@@ -4,9 +4,10 @@
  * "Outcome unconfirmed", which tells a script the run may have had an effect.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from an empty
- * folder outside them. Nothing is started; each refusal comes from validation. In the home folder,
- * whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing there,
- * and `down` there finds no stack to stop.
+ * folder outside them. Nothing is started; each refusal comes from validation. A `--server` that no
+ * local broker can serve is refused as the short classified report with an example on the port
+ * passed. In the home folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT
+ * and writes nothing there, and `down` there finds no stack to stop.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -51,6 +52,15 @@ for (const { args, message } of cases) {
   check(`up ${args.join(" ")} --json is one USAGE_INVALID refusal, exit 1`, json.status === 1 && json.envelope?.outcome === "refused" && json.envelope.error?.code === "USAGE_INVALID" && message.test(json.envelope.error.message ?? ""), shown(json));
   const text = run(["up", ...args]);
   check(`up ${args.join(" ")} prints the error and the help on stderr, nothing on stdout, exit 1`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Usage/.test(text.stderr), shown(text));
+}
+
+const servers: { server: string; message: RegExp; example: string }[] = [
+  { server: "http://127.0.0.1:43131", message: /--server must be a nats:\/\/ or tls:\/\/ URL/, example: "--server nats://127.0.0.1:43131" },
+  { server: "nats://127.0.0.1", message: /--server names no port/, example: "--server nats://127.0.0.1:<port>" },
+];
+for (const { server, message, example } of servers) {
+  const text = run(["up", "--server", server]);
+  check(`up --server ${server} is the classified USAGE_INVALID report with no help, exit 1, giving ${example}`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Code:\s+USAGE_INVALID/.test(text.stderr) && text.stderr.includes(example) && !/Usage|Options/.test(text.stderr), shown(text));
 }
 
 check("nothing was written in the folder", readdirSync(folder).length === 0, readdirSync(folder));
