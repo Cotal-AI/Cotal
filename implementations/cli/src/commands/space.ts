@@ -13,6 +13,7 @@ import {
   loadPreparedSpaces,
   noteFolderSpace,
   plainFlag,
+  preparedLifecycle,
   presentationOf,
   pruneStaleMeshes,
   writeResult,
@@ -93,6 +94,11 @@ export interface PreparedRow {
   readonly current: boolean;
   /** Its project folder no longer exists, so `up` cannot start it there. */
   readonly rootMissing: boolean;
+  /** What its root's stack records, as `status` reports it: never started, stopped, or a last
+   *  `up` or `down` with no recorded outcome. */
+  readonly state: "prepared" | "stopped" | "unsettled";
+  /** That last operation and how it ended, such as `cotal down, completed`; null when it never started. */
+  readonly lastOperation: string | null;
 }
 
 interface PreparedDetail extends PreparedRow {
@@ -178,7 +184,16 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
 }
 
 function preparedRow(p: PreparedSpace, current: string | null): PreparedRow {
-  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing: !existsSync(p.root) };
+  const rootMissing = !existsSync(p.root);
+  const lifecycle = rootMissing ? undefined : preparedLifecycle(p.root, p.space);
+  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing, state: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
+}
+
+/** How a prepared space's own root left it, as a cell. */
+function lifecycleCell(p: Pick<PreparedRow, "state" | "lastOperation">): Cell {
+  if (p.state === "stopped") return { text: `stopped · ${p.lastOperation}`, tone: "waiting" };
+  if (p.state === "unsettled") return { text: `last ${p.lastOperation}`, tone: "waiting" };
+  return { text: "not started", tone: "waiting" };
 }
 
 function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
@@ -233,24 +248,27 @@ const nameCell = (s: Pick<SpaceRow, "space" | "current">, folder: string | null 
   s.current ? { text: `${s.space} (selected)`, tone: "selected" } : s.space === folder ? { text: `${s.space} (this folder's)`, tone: "selected" } : s.space;
 
 function spacesView(result: SpacesResult): Report {
+  // A space that ran and was stopped says so, as `status` does, rather than reading as never started.
+  const ran = result.prepared.some((p) => p.state !== "prepared");
   const prepared: Section[] = result.prepared.length === 0 ? [] : [{
-    title: "Prepared, not started",
+    title: ran ? "Prepared spaces" : "Prepared, not started",
     blocks: [
       {
         kind: "table",
-        columns: [{ key: "space", label: "Space" }, { key: "root", label: "Project" }],
-        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), root: p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
+        columns: [{ key: "space", label: "Space" }, ...(ran ? [{ key: "state", label: "State" }] : []), { key: "root", label: "Project" }],
+        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
       },
       // A folder that is gone cannot be started, so its space names the steps `space show` gives.
       { kind: "commands", items: [
         ...(result.prepared.some((p) => !p.rootMissing) ? [{ command: "cotal up", description: "Start a prepared space from its project folder" }] : []),
+        ...(result.prepared.some((p) => p.state === "unsettled") ? [{ command: "cotal status", description: "Run in its project folder, it names the step that finishes or settles its last operation" }] : []),
         ...result.prepared.filter((p) => p.rootMissing).map((p) => ({ command: `cotal space forget ${p.space}`, description: `Its folder is gone: forget it, then prepare it again with \`cotal space create ${p.space} --root <dir>\`` })),
       ] },
     ],
   }];
   // A prepared space is listed below, so the empty line names what is missing without denying it.
   if (result.items.length === 0)
-    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? ["No space has been started or registered yet."] : ["No spaces registered.", { text: "Prepare a local space or connect to one you already run.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
+    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Prepare a local space or connect to one you already run.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
   return {
     sections: [{
       title: "Spaces",
@@ -286,12 +304,13 @@ function preparedView(p: PreparedDetail): Report {
   // A folder that is gone cannot be started; the space is forgotten and prepared again elsewhere.
   const hints: Cell[] = p.rootMissing
     ? [{ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with \`cotal space forget ${p.space}\`, then prepare it again with \`cotal space create ${p.space} --root <dir>\``, tone: "hint" }]
-    : [{ text: `start it with \`cotal up\` in ${p.root}`, tone: "hint" }];
+    : p.state === "unsettled" ? [{ text: `run \`cotal status\` in ${p.root}, which names the step that finishes or settles it`, tone: "hint" }]
+    : [{ text: `start it${p.state === "stopped" ? " again" : ""} with \`cotal up\` in ${p.root}`, tone: "hint" }];
   if (!p.current && !p.rootMissing) hints.push({ text: `select it with \`cotal use ${p.space}\``, tone: "hint" });
   return {
     sections: [{
       blocks: [
-        { kind: "fields", rows: [["space", nameCell(p)], ["broker", { text: "not started", tone: "waiting" }], ["root", p.root], ["prepared", p.preparedAt]] },
+        { kind: "fields", rows: [["space", nameCell(p)], ["broker", lifecycleCell(p)], ["root", p.root], ["prepared", p.preparedAt]] },
         { kind: "lines", lines: hints },
       ],
     }],

@@ -2391,8 +2391,11 @@ read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` with nothing selected. Each entry under `prepared` has `space`, `root`,
-`preparedAt`, `current` and `rootMissing`, which is true when its project folder no longer exists,
-and `space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
+`preparedAt`, `current`, `rootMissing`, which is true when its project folder no longer exists,
+`state` and `lastOperation`. `state` is `prepared` for a space that never started, `stopped` for one
+whose stack ran and was stopped, and `unsettled` when its last `up` or `down` recorded no outcome.
+`lastOperation` names that operation and how it ended, such as `cotal down, completed`, or is null.
+`space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
 such a folder `(no longer exists)` and names `cotal space forget <space>` for it instead of `cotal up`.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
@@ -2482,6 +2485,9 @@ formatting mark, which can show one path as another, refuses `USAGE_INVALID`, ex
 written, in `space create` and in `cotal up`. The refusal names the character and shows the path with
 it escaped. `space` lists prepared spaces under their own heading, below a line that says no space
 has been started or registered yet when that is so, and `space show`, `use` and `whoami` accept one.
+Once one of them has run, the heading gets a `State` column, and the line says no space is running
+or registered. A space whose stack ran and was stopped reads as stopped in `space`, `space show` and
+`use`, with its last operation, as `status` reads it.
 A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. Its Next names
@@ -2631,8 +2637,9 @@ selection, `use` also says that commands in the folder target that space, and `-
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
 nothing selected it is a `no-op`, exit 0. It takes no space name.
-A space stays selected through its `cotal down`: `use` then reports it as prepared and not started,
-and it stays selected until `use` changes it. On a controller root, `up --json` gives
+A space stays selected through its `cotal down`: `use` then reports it as stopped, with its last
+operation, such as `cotal down, completed`, and names `cotal up` in its root. It stays selected until
+`use` changes it. On a controller root, `up --json` gives
 `result.selection`, with `current`, the space selected after the start, and `changed`, which is true
 when this `up` selected its own space because no space was selected.
 

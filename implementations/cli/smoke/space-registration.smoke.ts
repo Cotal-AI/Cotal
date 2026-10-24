@@ -914,6 +914,8 @@ if (process.platform === "linux") {
   check("space lists it apart from the registrations", list.env?.result.prepared.some((p: { space: string; root: string }) => p.space === "demo" && p.root === fresh) && !list.env.result.items.some((s: { space: string }) => s.space === "demo"), list.env?.result);
   const show = await json(["space", "show", "demo"]);
   check("space show shows it as prepared", show.status === 0 && show.env?.result.kind === "prepared-space" && show.env.result.root === fresh && show.env.result.rootMissing === false, shown(show));
+  check("a space that never started reads as prepared, with no last operation, in the listing and in space show",
+    list.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "prepared" && p.lastOperation === null) && show.env?.result.state === "prepared" && show.env.result.lastOperation === null, { list: list.env?.result.prepared, show: show.env?.result });
   const named = await json(["who", "--space", "demo"]);
   check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(named.env?.error?.message ?? "") && named.env?.error?.remedy?.includes(fresh), shown(named));
   const channelForms = [["channel"], ["channel", "show", "general"], ["channel", "set", "general", "--desc", "x"], ["channel", "defaults"], ["channel", "members", "general"], ["channel", "remove", "general", "--yes"]];
@@ -952,7 +954,8 @@ if (process.platform === "linux") {
   check("up of a legacy name that is not a routing token says no member was started and quotes the name in its next step",
     refused(legacyUp, 1, "SCHEMA_INVALID") && /started no member/.test(legacyUp.env?.error?.message ?? "") && (legacyUp.env?.error?.remedy ?? "").includes("--space 'sp ace'"), shown(legacyUp));
   const human = await run(["space", "--plain"]);
-  check("the listing shows it under its own heading", /Prepared, not started/.test(human.stdout) && /demo \(selected\)/.test(human.stdout), shown(human));
+  // Spaces this suite started and stopped above are listed with it, so the heading has a State column.
+  check("the listing shows it under its own heading, as not started", /^Prepared spaces$/m.test(human.stdout) && /demo \(selected\) +not started/.test(human.stdout), shown(human));
   const target = await json(["who"]);
   check("a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root", refused(target, 2, "TARGET_UNAVAILABLE") && /cotal up/.test(target.env?.error?.remedy ?? "") && target.env?.error?.remedy?.includes(fresh), shown(target));
 
@@ -1142,6 +1145,19 @@ if (process.platform === "linux") {
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const restopped = await run(["down", "--yes"], {}, fresh);
   check("...and down stops it again with the space still selected", restopped.status === 0 && getCurrent() === "demo", { ...shown(restopped), current: getCurrent() });
+  // After its down, the space reads as stopped with its last operation, as `status` reads it.
+  const stoppedList = await json(["space"]), stoppedListHuman = await run(["space", "--plain"]);
+  check("after down, space lists it as stopped with its last operation, under a State column",
+    stoppedList.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "stopped" && p.lastOperation === "cotal down, completed")
+      && /^Prepared spaces$/m.test(stoppedListHuman.stdout) && /demo \(selected\) +stopped - cotal down, completed/.test(stoppedListHuman.stdout), { json: stoppedList.env?.result.prepared, human: stoppedListHuman.stdout });
+  const stoppedShow = await json(["space", "show"], fresh), stoppedShowHuman = await run(["space", "show", "--plain"], {}, fresh);
+  check("...space show gives the same state and names cotal up again in its root",
+    stoppedShow.env?.result.state === "stopped" && stoppedShow.env.result.lastOperation === "cotal down, completed"
+      && /^broker: +stopped - cotal down, completed$/m.test(stoppedShowHuman.stdout) && stoppedShowHuman.stdout.includes(`start it again with \`cotal up\` in ${fresh}`), { json: stoppedShow.env?.result, human: stoppedShowHuman.stdout });
+  const stoppedUse = await json(["use"]), stoppedUseHuman = await run(["use", "--plain"]);
+  check("...and use reports it as stopped, not as prepared and not started",
+    stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "cotal down, completed"
+      && stoppedUseHuman.stdout.includes(`stopped; its last operation, cotal down, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");

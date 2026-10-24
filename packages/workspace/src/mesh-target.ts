@@ -355,11 +355,28 @@ function notStarted(space: string, cwd?: string): void {
     const moved = stack?.stackSpace === space && stack.recordedRoot === prepared.root ? stack.stackRemedy : undefined;
     throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, ...(moved ? { stackRemedy: moved } : {}) });
   }
-  const stopped = stoppedStack(prepared.root, space);
-  const unsettled = unsettledStackOperation(prepared.root, space);
-  if (unsettled) throw new MeshTargetError("not-started", `"${space}" is prepared, and the last ${unsettled} of its stack in ${prepared.root} has no recorded outcome`, { space, root: prepared.root, unsettled, ...(stopped ? { stopped } : {}) });
-  if (stopped) throw new MeshTargetError("not-started", `"${space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space, root: prepared.root, stopped });
+  const lifecycle = preparedLifecycle(prepared.root, space);
+  if (lifecycle.state === "unsettled") throw new MeshTargetError("not-started", `"${space}" is prepared, and the last ${lifecycle.unsettled} of its stack in ${prepared.root} has no recorded outcome`, { space, root: prepared.root, unsettled: lifecycle.unsettled, ...(lifecycle.stopped ? { stopped: lifecycle.stopped } : {}) });
+  if (lifecycle.state === "stopped") throw new MeshTargetError("not-started", `"${space}" is stopped; its last operation, ${lifecycle.lastOperation}`, { space, root: prepared.root, stopped: lifecycle.stopped });
   throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
+}
+
+/** What the root a space was prepared in records about its stack, as a command that targets it
+ *  reports it: `unsettled` when the last whole-stack `up` or `down` recorded no outcome, `stopped`
+ *  once a stack that launched a member recorded one, else `prepared`. `lastOperation` names that
+ *  operation and how it ended, such as `cotal down, completed`. */
+export type PreparedLifecycle =
+  | { state: "prepared"; lastOperation: null }
+  | { state: "stopped"; lastOperation: string; stopped: NonNullable<MeshTargetErrorDetails["stopped"]> }
+  | { state: "unsettled"; lastOperation: string; unsettled: "up" | "down"; stopped?: NonNullable<MeshTargetErrorDetails["stopped"]> };
+
+/** {@link PreparedLifecycle} for `space`, prepared at `root`. */
+export function preparedLifecycle(root: string, space: string): PreparedLifecycle {
+  const stopped = stoppedStack(root, space);
+  const unsettled = unsettledStackOperation(root, space);
+  if (unsettled) return { state: "unsettled", lastOperation: `cotal ${unsettled}, with no recorded outcome`, unsettled, ...(stopped ? { stopped } : {}) };
+  if (stopped) return { state: "stopped", lastOperation: `${stopped.operation}, ${stopped.outcome}`, stopped };
+  return { state: "prepared", lastOperation: null };
 }
 
 const OPERATION: Record<string, string> = { up: "cotal up", down: "cotal down", preserve: "a preserving cotal down", resume: "a resume" };
