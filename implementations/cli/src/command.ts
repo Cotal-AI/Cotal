@@ -337,6 +337,7 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
  *  text, which is read as a positional. */
 function misspelledOption(cmd: Command, rest: readonly string[]): { message: string; remedy: string } | undefined {
   const names = new Set<string>([...(cmd.flags ?? []).map((flag) => flag.name), ...GLOBAL_FLAGS]);
+  const shorts = new Set<string>((cmd.flags ?? []).flatMap((flag) => (flag.short ? [flag.short] : [])));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
     const previous = rest[index - 1];
@@ -345,7 +346,8 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
     const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
-    if (typed && names.has(typed[1]!)) return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: --${typed[1]}` };
+    if (typed && (names.has(typed[1]!) || shorts.has(typed[1]!)))
+      return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
   }
   return undefined;
 }

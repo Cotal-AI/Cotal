@@ -504,10 +504,10 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 
 // ── A flag typed with a typographic dash, as autocorrect writes `--` ──────────────────────────────
 {
-  refused("an en-dash flag is refused naming the dash and the flag", cotal(["down", "\u2013yes"]), /"\u2013yes" starts with an en dash, a typographic dash, so it is not a flag; type --yes with ASCII hyphens/);
-  refused("an em-dash flag after an argument is refused the same way", cotal(["history", "general", "\u2014limit", "1"]), /"\u2014limit" starts with an em dash.*type --limit/);
-  refused("a minus-sign short flag names the short flag", cotal(["history", "general", "\u2212j"]), /"\u2212j" starts with a minus sign.*type -j with an ASCII hyphen/);
-  refused("a command's own flags are what it names, wherever the word stands", cotal(["send", "-c", "general", "hallo", "\u2013json"]), /"\u2013json" starts with an en dash.*type --json/);
+  refused("an en-dash flag is refused naming the dash and the flag", cotal(["down", "\u2013yes"]), /\u2013yes starts with a typographic dash, so it is not an option\n\s+type the option with hyphens: --yes/);
+  refused("an em-dash flag after an argument is refused the same way", cotal(["history", "general", "\u2014limit", "1"]), /\u2014limit starts with a typographic dash[^]*hyphens: --limit/);
+  refused("a minus-sign short flag names the short flag", cotal(["history", "general", "\u2212j"]), /\u2212j starts with a typographic dash[^]*hyphens: -j$/m);
+  refused("a command's own flags are what it names, wherever the word stands", cotal(["send", "-c", "general", "hallo", "\u2013json"]), /\u2013json starts with a typographic dash[^]*hyphens: --json/);
   const noFlag = cotal(["history", "\u2013nichts"], undefined, noSeed);
   check("a dash word that names no flag is still the argument it reads as", !/typographic dash/.test(noFlag.stderr) && /"\u2013nichts"/.test(noFlag.stderr), shown(noFlag));
   const terminated = cotal(["send", "-c", "general", "--", "\u2013json"], undefined, noSeed);
