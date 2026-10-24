@@ -5283,7 +5283,13 @@ cotal channel remove <name> [--purge] [--yes]
 metadata, not every channel with traffic. `show` includes inherited replay and delivery settings.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
-records. A missing feed remains unknown rather than an empty confirmed census. A lost connection is
+records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
+census with no member for a name that has no saved entry and no retained messages is refused with
+`TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
+case differs. A channel with a saved entry or retained messages and no member reads as empty. A
+follow shows the census again only when it changes: a poll that observes the same members writes no
+record and prints nothing, and the `end` record's `lastAsOf` is the last poll the follow read. A follow's
+view offers no command to follow. A lost connection is
 one `TARGET_UNAVAILABLE` error record, or one line, while the follow re-establishes it, and a `gap`
 record and the current census follow once the feed answers again, so a follow outlives a broker
 restart. A credential that can no longer connect ends the follow with the refusal a one-shot
