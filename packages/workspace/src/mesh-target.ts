@@ -293,10 +293,11 @@ function localTarget(root: string, server: string, source: MeshTarget["source"],
   // No registry entry and no explicit space, so the root itself must name exactly one space;
   // `soleSpaceOf` fails loud rather than picking one when it holds several (or the tenant list is
   // unreadable). Surface that as a catchable target error so a caller like `status` reports it as an
-  // ambiguous target instead of crashing on an uncaught throw.
+  // ambiguous target instead of crashing on an uncaught throw. A root with no trust yet names the
+  // space `cotal space create` prepared there, as `cotal up` there starts it.
   let space: string;
   try {
-    space = soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
+    space = soleSpaceOf(authDir(root)) ?? preparedSpaceAt(root)?.space ?? DEFAULT_SPACE;
   } catch (e) {
     throw new MeshTargetError("ambiguous-target", (e as Error).message, { root });
   }
@@ -481,7 +482,7 @@ function selectionTargetsHere(cwd: string, current: string, meshes: readonly Mes
   const folder = folderSpaces(cwd, meshes);
   if (!folder || folder.spaces.length === 0 || folder.spaces.includes(current)) return true;
   if (folder.spaces.length === 1) {
-    recordOperationSpaceNote(folder.spaces[0]!, `this folder's space; the selected space "${current}" applies outside it`);
+    noteFolderSpace(folder.spaces[0]!, current);
     return false;
   }
   recordOperationWarning({
@@ -490,6 +491,21 @@ function selectionTargetsHere(cwd: string, current: string, meshes: readonly Mes
     message: `this targets the selected space "${current}", not this folder's spaces ${folder.spaces.map((s) => `"${s}"`).join(", ")}; pass --space <space> to target one of them`,
   });
   return true;
+}
+
+/** Say under the run's `Mesh:` heading that `space` is this folder's and the selection `current`
+ *  applies outside the folder. */
+export function noteFolderSpace(space: string, current: string): void {
+  recordOperationSpaceNote(space, `this folder's space; the selected space "${current}" applies outside it`);
+}
+
+/** The space a command without `--space` targets in the project folder `cwd` is in when that is not
+ *  the selection `current`: the root's one registered or prepared space. Undefined with nothing
+ *  selected, outside a project, and where the selection is the target. */
+export function folderSpaceOverSelection(cwd: string, current: string | null): string | undefined {
+  if (current === null) return undefined;
+  const folder = folderSpaces(cwd, loadMeshes());
+  return folder?.spaces.length === 1 && folder.spaces[0] !== current ? folder.spaces[0] : undefined;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one

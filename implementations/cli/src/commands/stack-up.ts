@@ -15,9 +15,39 @@ import { join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MEMBERSHIP_MAX_BYTES, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getCurrent, getSpaceAuth, hasUserAuthState,
-  homeCotalDir, isCommandFailure, loadMeshes, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
-  rotateSystemCreds, SPACE_NAME_MAX, spaceNameTooLong, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
+  CommandFailure,
+  accountInventory,
+  authDir,
+  canonicalRoot,
+  deliveryCredsKey,
+  findMesh,
+  findPreparedSpace,
+  getCurrent,
+  getSpaceAuth,
+  hasUserAuthState,
+  homeCotalDir,
+  isCommandFailure,
+  loadMeshes,
+  localMeshesForRoot,
+  presentationOf,
+  readMaintenanceJournal,
+  renderReport,
+  resolveNativeServiceTarget,
+  resolveOnPath,
+  rotateSystemCreds,
+  SPACE_NAME_MAX,
+  spaceNameTooLong,
+  stackHomeRemedy,
+  stackRunsUnderOtherHome,
+  terminalWidth,
+  workspaceSecretStore,
+  writeResult,
+  type MaintenanceLock,
+  type OutputWarning,
+  type Report,
+  type ServiceDefinitionInput,
+  type UserAuthInfo,
+  unparsableDaemonCreds,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
@@ -25,7 +55,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
+import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { prepareKernelServiceStop, prepareProcessService, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
@@ -172,6 +202,16 @@ function holdsBrokerAccount(root: string): boolean {
   return inventory.spaces.length > 0 || inventory.corrupt.length > 0;
 }
 
+const MODE_NAME: Record<StackMode, string> = { auth: "static auth", open: "open", user: "user auth" };
+
+/** The next step when an explicit mode is not the one a root's first whole-stack `up` recorded.
+ *  Nothing converts a root's mode: `reset`, `clean` and `space forget` keep the stack journal that
+ *  records it. So the step keeps that mode, or starts the requested one in another folder. */
+function pinnedModeRemedy(recorded: StackMode, requested: StackMode): string {
+  const flag = requested === "open" ? " --open" : requested === "user" ? " --user-auth" : "";
+  return `run bare cotal up to keep ${MODE_NAME[recorded]} here, or for ${MODE_NAME[requested]} run cotal space create <space>, then cotal up${flag}, in another folder`;
+}
+
 /** The mode an invocation explicitly asks for, or none for a bare `up`. */
 export function requestedStackMode(values: ParsedArgs["values"]): StackMode | undefined {
   return values["user-auth"] === true ? "user" : values.open === true ? "open" : undefined;
@@ -179,7 +219,8 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
 
 /** A root takes the controller route when it already has a stack journal, or when it is a fresh,
  *  prepared root with nothing legacy, maintenance or team-owned retained under it. On either, an
- *  input the controller has no route for refuses `UNSUPPORTED`. A static-auth request needs an `up`
+ *  input the controller has no route for refuses `UNSUPPORTED`. A recorded stack that launched a
+ *  member keeps its auth mode. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
  *  its native auth service. Anything else keeps the retained path. */
@@ -191,7 +232,9 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   if (recorded) {
     const refused = unsupported.filter((name) => name !== "rotate-sys");
     if (refused.length) throw controllerUnsupported(canonical, refused, false);
-    if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${recorded.journal.mode === "open" ? "open" : recorded.journal.mode === "user" ? "user auth" : "static auth"}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: "run bare cotal up to keep the recorded mode" });
+    // A stack that never launched a member pins no mode; its next up plans a first start.
+    if (stackNeverStarted(recorded.journal)) return true;
+    if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${MODE_NAME[recorded.journal.mode]}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: pinnedModeRemedy(recorded.journal.mode, requested) });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
     return true;
   }
@@ -290,6 +333,14 @@ function membersView(journal: StackJournal, title: string, executable?: NatsServ
   ] }] };
 }
 
+/** The warning a start gives for daemon credentials the NATS client cannot parse. `up` mints only a
+ *  missing one and the manager re-signs only one that holds its key, so it names the step that
+ *  replaces it. */
+export function unparsableDaemonCredsNotice(kinds: readonly string[]): string {
+  const them = kinds.length === 1 ? "it" : "them";
+  return `${kinds.join(" and ")} cannot be parsed, so the delivery daemon runs without ${them} and the manager cannot re-sign ${them}; stop the stack with \`cotal down\`, then run \`cotal doctor auth --fix\`, which mints ${them} again`;
+}
+
 /** The listeners the stack's running broker and manager opened, from their saved definitions. Null
  *  when the broker's configuration could not be read, so no list is given rather than a short one. */
 function stackListeners(journal: StackJournal): StackListener[] | null {
@@ -321,7 +372,8 @@ export function keptOnUp(space: string, kept: string): string {
 }
 
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
- *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
+ *  own receipt, which names the saved services it does not start. The stack is up by then, so a
+ *  persona that cannot be written, or saved services that cannot be listed, is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
   const before = usableSelection();
   const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation } = await startControllerStack(request, native);
@@ -339,7 +391,20 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  if (mode !== "open") {
+    const unparsable = await unparsableDaemonCreds(root, space);
+    if (unparsable.length) warnings.push({ code: "DAEMON_CREDENTIAL_UNPARSABLE", target: { root, space, credentials: unparsable }, message: unparsableDaemonCredsNotice(unparsable) });
+  }
+  // A space forgotten under this name leaves its saved services to this one, so the receipt names
+  // each saved service up does not start.
+  const stackDefinitions = new Set(Object.values(STACK_DEFINITION));
+  let savedServices: string[] = [];
+  try {
+    savedServices = serviceDefinitionStore(space).list().map((row) => row.name).filter((name) => !stackDefinitions.has(name));
+  } catch (error) {
+    warnings.push({ code: "SAVED_SERVICES_NOT_READ", target: { root, space }, message: `the saved services of ${space} could not be listed: ${(error as Error).message}` });
+  }
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, savedServices, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const exposed = result.listeners && exposedPlaintext(result.listeners);
     const listening: Report["sections"] = [{ title: "Listeners", blocks: [
@@ -356,11 +421,15 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     ] }] }];
     const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
     const kept: Report["sections"] = selection ? [{ blocks: [{ kind: "lines", lines: [{ text: selection, tone: "hint" }] }] }] : [];
+    const saved: Report["sections"] = result.savedServices.length ? [{ blocks: [{ kind: "lines", lines: [
+      { text: `saved services up does not start: ${result.savedServices.join(", ")}`, tone: "hint" },
+      { text: `  a space forgotten under the name ${space} leaves its saved services to the next one; \`cotal service show <name> --space ${space}\` shows what one runs`, tone: "hint" },
+    ] }] }] : [];
     const rotated: Report["sections"] = result.rotatedSystemAccount ? [{ title: "System account rotated", blocks: [
       { kind: "fields", rows: [["Generation", String(result.rotatedSystemAccount.generation)], ["$SYS creds valid to", result.rotatedSystemAccount.expiresAt?.slice(0, 10) ?? "no expiry"]] },
       { kind: "lines", lines: ["membership-observer.creds and connection-evictor.creds were minted against the new system account, and the broker started on a configuration rendered from it. The data account, every agent credential and the JetStream store are unchanged. Old $SYS creds are refused by any broker that loads this configuration."] },
     ] }] : [];
-    return { ...view, sections: [...view.sections, ...rotated, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...kept, ...next] };
+    return { ...view, sections: [...view.sections, ...rotated, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...saved, ...kept, ...next] };
   });
 }
 
@@ -401,6 +470,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // member's file is written, instead of failing on the first file name that does not fit.
   const tooLong = spaceNameTooLong(space);
   if (tooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${tooLong}; nothing was started or written`, { target: { root, space }, remedy: `forget it with cotal space forget ${space}, then create one with a name of at most ${SPACE_NAME_MAX} characters with cotal space create <name>` });
+  // Each member's start is recorded under the space's service records. A folder there this account
+  // cannot write refuses here, naming it, instead of an unknown outcome after a member started.
+  const unwritable = serviceRecordsWriteProblem(space, ["definitions", "instances"]);
+  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+w ${unwritable}, then run cotal up again` });
   const recorded = readStackJournal(root);
   if (request.expectPriorDown && (!recorded || recorded.sha256 !== request.expectPriorDown.journalSha256 || recorded.journal.operation.id !== request.expectPriorDown.operationId))
     throw new CommandFailure("refused", "CONFLICT", "the stopped stack changed after the team boot checked it; nothing was started", { target: { root, space, expected: request.expectPriorDown.operationId } });
@@ -462,7 +535,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // The mode is pinned by the first whole-stack up. A conflicting explicit request refuses here,
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
-    throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: "run bare cotal up to keep the recorded mode" });
+    throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: pinnedModeRemedy(previous.journal.mode, request.mode) });
   const mode: StackMode = previous?.journal.mode ?? request.mode ?? "auth";
   if (mode === "open" && holdsBrokerAccount(root))
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });

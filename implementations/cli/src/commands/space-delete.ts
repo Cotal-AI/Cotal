@@ -1,26 +1,62 @@
 import * as prompts from "../lib/prompts.js";
 import { Kvm } from "@nats-io/kv";
-import { JetStreamApiCodes, jetstreamManager } from "@nats-io/jetstream";
+import { JetStreamApiCodes, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { canPrompt } from "./meshes-wizard.js";
 import {
-  dialerFor, isJetStreamMissing, isTransferStream, liveKvEntries, mintCreds,
-  mintLifecycleUid, newIdentity, observeBrokerConnectionIdentity, presenceBucket,
+  dialerFor, endpointNameOf, isJetStreamMissing, isTransferStream, liveKvEntries, mintCreds,
+  mintLifecycleUid, newIdentity, observeBrokerConnectionIdentity, presenceBucket, recordsBucket,
   spaceDeletionStreams, standaloneConnectOpts, token, validateSpaceAuth,
   type ParsedArgs, type Presence, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, localProcessPath, oneLine, presentationOf,
-  renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type MeshEntry, type Report,
+  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type MeshEntry, type Report, localProcessPath, type Block,
 } from "@cotal-ai/workspace";
-import { pidfileState } from "./down.js";
-import { localProcessSurface } from "../ext-loader.js";
-import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { processGone, readStackJournal, STACK_ADAPTER } from "../lib/stack-journal.js";
+import { runningStackMembers } from "../lib/stack-members.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 
 interface DeletionStream { name: string; kind: "stream" | "bucket" | "object-store"; state: "present" | "absent"; messages: number | null }
 interface PresenceImpact { id: string; name: string | null; status: string | null; lastHeartbeat: number | null }
+/** A workflow run the delete removes. `state` is its recorded status, `no status recorded` when it
+ *  has none, or `unreadable`. */
+interface DeletionRun { runId: string; endpoint: string; state: string }
+interface DeletionRuns { unfinished: DeletionRun[]; finished: number }
+
+/** The workflow runs in the space's records bucket that have not finished, each named by its spec
+ *  record and read from its status record. A run with no status record has not finished either.
+ *  The status read is a non-fencing direct get, the only records read the teardown grant holds. */
+async function recordedRuns(jsm: JetStreamManager, space: string): Promise<DeletionRuns> {
+  const bucket = recordsBucket(space), prefix = `$KV.${bucket}.`;
+  const specs = Object.keys((await jsm.streams.info(`KV_${bucket}`, { subjects_filter: `${prefix}run.*.*.spec` })).state.subjects ?? {}).sort();
+  const unfinished: DeletionRun[] = [];
+  let finished = 0;
+  for (const subject of specs) {
+    const parts = subject.slice(prefix.length).split(".");
+    if (parts.length !== 4) throw new CommandFailure("refused", "SCHEMA_INVALID", "a workflow run record has an unexpected key; no complete impact snapshot was returned", { target: { space } });
+    const [, endpoint, runId] = parts as [string, string, string, string];
+    const status = await jsm.direct.getMessage(`KV_${bucket}`, { last_by_subj: `${prefix}run.${endpoint}.${runId}.status` });
+    let state = "no status recorded";
+    if (status) {
+      let recorded: unknown;
+      try { recorded = status.header?.get("KV-Operation") ? undefined : status.json<{ state?: unknown }>().state; } catch { recorded = undefined; }
+      state = typeof recorded === "string" ? recorded : "unreadable";
+    }
+    if (state === "completed" || state === "failed") finished++;
+    else unfinished.push({ runId, endpoint: endpointNameOf(endpoint), state });
+  }
+  return { unfinished, finished };
+}
+
+/** The unfinished runs as report blocks, for the preview and the receipt. */
+function runBlocks(runs: readonly DeletionRun[], removed: boolean): Block[] {
+  return [
+    { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "state", label: "State" }], rows: runs.slice(0, 100).map((row) => ({ run: row.runId, state: row.state })) },
+    { kind: "lines", lines: [...(runs.length > 100 ? [`Showing 100 of ${runs.length} runs; --json retains every row.`] : []), removed
+      ? "These runs had not finished and were removed with the streams. A run that was waiting for an answer cannot be answered or resumed."
+      : "Deleting the streams removes these runs. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards. To read a run's open request first, run cotal up, then cotal run show <run>."] },
+  ];
+}
 
 /** A space this machine started whose own services still read and write its streams. Deleting the
  *  streams under them leaves a stack that can neither start nor stop. On a controller root every
@@ -29,16 +65,23 @@ interface PresenceImpact { id: string; name: string | null; status: string | nul
  *  itself, so it is not counted. A space registered for another machine's broker is not checked. */
 function liveStackRefusal(entry: MeshEntry, space: string, preview = false): CommandFailure | undefined {
   if (entry.origin !== "up") return undefined;
-  let controller: boolean, users: string[];
+  let controller: boolean, users: string[], services: { definition: string; instanceId: string }[];
   try {
-    controller = readStackJournal(entry.root)?.journal.space === space;
-    users = controller
-      ? serviceInstances(space).filter((row) => row.record.value.adapter?.name !== STACK_ADAPTER.broker && !processGone(observeServiceProcess(row.record.value))).map((row) => row.record.value.definition)
-      : localProcessSurface().filter((component) => !component.stopLast && pidfileState(localProcessPath(component.pidFile, { root: entry.root, space })).liveness !== "dead").map((component) => component.label);
+    ({ controller, members: users, services } = runningStackMembers(entry.root, space));
   } catch { return new CommandFailure("refused", "TARGET_UNAVAILABLE", "this space's local service and process records could not be read, so a running stack was not ruled out; no broker was contacted", { target: { space, root: entry.root } }); }
   if (!users.length) return undefined;
   // A preview reads the broker before it reports this, so only the apply says no broker was contacted.
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${[...new Set(users)].join(", ")}) and uses these streams${preview ? "" : "; no broker was contacted and nothing was deleted"}`, { target: { space, root: entry.root, running: [...new Set(users)] }, remedy: controller
+  const deleted = preview ? "" : "; no broker was contacted and nothing was deleted";
+  if (services.length) {
+    // `down` refuses while another service of the space runs, so each one is stopped first. With
+    // only the broker left after that, the delete itself applies.
+    const stack = users.filter((name) => !services.some((service) => service.definition === name));
+    const stops = services.map((service) => `cotal service stop ${service.definition} --instance ${service.instanceId} --space ${space} --yes`).join("; ");
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `services of this space still run here (${users.join(", ")}) and use these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: stack.length
+      ? `stop each service with ${stops}, then stop the stack with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
+      : `stop each service with ${stops}, then run cotal space delete ${space} again` });
+  }
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${users.join(", ")}) and uses these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: controller
     ? `stop it with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
     : `stop it with cotal down from ${entry.root}, then remove its stored streams with cotal clean store --force there` });
 }
@@ -85,7 +128,7 @@ async function readSpaceDeletion(name: string) {
     nc = await dialerFor(entry.server)({ servers: entry.server, ...standaloneConnectOpts({ ...(credential ? { creds: credential.creds } : {}), tls: entry.tlsRequired === true }), ...(credential ? { inboxPrefix: `_INBOX_${credential.id}` } : {}), timeout: 2_000, reconnect: false, maxReconnectAttempts: 0 });
   } catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the registered broker connection could not be established; no alternate address or identity was tried", { target }); }
 
-  let snapshot: { streams: DeletionStream[]; presences: PresenceImpact[]; serverId: string; identity: "matched" | "explicit-open"; observedAt: string } | undefined;
+  let snapshot: { streams: DeletionStream[]; presences: PresenceImpact[]; runs: DeletionRuns; serverId: string; identity: "matched" | "explicit-open"; observedAt: string } | undefined;
   let failure: CommandFailure | undefined;
   let transferConnection: NatsConnection | undefined;
   let closed = false, transferClosed = true;
@@ -137,7 +180,9 @@ async function readSpaceDeletion(name: string) {
         presences.push({ id: row.key, name: peer.card.name, status: peer.status, lastHeartbeat: peer.ts });
       }
     }
-    snapshot = { streams, presences, serverId: info.server_id, identity: credential ? "matched" : "explicit-open", observedAt: new Date().toISOString() };
+    const records = streams.find((stream) => stream.name === `KV_${recordsBucket(name)}`);
+    const runs = records?.state === "present" ? await recordedRuns(jsm, name) : { unfinished: [], finished: 0 };
+    snapshot = { streams, presences, runs, serverId: info.server_id, identity: credential ? "matched" : "explicit-open", observedAt: new Date().toISOString() };
   } catch (error) {
     failure = error instanceof CommandFailure ? error : new CommandFailure("failed", "OPERATION_FAILED", "the native stream or presence inventory did not finish; absence and impact were not inferred", { target });
   } finally {
@@ -158,6 +203,7 @@ function previewView(data: Awaited<ReturnType<typeof readSpaceDeletion>>["result
   return { sections: [
     { title: "Live space impact", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Recorded broker", data.recordedBroker ?? "not displayable"], ["Mode", data.recordedMode], ["TLS", data.recordedTlsRequired ? "required" : "not required"], ["Broker server ID", data.serverId], ["Identity", data.identity], ["Observed at", data.observedAt], ["Presence entries", String(data.presences.length)]] }, { kind: "lines", lines: ["Native reads were not atomic. Presence records are observations, not liveness or membership authority."] }] },
     { title: "First-party streams and buckets", blocks: [{ kind: "table", columns: [{ key: "name", label: "Name" }, { key: "kind", label: "Kind" }, { key: "state", label: "State" }, { key: "messages", label: "Messages" }], rows: data.streams.slice(0, 100).map((stream) => ({ name: stream.name, kind: stream.kind, state: stream.state, messages: stream.messages === null ? "-" : String(stream.messages) })) }, ...(data.streams.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${data.streams.length} targets; --json retains every row.`] }] : [])] },
+    ...(data.runs.unfinished.length ? [{ title: "Workflow runs that have not finished", blocks: runBlocks(data.runs.unfinished, false) }] : []),
     { title: "Presence entries", blocks: [{ kind: "table", columns: [{ key: "id", label: "Principal" }, { key: "name", label: "Name" }, { key: "status", label: "Reported status" }, { key: "ts", label: "Heartbeat (epoch ms)" }], rows: data.presences.slice(0, 100).map((peer) => ({ id: peer.id, name: peer.name ?? "-", status: peer.status ?? "-", ts: peer.lastHeartbeat === null ? "-" : String(peer.lastHeartbeat) })) }, ...(data.presences.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${data.presences.length} entries; --json retains every row.`] }] : []), { kind: "lines", lines: ["This preview deleted nothing. A separate apply rechecks the native target and requires confirmation."] }] },
   ] };
 }
@@ -281,7 +327,9 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const initial = await readSpaceDeletion(name);
   if (!yes) {
     process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
-    const answer = await prompts.text({ message: `Permanently delete ${oneLine(name)} on ${oneLine(initial.result.recordedBroker ?? "the registered broker")}? Type the exact space name`, validate: (value) => value === name ? undefined : `Type ${oneLine(name)} to confirm, or cancel.` });
+    const pending = initial.result.runs.unfinished.length;
+    const runs = pending ? ` Its ${pending} workflow run${pending === 1 ? " that has" : "s that have"} not finished go${pending === 1 ? "es" : ""} with it.` : "";
+    const answer = await prompts.text({ message: `Permanently delete ${oneLine(name)} on ${oneLine(initial.result.recordedBroker ?? "the registered broker")}?${runs} Type the exact space name`, validate: (value) => value === name ? undefined : `Type ${oneLine(name)} to confirm, or cancel.` });
     if (prompts.isCancel(answer)) {
       writeResult(presentation, { command: "space delete", target: { space: name }, result: { kind: "live-space-delete", confirmed: false, deleted: false }, noOp: true }, () => ({ sections: [{ title: "Space kept", blocks: [{ kind: "lines", lines: ["No native delete was submitted. The registration and local files were kept."] }] }] }));
       return;
@@ -298,6 +346,18 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   });
   if (fingerprint(initial) !== fingerprint(refreshed))
     throw new CommandFailure("refused", "CONFLICT", "the native streams or presence identities changed since the reviewed impact; no delete request was submitted", { target: { space: name }, remedy: "inspect the new impact with space delete <name> --dry-run before confirming again" });
+  // A typed confirmation was given for the message counts it showed, so a message stored or removed
+  // while it waited refuses too.
+  if (!yes) {
+    const reviewed = new Map(initial.result.streams.map((stream) => [stream.name, stream.messages]));
+    const changed = refreshed.result.streams.filter((stream) => reviewed.get(stream.name) !== stream.messages);
+    const count = (messages: number | null | undefined) => messages === null || messages === undefined ? "an unknown number of messages" : `${messages} message${messages === 1 ? "" : "s"}`;
+    if (changed.length)
+      throw new CommandFailure("refused", "CONFLICT", `the message counts changed while the confirmation waited (${changed.map((stream) => `${stream.name} holds ${count(stream.messages)}, ${count(reviewed.get(stream.name))} when reviewed`).join("; ")}); no delete request was submitted`, {
+        target: { space: name, changed: changed.map((stream) => ({ name: stream.name, reviewed: reviewed.get(stream.name) ?? null, messages: stream.messages })) },
+        remedy: `review the new impact and confirm it with cotal space delete ${name}`,
+      });
+  }
   // A stack started while the impact was reviewed refuses here too.
   const started = liveStackRefusal(refreshed.entry, name);
   if (started) throw started;
@@ -315,12 +375,14 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
       ? [{ command: "cotal down", description: `Stop the stack in ${root}; the next cotal up there creates the space's streams again, empty` },
         { command: `cotal space forget ${name}`, description: "After that stop, drop the space from this machine instead" }]
       : [{ command: `cotal space forget ${name}`, description: "Drop this machine's registration of the deleted space" }];
+  // The runs go with the records bucket that holds them.
+  const removedRuns = receipt.acknowledged.includes(`KV_${recordsBucket(name)}`) ? refreshed.result.runs.unfinished : [];
   writeResult(presentation, { command: "space delete", target: { space: name, broker: refreshed.result.recordedBroker },
-    result: { kind: "live-space-delete", space: name, brokerServerId: refreshed.result.serverId, open: refreshed.entry.mode === "open", ...receipt },
+    result: { kind: "live-space-delete", space: name, brokerServerId: refreshed.result.serverId, open: refreshed.entry.mode === "open", ...receipt, removedRuns },
     ...(receipt.acknowledged.length === 0 ? { noOp: true } : {}) }, (data): Report => ({ sections: [{ title: data.acknowledged.length ? "Space streams deleted" : "Space streams already absent", blocks: [
       { kind: "fields", rows: [["Space", data.space], ["Broker server ID", data.brokerServerId], ["Mode", data.open ? "open: any broker client can delete" : "static auth"], ["Deletion acknowledgements", String(data.acknowledged.length)], ["Already absent", String(data.alreadyAbsent.length)], ["Post-read remaining", String(data.postReadRemaining.length)]] },
       ...(data.acknowledged.length ? [{ kind: "table" as const, columns: [{ key: "name", label: "Deleted stream or bucket" }], rows: data.acknowledged.slice(0, 100).map((name) => ({ name })) }] : []),
       ...(data.alreadyAbsent.length ? [{ kind: "table" as const, columns: [{ key: "name", label: "Already absent" }], rows: data.alreadyAbsent.slice(0, 100).map((name) => ({ name })) }] : []),
       { kind: "lines", lines: ["Native delete acknowledgements are not a guarantee that another writer has not recreated a stream. No registration, trust or local file was removed.", ...(data.acknowledged.length > 100 || data.alreadyAbsent.length > 100 ? ["Each table shows at most 100 rows; --json retains every row."] : [])] },
-    ] }, { title: "Next", blocks: [{ kind: "commands", items: next }] }] }));
+    ] }, ...(data.removedRuns.length ? [{ title: "Workflow runs removed", blocks: runBlocks(data.removedRuns, true) }] : []), { title: "Next", blocks: [{ kind: "commands", items: next }] }] }));
 }

@@ -5,7 +5,8 @@
  * extended ACL. World write, a foreign owner and a symlink always refuse, a root-owned sticky
  * ancestor is accepted, and a credential file keeps its owner-only rule. A declared adapter path in
  * Cotal's own install, as the launcher runs it, names `cotal update` as the fix. The account database and
- * the ACL read are injected, so no case reads this machine's accounts or ACLs. Only `win32`
+ * the ACL read are injected, so no case reads this machine's accounts or ACLs. A record this account
+ * may not open names the folder that withholds it, and a link keeps the no-follow refusal. Only `win32`
  * selects the Windows record model; the platform is passed in, so that runs here. Broker-free.
  *
  * Run: pnpm smoke:protected-paths
@@ -18,7 +19,7 @@ import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
 import {
   assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
-  protectedLocalDirectory, protectedLocalEntries, protectedLocalEntry, protectedPathPolicy, type AccountDatabase, type ProtectedPathPolicy,
+  protectedLocalDirectory, protectedLocalEntries, protectedLocalEntry, protectedPathPolicy, readLocalRecordSource, type AccountDatabase, type ProtectedPathPolicy,
 } from "../src/protected-records.js";
 import { validateServiceAdapterPaths } from "../src/service-adapter.js";
 
@@ -286,7 +287,40 @@ try {
   }
 }
 
-// 6. One place picks the record model from the platform. Only win32 takes the Windows access-list
+// 6. A record this account may not open is refused with the folder that withholds it, which is often
+//    a folder above the file. A link stays the no-follow refusal; an absent file is no record.
+if (process.getuid?.() !== 0) {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "cotal-protected-read-")));
+  try {
+    const shut = join(base, "shut");
+    mkdirSync(join(shut, ".cotal"), { recursive: true, mode: 0o700 });
+    const record = join(shut, ".cotal", "record.json");
+    writeFileSync(record, "{}", { mode: 0o600 });
+    chmodSync(shut, 0o000);
+    let thrown: unknown;
+    try { readLocalRecordSource(record); } catch (error) { thrown = error; }
+    chmodSync(shut, 0o700);
+    assert.ok(thrown instanceof CommandFailure && thrown.code === "PERMISSION_DENIED", "a record under a folder this account cannot search refuses");
+    assert.equal((thrown as CommandFailure).message, `${shut} cannot be read by this account (EACCES), so ${record} was not read`, "the refusal names the folder, not the file or a link");
+    assert.equal((thrown as CommandFailure).remedy, `make it readable by you, for example with chmod u+rx ${shut}`, "its remedy is the chmod on that folder");
+    chmodSync(record, 0o000);
+    thrown = undefined;
+    try { readLocalRecordSource(record); } catch (error) { thrown = error; }
+    chmodSync(record, 0o600);
+    assert.equal((thrown as CommandFailure | undefined)?.message, `${record} cannot be read by this account (EACCES)`, "an unreadable file in a readable folder is named itself");
+    const link = join(base, "link.json");
+    symlinkSync(record, link);
+    thrown = undefined;
+    try { readLocalRecordSource(link); } catch (error) { thrown = error; }
+    assert.equal((thrown as CommandFailure | undefined)?.message, "the local record source could not be opened without following links", "a link keeps the no-follow refusal");
+    assert.equal(readLocalRecordSource(join(base, "absent.json")), undefined, "an absent file is no record");
+  } finally {
+    try { chmodSync(join(base, "shut"), 0o700); } catch { /* already restored */ }
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// 7. One place picks the record model from the platform. Only win32 takes the Windows access-list
 //    model; every other platform keeps the owner, mode and link checks, and this host has them.
 assert.equal(localRecordAccess("win32"), "windows-acl", "win32 selects the Windows access-list model");
 for (const platform of ["linux", "darwin", "freebsd"] as const)

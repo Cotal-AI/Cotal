@@ -159,7 +159,9 @@ dispatch it again: it opens a hold, a checkpoint under a token derived from the 
 request id, whose prompt names that id. Answer it with
 `cotal run answer <run> <step-key> --value <json>`, and the value becomes the step's result. An
 expired hold fails the step with the catchable L4027. Only `ask` runs inside `once`, so wrap just
-the step that writes: a host restart while it is in flight costs a settle.
+the step that writes: a host restart while it is in flight costs a settle. `run validate` refuses
+another effect in the body, or in a function the body calls by name, with L2033, and the run
+refuses one it reaches any other way with L4028.
 
 ```js
 const publisher = await spawn("publisher")
@@ -199,7 +201,11 @@ The recorded pins are preserved.
 mesh, which holds each run's journal, records and admission. A run that waited at a checkpoint or a
 timer when the backup was made is back after a full restore, and the manager takes it over as after
 a restart. What the run did after the backup is not in its record. A user-mode backup, and one made
-before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)).
+before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)). After a
+restore from one of them, or a registry-only restore, the store the restore set aside holds the only
+copy of the runs, and `cotal backup cleanup-fallback` deletes it only with `--discard-history`.
+After a full restore of a backup made before the space last ran, that store holds the only copy of
+what the runs did after the backup, under the same rule.
 
 ## From an agent session
 
@@ -260,7 +266,10 @@ or agent that holds the `run` capability.
 `journal` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
 accepted answer, it instead prints the answer value as JSON, who answered, the artifact when one was
 cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
-answer line.
+answer line. A settled `race` names on its line the branch it took. An answer the program never read
+is marked `not acted on`: its step was in a branch that lost a race, or its pause accepted it and
+was then cancelled, as a losing branch's pause is. `--json` carries the race's `winner` and, on each
+step of a losing branch, the `lostRace` it lost.
 
 A settled step is never answered twice, so a participant who changes their mind uses `amend`. It
 files a new answer beside the accepted one, naming the answer it supersedes, and `journal` prints

@@ -105,6 +105,11 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
         ...(typeof result.at === "number" ? { at: result.at } : {}),
       }
     : undefined;
+  // A race that took a branch's value settles `{ branches, value: { index, value } }`, where
+  // `index` names that branch.
+  const winner = e.kind === "race" && e.status === "ok" && result?.value !== null && typeof result?.value === "object"
+    ? (result.value as { index?: unknown }).index
+    : undefined;
   return {
     n,
     kind: "step",
@@ -118,6 +123,7 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
     ...(e.error?.message ? { errorMessage: e.error.message } : {}),
     startedAt: e.startedAt,
     ...(e.endedAt !== undefined ? { endedAt: e.endedAt } : {}),
+    ...(typeof winner === "string" ? { winner } : {}),
     ...(typeof external?.asks === "string" ? { asks: external.asks } : {}),
     ...(typeof external?.addressee === "string" ? { addressee: external.addressee } : {}),
     ...(typeof external?.deadlineAt === "number" ? { deadlineAt: external.deadlineAt } : {}),
@@ -126,9 +132,10 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
   };
 }
 
-/** The answer a settled `ask` accepted, read off its pause's status and answer record. An ask's
- *  frozen result is the answer's value alone, so unlike a checkpoint's it names no answer to print. */
-async function acceptedAskAnswer(kv: KV, endpoint: string, token: string): Promise<StepJournalRow["answer"]> {
+/** The answer a settled pause accepted, read off its pause's status and answer record. An ask's
+ *  frozen result is the answer's value alone, and a pause cancelled after it accepted an answer has
+ *  no result, so unlike a resolved checkpoint's neither names an answer to print. */
+async function acceptedPauseAnswer(kv: KV, endpoint: string, token: string): Promise<StepJournalRow["answer"]> {
   const status = await readCheckpointStatus(kv, { endpoint, token });
   const answerId = status?.value.state === "resumed" ? status.value.settledAnswerId : undefined;
   if (answerId === undefined) return undefined;
@@ -167,8 +174,9 @@ function journalPage(view: RunStatusView, offset: number, context: RunJournalPag
 /** The journal view `cotal run journal` prints, as rows. The step key is rendered by the export
  *  the journal itself keys with, so it is the key `answer` takes back. A settled checkpoint or
  *  `ask` also lists the amendments filed under the token it settled under (an ask's last attempt
- *  token rides its pending entries), read from the answer records on `kv`, and a settled ask the
- *  answer its last attempt accepted. */
+ *  token rides its pending entries), read from the answer records on `kv`, and a settled ask or a
+ *  cancelled pause the answer its last attempt accepted. Each step in a branch that lost a settled
+ *  `race` names that race. */
 export async function journalRows(
   kv: KV,
   endpoint: string,
@@ -176,6 +184,7 @@ export async function journalRows(
 ): Promise<RunJournalRow[]> {
   const rows: RunJournalRow[] = [];
   const steps = new Map<string, JournalEntry[]>();
+  const losers = new Map<string, readonly string[]>();
   for (const { record } of records) {
     if (record.kind === "activation") {
       rows.push({ n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo });
@@ -188,7 +197,8 @@ export async function journalRows(
     steps.set(row.step, step);
     const token = e.state !== "settled" || (e.kind !== "checkpoint" && e.kind !== "ask") ? undefined : stepPauseToken(step);
     const amendments = token === undefined ? [] : await listCheckpointAmendments(kv, endpoint, token);
-    const answer = token !== undefined && e.kind === "ask" ? await acceptedAskAnswer(kv, endpoint, token) : row.answer;
+    const answer = token !== undefined && (e.kind === "ask" || e.status === "cancelled") ? await acceptedPauseAnswer(kv, endpoint, token) : row.answer;
+    if (e.kind === "race" && e.state === "settled" && e.cancel !== undefined) losers.set(row.step, e.cancel.losers);
     rows.push({
       ...row,
       ...(answer !== undefined ? { answer } : {}),
@@ -202,7 +212,13 @@ export async function journalRows(
       })) }),
     });
   }
-  return rows;
+  // The step key grammar reserves `/`, `#` and `:`, so a race's branch holds exactly the steps under
+  // `<race>/b:<branch>/`.
+  const lost = [...losers].flatMap(([race, branches]) => branches.map((branch) => ({ race, prefix: `${race}/b:${branch}/` })));
+  return rows.map((row) => {
+    const race = row.kind === "step" ? lost.find((l) => row.step.startsWith(l.prefix))?.race : undefined;
+    return race === undefined ? row : { ...row, lostRace: race };
+  });
 }
 
 export const cotalLangRunHost: RunHost = {

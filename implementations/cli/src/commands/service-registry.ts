@@ -13,6 +13,7 @@ import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
 import { STACK_DEFINITION } from "../lib/stack-journal.js";
 import { localRecordName } from "../lib/protected-records.js";
+import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
 
 export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
   { name: "preset", type: "string", value: "<name>", description: "add: use a declared preset and that adapter's schema-derived options; starts nothing" },
@@ -67,7 +68,9 @@ function legacyProcesses(context: LocalProcessContext) {
 export async function service(args: ParsedArgs, commandName = "service"): Promise<void> {
   validateServiceArguments(args);
   const presentation = presentationOf(args.values);
-  const catalog = personaCatalog(args.values as { space?: string });
+  // Only --space selects the space: a preset's own options, such as the broker's --server and --root,
+  // describe the service and never the target.
+  const catalog = personaCatalog({ space: args.values.space as string | undefined });
   const { space, root } = catalog;
   recordOperationSpace(space);
   const store = serviceDefinitionStore(space);
@@ -171,6 +174,15 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
   if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with cotal service remove ${name} --space ${oneLine(space)} --yes, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
+  /** The broker's address is checked before a definition is saved, as its paths are, so a start does
+   *  not record a failed instance for an address the broker cannot serve. */
+  const refuseBrokerServer = (built: ServiceDefinitionInput): void => {
+    const problem = built.launch.type === "adapter" && built.launch.adapter === brokerService.name ? brokerServerProblem(String(built.launch.options.server)) : undefined;
+    if (!problem) return;
+    throw chosenPreset !== undefined
+      ? new CommandFailure("refused", "USAGE_INVALID", `--server ${problem}; nothing was saved`, { target: named, remedy: "pass the one address its configuration serves, for example --server nats://127.0.0.1:<port>", selfContained: true })
+      : new CommandFailure("refused", "SCHEMA_INVALID", `the definition's launch.options.server ${problem}; nothing was saved`, { target: named, remedy: "set launch.options.server to the one address its configuration serves, such as nats://127.0.0.1:<port>" });
+  };
   if (typeof args.values.preset === "string") {
     chosenPreset = args.values.preset;
     const preset = chosenPreset;
@@ -192,11 +204,13 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       if (prompts.isCancel(file)) return cancelled("Service creation cancelled");
       definition = forName(() => importServiceDefinition(resolve(file), space));
     }
+    refuseBrokerServer(definition);
     const answer = await prompts.confirm({ message: `Save ${oneLine(name)} in ${oneLine(space)}? Its program will not be started.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) return cancelled("Service creation cancelled");
   }
   const checked = definition;
   forName(() => validateServiceDefinition(checked, space));
+  refuseBrokerServer(checked);
   const record = store.commit(name, undefined, definition)!;
   // The executable as saved: a bare name in the input is saved as the absolute path add found for it.
   const executable = definition.launch.type === "process" ? definition.launch.executable : null;

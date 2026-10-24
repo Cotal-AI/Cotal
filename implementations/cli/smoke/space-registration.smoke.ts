@@ -18,12 +18,15 @@
  * A space name over 64 characters is refused by create, `up --space`, `space add` and `meshes add`
  * before anything is written, and `up` of a longer name an earlier release prepared refuses before its
  * journal is written.
+ * A service saved for a space survives its forget, which names it, and the next space of that name,
+ * in another folder, names it on its up, until the remove the forget named forgets it.
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
  * default channels file, have refused and left the root as it was; a default channels file that
  * begins with a UTF-8 byte-order mark seeds as the JSON after it, and one saved as UTF-16 is refused
- * by its encoding. Create and a later `up` write the
+ * by its encoding. That `up` reads its `--channels` seed once, from a FIFO written once, and seeds
+ * the channel from it. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -52,7 +55,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, spaceSegment } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -281,6 +284,15 @@ setCurrent("keep");
 
   const forced = await json(["space", "add", "dead1", "--server", DEAD, "--root", root, "--force"]);
   check("--force adds a space whose broker is down, marked not checked", forced.status === 0 && forced.env?.result.verified === false && findMesh("dead1") !== undefined, shown(forced));
+  check("…and its registration records that its mode was not checked", findMesh("dead1")?.unchecked === true && forced.env?.result.space.modeChecked === false, findMesh("dead1"));
+  const listedUnchecked = await json(["space"]);
+  check("space --json marks that mode unchecked and a checked one checked",
+    listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "dead1")?.modeChecked === false && listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "started")?.modeChecked === true, listedUnchecked.env?.result.items);
+  const shownUnchecked = await run(["space", "show", "dead1", "--plain"]);
+  check("space show names the mode not checked and how to check it", /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) && shownUnchecked.stdout.includes("cotal space forget dead1"), shown(shownUnchecked));
+  const whoUnchecked = await json(["whoami", "--space", "dead1"]);
+  check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
+    whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
 
   clearCurrent();
   const unselected = await json(["space", "add", "open3", "--server", LIVE, "--root", root]);
@@ -413,6 +425,7 @@ setCurrent("keep");
     check("...its stack definition is kept, and the warning names the route that releases it",
       kept.length === 1 && /stack-broker/.test(kept[0].message) && kept[0].message.includes(`cotal down --yes in ${goneRoot}, then run cotal space forget stackgone again`) &&
         unsettled.env?.result.releasedDefinitions.length === 0 && serviceDefinitionStore("stackgone").read("stack-broker") !== undefined, shown(unsettled));
+    check("...and its kept services do not repeat a stack definition the warning names", JSON.stringify(unsettled.env?.result.keptServices) === "[]", unsettled.env?.result);
 
     // Only a delivery member is recorded: its generic stop leaves the process-exit receipt this suite
     // can write, where the broker's and the manager's receipts carry native evidence.
@@ -435,6 +448,7 @@ setCurrent("keep");
       prepared.status === 0 && JSON.stringify(prepared.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("prepdone").read("stack-broker") === undefined, shown(prepared));
     check("...and keeps one saved for another folder, without a warning",
       other.status === 0 && other.env?.result.releasedDefinitions.length === 0 && other.env.warnings.length === 0 && serviceDefinitionStore("prepother").read("stack-broker") !== undefined, shown(other));
+    check("...and names it among the services it keeps for a later space of the name", JSON.stringify(other.env?.result.keptServices) === JSON.stringify(["stack-broker"]), other.env?.result);
   } else console.log("  - controller stack forget cells skipped: service records need Linux machine and boot identity");
 
   const stopped = await json(["space", "forget", "started"]);
@@ -616,6 +630,43 @@ if (process.platform === "linux") {
   if (selected === undefined) clearCurrent(); else setCurrent(selected);
 } else console.log("  - up selection cells skipped: a controller stack needs Linux machine and boot identity");
 
+// ── A saved service stays with the space's name ────────────────────────────────────────────────────────
+// Saved services belong to the space name, so a forget keeps them and names them, and the next space
+// of that name, in another folder, names them on its up.
+if (process.platform === "linux") {
+  const selected = getCurrent();
+  const first = join(home, "inheritfirst"), second = join(home, "inheritsecond");
+  mkdirSync(first);
+  mkdirSync(second);
+  const server = `nats://127.0.0.1:${await freePort()}`, definition = join(home, "inherit-tick.json");
+  writeFileSync(definition, JSON.stringify({ schemaVersion: 1, space: "inherit", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exit 0"], cwd: first }, readiness: { type: "process", timeoutMs: 3000 } }));
+  await json(["space", "create", "inherit"], first);
+  const sandbox = recordSmokeSandbox({ root: first, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const fresh = await json(["up", "--detach", "--open", "--no-manager", "--server", server], first);
+  check("an up whose space has no saved service of its own names none", fresh.status === 0 && JSON.stringify(fresh.env?.result.savedServices) === "[]", shown(fresh));
+  const added = await json(["service", "add", "tick", "--file", definition], first);
+  check("rig: a service is saved for the space", added.status === 0, shown(added));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
+  await run(["down", "--yes"], {}, first);
+  const forgot = await run(["space", "forget", "inherit"], {}, first);
+  check("forget keeps the saved service, names it and the remove that forgets it in a later space of the name",
+    forgot.status === 0 && serviceDefinitionStore("inherit").read("tick") !== undefined &&
+      forgot.stdout.includes("kept its saved services (tick): a later space named inherit inherits them, and `cotal service remove <name> --space inherit --yes` in that space forgets one"), shown(forgot));
+  await json(["space", "create", "inherit"], second);
+  const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const later = await json(["up", "--detach", "--open", "--no-manager", "--server", server], second);
+  check("the next space of that name, in another folder, names the service it inherits on its up", later.status === 0 && JSON.stringify(later.env?.result.savedServices) === JSON.stringify(["tick"]), shown(later));
+  const text = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
+  check("...and its text receipt says up does not start it", text.status === 0 && text.stdout.includes("saved services up does not start: tick"), shown(text));
+  assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
+  await run(["down", "--yes"], {}, second);
+  const removed = await json(["service", "remove", "tick", "--space", "inherit", "--yes"], second);
+  check("the remove the forget named forgets it there", removed.status === 0 && serviceDefinitionStore("inherit").read("tick") === undefined, shown(removed));
+  const clean = await json(["space", "forget", "inherit"], second);
+  check("a forget whose space has no saved service left keeps none", clean.status === 0 && JSON.stringify(clean.env?.result.keptServices) === "[]", shown(clean));
+  if (selected === undefined) clearCurrent(); else setCurrent(selected);
+} else console.log("  - saved service inheritance cells skipped: a controller stack needs Linux machine and boot identity");
+
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
   const before = registryFiles();
@@ -759,7 +810,8 @@ if (process.platform === "linux") {
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
   for (const name of ["a b", "dot.name", "é"]) {
     const bad = await json(["space", "create", name], spare);
-    check(`a name cotal up cannot start (${name.length > 20 ? `${name.length} characters` : name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
+    check(`a name cotal up cannot start (${name.length > 20 ? `${name.length} characters` : name}) is USAGE_INVALID, with the remedy in its envelope`,
+      refused(bad, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? "") && bad.env?.error?.remedy === "choose a name of only letters, digits, underscores and hyphens", shown(bad));
   }
   const dashed = await json(["space", "create", "--", "-x"], spare);
   check("a name that starts with - is USAGE_INVALID, saying it cannot be passed as a flag value",
@@ -843,6 +895,7 @@ if (process.platform === "linux") {
   const server = `nats://127.0.0.1:${await freePort()}`;
   const away = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "demo"], elsewhere);
   check("up --space for it from another folder refuses, naming its root, and makes nothing there", refused(away, 2, "TARGET_UNAVAILABLE") && away.env?.error?.message.includes(`prepared in ${fresh}`) && !existsSync(join(elsewhere, ".cotal")), shown(away));
+  check("that refusal names the up --root that starts it from here", away.env?.error?.remedy === `start it in its folder with \`cotal up --root ${fresh} --space demo\`, or \`cotal space forget demo\` to start it here`, shown(away));
   const otherName = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "other"], fresh);
   check("up --space for another space in its root refuses", refused(otherName, 2, "CONFLICT") && /root of "demo"/.test(otherName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(otherName));
   check("that refusal names the command that runs the folder's own space",
@@ -918,6 +971,12 @@ if (process.platform === "linux") {
   check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
     refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
+  // So does one that is not JSON at all: the default file's content is invalid, not the command line.
+  writeFileSync(defaultSeed, '{"channels":');
+  const unparsedDefault = await json(["up", "--open", "--server", server], fresh);
+  check("a default .cotal/channels.json that is not JSON refuses USAGE_INVALID, with the same remedy, before a store or a registration",
+    refused(unparsedDefault, 1, "USAGE_INVALID") && (unparsedDefault.env?.error?.message ?? "").includes(defaultSeed) && unparsedDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(unparsedDefault));
   unlinkSync(defaultSeed);
   // A FIFO there would block the read, so it is refused by its file type before it is opened.
   if (process.platform !== "win32") {
@@ -932,11 +991,23 @@ if (process.platform === "linux") {
   // as the JSON after it.
   writeFileSync(defaultSeed, '\uFEFF{"channels":{"bomseed":{"description":"saved with a BOM"}}}');
 
+  // Its seed comes through a FIFO written once, which a second open would wait on forever.
+  const seedFifo = join(home, "channels-seed.fifo");
+  spawnSync("mkfifo", ["-m", "600", seedFifo]);
+  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten"}}}', seedFifo], { stdio: "ignore" });
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
   check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
-  check("the selection still names it", getCurrent() === "demo", getCurrent());
   const bomSeeded = await json(["channel", "show", "bomseed", "--space", "demo"]);
+  // An explicit --channels replaces the default file, and only a start seeds, so the FIFO seed is
+  // read by the next start after a down.
+  check("down --yes stops it for the FIFO start", (await json(["down", "--yes"], fresh)).status === 0);
+  const fifoUp = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--channels", seedFifo], {}, fresh);
+  feeder.kill();
+  unlinkSync(seedFifo);
+  const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
+  check("it reads a --channels FIFO written once a single time and seeds the channel from it", fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), { up: shown(fifoUp), seeded: shown(seeded) });
+  check("the selection still names it", getCurrent() === "demo", getCurrent());
   check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
     bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
   unlinkSync(defaultSeed);
@@ -1109,6 +1180,11 @@ if (process.platform === "linux") {
   check("space show says the folder is gone and names forget and create, not cotal up",
     goneShow.status === 0 && goneShow.env?.result.kind === "prepared-space" && goneShow.env.result.rootMissing === true &&
       goneShowPlain.stdout.includes(`prepared in ${goneRoot}, which no longer exists`) && goneShowPlain.stdout.includes("forget it with `cotal space forget gone`, then prepare it again with `cotal space create gone --root <dir>`") && !goneShowPlain.stdout.includes("cotal up"), { json: shown(goneShow), plain: shown(goneShowPlain) });
+  const goneList = await json(["space"]);
+  const goneListPlain = await run(["space", "--plain"]);
+  check("the space listing marks the folder gone and names forget and create for it",
+    goneList.status === 0 && goneList.env?.result?.prepared?.find((p: { space: string }) => p.space === "gone")?.rootMissing === true &&
+      goneListPlain.stdout.includes(`${goneRoot} (no longer exists)`) && goneListPlain.stdout.includes("cotal space forget gone") && goneListPlain.stdout.includes("`cotal space create gone --root <dir>`"), { json: shown(goneList), plain: shown(goneListPlain) });
   const goneForgot = await run(["space", "forget", "gone"]);
   check("forget says the folder no longer exists", goneForgot.status === 0 && goneForgot.stdout.includes(`its folder ${goneRoot} no longer exists`) && findPreparedSpace("gone") === undefined, shown(goneForgot));
 
@@ -1247,8 +1323,9 @@ if (process.platform === "linux") {
   const folder = projectRoot("prepared-file");
   for (const args of [["space"], ["space", "create", "pf"], ["use", "pf"], ["space", "show", "pf"], ["up", "--server", DEAD, "--no-manager"]]) {
     const r = await json(args, folder);
-    check(`${args.slice(0, 2).join(" ")} with a file at the prepared spaces folder refuses SCHEMA_INVALID, exit 1, naming that folder`,
-      refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
+    check(`${args.slice(0, 2).join(" ")} with a file at the prepared spaces folder refuses SCHEMA_INVALID, exit 1, saying it is a file and how to move it aside`,
+      refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.message === `${dir} is a file, not a folder` &&
+        r.env.error?.remedy === `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space`, shown(r));
   }
   check("...and none of them wrote: the folder is still the file, and the project has only its .cotal", readFileSync(dir, "utf8") === "not a folder" && readdirSync(folder).join() === ".cotal");
   // status names the folder and reports the rest, exit 4, with a space selected that is not registered.
@@ -1261,18 +1338,39 @@ if (process.platform === "linux") {
     report.status === 4 && report.env?.outcome === "partial" && Boolean(report.env.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === dir)) && new Set(hints).size === hints.length, shown(report));
   rmSync(dir);
   if (held) renameSync(aside, dir);
-  // A record in it that does not parse, or is not a prepared space record, is refused by its file.
+  // A record in it that does not parse, or is not a prepared space record, is skipped with a warning
+  // naming its file, and refuses only a command about the space its file is named for.
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const [name, body] of [["unparsed.json", "{ not json"], ["unshaped.json", '{"space":"pf"}']]) {
-    const damaged = join(dir, name);
+  recordPreparedSpace({ space: "pready", root: projectRoot("prepared-ready"), ts: new Date().toISOString() });
+  const damaged = join(dir, `${spaceSegment("pf")}.json`);
+  for (const [label, body] of [["unparsed", "{ not json"], ["unshaped", '{"space":"pf"}']]) {
     writeFileSync(damaged, body);
-    for (const args of [["space"], ["use", "pf"]]) {
-      const r = await json(args, folder);
-      check(`${args.join(" ")} with a damaged prepared record (${name}) refuses SCHEMA_INVALID, exit 1, naming that file`,
-        refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === damaged && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
+    const list = await json(["space"], folder);
+    const skipped = list.env?.warnings?.find((w: { code: string }) => w.code === "PREPARED_RECORD_SKIPPED");
+    check(`space with a damaged prepared record (${label}) lists the rest and warns PREPARED_RECORD_SKIPPED, naming the file and its forget`,
+      list.status === 0 && list.env?.result?.prepared?.some((p: { space: string }) => p.space === "pready") && skipped?.target?.file === damaged && skipped.target.space === "pf" &&
+        skipped.message.endsWith("so it is skipped; remove it with `cotal space forget pf`"), shown(list));
+    const other = await json(["space", "show", "pready"], folder);
+    check(`space show of another space beside that record (${label}) succeeds`, other.status === 0 && other.env?.outcome === "ok", shown(other));
+    if (label === "unparsed") {
+      const report = await json(["status"], folder);
+      check("status names that record under meshes.unreadable, exit 4",
+        report.status === 4 && Boolean(report.env?.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === damaged)), shown(report));
     }
-    rmSync(damaged);
+    const own = await json(["use", "pf"], folder);
+    check(`use pf with its own record damaged (${label}) refuses SCHEMA_INVALID, exit 1, naming that file`, refused(own, 1, "SCHEMA_INVALID") && own.env?.target?.file === damaged, shown(own));
+    const forget = await json(["space", "forget", "pf"], folder);
+    check(`space forget pf removes its damaged record (${label}), with no root`,
+      forget.status === 0 && forget.env?.result?.kind === "space-forgotten" && forget.env.result.root === null && !existsSync(damaged), shown(forget));
   }
+  const stray = join(dir, "stray.json");
+  writeFileSync(stray, "{ not json");
+  const strayList = await json(["space"], folder);
+  check("a damaged file named for no space is skipped with a warning to remove it",
+    strayList.status === 0 && Boolean(strayList.env?.warnings?.some((w: { code: string; target: { file: string; space: unknown }; message: string }) =>
+      w.code === "PREPARED_RECORD_SKIPPED" && w.target.file === stray && w.target.space === null && w.message.endsWith("so it is skipped; remove it"))), shown(strayList));
+  rmSync(stray);
+  removePreparedSpace("pready");
 }
 
 finish();

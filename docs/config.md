@@ -231,7 +231,7 @@ other value when it starts, naming the variable.
 | `COTAL_FEEDBACK_URL` | `feedback`, connector | Intake URL override (self-hosted) | keyed / public intake |
 | `COTAL_TELEMETRY` | any `cotal` command | The [usage telemetry](telemetry.md) level (`off`, `minimal`, `regular`), above the settings file; any other value refuses | the file's level, `regular` at first |
 | `COTAL_TELEMETRY_DISABLED` / `DO_NOT_TRACK` | any `cotal` command | Force usage telemetry off (`1` or `true`) | off |
-| `COTAL_TELEMETRY_URL` | any `cotal` command | Usage telemetry intake override (self-hosted) | `https://cotal.ai/v1/telemetry` |
+| `COTAL_TELEMETRY_URL` | any `cotal` command | Usage telemetry intake override (self-hosted), an `http` or `https` URL; any other value refuses | `https://cotal.ai/v1/telemetry` |
 | `COTAL_SKIP_ASSIST` | `setup` | Disable the connector debug handoff on a failed step (`1`; for CI) | off |
 | `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors to stderr (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_DEBUG` | any `cotal` command | Print the stack trace under a command's error, followed by the stack of each error that caused it (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |

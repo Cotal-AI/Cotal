@@ -57,6 +57,7 @@ import {
   seatCheckpointDir,
   type SeatCheckpoint,
   type JsonValue,
+  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -90,7 +91,7 @@ import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTe
 import { service, serviceComplete, validateServiceArguments } from "./service-registry.js";
 import { stopNamedServiceSet } from "./service-set-stop.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
-import { assertBareDownServicesVerified, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
+import { assertBareDownServicesVerified, assertNoServicesForPreserve, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
@@ -198,7 +199,7 @@ function previewWholeStack(args: ParsedArgs): void {
   let otherBrokerRegistrations: Array<{ space: string; root: string; origin: string }>;
   // A root with no control directory, or with no stack registered at it, holds no stack. That is a
   // plain miss, not records that could not be read.
-  const noStack = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "there is no stack at this folder's root, so there is nothing to preview", { target, remedy: "run `cotal down --dry-run` from the folder where `cotal up` started the stack" });
+  const noStack = () => noStackHere(target, "preview");
   try {
     try { lstatSync(join(root, ".cotal")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") throw noStack(); throw error; }
@@ -291,10 +292,20 @@ function stoppedLegacyStack(): { root: string; space?: string; started: boolean 
   return { root, ...(space === undefined ? {} : { space }), started };
 }
 
+/** The refusal for a folder with no stack. Its next step is the folder that holds one, or, when this
+ *  machine has started or registered no stack at all, starting one, as `cotal status` says. A
+ *  registry this cannot read may hold one. */
+function noStackHere(target: { root: string; space?: string }, action: "stop" | "preview"): CommandFailure {
+  let elsewhere: boolean;
+  try { elsewhere = loadMeshes().some((mesh) => mesh.origin !== "manual" && mesh.origin !== "catalog"); } catch { elsewhere = true; }
+  if (!elsewhere) return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to ${action}`, { target, remedy: "run `cotal up` in a project" });
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, so there is nothing to ${action}`, { target, remedy: `run \`cotal down${action === "preview" ? " --dry-run" : ""}\` from the folder where \`cotal up\` started the stack` });
+}
+
 /** Why bare down found no stack of its own at this root, with the one step that moves it on. */
 function noOwnedStack(root: string): CommandFailure {
   const target = { root };
-  const absent = new CommandFailure("refused", "TARGET_NOT_FOUND", "there is no stack at this folder's root, so there is nothing to stop", { target, remedy: "run `cotal down` from the folder where `cotal up` started the stack" });
+  const absent = noStackHere(target, "stop");
   const unclassified = new CommandFailure("refused", "CONFLICT", "the local root has no unique owned stack registration and real control directory; no whole-stack stop target was inferred", { target, remedy: "run `cotal status` here to see what this folder records" });
   if (!existsSync(join(root, ".cotal"))) return absent;
   if (!realDirNoSymlink(root, ".cotal")) return unclassified;
@@ -631,7 +642,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
     const existing = readMaintenanceJournal(root);
     // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
     if (existing && "restore" in existing && existing.state === "active")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, existing.restore.selection) });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, restoreLeftOut(existing)) });
     if (existing && existing.state !== "cut-intent" && existing.state !== "cut-committed" && existing.state !== "ready")
       throw new Error(`cannot preserve while maintenance state is ${existing.state}`);
     if (existing && (existing.space !== mesh.space || existing.mode !== mesh.mode ||
@@ -642,6 +653,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       console.log(c.dim(`state for "${mesh.space}" is already preserved and offline`));
       return;
     }
+    // A saved service depends on the broker, so the cut does not stop the broker under one. Plain
+    // down stops them first; a preserve leaves that to the operator and stops nothing.
+    assertNoServicesForPreserve(mesh.space);
 
     let attemptId: string;
     let resume;

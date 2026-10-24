@@ -537,6 +537,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("-s offers them too", exactly(short, ["cc", "rr"]), shown(short));
   const subs = offered(["config"]);
   check("config offers get, set and unset", exactly(subs, ["get", "set", "unset"]), shown(subs));
+  // actor took these words but declared none of them, so it offered only its options.
+  const actor = offered(["actor"]);
+  check("actor offers grant, revoke and list", exactly(actor, ["grant", "revoke", "list"]), shown(actor));
   for (const sub of ["get", "set", "unset"]) {
     const keys = offered(["config", sub]);
     check(`config ${sub} offers the keys`, exactly(keys, ["harness", "persona", "detach-key", "color", "editor"]), shown(keys));

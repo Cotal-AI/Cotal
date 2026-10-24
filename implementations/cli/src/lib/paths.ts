@@ -15,6 +15,18 @@ export function cotalPath(...segments: string[]): string {
   return join(cotalRoot(), ".cotal", ...segments);
 }
 
+/** Whether the working folder was removed before this process read it. Node then fails every cwd
+ *  read, and caches the first read that succeeds. */
+export function workingFolderRemoved(): boolean {
+  try {
+    process.cwd();
+    return false;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    return true;
+  }
+}
+
 /** A `.cotal` link that the walk {@link cotalRoot} takes from the working folder meets first: a link
  *  to another folder, or one that leads nowhere, which the walk passes over. `target` is where it
  *  leads. The machine's home `.cotal` is left to the commands that use it. Undefined when the first

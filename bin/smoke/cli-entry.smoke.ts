@@ -4,10 +4,15 @@
  * Bare `cotal`, help and version read local metadata only, and every usage error is refused before
  * any effect: no connector seed, no config write. An alias resolves to the same command as its name
  * (help, refusal and parse), and a word that only prefixes a command selects nothing. A short flag
- * parses as its long form, and a wrong-case short flag or a missing value is refused. A refusal on a
+ * parses as its long form, and a wrong-case short flag or a missing value is refused. So is a flag typed
+ * with a typographic dash, naming the dash and the flag; after `--`, or naming no flag, such a word is
+ * an argument. A refusal on a
  * `✗` line escapes the control bytes of each word it quotes. `version --json`
- * writes one envelope, and a usage error under `--json` is one refusal envelope. `--no-color` and
- * `--no-input` are accepted by every command in any position before `--`. A failing command prints
+ * writes one envelope, and a usage error under `--json` is one refusal envelope. A `--server` with a
+ * user and password is refused by every command that takes one, without repeating it. `--no-color` and
+ * `--no-input` are accepted by every command in any position before `--`, once each. A command an
+ * official extension adds, run or asked for help before that extension is added, names the package
+ * to add. A failing command prints
  * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
@@ -155,6 +160,10 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);
   check("command help does not list a hidden subcommand", !cotal(["help", "ext"]).stdout.includes("__update-add"));
   refused("help of a hidden internal command is a usage error", cotal(["help", "__complete"]), /unknown command: __complete/);
+  // An official extension's command, before the extension is added, names the package to add.
+  const linearAdd = /^✗ no installed extension provides command "linear" - install it with `cotal ext add @cotal-ai\/linear`$/m;
+  refused("help linear without its extension names cotal ext add @cotal-ai/linear", cotal(["help", "linear"]), linearAdd);
+  refused("linear without its extension names the same package", cotal(["linear", "serve", "acct"]), linearAdd);
   // `docs` reads its page names from the bundled docs, so completion offers them offline.
   const pages = cotal(["__complete", "docs", ""], undefined, noSeed);
   check("docs completes its page names", pages.status === 0 && ["spec", "lang", "architecture"].every((page) => new RegExp(`^${page}(\\t|$)`, "m").test(pages.stdout)) && !/^--/m.test(pages.stdout), shown(pages));
@@ -254,6 +263,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const emptyJson = cotal(["history", "clear", "--space", "", "--yes", "--json"], selected, noSeed);
   check("an empty --space under --json is one USAGE_INVALID envelope with the space-listing remedy",
     envelopes(emptyJson).length === 1 && envelopes(emptyJson)[0]?.error?.code === "USAGE_INVALID" && envelopes(emptyJson)[0]?.error?.remedy === "name the space; `cotal space` lists the spaces this machine knows", shown(emptyJson));
+  // The NATS client keeps only a broker URL's host and port, so a user and password in --server were
+  // dropped in silence. Every command that takes --server refuses them before it runs, and never
+  // repeats the value. `up` keeps its own refusal, which names the address it listens on.
+  const userinfo = "--server must not embed credentials; the command did not run";
+  for (const argv of [["send", "-c", "general", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1"], ["history", "general", "--server", "u:pw0rdX@127.0.0.1:1"], ["whoami", "--server", "nats://127.0.0.1:1,tls://u:pw0rdX@127.0.0.1:2"], ["space", "add", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1", "--yes"]]) {
+    const r = cotal(argv, undefined, noSeed);
+    refused(`cotal ${argv.slice(0, 2).join(" ")} refuses a --server with a user and password, never repeating it`, r, new RegExp(`^✗ ${userinfo}$`, "m"));
+    check(`cotal ${argv.slice(0, 2).join(" ")} prints no part of that --server`, !`${r.stdout}${r.stderr}`.includes("pw0rdX") && !r.stderr.includes("127.0.0.1"), shown(r));
+  }
+  const userinfoJson = cotal(["send", "-c", "general", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1", "--json"], undefined, noSeed);
+  check("a --server with a user and password under --json is one USAGE_INVALID envelope without the value",
+    envelopes(userinfoJson).length === 1 && envelopes(userinfoJson)[0]?.error?.code === "USAGE_INVALID" && envelopes(userinfoJson)[0]?.error?.message === userinfo && !userinfoJson.stdout.includes("pw0rdX"), shown(userinfoJson));
+  const upUserinfo = cotal(["up", "--server", "nats://u:pw0rdX@127.0.0.1:1"], undefined, noSeed);
+  refused("control: up keeps its own --server credential refusal", upUserinfo, /--server must not embed credentials; nothing was started or written/);
+  check("control: up's refusal is its own, and does not repeat the value", !upUserinfo.stderr.includes(userinfo) && !`${upUserinfo.stdout}${upUserinfo.stderr}`.includes("pw0rdX"), shown(upUserinfo));
 }
 
 // ── Global flags: accepted by every command, before or after its words, and text after -- ─────────
@@ -293,6 +317,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("--no-input after the command's words is accepted", same(cotal(["version", "--no-input"]), cotal(["version"])));
   check("--no-input and --no-color together are accepted", same(cotal(["--no-input", "version", "--no-color"]), cotal(["version"])));
   refused("a global flag after -- is a word", cotal(["ext", "--", "--no-input"]), /cotal ext has no subcommand "--no-input"/);
+  // A global flag is given once, as any flag is, wherever the two stand.
+  for (const argv of [["version", "--no-color", "--no-color"], ["--no-color", "--no-color", "version"], ["--no-input", "version", "--no-input"]])
+    refused(`${argv.join(" ")} is refused as a repeated flag`, cotal(argv, undefined, noSeed), new RegExp(`Option '${argv.find((word) => word.startsWith("--no-"))}' cannot be repeated`));
+  const repeatedJson = cotal(["status", "--no-input", "--no-input", "--json"], undefined, noSeed);
+  let repeatedEnvelope: { error?: { code?: string; message?: string } } = {};
+  try { repeatedEnvelope = JSON.parse(repeatedJson.stdout); } catch { /* shown below */ }
+  check("under --json the repeat is one USAGE_INVALID envelope", repeatedJson.status === 1 && repeatedEnvelope.error?.code === "USAGE_INVALID" && repeatedEnvelope.error.message === "Option '--no-input' cannot be repeated", shown(repeatedJson));
   // `personas edit` opens an editor, which --no-input forbids. The control runs a do-nothing editor.
   const persona = (home: string) => {
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
@@ -425,7 +456,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     wide.status === 0 && wide.stdout.includes(`  ${longLine}\n`) && !wide.stdout.includes("…"), shown(wide));
   const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
   const piped = cotal(["personas", "show", "h"], hostile, noSeed);
-  check("personas show piped writes the file byte for byte", piped.status === 0 && piped.stdout.endsWith(`\n${card}`), shown(piped));
+  check("personas show piped writes the file byte for byte and nothing else", piped.status === 0 && piped.stdout === card, shown(piped));
   for (const argv of [["persona", "create", "q", "--role"], ["persona", "create", "q", "--model"], ["personas", "new", "q", "--role"]]) {
     const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
     check(`cotal ${argv.join(" ")} refuses control characters`,
@@ -505,6 +536,29 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("a prefix of a command selects nothing", cotal(["spaw"]), /unknown command: spaw/);
   refused("a prefix of an aliased command selects nothing", cotal(["hist"]), /unknown command: hist/);
   refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /unknown command: web - run `cotal help`/);
+  // A word the refusal quotes cannot reach the terminal as a control sequence.
+  for (const [what, args, shownAs] of [
+    ["an unknown command", ["x\u001b[2J"], "unknown command: x\\u001b[2J"],
+    ["help for an unknown command", ["help", "x\u001b]0;T\u0007"], "unknown command: x\\u001b]0;T\\u0007"],
+    ["an unknown subcommand", ["ext", "x\u001b]0;T\u0007"], 'no subcommand "x\\u001b]0;T\\u0007"'],
+    ["help for an unknown subcommand", ["help", "ext", "x\u001b[2J"], 'no subcommand "x\\u001b[2J"'],
+    ["an unknown option", ["status", "--x\u001b[2J"], "'--x\\u001b[2J'"],
+  ] as const) {
+    const r = cotal([...args], undefined, noSeed);
+    check(`${what} quotes the word with its control bytes escaped`, r.status === 1 && r.stderr.includes(shownAs) && !/[\u0007\u001b]/.test(r.stderr), shown(r));
+  }
+}
+
+// ── A flag typed with a typographic dash, as autocorrect writes `--` ──────────────────────────────
+{
+  refused("an en-dash flag is refused naming the dash and the flag", cotal(["down", "\u2013yes"]), /\u2013yes starts with a typographic dash, so it is not an option\n\s+type the option with hyphens: --yes/);
+  refused("an em-dash flag after an argument is refused the same way", cotal(["history", "general", "\u2014limit", "1"]), /\u2014limit starts with a typographic dash[^]*hyphens: --limit/);
+  refused("a minus-sign short flag names the short flag", cotal(["history", "general", "\u2212j"]), /\u2212j starts with a typographic dash[^]*hyphens: -j$/m);
+  refused("a command's own flags are what it names, wherever the word stands", cotal(["send", "-c", "general", "hallo", "\u2013json"]), /\u2013json starts with a typographic dash[^]*hyphens: --json/);
+  const noFlag = cotal(["history", "\u2013nichts"], undefined, noSeed);
+  check("a dash word that names no flag is still the argument it reads as", !/typographic dash/.test(noFlag.stderr) && /"\u2013nichts"/.test(noFlag.stderr), shown(noFlag));
+  const terminated = cotal(["send", "-c", "general", "--", "\u2013json"], undefined, noSeed);
+  check("after -- a dash word that names a flag is an argument as typed", terminated.status !== 1 && !/typographic dash/.test(terminated.stderr), shown(terminated));
 }
 
 // ── A `✗` line shows the control characters of an argument it repeats as escapes ─────────────────

@@ -38,7 +38,7 @@ import {
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { CommandFailure, controlCaller, loadSpaceAuth, oneLine, renderWorkspaceError, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
-import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
+import { DEV_OWNER, EP_UNANSWERED, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint, stderrLine } from "../ui.js";
 import { cliVersion } from "./version.js";
 import { nativeEndpointRefusal } from "./endpoint-errors.js";
@@ -273,6 +273,15 @@ export function managerFailure(reply: ManagerReply, operation: string, target: u
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", `the manager did not confirm the outcome of ${what}; it was not submitted again${reason}`, { target, native, remedy: "inspect the recorded manager, request and target before retrying" });
 }
 
+/** A describe that drew no answer means the command after it was never sent, so it is refused, as
+ *  `chat` and the run verbs refuse it, and not an unknown outcome. Undefined for any other failure. */
+export function unansweredDescribeRefusal(reply: ManagerReply, operation: string, target: unknown): CommandFailure | undefined {
+  if (!reply.details?.some((detail) => detail.kind === EP_UNANSWERED && detail.command === "describe")) return undefined;
+  const agent = (target as { agent?: unknown } | null)?.agent;
+  const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", `the manager registered for this space did not answer, so ${what} was not sent: ${oneLine(reply.error ?? "no reply")}`, { target, native: { code: reply.code }, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
+}
+
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
  *  (`ps`, `models`, `stop`, `attach`, `spawn --detach`), with `instanceId` set to what the operator
  *  typed, if anything. Its presence is what lets the renderer offer `--on` as a remedy: a command
@@ -449,7 +458,8 @@ export interface ScatterInstanceReply {
   /** Set on unreachable slots only: a slot that ANSWERED needs no liveness verdict. */
   liveness?: ScatterInstanceLiveness;
 }
-export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean };
+/** A failed scatter's `noLiveManager` says the registry was read and lists no live manager. */
+export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean; noLiveManager?: true };
 
 /** Open one short-lived control connection under whichever of the three auth shapes this command
  *  holds (static creds / user bearer + sentinel / bare open mesh) and hand it to `fn`. Extracted so
@@ -690,7 +700,7 @@ async function askManagerScatterEp(
     });
   } catch (e) {
     const { error, code, unanswered } = epRailFailure(e);
-    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}) };
+    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}), ...(noLiveInstances(e) ? { noLiveManager: true as const } : {}) };
   }
 
   // ---- the LOCAL pinned re-mint, decided by {@link scatterProbeMaterial} rather than inline.

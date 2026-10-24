@@ -2,11 +2,14 @@
  * `cotal doctor auth` reports a local credential with no expiry claim as a finding, whatever its
  * kind, since a copy of it stays valid until its signer rotates. An unbounded agent credential is
  * listed under "Credential findings" with guidance that retires it by rotating the space identity or
- * bounds it by replacing the named file, and the run ends failed (exit 5). One `cotal auth mint
- * --no-expiry` asked for, whose record beside it names its bytes, is a warning with the same ways out
- * and the run ends ok (exit 0); a record that names other bytes covers nothing. A bounded agent
- * credential beside it is no finding, and once the unbounded file is gone the same root reports no
- * findings. Broker-free; the doctor reads a staged static root.
+ * bounds it with `cotal auth mint <label> --replace`, and the run ends failed (exit 5). One `cotal
+ * auth mint --no-expiry` asked for, whose record beside it names its bytes, is a warning with the same
+ * ways out and the run ends ok (exit 0); a record that names other bytes covers nothing. An
+ * incarnation file, which is no label's standing credential, is bounded by removing it instead. An
+ * expired label's file names the same `--replace` beside the managed renewal; an expired incarnation
+ * keeps the managed guidance only. A bounded agent credential beside them is no finding, and once the
+ * unbounded and expired files are gone the same root reports no findings. Broker-free; the doctor
+ * reads a staged static root.
  *
  * Run: pnpm smoke:doctor-unbounded
  */
@@ -14,10 +17,11 @@ import { strict as nodeAssert } from "node:assert";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
+import { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, mintConnectionEvictorCreds, mintMembershipObserverCreds } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { agentCredsDir, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentCredsDir, authDir, saveSpaceAuth, spaceMaterialDir } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
+import { displayCmd } from "../src/lib/self-exec.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../src/lib/no-expiry-record.js";
 
 const counted = countedAssert(nodeAssert);
@@ -32,7 +36,13 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-doctor-unbounded-"))
 process.env.COTAL_HOME = join(root, "home");
 mkdirSync(authDir(root), { recursive: true, mode: 0o700 });
 saveSpaceAuth(authDir(root), auth);
+// A started root holds the $SYS pair its first `up` minted with the trust; doctor reports either one missing.
+const sysDir = spaceMaterialDir(root, SPACE);
+mkdirSync(sysDir, { recursive: true, mode: 0o700 });
+writeFileSync(join(sysDir, "membership-observer.creds"), await mintMembershipObserverCreds(auth, newIdentity()), { mode: 0o600 });
+writeFileSync(join(sysDir, "connection-evictor.creds"), await mintConnectionEvictorCreds(auth, newIdentity()), { mode: 0o600 });
 const credsDir = agentCredsDir(root, SPACE);
+const replaceFor = (label: string) => `\`${displayCmd()} auth mint ${label} --replace --space ${SPACE}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
 mkdirSync(credsDir, { recursive: true, mode: 0o700 });
 // alice: an unbounded credential nobody recorded asking for. bob: the same mint with an expiry.
 const unbounded = join(credsDir, "alice.creds");
@@ -79,7 +89,8 @@ try {
     assert.match(alice?.problem ?? "", /^unbounded credential \(no expiry claim\)/, "the unbounded agent credential is a finding");
     assert.match(alice?.problem ?? "", /a copy stays valid until the space identity rotates$/, "the finding says how long a copy lives");
     assert.match(alice?.repair ?? "", new RegExp(`reset space ${SPACE}\``), "its guidance retires it by rotating the space identity");
-    assert.ok(alice?.repair?.includes(`remove ${unbounded} and mint a replacement without --no-expiry, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`), "and bounds it by replacing the named file");
+    assert.ok(alice?.repair?.includes(`Or bound it: stop what uses it, then replace it with ${replaceFor("alice")}`), "and bounds it with auth mint --replace for its label");
+    assert.ok(!alice?.repair?.includes(`remove ${unbounded}`), "  rather than a hand removal inside .cotal");
     assert.equal(bob?.state, "healthy", "fixture: bob.creds is bounded and healthy");
     assert.equal(bob?.problem, null, "a bounded agent credential is no finding");
     assert.equal(envelope.result.findings, 1, "one finding");
@@ -113,7 +124,7 @@ try {
     assert.equal(carol?.state, "unbounded", "fixture: carol.creds carries no expiry claim");
     assert.equal(carol?.problem, null, "a requested unbounded credential is no finding");
     assert.match(carol?.warning ?? "", /^unbounded by request \(auth mint --no-expiry, recorded [0-9T:.-]+Z\) - a copy stays valid until the space identity rotates$/, "it is a warning that says it was asked for");
-    assert.ok(carol?.repair?.includes(`remove ${requested} and ${noExpiryRecordPath(requested)} and mint a replacement`), "with the same ways out, naming its record");
+    assert.ok(carol?.repair?.includes(`then replace it with ${replaceFor("carol")}`), "with the same ways out: --replace also drops its record");
     assert.deepEqual(envelope.warnings.map((w) => [w.code, w.target.path]), [["CREDENTIAL_UNBOUNDED_BY_REQUEST", requested]], "the envelope carries one warning naming the file");
     assert.equal(envelope.result.findings, 0, "no findings");
     assert.equal(envelope.outcome, "ok", "the diagnosis ends ok");
@@ -124,7 +135,32 @@ try {
     rmSync(noExpiryRecordPath(requested));
   }
 
-  // 4. Control: without the unbounded files the same root has no findings.
+  // 4. An incarnation file is no label's standing credential, so --replace cannot reach it and the
+  //    guidance removes it by hand. An expired label's file names --replace beside managed renewal;
+  //    an expired lone incarnation keeps the managed guidance only.
+  {
+    const incarnation = join(credsDir, `dave.${mintLifecycleUid()}.creds`);
+    writeFileSync(incarnation, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
+    const now = Math.floor(Date.now() / 1000);
+    const expiredLabel = join(credsDir, "erin.creds");
+    const expiredIncarnation = join(credsDir, `frank.${mintLifecycleUid()}.creds`);
+    for (const path of [expiredLabel, expiredIncarnation]) writeFileSync(path, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 60 }), { mode: 0o600 });
+    const { envelope, code } = await diagnose();
+    const item = (path: string) => envelope.result.items.find((i) => i.label === path.slice(credsDir.length + 1));
+    assert.ok(item(incarnation)?.repair?.includes(`Or bound it: stop what uses it, remove ${incarnation} and mint a replacement without --no-expiry`), "an unbounded incarnation file is bounded by removing it");
+    assert.ok(!item(incarnation)?.repair?.includes("--replace"), "  and its guidance names no --replace");
+    assert.equal(item(expiredLabel)?.state, "expired", "fixture: erin.creds has expired");
+    assert.ok(item(expiredLabel)?.repair?.includes(`If \`${displayCmd()} auth mint\` wrote it, replace it with ${replaceFor("erin")}`), "an expired label's file names --replace for that label");
+    assert.match(item(expiredLabel)?.repair ?? "", /^if a manager runs this agent, inspect this original lifecycle under it; supported managed renewal can re-sign the same nkey/, "  after the managed renewal that re-signs its nkey");
+    assert.equal(item(expiredIncarnation)?.state, "expired", "fixture: the incarnation file has expired");
+    assert.match(item(expiredIncarnation)?.repair ?? "", /^inspect this original lifecycle under its manager/, "an expired incarnation keeps the managed guidance");
+    assert.ok(!item(expiredIncarnation)?.repair?.includes("--replace"), "  and names no --replace");
+    assert.equal(envelope.result.findings, 3, "the three files are findings");
+    assert.equal(code, 5, "exit 5");
+    for (const path of [incarnation, expiredLabel, expiredIncarnation]) rmSync(path);
+  }
+
+  // 5. Control: without the unbounded and expired files the same root has no findings.
   {
     const { envelope, code, text } = await diagnose();
     assert.equal(envelope.result.findings, 0, "no findings once the unbounded credential is gone");

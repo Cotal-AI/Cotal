@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, serviceOperationId, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, stackAdoptionBlock, stackElsewhereRemedy, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -293,15 +293,16 @@ export function maintenanceStackView(root: string, space: string): ControllerSta
 
 /** Take the root's maintenance lock for one whole-stack operation. Every whole-stack operation
  *  holds it for its whole run, and a dead holder is reclaimed only when its PID is proven dead. A
- *  live holder is a known refusal that names its PID; nothing was read or changed.
+ *  live holder is a known refusal that names its PID; nothing was read or changed. `operation`, such
+ *  as `restore`, is recorded in the lock so another command it refuses can say what holds the root.
  *  Taking the lock creates the root's `.cotal/maintenance` folders when they are missing. A command
  *  that then ends refused or failed releases the lock if it still holds it, and removes the folders
  *  the lock created while they are still empty, so a refusal leaves the folder as it found it. */
-export function acquireStackOperationLock(root: string): MaintenanceLock {
+export function acquireStackOperationLock(root: string, operation?: string): MaintenanceLock {
   const paths = maintenancePaths(root);
   const created = [paths.versionDir, paths.maintenanceDir, paths.cotalDir].filter((dir) => !existsSync(dir));
   let lock: MaintenanceLock;
-  try { lock = acquireMaintenanceLock(root); }
+  try { lock = acquireMaintenanceLock(root, operation ? { operation } : {}); }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     let holder: number | undefined;
@@ -321,8 +322,9 @@ export function acquireStackOperationLock(root: string): MaintenanceLock {
   return lock;
 }
 
-/** An earlier operation that had no recorded outcome, and the member evidence it was settled from. */
-export interface StackSettlement { operation: StackJournal["operation"]; members: { role: StackRole; instanceId: string; process: "running" | "gone" }[] }
+/** An earlier operation that had no recorded outcome, and the member evidence it was settled from.
+ *  `unstarted` names the members it applies to that have no instance record. */
+export interface StackSettlement { operation: StackJournal["operation"]; members: { role: StackRole; instanceId: string; process: "running" | "gone" }[]; unstarted: StackRole[] }
 
 const UNSETTLED_PHASES: readonly StackJournal["operation"]["phase"][] = ["planned", "applying", "unknown"];
 
@@ -496,9 +498,11 @@ export function settleStackOperation(lock: MaintenanceLock, snapshot: StackJourn
   const journal = snapshot.journal, operation = journal.operation;
   if (!stackOperationUnsettled(journal) || operation.kind !== "up" && operation.kind !== "down") return { snapshot };
   if (lock.root !== journal.root) throw new CommandFailure("refused", "CONFLICT", "the held maintenance lock belongs to another root; the earlier operation was not settled", { target: { root: journal.root } });
-  const members = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role)).flatMap((role) => classifyStackMember(journal, role, true) ?? []);
-  const settled = writeStackJournal(journal.root, snapshot, { ...journal, members: withSettledMembers(journal, { operation, members }).members.map((row) => row.state !== "planned" && row.state !== "unknown" ? row : members.some((member) => member.role === row.role) ? { ...row, state: "unknown", code: "OPERATION_UNKNOWN" } : { ...row, state: "not-attempted", code: undefined }), operation: { ...operation, phase: "failed" }, updatedAt: new Date().toISOString() });
-  return { snapshot: settled, settled: { operation, members } };
+  const roles = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role));
+  const members = roles.flatMap((role) => classifyStackMember(journal, role, true) ?? []);
+  const settlement = { operation, members, unstarted: attemptedRoles(journal).filter((role) => !members.some((member) => member.role === role)) };
+  const settled = writeStackJournal(journal.root, snapshot, { ...journal, members: withSettledMembers(journal, settlement).members.map((row) => row.state !== "planned" && row.state !== "unknown" ? row : members.some((member) => member.role === row.role) ? { ...row, state: "unknown", code: "OPERATION_UNKNOWN" } : { ...row, state: "not-attempted", code: undefined }), operation: { ...operation, phase: "failed" }, updatedAt: new Date().toISOString() });
+  return { snapshot: settled, settled: settlement };
 }
 
 /** The journal with each journaled replacement resolved, and each member row that has no recorded
@@ -532,13 +536,44 @@ function resolveReplacement(journal: StackJournal, row: StackMember): StackMembe
 /** The read-only classification `settleStackOperation` would record, for a preview. Writes nothing. */
 export function previewStackSettlement(journal: StackJournal): StackSettlement | undefined {
   if (!stackOperationUnsettled(journal) || journal.operation.kind !== "up" && journal.operation.kind !== "down") return undefined;
-  return { operation: journal.operation, members: STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role)).flatMap((role) => classifyStackMember(journal, role, false) ?? []) };
+  const roles = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role));
+  const members = roles.flatMap((role) => classifyStackMember(journal, role, false) ?? []);
+  return { operation: journal.operation, members, unstarted: attemptedRoles(journal).filter((role) => !members.some((member) => member.role === role)) };
+}
+
+/** The members the journal's operation planned, as a `--no-manager` up plans no manager. */
+function attemptedRoles(journal: StackJournal): StackRole[] {
+  return STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role) && journal.members.some((row) => row.role === role && row.state !== "not-attempted"));
+}
+
+/** An earlier `up` that ended with no recorded outcome before every member it planned started, or
+ *  a `down` that ended so before every member stopped, with the members on each side as their
+ *  processes show. A member with no instance record counts as stopped, and `noManager` says the up
+ *  planned no manager, as `up --no-manager` does. Read-only. Undefined when the last
+ *  operation settled, when it reached its end anyway, or when a member's process is neither running
+ *  nor proven gone. */
+export function unfinishedStackOperation(journal: StackJournal): { kind: "up" | "down"; id: string; running: StackRole[]; stopped: StackRole[]; noManager: boolean } | undefined {
+  const { kind, id } = journal.operation;
+  if (!stackOperationUnsettled(journal) || kind !== "up" && kind !== "down") return undefined;
+  const running: StackRole[] = [], stopped: StackRole[] = [];
+  for (const role of attemptedRoles(journal)) {
+    const observed = serviceInstances(journal.space, STACK_DEFINITION[role]).map((row) => observeServiceProcess(row.record.value));
+    if (observed.includes("running")) running.push(role);
+    else if (observed.every(processGone)) stopped.push(role);
+    else return undefined;
+  }
+  if (kind === "up" ? !stopped.length : !running.length) return undefined;
+  return { kind, id, running, stopped, noManager: kind === "up" && stackRoleApplies(journal.mode, "manager") && !running.includes("manager") && !stopped.includes("manager") };
 }
 
 /** The one-line notice a command prints after it settled an earlier operation. */
 export function stackSettlementNotice(settled: StackSettlement): string {
   const gone = settled.members.filter((row) => row.process === "gone").map((row) => row.role), running = settled.members.filter((row) => row.process === "running").map((row) => row.role);
-  return `the earlier ${settled.operation.kind} ${settled.operation.id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"})`;
+  const { kind, id } = settled.operation;
+  // An up whose members all run, or a down whose members are all gone, reached its end anyway.
+  if (kind === "up" && !gone.length && !settled.unstarted.length) return `the earlier up ${id} was interrupted before it recorded an outcome; every member is running (${running.join(", ")})`;
+  if (kind === "down" && !running.length) return `the earlier down ${id} was interrupted before it recorded an outcome; every member is stopped`;
+  return `the earlier ${kind} ${id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"}${settled.unstarted.length ? `; not started: ${settled.unstarted.join(", ")}` : ""})`;
 }
 
 export function newStackOperation(kind: "up" | "down", withAgents = false): StackJournal["operation"] {
@@ -639,23 +674,52 @@ export function releaseStackDefinitions(root: string, space: string): { released
   return { released };
 }
 
-/** Legacy pidfile records under the root that may front a process, excluding the settled records
- *  the stack's own controller children publish for themselves: a record counts as owned only when
- *  its PID is the live creation-pinned process of a stack member instance. Nothing is adopted. */
-export function foreignLocalProcesses(root: string, space: string): string[] {
+/** One legacy pidfile record under the root: whose descriptor names it, its path relative to the
+ *  root, the record as read, the pid it holds when one parses, and its state. A `gone` record's
+ *  process is ESRCH-dead. A `reused` record's pid runs another start than its identity pin records,
+ *  so the pid was reused and the recorded process is gone too. A `live` one may front a process. */
+export interface LocalRecord { readonly name: string; readonly path: string; readonly raw: string; readonly pid?: number; readonly state: "live" | "gone" | "reused" }
+
+/** The legacy pidfile records under the root, excluding the settled records the stack's own
+ *  controller children publish for themselves: a record counts as owned only when its PID is the
+ *  live creation-pinned process of a stack member instance. Read only: nothing is adopted. */
+export function localRecords(root: string, space: string): LocalRecord[] {
   const owned = new Set<number>();
   for (const name of Object.values(STACK_DEFINITION))
     for (const row of serviceInstances(space, name)) if (row.record.value.process && observeServiceProcess(row.record.value) === "running") owned.add(row.record.value.process.pid);
-  const foreign: string[] = [];
+  const records: LocalRecord[] = [];
   for (const component of localProcessSurface()) {
-    const raw = readPidfile(localProcessPath(component.pidFile, { root, space }));
+    const path = localProcessPath(component.pidFile, { root, space });
+    const raw = readPidfile(path);
     if (!raw) continue;
     const pid = parsePid(raw);
     if (pid !== undefined && owned.has(pid)) continue;
-    if (pid === undefined || probeLiveness(pid) !== "dead") foreign.push(`${component.name}${pid === undefined ? " (unattributable record)" : ` (pid ${pid})`}`);
+    const pin = pid === undefined ? undefined : verifyIdentityPin(path).kind;
+    records.push({ name: component.name, path: relative(root, path), raw, ...(pid === undefined ? {} : { pid }), state: pin === "gone" ? "gone" : pin === "mismatch" ? "reused" : "live" });
   }
-  return foreign;
+  return records;
 }
+
+/** How a refusal lists one record: `<name> at <path>, pid <pid>`. */
+export const localRecordLine = (row: LocalRecord): string => `${row.name} at ${row.path}, ${row.pid === undefined ? "unattributable record" : `pid ${row.pid}`}`;
+
+/** Legacy pidfile records under the root that may front a process, as `up` refuses them: every
+ *  record whose process is not gone. */
+export function foreignLocalProcesses(root: string, space: string): string[] {
+  return localRecords(root, space).filter((row) => row.state !== "gone").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
+}
+
+/** Remove the records under the root that front no process, `gone` and `reused` ones, and return
+ *  them. Each is removed with its pin, only while its pidfile still reads as it did. */
+export function removeStaleLocalRecords(root: string, space: string): LocalRecord[] {
+  const stale = localRecords(root, space).filter((row) => row.state !== "live");
+  for (const row of stale) removePidPair(join(root, row.path), row.raw);
+  return stale;
+}
+
+/** What a stop says about a stale record it removed, or for a preview, one it would remove. */
+export const staleRecordNotice = (row: LocalRecord, preview = false): string =>
+  `${preview ? "the stop removes" : "removed"} the stale ${row.name} record ${row.path}: ${row.state === "reused" ? `pid ${row.pid} was reused by another process` : `its process, pid ${row.pid}, is gone`}`;
 
 /** A record under a root that may still front a process: whose descriptor names it, its path
  *  relative to the root, the pid it holds when one parses, and why it counts. */
@@ -714,16 +778,20 @@ export function stackNeverStarted(journal: StackJournal): boolean {
 export const processGone = (state: string) => state === "gone" || state === "previous-boot" || state === "foreign-pid";
 
 /** What stopping the stack's broker would cut off outside its recorded members refuses before the
- *  first signal: another live or unresolved service instance in the space, a legacy pidfile process
- *  under the root, or another registration that names the same broker address. Bare `down` and
- *  `down --preserve-state` both run it; `next` is the command to run once the named dependants are
- *  stopped. */
+ *  first signal: another live or unresolved service instance in the space, a legacy pidfile record
+ *  under the root that may front a process, or another registration that names the same broker
+ *  address. Bare `down` and `down --preserve-state` both run it; `next` is the command to run once
+ *  the named dependants are stopped. */
 export function stackScopeRefusals(journal: StackJournal, next: string): void {
   const memberIds = new Set(journal.members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId]));
   const others = serviceInstances(journal.space).filter((row) => !memberIds.has(row.name) && (!processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state)));
   if (others.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop each with ${others.map((row) => `cotal svc stop ${row.record.value.definition} --instance ${row.name} --space ${journal.space} --yes`).join("; ")}, then run ${next}` });
-  const legacy = foreignLocalProcesses(journal.root, journal.space);
-  if (legacy.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes under this root may depend on the broker; they were neither adopted nor stopped", { target: { root: journal.root, processes: legacy } });
+  // A record whose process is gone, or whose pid now runs another start, fronts nothing.
+  const legacy = localRecords(journal.root, journal.space).filter((row) => row.state === "live");
+  if (legacy.length) {
+    const lines = legacy.map(localRecordLine), checks = legacy.map((row) => row.pid === undefined ? row.path : `pid ${row.pid} at ${row.path}`);
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `legacy pidfile-owned processes under this root may depend on the broker (${lines.join("; ")}); they were neither adopted nor stopped`, { target: { root: journal.root, processes: lines }, remedy: `check ${checks.join(", ")}; stop each process where it was started, or remove a record whose process is gone, then run ${next}` });
+  }
   const sharing = loadMeshes().filter((mesh) => mesh.space !== journal.space && mesh.server === journal.server);
   if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) } });
 }
