@@ -22,6 +22,11 @@
  * readiness that exits at once fails its start, exit 5, recording its exit code, and its restart is
  * partial, exit 4, naming that exit code and its log.
  *
+ * A definition whose readiness breaks the schema refuses SCHEMA_INVALID, exit 1, naming the field
+ * and the rule it breaks, such as a timeoutMs out of range or a field the chosen type does not take.
+ *
+ * `service remove` of a controller stack member's definition refuses UNSUPPORTED and keeps it.
+ *
  * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
  * before a child in two isolated homes: with the account only in the child's home and only in the
  * controller's. Its space is registered in both homes as `up` records a started one, with static
@@ -137,6 +142,38 @@ const envRemoved = run(["service", "remove", "envsvc", "--space", "b1", "--yes"]
 check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemoved));
 const gone = run(["service", "show", "envsvc", "--space", "b1"]);
 check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 2, naming where the saved ones are", gone.status === 2 && gone.envelope?.error?.code === "TARGET_NOT_FOUND" && gone.envelope.error.remedy === "see the saved definitions with `cotal service`", shown(gone));
+
+// A readiness value that breaks the schema names the field and its rule, never the value, and its
+// Next says to correct readiness.
+const readinessCases: [string, unknown, string][] = [
+  ["no timeoutMs", { type: "process" }, "readiness.timeoutMs is required for process readiness, which takes type, timeoutMs"],
+  ["a zero timeoutMs", { type: "process", timeoutMs: 0 }, "readiness.timeoutMs must be a whole number of milliseconds from 1 to 120000"],
+  ["a timeoutMs given as text", { type: "process", timeoutMs: "5000" }, "readiness.timeoutMs must be a whole number of milliseconds from 1 to 120000"],
+  ["an unknown type", { type: "tcp", timeoutMs: 5000 }, "readiness.type must be process, http or adapter"],
+  ["no type", { timeoutMs: 5000 }, "readiness.type is required: process, http or adapter"],
+  ["an http readiness with no url", { type: "http", expectedStatus: 200, timeoutMs: 5000 }, "readiness.url is required for http readiness, which takes type, url, expectedStatus, timeoutMs"],
+  ["a status out of range", { type: "http", url: "http://127.0.0.1:8080/health", expectedStatus: 700, timeoutMs: 5000 }, "readiness.expectedStatus must be a whole number from 100 to 599"],
+  ["a field the type does not take", { type: "process", timeoutMs: 5000, retries: 3 }, "readiness.retries is not a field of process readiness, which takes type, timeoutMs"],
+  ["a url off loopback", { type: "http", url: "https://example.com/health", expectedStatus: 200, timeoutMs: 5000 }, "readiness.url must be an http:// URL on 127.0.0.1 or [::1] with a path, such as http://127.0.0.1:8080/health"],
+  ["a readiness that is not an object", "process", "readiness must be an object with a type of process, http or adapter and a timeoutMs"],
+];
+for (const [what, readiness, rule] of readinessCases) {
+  const file = join(home, "readiness.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exit 0"], cwd: root }, readiness }));
+  const bad = run(["service", "add", "badready", "--file", file, "--space", "b1"]);
+  check(`a definition with ${what} refuses SCHEMA_INVALID, exit 1, naming the rule, with a Next`,
+    bad.status === 1 && bad.envelope?.error?.code === "SCHEMA_INVALID" && bad.envelope.error.message === `service definition: ${rule}` && bad.envelope.error.remedy === "correct readiness in the definition as the message says, then add it again", shown(bad));
+}
+check("no refused definition was saved", run(["service", "show", "badready", "--space", "b1"]).envelope?.error?.code === "TARGET_NOT_FOUND");
+
+// A controller stack member's definition stays with its stack, whose up and down read it. Its name
+// marks it, so a definition saved under one stands for the stack's here.
+const member = run(["service", "add", "stack-manager", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", "b1"]);
+check("rig: a definition under a stack member's name is saved", member.status === 0, shown(member));
+const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
+check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming down and space forget, and keeps it",
+  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === "it goes with the stack: cotal down --yes, then cotal space forget b1"
+    && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
 
 // A process service whose HTTP readiness never answers: nothing listens at its loopback address.
 {

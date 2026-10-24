@@ -13,6 +13,9 @@
  * another Cotal home: create, down and status there name that home. A folder path with a control
  * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
+ * A space name over 64 characters is refused by create, `up --space`, `space add` and `meshes add`
+ * before anything is written, and `up` of a longer name an earlier release prepared refuses before its
+ * journal is written.
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
@@ -172,6 +175,14 @@ setCurrent("keep");
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
   check("--from without a terminal is USAGE_INVALID and names --file", refused(fromScript, 1, "USAGE_INVALID") && /--file/.test(fromScript.env?.error?.remedy ?? ""), shown(fromScript));
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
+  // A space added from elsewhere is carried by the same local files as one created here.
+  for (const length of [65, 117]) {
+    const long = "r".repeat(length), limit = `the space name has ${length} characters, and a space name holds at most 64`;
+    const added = await json(["space", "add", long, "--server", LIVE, "--mode", "open", "--root", root, "--force", "--yes"]);
+    check(`space add of a ${length}-character name is USAGE_INVALID, exit 1, naming the limit`, refused(added, 1, "USAGE_INVALID") && (added.env?.error?.message ?? "").startsWith(limit), shown(added));
+    const meshes = await run(["meshes", "add", long, "--server", LIVE, "--mode", "open", "--root", root, "--force"]);
+    check(`meshes add of a ${length}-character name exits 1 naming the limit`, meshes.status === 1 && meshes.stderr.includes(limit), shown(meshes));
+  }
   check("no usage refusal wrote anything", JSON.stringify(registryFiles()) === JSON.stringify(before));
 }
 
@@ -708,6 +719,26 @@ if (process.platform === "linux") {
     check(`a name cotal up cannot start (${name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
   }
   check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
+  // A space name holds at most 64 characters, so its hex fits every local file name that carries it.
+  const longName = "y".repeat(65), longest = "y".repeat(64);
+  const tooLong = await json(["space", "create", longName], spare);
+  check("a 65-character name is USAGE_INVALID naming the 64-character limit, and nothing is written",
+    refused(tooLong, 1, "USAGE_INVALID") && (tooLong.env?.error?.message ?? "").startsWith("the space name has 65 characters, and a space name holds at most 64") && findPreparedSpace(longName) === undefined && !existsSync(join(spare, ".cotal")), shown(tooLong));
+  const upTooLong = await json(["up", "--server", DEAD, "--space", longName], spare);
+  check("up --space with a 65-character name is USAGE_INVALID before anything is written", refused(upTooLong, 1, "USAGE_INVALID") && /at most 64/.test(upTooLong.env?.error?.message ?? "") && !existsSync(join(spare, ".cotal")), shown(upTooLong));
+  const fits = await json(["space", "create", longest], spare);
+  check("control: a 64-character name is prepared", fits.status === 0 && findPreparedSpace(longest) !== undefined, shown(fits));
+  check("control: forget it", (await json(["space", "forget", longest])).status === 0 && findPreparedSpace(longest) === undefined);
+  rmSync(join(spare, ".cotal"), { recursive: true, force: true });
+  // An earlier release prepared longer names; up there refuses before its journal is written.
+  const earlier = mkdtempSync(join(home, "earlier-"));
+  mkdirSync(join(earlier, ".cotal"), { mode: 0o700 });
+  recordPreparedSpace({ space: "y".repeat(100), root: earlier, ts: new Date().toISOString() });
+  const upEarlier = await json(["up", "--server", DEAD], earlier);
+  check("up of a 100-character space an earlier release prepared is USAGE_INVALID naming space forget, and writes no journal",
+    refused(upEarlier, 1, "USAGE_INVALID") && /has 100 characters/.test(upEarlier.env?.error?.message ?? "") && (upEarlier.env?.error?.remedy ?? "").includes(`cotal space forget ${"y".repeat(100)}`) && !existsSync(join(earlier, ".cotal", "stack-controller.json")), shown(upEarlier));
+  removePreparedSpace("y".repeat(100));
+  rmSync(earlier, { recursive: true, force: true });
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
   check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
 
