@@ -25,7 +25,12 @@
  *     later `up` finds them held.
  *  7. A partial loss. When the running broker lost only the delivery bucket, `up` leaves the rest as
  *     they are and refuses TARGET_NOT_FOUND (exit 2) naming the restart, which creates it.
- *  8. A store directory that also holds the user's files. After `up --store-dir` and `down`,
+ *  8. A stack whose registration an older CLI dropped or replaced. With none, `down --yes` refuses
+ *     CONFLICT (exit 2) and stops nothing while the broker's launch receipt names another address,
+ *     and stops the stack through its journal once it matches. A registration added by hand at
+ *     another address refuses CONFLICT, naming `cotal space forget`, and stays. One added by hand
+ *     at the stack's own root and broker is stopped through, and neither leaves a registration.
+ *  9. A store directory that also holds the user's files. After `up --store-dir` and `down`,
  *     `reset store`, `reset space` and their dry runs refuse CONFLICT naming those files, and the
  *     folder keeps them.
  *
@@ -52,7 +57,8 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { findMesh, findPreparedSpace, getSpaceAuth, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -274,7 +280,53 @@ try {
     check("down --yes stops it", last.status === 0, shown(last));
   }
 
-  // 8. A controller stack whose --store-dir also holds the user's files: the reset keeps them.
+  // 8. A registration an older `meshes rm --force` dropped, or `meshes add --force` replaced.
+  {
+    const space = "tear6";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    anchor(root);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(root, "up", "--server", server, "--no-manager", "--json");
+    const registered = findMesh(space);
+    check("space create and up start a fourth controller root", created.status === 0 && started.status === 0 && registered?.origin === "up", { create: shown(created), up: shown(started) });
+    // Read from the instance records, as the stop reads them: `service --space` resolves the
+    // registration this section removes.
+    const live = () => serviceInstances(space).filter((row) => observeServiceProcess(row.record.value) === "running").length;
+    const running = live();
+    const broker = serviceInstances(space).find((row) => row.record.value.definition === "stack-broker")!.record.value;
+    const receipt = join(serviceInstanceStore(space).directory()!, `.broker-launch-${broker.launchRequestId}.json`);
+    const original = readFileSync(receipt, "utf8");
+
+    removeMesh(space);
+    writeFileSync(receipt, original.replace(server, "nats://127.0.0.1:1"), { mode: 0o600 });
+    const mismatched = cli(root, "down", "--yes", "--json");
+    check("with no registration and a broker receipt for another address, down refuses CONFLICT, exit 2",
+      mismatched.status === 2 && mismatched.env?.error?.code === "CONFLICT" && Boolean(mismatched.env.error.message.includes("is not the launch its journal records")), shown(mismatched));
+    check("...stopping nothing and writing no registration", live() === running && running > 0 && findMesh(space) === undefined, { running, now: live() });
+    writeFileSync(receipt, original, { mode: 0o600 });
+
+    recordMesh({ ...registered!, origin: "manual", server: "nats://127.0.0.1:2" });
+    const elsewhere = cli(root, "down", "--yes", "--json");
+    check("a registration added by hand at another address refuses CONFLICT, exit 2, naming cotal space forget",
+      elsewhere.status === 2 && elsewhere.env?.error?.code === "CONFLICT" && Boolean(elsewhere.env.error.remedy?.includes(`cotal space forget ${space}`)), shown(elsewhere));
+    check("...keeping that registration and every member", findMesh(space)?.server === "nats://127.0.0.1:2" && live() === running, findMesh(space));
+
+    recordMesh({ ...registered!, origin: "manual" });
+    const preview = cli(root, "down", "--dry-run", "--json");
+    check("one added by hand at the stack's own root and broker previews the rebuilt registration", preview.status === 0 && Boolean(preview.env?.warnings?.some((row) => row.code === "REGISTRATION_REBUILT" && row.message.includes("would use"))), shown(preview));
+    const same = cli(root, "down", "--yes", "--json");
+    check("...and down --yes stops the whole stack through it", same.status === 0 && Boolean(same.env?.warnings?.some((row) => row.code === "REGISTRATION_REBUILT")) && live() === 0, shown(same));
+    check("...leaving no registration and the prepared record", findMesh(space) === undefined && findPreparedSpace(space) !== undefined, findMesh(space));
+
+    const again = cli(root, "up", "--json");
+    removeMesh(space);
+    const dropped = cli(root, "down", "--yes", "--json");
+    check("a stack restarted and then left with no registration stops through its journal",
+      again.status === 0 && dropped.status === 0 && Boolean(dropped.env?.warnings?.some((row) => row.code === "REGISTRATION_REBUILT" && row.message.includes("had no registration"))) && live() === 0, { up: shown(again), down: shown(dropped) });
+  }
+
+  // 9. A controller stack whose --store-dir also holds the user's files: the reset keeps them.
   {
     const space = "tear5";
     const root = folder(space);

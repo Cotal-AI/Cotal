@@ -514,18 +514,21 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     }
   }
-  // A preferences file that does not validate stops every command except help and shell completion,
-  // as a broken config file does, so nothing runs on a default the person did not mean. `--help` on a
-  // command has already returned above.
+  // A preferences file that does not validate stops every command that could act on a default, as a
+  // broken config file does, so nothing runs on a default the person did not mean. Help, shell
+  // completion, version and docs use no preference, and status reports the file as a warning, so they
+  // still run. `--help` on a command has already returned above.
   if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
     // A COTAL_HOME that cannot be a directory stops them the same way, before any command reads it.
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
-    try {
-      cachedPreferences();
-    } catch (e) {
-      if (!isCommandFailure(e)) throw e;
-      failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+    if (!["version", "docs", "status"].includes(cmd.name)) {
+      try {
+        cachedPreferences();
+      } catch (e) {
+        if (!isCommandFailure(e)) throw e;
+        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+      }
     }
   }
   // A failure raised after the command recorded the space it resolved is reported in that space.

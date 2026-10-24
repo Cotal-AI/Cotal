@@ -92,7 +92,7 @@ export function personasComplete(argv: string[]): CompletionResult {
     { name: "force", type: "boolean" },
   ] as const;
   const flag = completingFlagValue(argv, flags);
-  if (flag?.name === "from" || flag?.name === "creds") return { items: [], directive: "default" };
+  if (flag?.name === "from") return { items: [], directive: "default" };
 
   const positionals = positionalsForCompletion(argv, flags);
   const subs: CompletionResult = {

@@ -365,6 +365,11 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const brokerStore = recordedBroker?.storeDir ?? request.storeDir ?? unstarted?.broker?.storeDir;
   const brokerCap = recordedBroker ? recordedBroker.maxFileStore : request.maxFileStore ?? unstarted?.broker?.maxFileStore;
   const brokerHost = recordedBroker ? recordedBroker.host : request.host ?? unstarted?.broker?.host;
+  // The manager's session ceiling is kept by its saved definition, so a bare up starts it with the
+  // ceiling an earlier up set rather than the default. An explicit --max-sessions replaces it.
+  const savedManager = serviceDefinitionStore(space).read(STACK_DEFINITION.manager)?.record.value.launch;
+  const savedSessions = savedManager?.type === "adapter" && savedManager.options.root === root ? savedManager.options["max-sessions"] : undefined;
+  const maxSessions = request.maxSessions ?? (typeof savedSessions === "number" ? savedSessions : undefined);
   // The mode is pinned by the first whole-stack up. A conflicting explicit request refuses here,
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
@@ -547,7 +552,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // A user registration is recorded here, before its auth service exists, because the native
       // auth-service child resolves a registered user target. It carries only the prepared trust
       // pins and stays incomplete until that child's own readiness is confirmed below.
-      native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, ...(prepared.user ? { userAuth: provisionalUserAuth(prepared.user) } : {}), ...(request.maxSessions !== undefined ? { maxSessions: request.maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
+      native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, ...(prepared.user ? { userAuth: provisionalUserAuth(prepared.user) } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
       failedStage = undefined;
       failedRole = undefined;
     } else if (mode !== "user") {
@@ -569,7 +574,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       if (prepared?.user) {
         failedRole = "auth";
         const confirmed = await confirmUserAuthEndpoints(prepared.user, space, instance);
-        native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, userAuth: confirmed, ...(request.maxSessions !== undefined ? { maxSessions: request.maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
+        native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, userAuth: confirmed, ...(maxSessions !== undefined ? { maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
         failedRole = undefined;
       }
     }
@@ -613,7 +618,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (!request.noManager && !loginBlock) {
       const options: Record<string, unknown> = { root, runtime: request.runtime, server };
       if (prepared?.setup?.wsPort !== undefined) options["ws-port"] = prepared.setup.wsPort;
-      if (request.maxSessions !== undefined) options["max-sessions"] = request.maxSessions;
+      if (maxSessions !== undefined) options["max-sessions"] = maxSessions;
       if (brokerHost) options["console-host"] = brokerHost;
       if (request.manifest) {
         // The manager carries the manifest launch only when this call starts it. A running manager

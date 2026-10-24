@@ -16,7 +16,7 @@ import {
   type ServiceAdapterKernelStopPlan, type ServicePreset,
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
-import { observeServiceProcess, serviceInstances } from "./service-instances.js";
+import { observeServiceProcess, serviceInstances, serviceInstanceStore } from "./service-instances.js";
 import { maintenanceStackView } from "./stack-journal.js";
 
 export const brokerPreset: ServicePreset = {
@@ -35,7 +35,7 @@ const refuse = (code: "CONFLICT" | "LIFECYCLE_BLOCKED" | "UNSUPPORTED" | "TARGET
 
 const LISTENER_PROBE_TIMEOUT_MS = 5000;
 const portsDirectory = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-ports-${context.launchRequestId}`);
-const launchReceipt = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-launch-${context.launchRequestId}.json`);
+const launchReceipt = (context: Pick<ServiceAdapterContext, "stateDirectory" | "launchRequestId">) => join(context.stateDirectory, `.broker-launch-${context.launchRequestId}.json`);
 
 function physical(path: string): string {
   try { return realpathSync.native(path); }
@@ -260,6 +260,20 @@ function brokerScope(context: ServiceAdapterContext & { process: ProcessIdentity
   const receipt = decodeLocalJson(bytes) as Record<string, unknown>;
   if (!receipt || Object.keys(receipt).length !== 5 || receipt.instanceId !== context.instanceId || receipt.launchRequestId !== context.launchRequestId || receipt.root !== target.root || receipt.server !== target.server || typeof receipt.configSha256 !== "string" || !/^[0-9a-f]{64}$/.test(receipt.configSha256)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker launch receipt does not match this exact launch, root or address");
   return { kind: "nats-broker", root: target.root, space: target.space, server: target.server, configSha256: receipt.configSha256 };
+}
+
+/** Whether a broker instance is the exact launch its receipt records at this root and address. A
+ *  stack whose registration is missing is stopped through its journal only while this holds. */
+export function brokerLaunchAt(space: string, instanceId: string, launchRequestId: string, root: string, server: string): boolean {
+  const stateDirectory = serviceInstanceStore(space).directory();
+  if (!stateDirectory) return false;
+  const bytes = readLocalRecordSource(launchReceipt({ stateDirectory, launchRequestId }), 4096, true);
+  if (!bytes) return false;
+  let receipt: Record<string, unknown> | null;
+  try { receipt = decodeLocalJson(bytes) as Record<string, unknown> | null; } catch { return false; }
+  let physicalRoot: string;
+  try { physicalRoot = realpathSync.native(root); } catch { return false; }
+  return receipt !== null && typeof receipt === "object" && receipt.instanceId === instanceId && receipt.launchRequestId === launchRequestId && receipt.root === physicalRoot && receipt.server === server;
 }
 
 export const brokerService: LocalProcess = {
