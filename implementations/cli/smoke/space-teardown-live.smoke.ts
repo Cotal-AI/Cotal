@@ -20,7 +20,8 @@
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
  *     definitions saved for the root, and another folder starts a stack under the same name.
  *  6. Space delete under a stopped stack. With only the broker running the delete applies, and its
- *     receipt names `cotal up`, and `cotal down --yes` with `cotal space forget`. A bare `up` then
+ *     receipt names `cotal up`, and `cotal down --yes` with `cotal space forget`. A run waiting at a
+ *     checkpoint is listed with its state in the preview and the receipt, and a finished run is not. A bare `up` then
  *     creates the streams again on the running broker, empty, says so and starts delivery, and a
  *     later `up` finds them held.
  *  7. A partial loss. When the running broker lost only the delivery bucket, `up` leaves the rest as
@@ -234,20 +235,42 @@ try {
     const created = cli(home, "space", "create", space, "--root", root, "--json");
     check("space create prepares a third controller root", created.status === 0, shown(created));
     anchor(root);
-    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
     const services = cli(root, "service", "--space", space, "--json");
-    const delivery = (services.env?.result?.instances as { definition: string; instanceId: string }[] | undefined)?.find((row) => row.definition === "stack-delivery")?.instanceId;
-    check("up starts the broker and delivery", started.status === 0 && typeof delivery === "string", { up: shown(started), services: shown(services) });
-    const stoppedDelivery = cli(root, "service", "stop", "stack-delivery", "--instance", String(delivery), "--space", space, "--yes", "--json");
-    check("the delivery member stops on its own", stoppedDelivery.status === 0, shown(stoppedDelivery));
+    const instance = (definition: string) => (services.env?.result?.instances as { definition: string; instanceId: string }[] | undefined)?.find((row) => row.definition === definition)?.instanceId;
+    const delivery = instance("stack-delivery"), manager = instance("stack-manager");
+    check("up starts the broker, delivery and the manager", started.status === 0 && typeof delivery === "string" && typeof manager === "string", { up: shown(started), services: shown(services) });
+    // One run waits at a checkpoint and one finishes; the delete names only the first.
+    writeFileSync(join(root, "wait.js"), 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
+    writeFileSync(join(root, "done.js"), 'log("done");\n');
+    const waiting = cli(root, "run", "start", "wait.js", "--space", space, "--json"), finishing = cli(root, "run", "start", "done.js", "--space", space, "--json");
+    const runId = (waiting.env?.result?.result as { runId?: string } | undefined)?.runId;
+    check("a run that waits and a run that finishes start", waiting.status === 0 && typeof runId === "string" && finishing.status === 0, { waiting: shown(waiting), finishing: shown(finishing) });
+    let runs: { unfinished?: { runId: string; state: string }[]; finished?: number } | undefined;
+    for (let i = 0; i < 40; i++) {
+      runs = cli(home, "space", "delete", space, "--dry-run", "--json").env?.result?.runs as typeof runs;
+      if (runs?.finished === 1) break;
+      await new Promise((settle) => setTimeout(settle, 250));
+    }
+    check("the finished run is counted and only the waiting run is listed, with its state", runs?.finished === 1 && runs.unfinished?.length === 1 && runs.unfinished[0]?.runId === runId && runs.unfinished[0].state === "running", runs);
+    for (const [definition, id] of [["stack-manager", manager], ["stack-delivery", delivery]] as const) {
+      const stoppedMember = cli(root, "service", "stop", definition, "--instance", String(id), "--space", space, "--yes", "--json");
+      check(`the ${definition} member stops on its own`, stoppedMember.status === 0, shown(stoppedMember));
+    }
+    const runPreview = cli(home, "space", "delete", space, "--dry-run");
+    check("the delete preview lists the waiting run and says it goes with the streams",
+      runPreview.status === 0 && /Workflow runs that have not finished/.test(runPreview.stdout) && runPreview.stdout.includes(runId ?? "-") && runPreview.stdout.includes("cotal run show <run>"), shown(runPreview));
 
     const deleted = cli(home, "space", "delete", space, "--yes");
     check("space delete applies with only the broker running", deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), shown(deleted));
+    check("its receipt lists the waiting run it removed", /Workflow runs removed/.test(deleted.stdout) && deleted.stdout.includes(runId ?? "-"), shown(deleted));
     check("its receipt names the route back: cotal up there, or cotal down --yes and cotal space forget",
       /Next/.test(deleted.stdout) && deleted.stdout.includes("cotal up") && deleted.stdout.includes(`Run in ${root}: create the space's streams again`) && deleted.stdout.includes("cotal down --yes") && deleted.stdout.includes(`cotal space forget ${space}`), shown(deleted));
     const bare = cli(root, "up", "--json");
     const members = (bare.env?.result?.members as { role: string; state: string }[] | undefined) ?? [];
-    check("a bare up creates the streams again on the running broker and starts delivery", bare.status === 0 && bare.env?.result?.streamsRecreated === true && members.some((row) => row.role === "broker" && row.state === "reused") && members.some((row) => row.role === "delivery" && row.state === "started"), shown(bare));
+    check("a bare up creates the streams again on the running broker and starts delivery", bare.status === 0 && bare.env?.result?.streamsRecreated === true && members.some((row) => row.role === "broker" && row.state === "reused") && members.some((row) => row.role === "delivery" && row.state === "started"), shown(bare))
+    const gone = cli(root, "run", "show", runId ?? "-", "--space", space, "--json");
+    check("the removed run is gone after the streams return", gone.status === 2 && gone.env?.error?.code === "TARGET_NOT_FOUND", shown(gone));;
     const sent = cli(root, "send", "-c", "general", "after the delete", "--space", space, "--json");
     check("the space takes a message again", sent.status === 0, shown(sent));
     const again = cli(root, "up", "--json");
