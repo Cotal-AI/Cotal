@@ -319,12 +319,13 @@ try {
 
   // ---- THE ID-ECHO CELL: the minimal correctness guard from the un-migrated envelope ----------
   // The rail moved to `ep` SUBJECTS but still exchanges the ctl-era `{op,args}`/`{ok,data,error}`
-  // bodies (SPEC 1421 says those envelopes are DELETED - a NAMED RESIDUAL, its own cut). Binding a
-  // reply on (endpoint, nonce) alone would let a malformed or WRONG-ID `{ok:true}` clear a
-  // retirement hold, so the reply MUST echo the caller's request id. Through the generic client
-  // this is `invokeCommand`'s own internal echo check (`parseAttributedReply`, SPEC 13.3) - there
-  // is no wire left for this suite's sender to demand a mismatched id on, so the negative half of
-  // this cell is gone; what remains is the positive guarantee the generic client actually gives.
+  // bodies (SPEC §5 "Envelopes" and §13.11 "The hard cut" delete those envelopes - a NAMED
+  // RESIDUAL, its own cut). Binding a reply on (endpoint, nonce) alone would let a malformed or
+  // WRONG-ID `{ok:true}` clear a retirement hold, so the reply MUST echo the caller's request id.
+  // Through the generic client this is `invokeCommand`'s own internal echo check
+  // (`parseAttributedReply`, SPEC 13.3) - there is no wire left for this suite's sender to demand
+  // a mismatched id on, so the negative half of this cell is gone; what remains is the positive
+  // guarantee the generic client actually gives.
   {
     const uidE2 = mintLifecycleUid();
     await ensureRootCredential(wreg, { owner: OWNER, actor: "wecho2", lifecycleUid: uidE2, managerInstance: "smoke" });
