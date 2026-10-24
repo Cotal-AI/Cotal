@@ -91,7 +91,7 @@ import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTe
 import { service, serviceComplete, validateServiceArguments } from "./service-registry.js";
 import { stopNamedServiceSet } from "./service-set-stop.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
-import { assertBareDownServicesVerified, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
+import { assertBareDownServicesVerified, assertNoServicesForPreserve, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
@@ -639,6 +639,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       console.log(c.dim(`state for "${mesh.space}" is already preserved and offline`));
       return;
     }
+    // A saved service depends on the broker, so the cut does not stop the broker under one. Plain
+    // down stops them first; a preserve leaves that to the operator and stops nothing.
+    assertNoServicesForPreserve(mesh.space);
 
     let attemptId: string;
     let resume;
