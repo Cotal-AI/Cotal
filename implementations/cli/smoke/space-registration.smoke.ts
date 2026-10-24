@@ -822,6 +822,8 @@ if (process.platform === "linux") {
   const bare = await json(["up", "--detach", "--no-manager"], fresh);
   check("a second bare up in the same root runs the same space and is a no-op",
     bare.status === 0 && bare.env?.outcome === "no-op" && bare.env.result.space === "demo" && bare.env.result.server === server && findMesh("demo")?.root === fresh, shown(bare));
+  check("...and its JSON says the selection still names the space and this up did not change it",
+    bare.env?.result.selection?.current === "demo" && bare.env.result.selection.changed === false, bare.env?.result.selection);
   // The receipt's Next runs as printed: down stops only the stack of the folder it runs in.
   check("up in its root offers a bare cotal up and cotal down as its Next",
     /^ +cotal up +Add the manager to this stack$/m.test(up.stdout) && /^ +cotal down +Stop every recorded member$/m.test(up.stdout), shown(up));
@@ -857,6 +859,15 @@ if (process.platform === "linux") {
     refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.1 (recorded: none)") &&
       (bound.env?.error?.remedy ?? "").includes(`run bare cotal up from ${recordedRoot}`), shown(bound));
   check("neither refusal changed the stack journal", readFileSync(stackJournalPath(fresh), "utf8") === journalBefore);
+  // With no space selected, a start selects its own space and its JSON says so. The selection stays
+  // through the space's down.
+  clearCurrent();
+  const selects = await json(["up", "--detach", "--no-manager"], fresh);
+  check("with no space selected, up selects its space and its JSON says this up changed the selection",
+    selects.status === 0 && getCurrent() === "demo" && selects.env?.result.selection?.current === "demo" && selects.env.result.selection.changed === true, shown(selects));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
+  const restopped = await run(["down", "--yes"], {}, fresh);
+  check("...and down stops it again with the space still selected", restopped.status === 0 && getCurrent() === "demo", { ...shown(restopped), current: getCurrent() });
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");

@@ -2170,6 +2170,10 @@ the selection. A selection that names a space no longer registered is reported w
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
 nothing selected it is a `no-op`, exit 0. It takes no space name.
+A space stays selected through its `cotal down`: `use` then reports it as prepared and not started,
+and it stays selected until `use` changes it. On a controller root, `up --json` gives
+`result.selection`, with `current`, the space selected after the start, and `changed`, which is true
+when this `up` selected its own space because no space was selected.
 
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered

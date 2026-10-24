@@ -291,6 +291,9 @@ function membersView(journal: StackJournal, title: string, executable?: NatsServ
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
+  // A start selects its space when no usable space is selected, as a legacy `up` does.
+  const before = getCurrent();
+  const selectedBefore = before && (findMesh(before) || findPreparedSpace(before)) ? before : undefined;
   const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
@@ -305,7 +308,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, written }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, written, selection: { current: current ?? null, changed: current === space && selectedBefore !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const view: Report = result.written.length ? { ...members, sections: [...members.sections, { blocks: [{ kind: "fields", rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] } : members;
     // `down` stops only the stack of the folder it runs in, so from another folder the Next says where.
