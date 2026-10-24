@@ -10,9 +10,9 @@ import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core
 import {
   CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, decodeLocalJson,
   findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath, oneLine,
-  parsePid, probeLiveness, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
+  parsePid, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
   controllerAttemptBroker, cutController, maintenanceAdmitsStackWork, serviceAdapterAttempt,
-  serviceMetadataDigest, type LocalProcess, type ProcessIdentityRecord, type ServiceAdapterContext,
+  serviceMetadataDigest, verifyIdentityPin, type LocalProcess, type ProcessIdentityRecord, type ServiceAdapterContext,
   type ServiceAdapterKernelStopPlan, type ServicePreset,
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
@@ -188,19 +188,24 @@ function refuseLegacyBroker(target: BrokerTarget): void {
   if (raw !== undefined) refuse("LIFECYCLE_BLOCKED", "a legacy nats.pid record exists under this root; the broker service neither adopts nor clears it", { root: target.root, remedy: "inspect and stop the legacy broker with its original route before using the broker service" });
 }
 
-/** Every non-broker legacy record that might still front a process depends on this broker. A record
- *  whose PID is a live service instance of this space is that controller child's own native record,
- *  not a legacy daemon; the service-instance check below names it by its definition. */
-function liveLegacyDependants(target: BrokerTarget): string[] {
+/** Every non-broker legacy record that might still front a process depends on this broker, each as
+ *  `<name> at <path>` with its pid. A record whose PID is a live service instance of this space is
+ *  that controller child's own native record, not a legacy daemon; the service-instance check below
+ *  names it by its definition. A record whose process is gone, or whose pid now runs another start
+ *  than its identity pin records, fronts nothing. */
+function liveLegacyDependants(target: BrokerTarget): { line: string; check: string }[] {
   const owned = new Set(serviceInstances(target.space).flatMap((row) => row.record.value.process && observeServiceProcess(row.record.value) === "running" ? [row.record.value.process.pid] : []));
-  const live: string[] = [];
+  const live: { line: string; check: string }[] = [];
   for (const component of localProcessSurface()) {
     if (component.name === "nats") continue;
-    const raw = readPidfile(localProcessPath(component.pidFile, { root: target.root, space: target.space }));
+    const path = localProcessPath(component.pidFile, { root: target.root, space: target.space });
+    const raw = readPidfile(path);
     if (!raw) continue;
     const pid = parsePid(raw);
     if (pid !== undefined && owned.has(pid)) continue;
-    if (pid === undefined || probeLiveness(pid) !== "dead") live.push(component.name);
+    if (pid !== undefined && ["gone", "mismatch"].includes(verifyIdentityPin(path).kind)) continue;
+    const at = relative(target.root, path);
+    live.push({ line: `${component.name} at ${at}, ${pid === undefined ? "unattributable record" : `pid ${pid}`}`, check: pid === undefined ? at : `pid ${pid} at ${at}` });
   }
   return live;
 }
@@ -333,7 +338,7 @@ export const brokerService: LocalProcess = {
     const binding = brokerScope(context, target);
     refuseLegacyBroker(target);
     const legacy = liveLegacyDependants(target);
-    if (legacy.length) refuse("LIFECYCLE_BLOCKED", `legacy local daemons on this root (${legacy.join(", ")}) may still depend on the broker; it was not stopped under them`, { space: context.space, dependants: legacy });
+    if (legacy.length) refuse("LIFECYCLE_BLOCKED", `legacy local daemons on this root (${legacy.map((row) => row.line).join("; ")}) may still depend on the broker; it was not stopped under them`, { space: context.space, dependants: legacy.map((row) => row.line) }, `check ${legacy.map((row) => row.check).join(", ")}; stop each process where it was started, or remove a record whose process is gone, then stop the broker again`);
     const others = serviceInstances(context.space).filter((row) => row.name !== context.instanceId)
       .filter((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
     const names = [...new Set(others.map((row) => row.record.value.definition))];

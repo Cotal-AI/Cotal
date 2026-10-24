@@ -293,10 +293,11 @@ function localTarget(root: string, server: string, source: MeshTarget["source"],
   // No registry entry and no explicit space, so the root itself must name exactly one space;
   // `soleSpaceOf` fails loud rather than picking one when it holds several (or the tenant list is
   // unreadable). Surface that as a catchable target error so a caller like `status` reports it as an
-  // ambiguous target instead of crashing on an uncaught throw.
+  // ambiguous target instead of crashing on an uncaught throw. A root with no trust yet names the
+  // space `cotal space create` prepared there, as `cotal up` there starts it.
   let space: string;
   try {
-    space = soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
+    space = soleSpaceOf(authDir(root)) ?? preparedSpaceAt(root)?.space ?? DEFAULT_SPACE;
   } catch (e) {
     throw new MeshTargetError("ambiguous-target", (e as Error).message, { root });
   }

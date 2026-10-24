@@ -19,8 +19,11 @@
  *     and keeps any other.
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
  *     definitions saved for the root, and another folder starts a stack under the same name.
- *  6. Space delete under a stopped stack. With only the broker running the delete applies, and its
- *     receipt names `cotal up`, and `cotal down --yes` with `cotal space forget`. History, send and
+ *  6. Space delete under a stopped stack. Beside a running service the user added, it refuses naming
+ *     that service's `cotal service stop` and then the delete again, since `down` refuses there
+ *     too. Under a terminal, a message posted while the typed confirmation waits refuses CONFLICT
+ *     naming the changed count. With only the broker running the delete applies, and its receipt
+ *     names `cotal up`, and `cotal down --yes` with `cotal space forget`. History, send and
  *     `run ps` then refuse naming the missing streams, and `status` shows them absent with `up
  *     --root` first in its Next. A run waiting at a checkpoint is listed with its state in the
  *     preview and the receipt, and a finished run is not. A bare `up` creates the streams again on
@@ -54,6 +57,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { deliveryBucket, mintCreds, mintLifecycleUid, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { clean, cotalPty, wait } from "./_console-pty.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -265,6 +269,36 @@ try {
     const runPreview = cli(home, "space", "delete", space, "--dry-run");
     check("the delete preview lists the waiting run and says it goes with the streams",
       runPreview.status === 0 && /Workflow runs that have not finished/.test(runPreview.stdout) && runPreview.stdout.includes(runId ?? "-") && runPreview.stdout.includes("cotal run show <run>"), shown(runPreview));
+    // A service the user added still uses the streams, and `down` refuses beside it, so the refusal
+    // names that service's own stop and then the delete again.
+    writeFileSync(join(root, "idle.json"), JSON.stringify({ schemaVersion: 1, space, launch: { type: "process", executable: process.execPath, args: ["-e", "setTimeout(() => {}, 600000)"], cwd: root }, readiness: { type: "process", timeoutMs: 10000 } }));
+    const added = cli(root, "service", "add", "idle", "--file", "idle.json", "--space", space, "--json");
+    const idleStart = cli(root, "service", "start", "idle", "--space", space, "--json");
+    const idle = idleStart.env?.result?.instanceId;
+    check("rig: a service the user added runs beside the broker", added.status === 0 && idleStart.status === 0 && typeof idle === "string", { added: shown(added), started: shown(idleStart) });
+    const besideService = cli(home, "space", "delete", space, "--yes", "--json");
+    check("space delete beside it refuses LIFECYCLE_BLOCKED, naming its service stop and then the delete again",
+      besideService.status === 2 && besideService.env?.error?.code === "LIFECYCLE_BLOCKED" && /^services of this space still run here \(idle\)/.test(besideService.env.error.message) &&
+        besideService.env.error.remedy === `stop each service with cotal service stop idle --instance ${String(idle)} --space ${space} --yes, then run cotal space delete ${space} again`, shown(besideService));
+    const idleStop = cli(root, "service", "stop", "idle", "--instance", String(idle), "--space", space, "--yes", "--json");
+    check("the named service stop stops it", idleStop.status === 0, shown(idleStop));
+    // The typed confirmation was given for the message counts it showed, so a message stored while it
+    // waits refuses the delete.
+    const first = cli(root, "send", "-c", "general", "before the review", "--json");
+    const ptyEnv = Object.fromEntries(Object.entries(env).filter((pair): pair is [string, string] => pair[1] !== undefined));
+    const typed = cotalPty(["space", "delete", space], { cwd: home, env: ptyEnv, cols: 160, rows: 60 });
+    let typedOut = "", typedExit: number | undefined;
+    typed.onData((data) => (typedOut += data));
+    typed.onExit((e) => (typedExit = e.exitCode));
+    const until = async (done: () => boolean) => { for (const t0 = Date.now(); Date.now() - t0 < 90_000 && !done(); await wait(100)); return done(); };
+    const asked = await until(() => clean(typedOut).includes("Type the exact space name"));
+    const during = cli(root, "send", "-c", "general", "while the confirmation waits", "--json");
+    typed.write(`${space}\r`);
+    const ended = await until(() => typedExit !== undefined);
+    if (!ended) typed.kill();
+    check("a message stored while the typed confirmation waits refuses CONFLICT, exit 2, naming the changed count",
+      first.status === 0 && asked && during.status === 0 && typedExit === 2 && clean(typedOut).includes(`CHAT_${space} holds 2 messages, 1 message when reviewed`) && /CONFLICT/.test(typedOut),
+      { first: shown(first), during: shown(during), exit: typedExit, out: clean(typedOut).slice(-1500) });
 
     const deleted = cli(home, "space", "delete", space, "--yes");
     check("space delete applies with only the broker running", deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), shown(deleted));

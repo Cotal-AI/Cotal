@@ -41,7 +41,6 @@ import {
   DELIVERY_PIDFILE,
   extensionsDir,
   findCotalRoot,
-  findPreparedSpace,
   hasUserAuthState,
   homeCotalDir,
   cachedPreferences,
@@ -63,6 +62,7 @@ import {
   probeWebReadiness,
   readCurrent,
   readMeshRegistry,
+  readPreparedSpaces,
   readRenewalRecord,
   renderWorkspaceError,
   resolveMeshTarget,
@@ -1011,7 +1011,9 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
   // The prepared spaces folder, or a record in it, that cannot be read is named the same way.
   let currentPrepared = false;
   try {
-    currentPrepared = current !== null && !entries.some((m) => m.space === current) && findPreparedSpace(current) !== undefined;
+    const prepared = readPreparedSpaces();
+    for (const e of prepared.unusable) unread(e.file, e.message);
+    currentPrepared = current !== null && !entries.some((m) => m.space === current) && prepared.spaces.some((p) => p.space === current);
   } catch (e) {
     if (!isMeshRegistryError(e)) throw e;
     unread(e.file, e.message);
