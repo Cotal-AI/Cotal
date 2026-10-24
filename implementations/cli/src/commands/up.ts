@@ -30,6 +30,7 @@ import {
   openServerConfig,
   validateTlsMaterial,
   type BrokerTransport,
+  credsProblem,
   mintCreds,
   mintLifecycleUid,
   DEV_OWNER,
@@ -202,7 +203,7 @@ import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { checkSpaceName } from "./meshes-add.js";
 import { cleanedManifestStart } from "../lib/legacy-start.js";
-import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, unparsableDaemonCredsNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
@@ -4896,10 +4897,11 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: str
     const composition = { injected: false as const, root };
     const rwKey = membershipRwCredsKey(space, composition);
     const wrote: string[] = [];
-    if ((await store.get(rwKey)) === undefined) {
+    const rw = await store.get(rwKey);
+    if (rw === undefined) {
       await store.put(rwKey, await mintCreds(auth, newIdentity(), "membership-rw"));
       wrote.push(MEMBERSHIP_RW_CREDS_KIND); // the KIND is what an operator reads, never the segmented key
-    }
+    } else if (credsProblem(rw) !== undefined && !quietBoot) console.error(c.yellow(`! ${unparsableDaemonCredsNotice([MEMBERSHIP_RW_CREDS_KIND])}`));
     const configPath = membershipConfigPath(root, space);
     if (!existsSync(configPath)) {
       mkSecretDir(dirname(configPath)); // harden the per-space dir before the file lands, as the fresh path does

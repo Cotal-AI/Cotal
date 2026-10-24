@@ -5216,6 +5216,10 @@ on the file as its repair. That includes the space's own store credentials, and 
 still checked. Each file is also parsed the way `--creds` checks one, so a file the NATS
 client cannot parse is a finding even when its claims are legible, such as one with Windows (CRLF)
 line endings.
+Once the root holds the space's trust, a missing `membership-observer` or `connection-evictor`
+credential is a finding too, with `cotal down` then `cotal up --rotate-sys` as its repair, because
+nothing else mints that pair again. A missing delivery or membership-rw credential is only noted,
+since `cotal up` mints it.
 A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
 signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential
 stays a finding until its file is gone. The exception is one `auth mint --no-expiry` wrote, whose
@@ -5239,6 +5243,14 @@ renewal lease when using the broker and refuses another holder. Offline repair i
 uncoordinated; an authenticated preflight failure is not called an offline target. User-auth roots
 cannot receive a static-signer repair fallback. No system account is rotated and no agent is
 respawned or silently given a new identity.
+
+A delivery or membership-rw credential the NATS client cannot parse holds no key to re-sign, and
+the manager cannot renew it either. When no broker answers, `--fix` mints it again under a new
+identity, as `cotal up` mints a missing one, and its result row has `reminted: true`. While its
+broker answers it stays a finding, and its guidance and row name `cotal down` first. A refusal
+because the manager holds the renewal lease names the same step. Every result row that is not a
+plain re-sign has a `reason`. When `cotal up` starts with such a membership-rw credential, the
+delivery daemon runs without it, and `up` warns `DAEMON_CREDENTIAL_UNPARSABLE`, naming the same step.
 
 A local re-sign does not erase a recorded broker refusal or claim that a daemon adopted it.
 A recorded refusal names the space's manager, the renewal owner, as the next step. A pre-per-space

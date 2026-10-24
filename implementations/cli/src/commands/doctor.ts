@@ -32,11 +32,13 @@ import {
   migrateLegacyCotalMaterial,
   preflightTarget,
   remintDaemonCreds,
+  REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
   spaceAccountPath,
   staleSystemCreds,
   type StaleSystemCred, type MaterialMigrationReceipt,
+  unparsableDaemonCreds,
   workspaceSecretStore,
   writeRenewalRecord,
   recordOperationSpace,
@@ -46,7 +48,7 @@ import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 
 export const doctorFlags = [jsonFlag, plainFlag,
-  { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds; needs the local signer)" },
+  { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds, or mint one again that holds no key while its broker does not answer; needs the local signer)" },
   { name: "space", type: "string", description: "target space on a multi-space root (default: the sole space)" },
 ] as const;
 
@@ -56,6 +58,8 @@ interface CredReport {
   kind: CredentialKind;
   path: string;
   health?: CredHealth; // undefined = file missing
+  /** Bytes this account read that the NATS client cannot parse, so they hold no key to re-sign. */
+  unparsable?: boolean;
   /** A finding that must block `healthy`, with its exact repair. */
   problem?: string;
   repair?: string;
@@ -79,7 +83,9 @@ interface RepairObservation {
   requested: boolean;
   attempted: boolean;
   authority: "lease" | "offline" | null;
-  results: { file: string; ok: boolean; skipped: boolean }[];
+  /** `reminted` marks a file minted again under a new identity; `reason` says why a row is not a
+   *  plain re-sign, in fixed text that never quotes a parser or renewal error. */
+  results: { file: string; ok: boolean; skipped: boolean; reminted: boolean; reason: string | null }[];
   migrationAttempted: boolean;
   migrations: MaterialMigrationReceipt[];
   coordinationCleanup: "not-opened" | "confirmed" | "unconfirmed";
@@ -133,7 +139,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     if (values.fix && userMode) throw new CommandFailure("refused", "UNSUPPORTED", "this static daemon repair cannot replace a user-auth space's supported issuer authority", { target });
     repair.migrationAttempted = values.fix === true;
     reports = inventory(root, auth.space, auth.sys.pub, !values.fix, (receipt) => repair.migrations.push(receipt));
-    if (values.fix && reports.some((row) => row.problem && isRemintable(row.kind))) await repairDoctorCredentials(root, auth, repair);
+    if (values.fix && reports.some((row) => row.problem && isRemintable(row.kind))) await repairDoctorCredentials(root, auth, repair, new Set(reports.filter((row) => row.unparsable && isRemintable(row.kind)).map((row) => row.label)));
     if (repair.attempted) reports = inventory(root, auth.space, auth.sys.pub, true);
   } catch (error) {
     const changed = [...repair.migrations.map((receipt) => ({ kind: "credential-material-migrated", materialKind: receipt.kind, from: receipt.from, to: receipt.to, space: receipt.space })), ...repair.results.filter((row) => row.ok).map((row) => ({ kind: "daemon-credential-resigned", file: row.file, space: auth!.space }))];
@@ -143,7 +149,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   }
   const renewal = renewalObservation(root, auth.space);
   const items = reports.map((row) => ({
-    label: row.label, kind: row.kind, path: row.path, state: row.superseded ? "superseded-local-file" : row.health?.state ?? "not-provisioned-here",
+    label: row.label, kind: row.kind, path: row.path, state: row.superseded ? "superseded-local-file" : row.health?.state ?? (row.problem ? "missing" : "not-provisioned-here"),
     issuedAt: Number.isFinite(row.health?.iat) ? row.health!.iat! : null,
     expiresAt: Number.isFinite(row.health?.exp) ? row.health!.exp! : null,
     renewAt: Number.isFinite(row.health?.renewAt) ? row.health!.renewAt! : null,
@@ -161,6 +167,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     { title: data.findings || refused || incomplete ? "Credential findings" : "No local credential findings", blocks: [
       { kind: "fields", rows: [["Root", data.root], ["Space", data.space], ["Mode", data.mode], ["Scope", data.scope], ["Current broker authorization", { text: "not checked", tone: "waiting" }], ["Live agent health", { text: "not checked", tone: "waiting" }], ["Repair requested", data.repair.requested ? "yes" : "no"], ["Acknowledged local migrations", String(data.repair.migrations.length)], ["Repair coordination", data.repair.authority ?? "not used"]] },
       { kind: "lines", lines: [{ text: "Credential expiry/claim inspection is not live broker acceptance, daemon adoption, process health or task progress. Locally ordered superseded files are not proof that their successor is connected. No agent was respawned and no system account was rotated.", tone: "hint" }] },
+      ...(data.repair.results.some((row) => row.reminted || (!row.ok && !row.skipped)) ? [{ kind: "lines" as const, lines: data.repair.results.filter((row) => row.reminted || (!row.ok && !row.skipped)).map((row) => row.reminted ? `${row.file}: minted again under a new identity, because ${row.reason}` : `${row.file}: not repaired, because ${row.reason}`) }] : []),
     ] },
     { title: "Local credential files", blocks: [
       { kind: "table", columns: [{ key: "name", label: "Credential" }, { key: "state", label: "Local state" }, { key: "issued", label: "Issued" }, { key: "expiry", label: "Expiry" }], rows: data.items.slice(0, 200).map((row) => ({ name: row.label, state: row.state, issued: at(row.issuedAt ?? undefined), expiry: at(row.expiresAt ?? undefined) })) },
@@ -173,7 +180,8 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
-async function repairDoctorCredentials(root: string, auth: NonNullable<Awaited<ReturnType<typeof getSpaceAuth>>>, observed: RepairObservation): Promise<void> {
+/** `unparsable` names the daemon files the inventory read but the NATS client cannot parse. */
+async function repairDoctorCredentials(root: string, auth: NonNullable<Awaited<ReturnType<typeof getSpaceAuth>>>, observed: RepairObservation, unparsable: ReadonlySet<string>): Promise<void> {
   let target: ReturnType<typeof resolveMeshTarget> | undefined;
   try {
     target = resolveMeshTarget(root, { space: auth.space, readOnly: true });
@@ -191,7 +199,8 @@ async function repairDoctorCredentials(root: string, auth: NonNullable<Awaited<R
   const prior = renewalObservation(root, auth.space);
   if (prior.state === "unreadable") throw new CommandFailure("refused", "SCHEMA_INVALID", "the prior renewal record is unreadable; a possible broker refusal was not overwritten");
   let results: Awaited<ReturnType<typeof remintDaemonCreds>>;
-  const retain = (rows: Awaited<ReturnType<typeof remintDaemonCreds>>) => { observed.results = rows.map((row) => ({ file: row.file, ok: row.ok === true, skipped: row.skipped !== undefined })); };
+  const reminted = new Set<string>();
+  const retain = (rows: Awaited<ReturnType<typeof remintDaemonCreds>>) => { observed.results = rows.map((row) => ({ file: row.file, ok: row.ok === true, skipped: row.skipped !== undefined, reminted: reminted.has(row.file), reason: repairReason(row, reminted, unparsable) })); };
   if (target) {
     const uid = mintLifecycleUid(), identity = newIdentity();
     const ep = new CotalEndpoint({ space: target.space, servers: target.server, tls: target.tlsRequired, creds: await mintCreds(auth, identity, "supervisor", { lifecycleUid: uid }), lifecycleUid: uid, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { id: identity.id, name: "doctor-auth-fix", kind: "endpoint" } });
@@ -200,7 +209,7 @@ async function repairDoctorCredentials(root: string, auth: NonNullable<Awaited<R
     try {
       await ep.start();
       held = await ep.holdDaemonRenewalLease(`doctor:${hostname()}:${process.pid}`);
-      if (!held) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another native renewal owner holds the lease; no daemon credential was re-signed");
+      if (!held) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another native renewal owner holds the lease; no daemon credential was re-signed", { target: { root, space: auth.space }, remedy: `the renewal owner re-signs these credentials itself while it runs; for one that holds no key to re-sign, stop the stack with \`${displayCmd()} down\`, then run \`${displayCmd()} doctor auth --fix\`` });
       observed.authority = "lease";
       observed.attempted = true;
       results = await remintDaemonCreds(root, auth.space, undefined, { preflight: async (creds) => (await probeConnect(target!.server, { creds, tls: target!.tlsRequired })).ok === true });
@@ -216,6 +225,17 @@ async function repairDoctorCredentials(root: string, auth: NonNullable<Awaited<R
     observed.authority = "offline";
     observed.attempted = true;
     results = await remintDaemonCreds(root, auth.space);
+    // No broker answers, so no daemon runs on these files. One that holds no key to re-sign is minted
+    // again under a new identity, as `up` mints a missing one, once the store still reads it unparsable.
+    const store = workspaceSecretStore(root);
+    const still = new Set(await unparsableDaemonCreds(root, auth.space, store));
+    for (const [i, row] of results.entries()) {
+      const entry = REMINTABLE_DAEMON_CREDS.find((daemon) => daemon.kind === row.file);
+      if (row.ok || row.skipped !== undefined || !entry || !unparsable.has(row.file) || !still.has(row.file)) continue;
+      await store.put(entry.key(auth.space), await mintCreds(auth, newIdentity(), entry.profile));
+      results[i] = { file: row.file, ok: true };
+      reminted.add(row.file);
+    }
     retain(results);
   }
   const adoption = prior.brokerAcceptance === "recorded-refusal" ? { ok: false, error: "re-signed locally by doctor auth --fix; the previous broker refusal remains unproven until the native renewal owner proves and adopts the generation" } : undefined;
@@ -237,6 +257,36 @@ function renewalObservation(root: string, space: string) {
 
 function isRemintable(kind: CredentialKind): boolean {
   return kind === "delivery" || kind === "membership-rw";
+}
+
+/** Why a `--fix` row is not a plain re-sign, or null for one that is. */
+function repairReason(row: Awaited<ReturnType<typeof remintDaemonCreds>>[number], reminted: ReadonlySet<string>, unparsable: ReadonlySet<string>): string | null {
+  if (reminted.has(row.file)) return "it held no key to re-sign";
+  if (row.skipped === "missing-file") return `it is absent here, and \`${displayCmd()} up\` mints it`;
+  if (row.skipped === "no-auth") return "no static trust here signs it";
+  if (row.ok) return null;
+  if (unparsable.has(row.file)) return `it holds no key to re-sign, and its broker answers; stop the stack with \`${displayCmd()} down\`, then run \`${displayCmd()} doctor auth --fix\` again`;
+  return "it could not be re-signed, so the current file was kept";
+}
+
+/** The repair for a daemon file that holds no key: only a new identity replaces it. */
+function daemonRemintRepair(): string {
+  const cmd = displayCmd();
+  return `it holds no key to re-sign, so the manager cannot renew it. While its broker does not answer, \`${cmd} doctor auth --fix\` mints it again under a new identity, as \`${cmd} up\` does for a missing one; stop a running stack with \`${cmd} down\` first`;
+}
+
+/** The repair for the $SYS pair, which nothing re-signs in place. A plain `down` + `up` does NOT
+ *  touch these: `up` mints them only on the branch that CREATES the trust record, so re-upping an
+ *  existing space reuses the same files and reports success. The rotation must be asked for. */
+function systemRotationRepair(): string {
+  return `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+}
+
+/** A credential file that is absent. Only the $SYS pair is a finding then, once the space has its
+ *  trust: `up` mints the other two when they are missing, and nothing but a rotation mints these. */
+function missingReport(label: string, kind: CredentialKind, path: string, sysPub?: string): CredReport {
+  if (sysPub === undefined || (kind !== "membership-observer" && kind !== "connection-evictor")) return { label, kind, path };
+  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair() };
 }
 
 /** Local filename/issued-at ordering only. No role here proves a connected or running successor. */
@@ -379,13 +429,15 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
   // fixed and never quotes the file.
   let named: { problem: string; repair?: string } | undefined;
   let bytes: Buffer | undefined;
+  let unparsable = false;
   try {
     bytes = readLocalRecordSource(path, 1024 * 1024, true);
-    if (!bytes) return { label, kind, path };
+    if (!bytes) return missingReport(label, kind, path, sysPub);
     const creds = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     // The NATS client's own parse, the check `--creds` makes, so a file whose claims are legible but
     // that the client cannot present is not called healthy.
     const unusable = credsProblem(creds);
+    unparsable = unusable !== undefined;
     if (unusable) named = { problem: `the NATS client cannot parse it: ${unusable.message}`, ...(unusable.code === "crlf" ? { repair: `save it with LF line endings, for example with \`dos2unix ${path}\`` } : {}) };
     health = unusable ? { state: "unreadable", error: unusable.message } : inspectCredHealth(creds);
   } catch (error) {
@@ -394,19 +446,18 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
     let exposure: ReturnType<typeof credentialFileExposure>;
     try { const stat = lstatSync(path); exposure = stat.isFile() ? credentialFileExposure(path, stat) : undefined; } catch { exposure = undefined; }
     if (exposure) named = { problem: `the credential file ${exposure.reason}`, repair: exposure.remedy };
+    // Bytes that were read and then failed to decode are unparsable; a refused read is not.
+    unparsable = bytes !== undefined && exposure === undefined;
     health = { state: "unreadable", error: "protected credential could not be read or parsed" };
   }
-  const r: CredReport = { label, kind, path, health };
+  const r: CredReport = { label, kind, path, health, unparsable };
   const policy = credentialLifetime(kind);
   const standing = policy.class === "standing-renewable" || policy.class === "rotation-renewed";
   const repair = isRemintable(kind)
     ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager - it is the renewal owner and re-signs + reloads these every half-TTL)`
     : kind === "agent"
       ? agentRepair(path, live, space)
-        // The $SYS pair. A plain `down` + `up` does NOT touch these: `up` mints them only on the
-        // branch that CREATES the trust record, so re-upping an existing space reuses the same
-        // expired files and reports success. The rotation must be asked for.
-      : `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+      : systemRotationRepair();
   // A $SYS cred is only usable if the system account that SIGNED it is the one the broker loads,
   // i.e. the one in this root's trust record. Expiry alone cannot see a RETIRED issuer: a rotation
   // that committed the record and then died leaves a file that is structurally valid and years from
@@ -424,7 +475,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
       r.problem = named?.problem ?? "credential parsing failed; raw diagnostic omitted";
       // Unreadable material cannot be re-signed, so the honest agent remedy here is the respawn
       // the old code gave to every case — this is the ONE case it fitted.
-      r.repair = named?.repair ?? (kind === "agent" && live?.role !== "superseded" ? agentUnrenewableRepair() : repair);
+      r.repair = named?.repair ?? (kind === "agent" && live?.role !== "superseded" ? agentUnrenewableRepair() : unparsable && isRemintable(kind) ? daemonRemintRepair() : repair);
       break;
     case "expired":
       // #1576 ASK 3. A SUPERSEDED incarnation is expected to be expired — that is what supersession
