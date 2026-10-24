@@ -132,6 +132,8 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("use reports the selection it replaced", swap.status === 0 && swap.env?.result.current === "alpha" && swap.env.result.previous === "beta" && swap.env.target?.space === "alpha", shown(swap));
   const unknown = json(["use", "nope"]);
   check("use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection", unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && getCurrent() === "alpha", shown(unknown));
+  const unknownHuman = run(["use", "nope"]);
+  check("the refusal of an unregistered name is headed with that name, as space forget's is", unknown.env?.target?.space === "nope" && unknownHuman.stderr.startsWith("Mesh: nope\n"), shown(unknownHuman));
   const two = json(["use", "alpha", "beta"]);
   check("use with two names is a usage error", two.status === 1 && two.env?.error?.code === "USAGE_INVALID", shown(two));
   const listed = json(["space"]);
@@ -165,6 +167,8 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("show leaves the credential path out", !gamma.stdout.includes("sentinel") && !gamma.stdout.includes("auth.test"), shown(gamma));
   const unknown = json(["space", "show", "nope"]);
   check("show refuses an unregistered name with TARGET_NOT_FOUND", unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
+  const unknownHuman = run(["space", "show", "nope"]);
+  check("the show refusal is headed with the name it looked for", unknown.env?.target?.space === "nope" && unknownHuman.stderr.startsWith("Mesh: nope\n"), shown(unknownHuman));
   const human = run(["space", "show", "beta"]);
   check("the show report offers the command that selects it", human.status === 0 && /tls:\s+required/.test(human.stdout) && /cotal use beta/.test(human.stdout), shown(human));
   clearCurrent();

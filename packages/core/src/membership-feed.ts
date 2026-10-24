@@ -27,7 +27,8 @@
  * would undo the daemon's least-privilege extraction. The barrel exports {@link startMembershipFeed}, but
  * the **scoped creds are the real gate**: with no system-account observer cred it simply cannot connect.
  */
-import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
   membershipBucket,
@@ -119,7 +120,7 @@ const MEMBERSHIP_CREDS_RETRY_MS = 60_000;
  *  the candidate, so the proof is unambiguous. */
 async function brokerAcceptsCreds(servers: string, creds: string, timeoutMs: number): Promise<boolean> {
   try {
-    const probe = await connect({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
+    const probe = await dialerFor(servers)({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
     await probe.close();
     return true;
   } catch {
@@ -201,7 +202,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     log(why);
     throw new Error(why);
   };
-  const connectObs = () => connect({
+  const connectObs = () => dialerFor(opts.servers)({
     servers: opts.servers,
     authenticator: (nonce?: string) => { refuseExpiredObsCreds(); return credsAuthenticator(enc(currentObsCreds))(nonce); },
     name: "cotal-membership-observer",
@@ -252,7 +253,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   // Shared by the initial dial and by a later revive: the authenticator always presents the last
   // BROKER-PROVEN cache, never a fresh un-preflighted source read. The 75% timer / explicit reload
   // advance `currentRwCreds` only AFTER a disposable preflight proves the broker accepts the candidate.
-  const connectRw = () => connect({
+  const connectRw = () => dialerFor(opts.servers)({
     servers: opts.servers,
     authenticator: (nonce?: string) => { refuseExpiredRwCreds(); return credsAuthenticator(enc(currentRwCreds))(nonce); },
     name: "cotal-membership-rw",
