@@ -374,6 +374,34 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       listed.status === 4 && doc.result?.items?.some((item) => item.name === "x" && !item.valid) === true && doc.result.items.some((item) => item.name === "default" && item.valid) &&
         doc.warnings?.some((w) => w.code === "PERMISSION_DENIED" && /^persona is not a regular file: \S+\/x\.md; it was not read$/.test(w.message)) === true, shown(listed));
   }
+  // A signal to the CLI while the editor is open reaches the editor. These editors signal the CLI,
+  // their parent, themselves. SIGTERM, or a Ctrl-C that ends the editor, saves nothing and reports it;
+  // an editor that takes Ctrl-C as a key keeps the edit going.
+  if (process.platform !== "win32") {
+    const interrupted = (name: string, script: string) => {
+      const drafts = mkdtempSync(join(tmpdir(), "cotal-entry-drafts-"));
+      cleanup.push(drafts);
+      const path = join(drafts, "..", `${name}-${process.pid}.sh`);
+      writeFileSync(path, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+      cleanup.push(path);
+      let file = "";
+      const r = cotal(["persona", "edit", "x"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, { ...noSeed, VISUAL: path, EDITOR: path, TMPDIR: drafts });
+      return { r, drafts: readdirSync(drafts), saved: readFileSync(file, "utf8") };
+    };
+    const term = interrupted("term", 'kill -TERM "$PPID"; exec sleep 30');
+    check("persona edit on SIGTERM stops the editor, exits 143, saves nothing and removes the unchanged draft",
+      term.r.status === 143 && term.r.stderr.includes("Interrupted while the editor was open, so nothing was saved and x is unchanged.") && term.drafts.length === 0 && term.saved === "---\nname: x\n---\nhi\n", { ...shown(term.r), drafts: term.drafts });
+    const half = interrupted("half", 'printf "half\\n" >> "$1"; kill -TERM "$PPID"; exec sleep 30');
+    const kept = /Your draft is kept in (\S+\.md);/.exec(half.r.stderr)?.[1];
+    check("persona edit on SIGTERM keeps a changed draft and names it",
+      half.r.status === 143 && kept !== undefined && readFileSync(kept, "utf8").endsWith("half\n") && half.drafts.length === 1 && !half.saved.includes("half"), { ...shown(half.r), drafts: half.drafts });
+    const ctrlC = interrupted("int", 'kill -INT "$PPID"; exec sleep 30');
+    check("persona edit on a Ctrl-C that ends the editor exits 130 and saves nothing",
+      ctrlC.r.status === 130 && ctrlC.r.stderr.includes("Interrupted while the editor was open, so nothing was saved and x is unchanged.") && ctrlC.drafts.length === 0, { ...shown(ctrlC.r), drafts: ctrlC.drafts });
+    const key = interrupted("key", 'got=; trap "got=1" INT; kill -INT "$PPID"; i=0\nwhile [ -z "$got" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done\n[ -n "$got" ] && printf "more\\n" >> "$1"');
+    check("persona edit keeps going when the editor takes Ctrl-C as a key, and saves its edit",
+      key.r.status === 0 && key.r.stdout.includes("Persona saved") && key.saved.endsWith("more\n") && key.drafts.length === 0, { ...shown(key.r), drafts: key.drafts });
+  }
   for (const sub of ["list", "show", "edit", "new", "rm"]) {
     const help = cotal(["help", "personas", sub]);
     check(`help personas ${sub} prints that subcommand's help`, help.status === 0 && help.stdout.includes(`cotal personas ${sub}`), shown(help));

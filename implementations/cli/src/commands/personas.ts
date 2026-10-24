@@ -196,16 +196,16 @@ function show(name: string | undefined, values: { space?: string; server?: strin
 
 /** `cotal personas edit <name>` — open the card in the `editor` preference ($VISUAL, then $EDITOR,
  *  then the saved one), validate a private draft, then compare and commit through the shared local writer. */
-function edit(name: string | undefined, values: { space?: string; server?: string }): void {
+async function edit(name: string | undefined, values: { space?: string; server?: string }): Promise<void> {
   if (!name) return usage();
   const catalog = personaCatalog(values);
-  const edit = editPersona(personaPath(catalog.root, name), name, catalog);
+  const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
   if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
   else if (edit.action === "unchanged") console.log(c.dim(`"${name}" is unchanged, so nothing was saved`));
   else console.log(c.yellow(`edit cancelled: the editor exited with status ${edit.status}, so nothing was saved${edit.draft ? `; your draft is kept in ${edit.draft}` : ""}`));
 }
 
-function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean; space?: string; server?: string }): void {
+async function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean; space?: string; server?: string }): Promise<void> {
   if (!name) return usage();
   if (!NAME_RE.test(name)) {
     console.error(c.red(`invalid persona name "${name}": use letters, digits, "_" or "-"`));
@@ -250,7 +250,7 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
   }
   const subscribe = v.subscribe.split(",").map((s) => s.trim()).filter(Boolean);
 
-  const bytes = serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
+  const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
   commitPersona(path, expected, bytes);
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}`));

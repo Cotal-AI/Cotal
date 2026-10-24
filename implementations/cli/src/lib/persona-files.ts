@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -13,6 +13,7 @@ import {
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
+import { exitInterrupted, INTERRUPT_SIGNALS, type InterruptSignal } from "./interrupt-notice.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
@@ -161,12 +162,12 @@ function draftFolder(): string {
 
 /** Own a private draft and remove only that draft. A cleanup failure is not a successful operation.
  *  When `keep` says so, the draft stays in place, because it holds work that was not saved. */
-function withDraft<T>(name: string, action: (path: string) => T, keep?: () => boolean): T {
+async function withDraft<T>(name: string, action: (path: string) => T | Promise<T>, keep?: () => boolean): Promise<T> {
   const dir = draftFolder();
   let kept = false;
   try {
     hardenPrivate(dir, "dir");
-    const value = action(join(dir, `${name}.md`));
+    const value = await action(join(dir, `${name}.md`));
     kept = keep?.() === true;
     return value;
   }
@@ -183,7 +184,7 @@ function withDraft<T>(name: string, action: (path: string) => T, keep?: () => bo
 }
 
 /** Use the existing serializer for flag-built definitions; file inputs keep their original bytes. */
-export function serializePersona(def: AgentDef): Buffer {
+export function serializePersona(def: AgentDef): Promise<Buffer> {
   for (const [flag, value] of [["--role", def.role], ["--model", def.model]] as const)
     if (value !== undefined && /[\u0000-\u001f\u007f]/u.test(value))
       throw new CommandFailure("refused", "USAGE_INVALID", `${flag} takes a label without control characters`);
@@ -204,12 +205,38 @@ function editorProgram(editor: string): string | undefined {
   catch { return undefined; }
 }
 
+/** How the editor ended, and the first signal the CLI received while it ran. */
+interface EditorExit { status: number | null; signal: NodeJS.Signals | null; error?: NodeJS.ErrnoException; received?: InterruptSignal }
+
+/** Run the editor on the draft and wait for it to exit. A SIGINT, SIGTERM or SIGHUP the CLI receives
+ *  meanwhile is passed to the editor, so the editor does not outlive the CLI. */
+function runEditor(editor: string, draft: string): Promise<EditorExit> {
+  const program = editorProgram(editor);
+  const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
+  let received: InterruptSignal | undefined;
+  // The editor starts running as soon as it is spawned, so the CLI holds the signals first.
+  const pass = (signal: InterruptSignal) => { received ??= signal; child.kill(signal); };
+  for (const signal of INTERRUPT_SIGNALS) process.on(signal, pass);
+  const child = program ? spawn(program, [draft], { stdio: "inherit" }) : spawn(`${editor} ${quoted}`, { shell: true, stdio: "inherit" });
+  return new Promise(resolve => {
+    const done = (exit: EditorExit) => {
+      for (const signal of INTERRUPT_SIGNALS) process.off(signal, pass);
+      resolve({ ...exit, ...(received ? { received } : {}) });
+    };
+    // An error after a successful start is a failed kill; the exit still follows.
+    child.once("error", error => { if (child.pid === undefined) done({ status: null, signal: null, error }); });
+    child.once("exit", (status, signal) => done({ status, signal }));
+  });
+}
+
 /** What an edit did. An editor that exits non-zero cancels it, as vim's `:cq` does; a draft it changed
  *  is kept. A draft left as it was saves nothing. */
 export type PersonaEdit = { action: "saved" } | { action: "unchanged" } | { action: "cancelled"; status: number; draft?: string };
 
-/** Never expose the catalog file to an editor. Validate successful draft bytes, then compare under lock. */
-export function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): PersonaEdit {
+/** Never expose the catalog file to an editor. Validate successful draft bytes, then compare under lock.
+ *  An interrupt that stops the edit saves nothing, removes an unchanged draft, names a changed one, and
+ *  exits with the signal's code. */
+export async function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): Promise<PersonaEdit> {
   if (json || inputDisabledByFlag())
     throw new CommandFailure("refused", "USAGE_INVALID", "persona edit opens an editor, --no-input forbids one, as does --json", { remedy: "edit interactively without --json or --no-input" });
   const source = requirePersonaSource(path);
@@ -219,15 +246,19 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   // A draft the editor may have changed and that was not saved is kept, and the failure names it.
   let keep = false;
-  return withDraft(name, (draft): PersonaEdit => {
+  const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {
     writeSecretFile(draft, source.bytes);
-    const program = editorProgram(editor);
-    const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
-    const result = program ? spawnSync(program, [draft], { stdio: "inherit" }) : spawnSync(`${editor} ${quoted}`, { shell: true, stdio: "inherit" });
+    const result = await runEditor(editor, draft);
+    // SIGTERM or SIGHUP stops the edit. Ctrl-C reaches the editor too, and stops the edit only when
+    // it ends the editor, since an editor such as vim takes Ctrl-C as a key.
+    if (result.received && (result.received !== "SIGINT" || result.signal)) {
+      keep = readPersonaSource(draft)?.bytes.equals(source.bytes) === false;
+      return { action: "interrupted", signal: result.received, ...(keep ? { draft } : {}) };
+    }
     // A POSIX shell exits 127 when it finds no such command and 126 when it cannot run it: the editor
     // is missing, as it is when none is set, and nothing was edited. A program that cannot be run is
     // refused the same way.
-    if (program && (result.error as NodeJS.ErrnoException | undefined)?.code === "EACCES")
+    if (result.error?.code === "EACCES")
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} could not be run - not saved`, { remedy: `make ${editor} executable, or set VISUAL or EDITOR to an installed editor` });
     if (process.platform !== "win32" && !result.error && (result.status === 127 || result.status === 126))
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} ${result.status === 127 ? "was not found" : "could not be run"} - not saved`, {
@@ -266,4 +297,10 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
     }
     return { action: "saved" };
   }, () => keep);
+  if (edit.action === "interrupted") {
+    exitInterrupted(edit.signal, edit.draft
+      ? `Interrupted while the editor was open, so nothing was saved. Your draft is kept in ${edit.draft}; remove ${dirname(edit.draft)} when you are done.`
+      : `Interrupted while the editor was open, so nothing was saved and ${name} is unchanged.`);
+  }
+  return edit;
 }

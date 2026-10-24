@@ -3904,7 +3904,11 @@ successful editor exit and valid definition are required before saving. A draft 
 validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
 so the edit is not lost. An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
 exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
-editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A draft left as it was
+editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
+SIGHUP that reaches the CLI while the editor is open is passed to the editor, and the CLI waits for
+it to exit. SIGTERM and SIGHUP then stop the edit, as does a Ctrl-C that ends the editor: nothing is
+saved, an unchanged draft is removed, a changed one is kept and named, and the CLI exits 130, 143 or
+129. An editor such as vim that takes Ctrl-C as a key keeps the edit going. A draft left as it was
 saves nothing and says the persona is unchanged. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
 refusal says which one happened and keeps your edited draft in its private folder, naming it, so

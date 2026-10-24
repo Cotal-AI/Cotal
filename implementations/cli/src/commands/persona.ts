@@ -79,12 +79,12 @@ export async function persona(args: ParsedArgs): Promise<void> {
     if (reserved) throw new CommandFailure("refused", "USAGE_INVALID", reserved, { remedy: "choose another name" });
     const expected = readPersonaSource(path);
     if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with cotal persona edit ${name}, or remove it with cotal persona remove ${name} first` });
-    const bytes = createSource(name!, path, values);
+    const bytes = await createSource(name!, path, values);
     commitPersona(path, expected, bytes);
     return receipt(presentation, catalog, name!, path, "created");
   }
   if (sub === "edit") {
-    const edit = editPersona(path, name!, catalog, presentation === "json");
+    const edit = await editPersona(path, name!, catalog, presentation === "json");
     if (edit.action === "saved") return receipt(presentation, catalog, name!, path, "saved");
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
@@ -118,7 +118,7 @@ function readInput(path: string): Buffer {
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`); }
 }
 
-function createSource(name: string, path: string, values: Values): Buffer {
+async function createSource(name: string, path: string, values: Values): Promise<Buffer> {
   const sources = [values.file, values.prompt, values.from].filter(value => value !== undefined);
   if (sources.length !== 1) throw usage("provide one of --file, --prompt or --from");
   if (values.file !== undefined) {
