@@ -5,7 +5,7 @@
  * a distinct long-lived infra role with its own scoped cred profile and lifecycle. It NEVER imports
  * `@cotal-ai/manager` or `@cotal-ai/cli` (one-way tiering).
  */
-import { deprecatedDaemonEntry, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
+import { deprecatedDaemonEntry, deprecatedDaemonEntrySummary, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
 import { feedbackIntakePreset, feedbackIntakeProcess, runNativeFeedbackIntake, validateNativeIntakeArguments } from "./feedback-intake-service.js";
 import { registry, type Command } from "@cotal-ai/core";
 import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService } from "./delivery.js";
@@ -90,7 +90,7 @@ const nativeIntake: Command = {
 };
 // The deprecated entries keep their pre-cut parsers and runners for persisted callers, hidden from
 // help: `feedback-intake` as declared, `deliver` as its daemon twin plus the warning.
-const commands = deliveryCommands.map((command): Command => command === intake ? { ...command, hidden: true } : command);
+const commands = deliveryCommands.map((command): Command => command === intake ? { ...command, hidden: true, summary: deprecatedDaemonEntrySummary("feedback-intake", command.summary) } : command);
 const daemonDeliver = deliveryCommands.find((command) => command.name === "__daemon-deliver")!;
 const deliver = deprecatedDaemonEntry("deliver", daemonDeliver, (args) => args.positionals[0] === "pending" ? "deliver pending" : "deliver");
 registry.register(...commands, deliver, nativeIntake, feedbackIntakePreset, feedbackIntakeProcess, nativeDeliveryCommand, deliveryPreset, deliveryService);

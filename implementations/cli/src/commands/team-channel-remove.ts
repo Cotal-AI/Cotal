@@ -1,6 +1,6 @@
 import * as prompts from "../lib/prompts.js";
 import { contractDigest, mintCreds, newIdentity, type ChannelConfig, type ChannelDefaults } from "@cotal-ai/core";
-import { brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { listAdditiveTeamAttempts, removedAdditiveDeploymentIds, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
@@ -259,7 +259,7 @@ async function reconcileChannelTeam(input: { root: string; space: string; deploy
   try {
     const preview = { kind: "channel-team-removal-reconcile-preview" as const, deploymentId, cards: phase.settlements, recordable: phase.settlements.filter((row) => row.state === "record").length, unattempted: phase.settlements.filter((row) => row.state === "unattempted").length, unknown: phase.settlements.filter((row) => row.state === "unknown").length, effectAttempted: false as const, continuationOffered: false as const };
     if (values["dry-run"] || !values.yes && (!canPrompt() || values.json)) {
-      if (!values["dry-run"]) throw new CommandFailure("refused", "USAGE_INVALID", "scripted reconciliation needs --yes after reviewing which observations it records", { target });
+      if (!values["dry-run"]) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
       writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "Card revisions were read from the intent's registry stream. Nothing was recorded, deleted or retried." } }, reconcileView);
       return;
     }
@@ -316,7 +316,7 @@ export async function removeChannelTeam(deploymentId: string, values: TeamValues
     const preview = phase.preview;
     if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "Current card revisions were compared with the returned create revisions. The membership feed is display-only. Nothing was deleted." } }, previewView); return; }
     if (!values.yes) {
-      if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted card removal needs --yes after reviewing its policy fallback and impact", { target });
+      if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted card removal needs --yes after reviewing its policy fallback and impact", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
       const answer = await prompts.confirm({ message: `Remove ${receipt.createdChannels.length} recorded channel card(s) from ${oneLine(space)}? The space defaults then apply (delivery ${preview.defaults.deliveryClass}). History, grants and readers are not changed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "channel-team-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Channel cards kept", blocks: [{ kind: "lines", lines: ["No removal intent or card delete was submitted."] }] }] })); return; }
     }

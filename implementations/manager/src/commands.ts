@@ -30,7 +30,7 @@ import {
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
-  deprecatedDaemonEntry, type MeshEntry,
+  ConfirmationRequired, deprecatedDaemonEntry, type MeshEntry,
 } from "@cotal-ai/workspace";
 import { Manager, rejectionText } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -751,7 +751,7 @@ function validateMaintenanceArguments(args: ParsedArgs, mode: "reconcile" | "sea
 async function confirmMaintenance(args: ParsedArgs, target: unknown, review: Report, question: string): Promise<boolean> {
   if (args.values.yes === true) return true;
   const presentation = presentationOf(args.values);
-  if (presentation === "json" || !process.stdin.isTTY || !process.stdout.isTTY || inputDisabledByFlag() || process.env.COTAL_NO_PROMPT === "1") throw new CommandFailure("refused", "USAGE_INVALID", "manager maintenance requires --yes outside an interactive terminal", { target, remedy: "inspect the same operation with --dry-run before confirming its scope" });
+  if (presentation === "json" || !process.stdin.isTTY || !process.stdout.isTTY || inputDisabledByFlag() || process.env.COTAL_NO_PROMPT === "1") throw new ConfirmationRequired("manager maintenance requires --yes outside an interactive terminal", { target, remedy: "inspect the same operation with --dry-run before confirming its scope, then run it with --yes" });
   console.log(renderReport(review, presentation, terminalWidth(process.stdout)));
   const answer = await untilInputEnds((signal) => prompts.confirm({ message: question, initialValue: false, signal }));
   if (!prompts.isCancel(answer) && answer) return true;

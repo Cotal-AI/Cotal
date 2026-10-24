@@ -68,7 +68,7 @@
     {
       "name": "use selects an unregistered name",
       "file": "implementations/cli/src/commands/use.ts",
-      "find": "if (!m && !p) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `no space named \"${name}\" is registered here`, { remedy: \"see the registered spaces with `cotal space`\" });",
+      "find": "if (!m && !p) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `no space named \"${name}\" is registered here`, { remedy: \"see the registered spaces with `cotal space`, or clear the selection with `cotal use --clear`\" });",
       "replace": "if (!m && !p) {\n    setCurrent(name);\n    return;\n  }",
       "expectRed": "use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection",
       "cell": "use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection",

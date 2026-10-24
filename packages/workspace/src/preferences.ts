@@ -237,8 +237,10 @@ export function preferenceValueProblem(key: string, value: string): string | und
  * Set (`value` a string) or clear (`value` undefined) one key in one scope, and report whether the
  * file changed. The write holds the preferences lock, refuses with `CONFLICT` when the file is no
  * longer at `expectedRevision`, and replaces the file atomically, so a concurrent edit is never lost.
+ * The new file is private (`0600`); `replacedMode` is the old file's mode when it was another, such as
+ * a read-only `0400`, so the caller can say the mode changed.
  */
-export function writePreference(scope: PreferenceScope, key: string, value: string | undefined, expectedRevision: number): { changed: boolean; revision: number } {
+export function writePreference(scope: PreferenceScope, key: string, value: string | undefined, expectedRevision: number): { changed: boolean; revision: number; replacedMode?: number } {
   const spec = specOf(key);
   if (scope.space !== undefined) {
     const problem = preferenceSpaceProblem(scope.space);
@@ -282,9 +284,11 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
       else delete spaces[scope.space];
     }
     const next: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: current.revision + 1, defaults, spaces };
+    const old = localRecordAccess() === "posix" ? lstatSync(preferencesPath(), { throwIfNoEntry: false }) : undefined;
     writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`);
     cached = { path: preferencesPath(), prefs: next };
-    return { changed: true, revision: next.revision };
+    const oldMode = old ? old.mode & 0o777 : undefined;
+    return { changed: true, revision: next.revision, ...(oldMode !== undefined && oldMode !== 0o600 ? { replacedMode: oldMode } : {}) };
   } finally {
     lock.release();
   }

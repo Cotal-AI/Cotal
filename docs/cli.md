@@ -35,10 +35,14 @@ to `cotal setup`. Every command generates its own help, usage, and shell complet
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. `-v` is not a
 version flag.
 
-Some commands have short aliases, listed in `cotal help --all`: `sp` (spawn), `a` (attach),
-`s` (status), `r` (run), `x` (ext), `h` (history), `cfg` (config) and `p` (persona). Subcommands can have their own, such as
+Some commands have short aliases, listed in `cotal help --all` and under Shorthands in each
+command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), `h` (history),
+`t` (team), `p` (persona), `ch` (channel), `w` (watch), `ep` (endpoint), `mgr` (manager), `svc` and
+`services` (service), and `cfg` (config). Subcommands can have their own, such as
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
-subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. A command, alias,
+subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
+unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. A command, alias,
 or extension command that would claim a word another one already claims is refused when it
 registers or installs.
 
@@ -77,7 +81,9 @@ repeatable, as `--opt` and `down --session-store` are. So is an unknown command,
 that is not one of the command's subcommands when it declares them. So is input a command checks
 before it acts, such as a missing argument, an invalid flag value or two flags that conflict, and
 `cotal help` with a subcommand that does not exist. The command prints the error, then any remedy,
-then its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
+then its help on stderr, writes nothing on stdout, exits 1, and does not run. A refusal for a missing
+`--yes` outside an interactive terminal prints its error and a remedy that names `--yes`, without the
+help. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
@@ -1413,7 +1419,8 @@ reason. `cotal status` lists the tenants on such a root. Personas
 store location for `up`'s own repair, but `clean` still takes `--store-dir` itself; `clean` does
 not read the record. Custom cleanup targets must contain either the Cotal store-generation marker or a
 real `jetstream/` store directory; filesystem roots, project roots, and Cotal auth/maintenance trees
-are always refused.
+are always refused. Its contents are not checked, so a directory that holds only a `jetstream/`
+directory is removed as a store, whatever that directory holds.
 
 `--dry-run` runs the same checks as `store` or `all` and prints `would remove <path>` for each
 store, credential, record and registration the command would remove, then removes nothing and takes
@@ -1935,7 +1942,7 @@ cotal space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root 
 cotal space create <name> [--root <dir>]
 cotal space forget <name>
 cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]
-cotal use [<space>] [--json|--plain]
+cotal use [<space> | --clear] [--json|--plain]
 ```
 
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
@@ -2013,7 +2020,8 @@ space's root, and the home folder, whose `.cotal` holds this machine's own recor
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. `space` lists
-prepared spaces under their own heading, and `space show` and `use` accept one. A command that
+prepared spaces under their own heading, below a line that says no space has been started or
+registered yet when that is so, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
@@ -2105,6 +2113,9 @@ the command that targets it reports that. Selecting the selected space again is 
 registered is refused with `TARGET_NOT_FOUND`, exit 2, and the selection stays. Bare `use` reports
 the selection. A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
+`use --clear` removes the selection, so a command targets its folder's space again. Its receipt
+names the space that was selected, and `--json` gives `current: null` with that `previous`. With
+nothing selected it is a `no-op`, exit 0. It takes no space name.
 
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
@@ -3519,7 +3530,8 @@ cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--s
 ```
 
 `supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
-completion omit it. It accepts the same flags and prints a warning on every run naming the
+completion omit it. `help --all` and `help supervise` mark it deprecated and name the `manager`
+preset. It accepts the same flags and prints a warning on every run naming the
 `manager` service preset and the release that removes it; see
 [deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries). The manager that `cotal up`
 starts runs the same code through a hidden entry and prints no warning.
@@ -5317,8 +5329,10 @@ cotal config unset <key> [--user | --space <name>] [--json | --plain]
 Your [preferences](config.md#preferences): `harness`, `persona`, `detach-key`, `color` and `editor`.
 Bare `config` lists every key with the value a command uses, where it came from (a variable, your
 value for the space, your own value, or the default) and the values it outranks. `get` shows one
-key. A read looks through `--space`, else the space selected with `cotal use`, else your defaults;
-`--user` reads your defaults alone.
+key. A read looks through `--space`, else the space a launch here uses: the space selected with
+`cotal use`, or with nothing selected the space `spawn` resolves from this folder, which is this
+folder's space or the only running one. With none of those it reads your defaults. `--user` reads
+your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
@@ -5326,8 +5340,9 @@ machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the kno
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
 a space you removed can be read and removed, and refuse any other name the same way. A write that
 another value outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming
-that value: a variable, or your value for the selected space when you write your defaults without
-`--user`. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
+that value: a variable, or your value for the space a command here uses when you write your
+defaults, with or without `--user`. The receipt's effective value is the one a command here uses,
+read through `--space`, else that space. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
 warning naming the catalog. A variable whose value `config set` would refuse still wins, and
 `config`, `config get` and `status` name it in a `PREFERENCE_INVALID` warning with the reason.
 Setting a value that is already saved, or
@@ -5640,7 +5655,8 @@ Two long-lived infra roles ship with the CLI. They are not part of everyday oper
 daemon comes up automatically with `cotal up --detach` in auth mode.
 
 `deliver`, `auth-service` and `feedback-intake` are deprecated entries kept for existing units and
-scripts, as is `supervise`; help and completion omit them. Each accepts its existing flags and
+scripts, as is `supervise`; help and completion omit them. `help --all` and each entry's own help
+mark it deprecated, with its removal release and the preset that replaces it. Each accepts its existing flags and
 prints a warning on every run naming its service preset and the release that removes it. The
 delivery daemon and auth service that `cotal up` starts run the same code through hidden entries
 and print no warning. New setups use `cotal service add <name> --preset <preset>`; see
@@ -5760,6 +5776,9 @@ of the stream closes it, as `| head` does, the observer stops the same way.
 Execution, Mesh and Last reported activity. JSON has `identity`, `execution`, `mesh`
 and `activity` fields; missing optional observations are null with source annotations.
 `--on <manager-instance>` restricts the read. It takes no `--all` or `--components`.
+`cotal status manager`, or an answering manager's instance id, names the manager itself, which runs no
+row of its own: it refuses `TARGET_NOT_FOUND` like any unknown name, and its Next says the manager is
+answering and points to `cotal status` and `cotal endpoint describe manager`.
 A requested model is not provider-confirmed. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager
 row marks a roster observation exact only when its principal and lifecycle UID

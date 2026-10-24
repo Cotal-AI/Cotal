@@ -3,6 +3,9 @@
  * command's help, all on stderr, nothing on stdout, exit 1. A command's own input checks used to
  * print a framed "Request refused … Code: USAGE_INVALID" block with no help; `clean` printed a bare
  * `usage:` line or a lowercase "refusing to clean store without --force"; and `help service nosuch`
+ * refused without listing the subcommands. A missing `--yes` is the exception: its refusal and remedy
+ * are the whole fix, so it prints without the help. A mistyped word that is near a command, leading
+ * flag, subcommand or option names it.
  * refused without listing the subcommands. Under `--plain` or a locale without UTF-8, which have no
  * refusal mark, the error is the classified report instead, still followed by the help; it used to
  * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
@@ -13,7 +16,7 @@
  * Run: pnpm smoke:usage-format
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -33,8 +36,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 // The locale decides the refusal's shape, so the host's is replaced with a UTF-8 one.
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !["FORCE_COLOR", "NO_COLOR", "LC_ALL", "LC_CTYPE"].includes(k)));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", LANG: "C.UTF-8" };
-const run = (args: string[], extra: Record<string, string> = {}) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
@@ -76,6 +79,40 @@ const asciiParser = run(["status", "--bogus"], ascii);
 check("under a locale without UTF-8 a parser usage error is the report, then the help", reportShape(asciiParser, /Unknown option '--bogus'/), shown(asciiParser));
 const asciiUnknown = run(["frobnicate"], ascii);
 check("under a locale without UTF-8 an unknown command is the report, with no warning mark", asciiUnknown.status === 1 && /^Request refused$/m.test(asciiUnknown.stderr) && /unknown command: frobnicate/.test(asciiUnknown.stderr) && !/^! /m.test(asciiUnknown.stderr), shown(asciiUnknown));
+// A missing --yes outside a terminal is not a grammar mistake: the refusal and a remedy that names
+// --yes are the whole fix, so the command's help is left out, as `down` already did.
+const project = join(home, "proj");
+mkdirSync(join(project, ".cotal", "agents"), { recursive: true });
+writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nhello\n");
+const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>
+  r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr);
+for (const [args, message, remedy] of [
+  [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with cotal persona remove p1 --yes"],
+  [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with cotal history clear --dms --yes"],
+  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run cotal space delete nosuch --yes"],
+  [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run cotal reset store nosuch --yes"],
+  [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run cotal reset space nosuch --yes"],
+] as const) {
+  const r = run([...args], {}, project);
+  check(`${args.join(" ")} without --yes prints its refusal and remedy without the help`, confirmShape(r, message, remedy), shown(r));
+}
+
+// A mistyped command, leading flag, subcommand or option names the nearest one; a word near nothing
+// keeps the plain line.
+for (const [args, message] of [
+  [["stauts"], /unknown command: stauts - did you mean status\? Or run `cotal help` to list commands/],
+  [["help", "stauts"], /unknown command: stauts - did you mean status\?/],
+  [["--jsno"], /unknown command: --jsno - did you mean --json\?/],
+  [["--verison"], /unknown command: --verison - did you mean --version\?/],
+  [["persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\? Or run `cotal help persona`/],
+  [["help", "persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\?/],
+  [["status", "--jsno"], /Unknown option '--jsno' - did you mean --json\?/],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));
+}
+const far = run(["frobnicate"]);
+check("control: a word near nothing gets no suggestion", far.status === 1 && /unknown command: frobnicate - run `cotal help` to list commands/.test(far.stderr) && !/did you mean/.test(far.stderr), shown(far));
 
 const json = run(["clean", "--json"]);
 check("control: a command without JSON output still refuses --json as an unknown option", json.status === 1 && /Unknown option '--json'/.test(json.stderr), shown(json));
