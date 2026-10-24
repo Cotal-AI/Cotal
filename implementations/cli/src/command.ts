@@ -18,6 +18,7 @@ import {
   inOperationSpace,
   isCommandFailure,
   isConnectRefusal,
+  isMeshRegistryError,
   isSeededCommand,
   isWorkspaceTargetError,
   localeIsUtf8,
@@ -52,6 +53,7 @@ import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.
 import { servicePresetCommand } from "./lib/service-presets.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
+import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
@@ -621,6 +623,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         const target = spaceRootTarget(e.details);
         failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true, scope.warnings);
       }
+      // A registry record or directory it could not read is refused by its file, as `space` reports
+      // it, and as a target it could not resolve is refused above.
+      if (isMeshRegistryError(e)) failureExit(cmd, inOperationSpace(registryFailure(e), scope.space), json, parsed.values.plain === true, scope.warnings);
       if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true, scope.warnings);
       failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true, scope.warnings);
     }
