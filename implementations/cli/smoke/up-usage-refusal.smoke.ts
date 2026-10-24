@@ -21,7 +21,8 @@
  * there, and `down` and `down --dry-run` there find no stack. In a prepared folder whose broker store
  * this account cannot write, `up` refuses PERMISSION_DENIED naming the store and the `chmod` that
  * fixes it, where the broker used to exit naming the cause only in its log, and status names the same
- * step in place of `cotal up`. Every broker address the cells after
+ * step in place of `cotal up`. A `server.conf` that is a symlink, and a trust record this account
+ * cannot read, are refused PERMISSION_DENIED the same way, each naming its path and its step. Every broker address the cells after
  * those use is held by a loopback listener that never answers NATS, so a regression still cannot
  * start a broker there. On Linux, two cells hold one by a client connection's local end instead,
  * open and then in TIME-WAIT, with nothing listening, and need the refusal to say which.
@@ -32,7 +33,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { connect, createServer, type AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -133,6 +134,32 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const hints = (JSON.parse(status.stdout || "{}") as { result?: { hints?: string[] } }).result?.hints ?? [];
   check("status there names the store and the same step, not cotal up",
     hints.includes(`the broker store ${jetstream} is not writable by this account (EACCES), so the broker cannot start JetStream there; ${step}`) && !hints.some((hint) => hint.includes("start it with `cotal up`")), shown(status));
+}
+
+// A broker configuration up cannot write, such as a symlink in its place, and a trust record it
+// cannot read are each refused by name before anything starts, where up used to exit 3 saying started
+// members were kept. The first refused up has already written the space's trust in this folder.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-conf-")));
+  process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+  const createdConf = run(["space", "create", "upconf", "--root", root, "--json"]);
+  const conf = join(root, ".cotal", "auth", "server.conf"), outside = join(root, "outside.txt");
+  writeFileSync(outside, "# not a broker configuration\n");
+  mkdirSync(join(root, ".cotal", "auth"), { recursive: true, mode: 0o700 });
+  symlinkSync(outside, conf);
+  const linked = run(["up", "--server", "nats://127.0.0.1:1", "--json"], root);
+  check("up over a server.conf that is a symlink refuses PERMISSION_DENIED, exit 2, naming it and the mv that moves it aside",
+    createdConf.status === 0 && linked.status === 2 && linked.envelope?.error?.code === "PERMISSION_DENIED" && (linked.envelope.error.message ?? "").includes(`the broker configuration ${conf} is a symlink, so up cannot write it`)
+      && linked.envelope.error.remedy === `move it aside, as mv ${conf} ${conf}.old does, then run cotal up again, which writes it from the space's trust`, shown(linked));
+  check("the link and the file it names are left as they were", lstatSync(conf).isSymbolicLink() && readFileSync(outside, "utf8") === "# not a broker configuration\n");
+  const trust = join(root, ".cotal", "auth", "broker.json");
+  check("rig: that up wrote the space's trust record", existsSync(trust));
+  chmodSync(trust, 0o000);
+  const unreadable = run(["up", "--server", "nats://127.0.0.1:1", "--json"], root);
+  chmodSync(trust, 0o600);
+  check("up over a trust record this account cannot read refuses PERMISSION_DENIED, exit 2, with the chmod that makes it readable",
+    unreadable.status === 2 && unreadable.envelope?.error?.code === "PERMISSION_DENIED" && (unreadable.envelope.error.message ?? "").includes(`the space's trust record ${trust} cannot be read by this account (EACCES)`)
+      && unreadable.envelope.error.remedy === `make it readable by you again, as chmod 600 ${trust} does, then run cotal up again; it holds the space's keys, so keep it`, shown(unreadable));
 }
 
 // Port 1 cannot be bound, so a regression here starts no usable broker.

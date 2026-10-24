@@ -1060,7 +1060,11 @@ default store holds none, such as after `backup restore --store-dir`, the start 
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit
-restart that leaves an answering listener in place is a refresh, not a rebind.
+restart that leaves an answering listener in place is a refresh, not a rebind. When a symlink or a
+folder stands in its place, `up` leaves it as it is and refuses `PERMISSION_DENIED` (exit 2) before
+it starts anything, naming the path and the `mv` that moves it aside; the next `up` writes the file
+again. A trust record under `.cotal/auth` that this account cannot read, such as one at mode 000, is
+refused the same way, and its next step makes it readable again.
 
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the

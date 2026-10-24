@@ -99,7 +99,7 @@ try {
     symlinkSync(outside, prepared.confPath);
     let planted: unknown;
     try { await prepare("private-auth", false); } catch (error) { planted = error; }
-    check("a re-prepare refuses a symlink at server.conf", (planted as NodeJS.ErrnoException | undefined)?.code === "EPERM", planted);
+    check("a re-prepare refuses a symlink at server.conf, naming it", isCommandFailure(planted) && planted.code === "PERMISSION_DENIED" && planted.message.includes(`the broker configuration ${prepared.confPath} is a symlink`), planted);
     check("the symlink's target keeps its bytes and mode",
       readFileSync(outside, "utf8") === "not the broker's\n" && mode(outside) === 0o644, octal(mode(outside)));
     rmSync(prepared.confPath);
