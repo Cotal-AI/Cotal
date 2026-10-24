@@ -174,6 +174,15 @@ Nothing resets it: fix or remove the file. A `preferences.json` that is a symbol
 same way with `PERMISSION_DENIED` (exit 2), naming the file it points to: `editor` runs as a shell
 command, so the file is neither read through the link nor replaced by `cotal config set`.
 
+The folder that holds the file, and every folder above it, must be one only you or root can write.
+Group write is accepted only for your own private group with no extended ACL, and world write never
+is. Another account that could write one of them could replace the file. In such a folder every
+command that uses your preferences still applies them, with a `PREFERENCES_FOLDER_UNPROTECTED` warning
+that names the folder and the `chmod` that fixes it, and `cotal status` lists that `chmod` under Next. A
+write there (`config set` or `unset`, `setup`, or `space forget` removing a space's values) is refused
+with `PERMISSION_DENIED` (exit 2) before anything is changed. When the folder does not exist yet, the
+nearest folder above it is checked.
+
 ## Environment variables
 
 These are the operator-facing variables. Most of the connector-session ones (space, name, role, …)
