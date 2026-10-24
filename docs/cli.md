@@ -4746,6 +4746,13 @@ Without `peek` it returns them, and they are acknowledged once its result is han
 message still unacknowledged when the session closes is left unacknowledged and does not come back
 to this session.
 
+`join`'s `backfilled` counts the messages the join read back from the channel's retained history:
+those sent before the join and within the channel's replay window, not counting this session's own.
+It is 0 when the session is already on the channel or replay is off for it. Each of them then follows
+the rules above. One the session already handed over, holds or dropped is not held again, and one on
+a muted channel is dropped, so the inbox can gain fewer messages than `backfilled` says. The session
+remembers at least the last 4096 messages it handled for this.
+
 A `live` gap means the connection dropped or is reconnecting, so live channel messages may be
 missed until it returns. Its reason defaults to
 `connection <state>: live channel messages may be missed until it returns`. An `inbox` gap means
