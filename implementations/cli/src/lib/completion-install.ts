@@ -8,12 +8,17 @@ import { LOAD_NOW, SCRIPTS } from "./completion-scripts.js";
 import { CommandFailure } from "@cotal-ai/workspace";
 
 interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number }
-interface Ownership { schemaVersion: 1; shell: string; stub: string; stubHash: string; wiring: { path: string; block: string } | null }
+/** `wiring.created` marks a startup file that `install` created, so `uninstall` removes it once it is empty. */
+interface Ownership { schemaVersion: 1; shell: string; stub: string; stubHash: string; wiring: { path: string; block: string; created?: true } | null }
 interface Paths { stub: string; rc?: string }
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 export const completionSourceLine = (path: string, shell = "bash"): string => shell === "powershell" ? `. '${path.replaceAll("'", "''")}'` : `source ${quote(path)}`;
-const blockFor = (path: string, shell: string) => `# >>> cotal completion >>>\n${completionSourceLine(path, shell)}\n# <<< cotal completion <<<\n`;
+const BEGIN = "# >>> cotal completion >>>", END = "# <<< cotal completion <<<";
+const blockFor = (path: string, shell: string) => `${BEGIN}\n${completionSourceLine(path, shell)}\n${END}\n`;
+/** Each complete owned block in a startup file: its begin marker, the lines up to the next end
+ *  marker with no begin marker among them, and that end marker. */
+const MARKED = new RegExp(`^${BEGIN}\\n(?:(?!${BEGIN}\\n)[^\\n]*\\n)*?${END}(?:\\n|$)`, "gm");
 const recordPath = (paths: Paths) => `${paths.stub}.ownership.json`;
 
 /** Ask the installed shell for its current-user all-hosts profile; profile directories vary by host. */
@@ -45,15 +50,23 @@ interface Gap { path: string; problem: string; chmod?: string }
 const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : quote(path);
 const modeOf = (info: Stats) => `mode ${(info.mode & 0o777).toString(8).padStart(4, "0")}`;
 
+/** The chmod commands that fix `gaps`, one per mode. */
+const chmodsFor = (gaps: Gap[]) => [...new Set(gaps.map((gap) => gap.chmod))].map((mode) => `chmod ${mode} ${gaps.filter((gap) => gap.chmod === mode).map((gap) => shellPath(gap.path)).join(" ")}`);
 /** One refusal naming every unsafe path with its reason, so a single change fixes them all. */
 function unsafe(gaps: Gap[]): CommandFailure {
-  const chmods = [...new Set(gaps.map((gap) => gap.chmod))].map((mode) => `chmod ${mode} ${gaps.filter((gap) => gap.chmod === mode).map((gap) => shellPath(gap.path)).join(" ")}`);
   return new CommandFailure("refused", "PERMISSION_DENIED", `${gaps.map((gap) => `${gap.path} ${gap.problem}`).join("; ")}; custom shell wiring was not changed`, {
     target: gaps.length === 1 ? { path: gaps[0]!.path } : { path: gaps[0]!.path, paths: gaps.map((gap) => gap.path) },
     remedy: gaps.every((gap) => gap.chmod)
-      ? `${chmods.join("; ")} and run the command again, or wire completion yourself from cotal completion script <shell>`
+      ? `${chmodsFor(gaps).join("; ")} and run the command again, or wire completion yourself from cotal completion script <shell>`
       : "wire completion yourself from cotal completion script <shell>",
   });
+}
+/** The unsafe folders above `path`, named with their reasons, and the chmod that fixes them when one
+ *  does. Bare `completion` names them once for every file under them, which it does not open. */
+export function completionUnsafeFolders(path: string): { problem: string; chmod?: string } | undefined {
+  const gaps = parentGaps(dirname(path));
+  if (!gaps.length) return undefined;
+  return { problem: gaps.map((gap) => `${gap.path} ${gap.problem}`).join("; "), ...(gaps.every((gap) => gap.chmod) ? { chmod: chmodsFor(gaps).join("; ") } : {}) };
 }
 /** Every unsafe folder from `path` up to the root, deepest first. The walk ends at a missing folder,
  *  which `create` makes private when nothing above it was refused. */
@@ -99,8 +112,12 @@ function pathGaps(path: string, privateFile = false, link = true): Gap[] {
   return [...(gap ? [gap] : []), ...parentGaps(dirname(path))];
 }
 function read(path: string, privateFile = false): Snapshot | undefined {
-  // A file under an unsafe folder is not opened. It is named with that folder instead.
-  if (parentGaps(dirname(path)).length) throw unsafe(pathGaps(path, privateFile));
+  // A file under an unsafe folder is not opened. It is named with that folder instead, and one that is
+  // not there is missing, since nothing would be read.
+  if (parentGaps(dirname(path)).length) {
+    try { lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; }
+    throw unsafe(pathGaps(path, privateFile));
+  }
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
@@ -170,7 +187,13 @@ function ownership(paths: Paths, shell: string): { record?: Ownership; snapshot?
   try { value = JSON.parse(text(snapshot)!); } catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record is invalid; it was not reset"); }
   const record = value as Ownership;
   if (!record || typeof record !== "object" || Object.keys(record).some((key) => !["schemaVersion", "shell", "stub", "stubHash", "wiring"].includes(key)) || record.schemaVersion !== 1 || record.shell !== shell || record.stub !== paths.stub || typeof record.stubHash !== "string" || !/^[0-9a-f]{64}$/.test(record.stubHash)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record does not match this shell and path");
-  if (record.wiring !== null && (!record.wiring || typeof record.wiring !== "object" || Object.keys(record.wiring).some((key) => !["path", "block"].includes(key)) || record.wiring.path !== paths.rc || typeof record.wiring.block !== "string" || ![blockFor(paths.stub, shell), "\n" + blockFor(paths.stub, shell)].includes(record.wiring.block))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record contains unknown startup wiring; it was not used to rewrite a shell file");
+  // A record wired into another startup file, as one installed under another ZDOTDIR is, is named as such.
+  if (record.wiring && typeof record.wiring === "object" && typeof record.wiring.path === "string" && record.wiring.path !== paths.rc)
+    throw new CommandFailure("refused", "CONFLICT", `${recordPath(paths)} records ${shell} completion wired into ${record.wiring.path}, and this environment's startup file is ${paths.rc ?? "none"}`, {
+      target: { shell, path: recordPath(paths) },
+      remedy: shell === "zsh" ? `read or change it with the ZDOTDIR it was installed under: ZDOTDIR=${dirname(record.wiring.path)} cotal completion` : "read or change it from the environment it was installed in",
+    });
+  if (record.wiring !== null && (!record.wiring || typeof record.wiring !== "object" || Object.keys(record.wiring).some((key) => !["path", "block", "created"].includes(key)) || (record.wiring.created !== undefined && record.wiring.created !== true) || record.wiring.path !== paths.rc || typeof record.wiring.block !== "string" || ![blockFor(paths.stub, shell), "\n" + blockFor(paths.stub, shell)].includes(record.wiring.block))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record contains unknown startup wiring; it was not used to rewrite a shell file");
   return { record, snapshot };
 }
 
@@ -190,8 +213,10 @@ export function readCompletionText(path: string): string | undefined {
   return text(read(path));
 }
 
-/** Hold one writer lock and change only the recorded stub and unchanged owned startup block. */
-export function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string) {
+/** Hold one writer lock and change only the recorded stub and unchanged owned startup block. With
+ *  `force`, a modified recorded stub and the complete marked blocks are rewritten or removed too, and
+ *  startup content outside the markers is still kept. */
+export function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string, force = false) {
   supported();
   // Every unsafe file or folder this change reads or writes is named in one refusal before anything is
   // created. A linked startup file is left to its own refusal below, which names the line to add.
@@ -200,7 +225,13 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
   if (paths.rc) {
     safeParents(dirname(paths.rc));
     try { lstatSync(dirname(paths.rc)); }
-    catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the shell startup directory must exist before completion installation"); }
+    catch {
+      const dir = dirname(paths.rc), fromZdotdir = shell === "zsh" && Boolean(process.env.ZDOTDIR);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the shell startup folder ${dir}${fromZdotdir ? ", which ZDOTDIR names," : ""} does not exist; nothing was changed`, {
+        target: { shell, path: dir },
+        remedy: `create it with (umask 077 && mkdir -p ${dir})${fromZdotdir ? ", or unset ZDOTDIR to use ~/.zshrc" : ""}, then run the command again`,
+      });
+    }
     // A startup file linked from elsewhere, as a dotfile manager such as stow links it, is never
     // written through. The load line needs no stub, so it works from the file the link points to.
     if (lstatSync(paths.rc, { throwIfNoEntry: false })?.isSymbolicLink())
@@ -218,19 +249,36 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     let record = owned.record;
     if (!record && operation === "uninstall") {
       if (stub) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this completion file has no recorded ownership; it and custom startup wiring were left unchanged", { remedy: "review and explicitly install the recognized generated integration before uninstalling it" });
-      return { operation, shell, changed, noOp: true, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
+      return { operation, shell, changed, noOp: true, forced: false, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
     }
     if (!record && stub) throw new CommandFailure("refused", "CONFLICT", "the existing completion stub has no recorded ownership; it was not adopted or overwritten", { target: { shell, path: paths.stub }, remedy: "review the existing integration manually; completion script prints the supported replacement without editing it" });
-    if (record && stub && stub.hash !== record.stubHash) throw new CommandFailure("refused", "CONFLICT", "the recorded completion stub was modified; it and startup content were left unchanged", { target: { shell, path: paths.stub } });
+    let forced = false;
+    if (record && stub && stub.hash !== record.stubHash) {
+      if (!force) throw new CommandFailure("refused", "CONFLICT", `the recorded completion stub ${paths.stub} was modified; it and startup content were left unchanged`, { target: { shell, path: paths.stub }, remedy: operation === "install"
+        ? `rewrite it with \`cotal completion install ${shell} --force\`, or put your copy back; \`cotal completion script ${shell}\` prints the one install writes`
+        : `remove it anyway with \`cotal completion uninstall ${shell} --force\`, or put the installed copy back first` });
+      forced = true;
+    }
     if (!record) {
       record = { schemaVersion: 1, shell, stub: paths.stub, stubHash: hash(script), wiring: null };
     }
     let nextStartup = current;
     let installedBlock = blockFor(paths.stub, shell);
+    // A startup file this integration created, recorded at its first install or created by this one.
+    const created = record.wiring?.created === true || (paths.rc !== undefined && startup === undefined);
     if (record.wiring) {
       const count = current.split(record.wiring.block).length - 1;
-      if (count > 1 || count === 0 && (current.includes(paths.stub) || current.includes("# >>> cotal completion >>>") || current.includes("# cotal shell completion"))) throw new CommandFailure("refused", "CONFLICT", "the recorded startup block is modified or ambiguous; custom startup content was not rewritten");
-      if (count === 1) {
+      if (count > 1 || count === 0 && (current.includes(paths.stub) || current.includes(BEGIN) || current.includes("# cotal shell completion"))) {
+        // Only complete marked blocks can be rewritten; without one, the owner has to say which lines are cotal's.
+        const marked = current.match(MARKED)?.length ?? 0;
+        if (!force || !marked) throw new CommandFailure("refused", "CONFLICT", "the recorded startup block is modified or ambiguous; custom startup content was not rewritten", { target: { shell, path: paths.rc }, remedy: marked
+          ? `${operation === "install" ? "rewrite" : "remove"} the lines from "${BEGIN}" to "${END}" in ${paths.rc} with \`cotal completion ${operation} ${shell} --force\`, or edit them there yourself`
+          : `${paths.rc} has no complete block from "${BEGIN}" to "${END}", so remove the cotal completion lines there yourself, then run \`cotal completion ${operation} ${shell}\` again` });
+        forced = true;
+        installedBlock = blockFor(paths.stub, shell);
+        let placed = operation === "uninstall";
+        nextStartup = current.replace(MARKED, () => (placed ? "" : (placed = true, installedBlock)));
+      } else if (count === 1) {
         installedBlock = (record.wiring.block.startsWith("\n") ? "\n" : "") + blockFor(paths.stub, shell);
         nextStartup = current.replace(record.wiring.block, operation === "install" ? installedBlock : "");
       }
@@ -239,14 +287,22 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     // A startup file its owner made read-only is never replaced. Asked once its next content is known.
     const readOnly = () => paths.rc !== undefined && nextStartup !== current && startup !== undefined && (startup.mode & 0o200) === 0;
     if (operation === "uninstall") {
-      if (paths.rc && nextStartup.includes(paths.stub)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unowned startup reference still names this stub; removing the file would break custom wiring", { remedy: "review and remove that custom reference manually before uninstalling" });
+      if (paths.rc && nextStartup.includes(paths.stub)) {
+        const line = nextStartup.split("\n").find((text) => text.includes(paths.stub))!.trim();
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line)}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
+      }
       if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run cotal completion uninstall ${shell} again` });
-      if (paths.rc && nextStartup !== current) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
+      if (paths.rc && nextStartup !== current) {
+        // A startup file install created, with nothing else in it now, goes rather than staying empty.
+        if (created && nextStartup === "" && startup) remove(paths.rc, startup);
+        else write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644);
+        changed.push(paths.rc);
+      }
       if (stub) { remove(paths.stub, stub); changed.push(paths.stub); }
       if (owned.snapshot) { remove(recordPath(paths), owned.snapshot); changed.push(recordPath(paths)); }
     } else {
       if (paths.rc && !record.wiring) {
-        if (current.includes(paths.stub) || current.includes("# >>> cotal completion >>>") || current.includes("# cotal shell completion")) throw new CommandFailure("refused", "CONFLICT", "custom startup wiring already refers to this stub; it was not adopted or rewritten", { remedy: "keep custom wiring and use completion script, or review it before managed installation" });
+        if (current.includes(paths.stub) || current.includes(BEGIN) || current.includes("# cotal shell completion")) throw new CommandFailure("refused", "CONFLICT", "custom startup wiring already refers to this stub; it was not adopted or rewritten", { remedy: "keep custom wiring and use completion script, or review it before managed installation" });
         installedBlock = (current && !current.endsWith("\n") ? "\n" : "") + blockFor(paths.stub, shell);
         nextStartup = current + installedBlock;
       }
@@ -254,12 +310,12 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       if (paths.rc && nextStartup !== current && !readOnly()) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
       record.stubHash = hash(script);
       // A read-only startup file keeps the wiring it had, so the record keeps naming that.
-      if (!readOnly()) record.wiring = paths.rc ? { path: paths.rc, block: installedBlock } : null;
+      if (!readOnly()) record.wiring = paths.rc ? { path: paths.rc, block: installedBlock, ...(created ? { created: true as const } : {}) } : null;
       const serialized = JSON.stringify(record, null, 2) + "\n";
       if (text(owned.snapshot) !== serialized) { write(recordPath(paths), owned.snapshot, serialized, 0o600); changed.push(recordPath(paths)); }
       if (readOnly()) throw new CommandFailure("failed", "OPERATION_FAILED", `${changed.includes(paths.stub) ? "wrote" : "kept the current"} ${paths.stub} but could not add its line to ${paths.rc}, which is read-only; that file was not changed`, { target: { shell, path: paths.rc }, changed: [...changed], remedy: `add this line to ${paths.rc} yourself: ${completionSourceLine(paths.stub, shell)}` });
     }
-    return { operation, shell, changed, noOp: !changed.length, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
+    return { operation, shell, changed, noOp: !changed.length, forced, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
   } catch (error) {
     const confirmed = [...changed, ...(error instanceof CommandFailure ? error.changed ?? [] : [])];
     if (error instanceof CommandFailure && error.outcome === "unknown") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", error.message, { target: { shell, detail: error.target }, changed: confirmed, remedy: error.remedy });

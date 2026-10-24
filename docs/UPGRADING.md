@@ -34,6 +34,21 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Minted credential lifetime after 0.100.2
+
+`cotal auth mint` gives a fixed-profile credential a 24-hour lifetime when no lifetime flag names
+one. Before, such a credential had no expiry claim. Credentials minted before the upgrade keep the
+lifetime they were minted with, and endpoint callers (`auth mint --endpoint`) are unchanged.
+
+After the upgrade, a process that reads a newly minted file for longer than a day stops
+authenticating when the file expires. A dashboard given `--creds` is one. Mint such a file one of two
+ways:
+
+- with `--expires-in <seconds>` or `--expires-at <unix-seconds>`, and mint a replacement before it
+  expires;
+- with `--no-expiry`, which issues the unbounded credential the old default did and records the
+  request beside the file, so `cotal doctor auth` reports it as a warning rather than a finding.
+
 ## Spawn in this terminal after 0.100.0
 
 A bare `cotal spawn [<persona>]` runs the application in this terminal again, on every kind of mesh,

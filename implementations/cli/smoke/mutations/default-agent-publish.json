@@ -61,11 +61,11 @@
     {
       "name": "M6 drop the mint lifetime before it reaches the seam",
       "file": "implementations/cli/src/commands/mint.ts",
-      "find": "    const options = { allowSubscribe, allowPublish, role, lifecycleUid, expiresInSeconds: values[\"expires-in\"] === undefined ? undefined : Number(values[\"expires-in\"]), expiresAt: values[\"expires-at\"] === undefined ? undefined : Number(values[\"expires-at\"]) };",
+      "find": "    const options = { allowSubscribe, allowPublish, role, lifecycleUid, expiresInSeconds: values[\"expires-in\"] !== undefined ? Number(values[\"expires-in\"]) : defaultLifetime ? DEFAULT_LIFETIME_SECONDS : undefined, expiresAt: values[\"expires-at\"] === undefined ? undefined : Number(values[\"expires-at\"]) };",
       "replace": "    const options = { allowSubscribe, allowPublish, role, lifecycleUid };",
       "expectRed": "the JWT's exp is iat + the flag, computed within the command's own second",
       "cell": "the JWT's exp is iat + the flag, computed within the command's own second",
-      "note": "Restores the shipped half 1: the flag parses and validates but never reaches mintCreds, so the mint itself still succeeds while the credential stays unbounded (exp undefined). The success cell stays green by design; the exp-arithmetic cell is the one that catches the dropped lifetime."
+      "note": "Restores the shipped half 1: the flag parses and validates but never reaches mintCreds, so the mint itself still succeeds while the credential is unbounded (exp undefined), with neither the flag nor the 24-hour default applied. The success cell stays green by design; the exp-arithmetic cell is the one that catches the dropped lifetime."
     },
     {
       "name": "M7 churn the identity on every re-mint",

@@ -43,6 +43,7 @@ import {
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
+import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 
 export const doctorFlags = [jsonFlag, plainFlag,
   { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds; needs the local signer)" },
@@ -62,6 +63,9 @@ interface CredReport {
    *  given a cleanup, but deliberately NOT a `problem`: it is a leftover file, not a broken agent,
    *  and counting it as one is what reported a healthy fleet as 15 failures. */
   superseded?: boolean;
+  /** An unbounded agent credential `auth mint --no-expiry` asked for: reported with its ways out,
+   *  but not a `problem`, because someone chose it. */
+  warning?: string;
 }
 
 /** `cotal doctor auth` — the ONE stale-credential repair surface (D5 slice 6). Read-only diagnosis
@@ -143,16 +147,17 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     issuedAt: Number.isFinite(row.health?.iat) ? row.health!.iat! : null,
     expiresAt: Number.isFinite(row.health?.exp) ? row.health!.exp! : null,
     renewAt: Number.isFinite(row.health?.renewAt) ? row.health!.renewAt! : null,
-    problem: row.problem ?? null,
+    problem: row.problem ?? null, warning: row.warning ?? null,
     repair: row.repair ?? null, superseded: row.superseded === true,
   }));
+  const warnings = items.filter((row) => row.warning !== null).map((row) => ({ code: "CREDENTIAL_UNBOUNDED_BY_REQUEST", target: { path: row.path }, message: `${row.label}: ${row.warning}` }));
   const findings = items.filter((row) => row.problem !== null).length;
   const refused = renewal.state === "present" && renewal.brokerAcceptance === "recorded-refusal";
   const incomplete = renewal.state === "unreadable";
   const result = { kind: "credential-health", root, space: auth.space, mode: userMode ? "user" : "static", scope: "local credential claims and recorded renewal only", items, findings, renewal, repair, brokerAuthorization: "not-checked", liveAgentHealth: "not-checked", systemAccountRotated: false, agentCredentialsReminted: false };
   // A recorded refusal names the renewal owner to repair, so the finding keeps its next step.
   const failure = incomplete ? new CommandFailure("partial", "OPERATION_PARTIAL", "credential observations were collected but the renewal record is unreadable; a complete healthy verdict was not inferred", { target }) : findings || refused ? new CommandFailure(repair.results.some((row) => row.ok) || repair.migrations.length ? "partial" : "failed", repair.results.some((row) => row.ok) || repair.migrations.length ? "OPERATION_PARTIAL" : "OPERATION_FAILED", refused ? "the recorded renewal was not broker-accepted; local re-signing alone cannot clear that finding" : "local credential findings remain; per-file native repair guidance is retained", { target, ...(refused ? { remedy: "start or repair this space's manager, the renewal owner, so it re-signs the daemon credentials and the broker accepts them; do not respawn agents for this finding" } : {}) }) : undefined;
-  writeResult(presentationOf(values), { command: "doctor auth", target, result, completeness: incomplete ? "partial" : "complete", failure, noOp: failure === undefined && values.fix === true && !repair.attempted && !repair.migrations.length }, (data): Report => ({ sections: [
+  writeResult(presentationOf(values), { command: "doctor auth", target, result, completeness: incomplete ? "partial" : "complete", warnings, failure, noOp: failure === undefined && values.fix === true && !repair.attempted && !repair.migrations.length }, (data): Report => ({ sections: [
     { title: data.findings || refused || incomplete ? "Credential findings" : "No local credential findings", blocks: [
       { kind: "fields", rows: [["Root", data.root], ["Space", data.space], ["Mode", data.mode], ["Scope", data.scope], ["Current broker authorization", { text: "not checked", tone: "waiting" }], ["Live agent health", { text: "not checked", tone: "waiting" }], ["Repair requested", data.repair.requested ? "yes" : "no"], ["Acknowledged local migrations", String(data.repair.migrations.length)], ["Repair coordination", data.repair.authority ?? "not used"]] },
       { kind: "lines", lines: [{ text: "Credential expiry/claim inspection is not live broker acceptance, daemon adoption, process health or task progress. Locally ordered superseded files are not proof that their successor is connected. No agent was respawned and no system account was rotated.", tone: "hint" }] },
@@ -164,7 +169,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     { title: "Recorded renewal", blocks: [{ kind: "fields", rows: [["Record", data.renewal.state], ["Recorded time", data.renewal.recordedAt ?? "not established"], ["Recorded owner", data.renewal.recordedOwner ?? "not established"], ["Broker acceptance at that pass", data.renewal.brokerAcceptance], ["Recorded coordination", data.renewal.authority ?? "not recorded"], ["Delivery responder at that pass", data.renewal.deliveryResponderUnbound ? "reported unbound" : "not established by this view"]] }, ...(data.renewal.deliveryResponderUnbound ? [{ kind: "lines" as const, lines: [RESPONDER_UNBOUND_CONSEQUENCE, "Repair the original delivery responder and inspect status; do not respawn agents merely because a responder was absent at that recorded pass."] }] : []),
       // The leftover root-scoped record is named, never read as this space's verdict.
       ...("legacyRecordPresent" in data.renewal && data.renewal.legacyRecordPresent ? [{ kind: "lines" as const, lines: [`This root also holds .cotal/renewal.json, a pre-per-space renewal record. It names no space, so it is not read as this space's verdict. ${displayCmd()} clean all --force removes it when this root is reset.`] }] : [])] },
-    ...(data.items.some((row) => row.problem !== null || row.superseded) ? [{ title: "Inspect before changing identities", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Credential" }, { key: "finding", label: "Finding" }, { key: "next", label: "Native guidance" }], rows: data.items.filter((row) => row.problem !== null || row.superseded).slice(0, 200).map((row) => ({ name: row.label, finding: row.problem ?? "superseded in local credential family; not a broken-agent verdict", next: row.repair ?? "inspect the original file and authority" })) }] }] : []),
+    ...(data.items.some((row) => row.problem !== null || row.warning !== null || row.superseded) ? [{ title: "Inspect before changing identities", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Credential" }, { key: "finding", label: "Finding" }, { key: "next", label: "Native guidance" }], rows: data.items.filter((row) => row.problem !== null || row.warning !== null || row.superseded).slice(0, 200).map((row) => ({ name: row.label, finding: row.problem ?? (row.warning !== null ? `warning: ${row.warning}` : "superseded in local credential family; not a broken-agent verdict"), next: row.repair ?? "inspect the original file and authority" })) }] }] : []),
   ] }));
 }
 
@@ -248,10 +253,11 @@ function agentUnrenewableRepair(): string {
 }
 
 /** The two ways out for an agent credential with no expiry: rotating the space identity retires it
- *  with everything the space issued, and a bounded replacement ends it once the file is gone. */
-function agentUnboundedRepair(path: string, space: string): string {
+ *  with everything the space issued, and a bounded replacement ends it once the file, and the
+ *  no-expiry record beside it when there is one, are gone. */
+function agentUnboundedRepair(path: string, space: string, record?: string): string {
   const cmd = displayCmd();
-  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`. Or bound it: stop what uses it, remove ${path} and mint a replacement with --expires-in <seconds> or --expires-at <unix-seconds>; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
+  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`. Or bound it: stop what uses it, remove ${path}${record ? ` and ${record}` : ""} and mint a replacement without --no-expiry, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
 }
 
 /** Classify every `agent` file by alias family, so a superseded incarnation is never reported as a
@@ -359,8 +365,9 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
   // A cause the operator can act on, reported in place of the generic parse finding. Its text is
   // fixed and never quotes the file.
   let named: { problem: string; repair?: string } | undefined;
+  let bytes: Buffer | undefined;
   try {
-    const bytes = readLocalRecordSource(path, 1024 * 1024, true);
+    bytes = readLocalRecordSource(path, 1024 * 1024, true);
     if (!bytes) return { label, kind, path };
     const creds = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     // The NATS client's own parse, the check `--creds` makes, so a file whose claims are legible but
@@ -427,7 +434,15 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
         r.repair = repair;
       }
       break;
-    case "unbounded":
+    case "unbounded": {
+      // An agent credential `auth mint --no-expiry` asked for, whose record beside it names these
+      // bytes, is reported with the same ways out, but someone chose it, so it is no finding.
+      const requestedAt = kind === "agent" && live?.role !== "superseded" && space !== undefined && bytes ? noExpiryRequestedAt(path, bytes) : undefined;
+      if (requestedAt !== undefined) {
+        r.warning = `unbounded by request (auth mint --no-expiry, recorded ${requestedAt}) - a copy stays valid until the space identity rotates`;
+        r.repair = agentUnboundedRepair(path, space!, noExpiryRecordPath(path));
+        break;
+      }
       // A credential with no expiry claim stays valid until its signer rotates, whatever its kind,
       // so it is a finding even where no renewal owner bounds it.
       r.problem = standing
@@ -435,6 +450,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
         : "unbounded credential (no expiry claim) - a copy stays valid until the space identity rotates";
       r.repair = kind === "agent" && live?.role !== "superseded" && space !== undefined ? agentUnboundedRepair(path, space) : repair;
       break;
+    }
   }
   return r;
 }
