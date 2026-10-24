@@ -16,6 +16,7 @@ import {
   lstatSync,
   realpathSync,
   readdirSync,
+  unlinkSync,
   type Stats,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -42,6 +43,7 @@ import {
   requireBrokerFloor,
   parseServerVersion,
   presenceBucket,
+  MEMBERSHIP_MAX_BYTES,
   spaceDeletionStreams,
   isJetStreamMissing,
   seedChannelRegistry,
@@ -55,6 +57,7 @@ import {
   openPrivateAppend,
   realDirNoSymlink,
   writeSecretFile,
+  writeSecretFileAtomic,
   type AuthPrepared,
   type SpaceAuth,
   type ChannelConfig,
@@ -70,6 +73,10 @@ import {
   assertManagerName,
   readManagerName,
   recordManagerName,
+  assertRecordIdentity,
+  formatRecord,
+  identityRecord,
+  parseRecord,
   CommandFailure,
   commandFailureReport,
   isCommandFailure,
@@ -90,6 +97,7 @@ import {
   preloadSpaceAccounts,
   putSpaceAuth,
   canonicalRoot,
+  rootPathProblem,
   clearCurrent,
   findMesh,
   findPreparedSpace,
@@ -193,7 +201,7 @@ import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { cleanedManifestStart } from "../lib/legacy-start.js";
-import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import { bindReaches, controllerStackApplies, keptOnUp, recheckExistingStore, requestedStackMode, selectedOnUp, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
@@ -201,13 +209,13 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut } from "../lib/stack-journal.js";
-import { serviceInstances } from "../lib/service-instances.js";
+import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
+import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, lastServedStore, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { assertStoreDirArgument, lastServedStore, warnForeignStoreEntries, configuredStoreDir } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -237,6 +245,7 @@ import {
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
+import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
 
 const pendingRestores = new Map<string, PreparedRestore>();
 
@@ -369,12 +378,16 @@ export function validateUpArguments(args: ParsedArgs): void {
   // before the controller stack writes its journal or trust.
   const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
   if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem.problem}; nothing was started or written`, { remedy: hostProblem.remedy });
+  // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
+  // checks the certificate against the address it names.
+  if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}` });
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
-  parsePositiveIntegerFlag("--max-file-store", args.values["max-file-store"] as string | undefined);
+  parseMaxFileStore(args.values["max-file-store"] as string | undefined);
   if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot());
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
@@ -394,14 +407,21 @@ export function validateUpArguments(args: ParsedArgs): void {
       throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
-  if (!(args.values.file && args.values["dry-run"] === true)) assertUpRootWritable(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot());
+  if (!(args.values.file && args.values["dry-run"] === true)) {
+    const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot();
+    // A path with a control character or a bidirectional formatting mark is refused before any write.
+    const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
+    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
+    assertUpRootWritable(root);
+  }
 }
 
 /** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder
  *  this account cannot write is refused here, by name, instead of as the raw error of whichever
  *  write came first. */
 function assertUpRootWritable(root: string): void {
-  const path = existsSync(join(root, ".cotal")) ? join(root, ".cotal") : root;
+  // A `.cotal` that is a file is refused by name before any command runs, so only a directory is tested here.
+  const path = statSync(join(root, ".cotal"), { throwIfNoEntry: false })?.isDirectory() ? join(root, ".cotal") : root;
   try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -568,6 +588,12 @@ function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promis
  *  sets the exit code: 0 when another command completed the stop or preserve, 130 or 143 after a
  *  signal, whatever the start receipt set. */
 export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
+  claimForegroundHold(root);
+  try { await holdStack(root, start); }
+  finally { releaseForegroundHold(root); }
+}
+
+async function holdStack(root: string, start?: () => Promise<void>): Promise<void> {
   if (start) {
     let requested: "SIGINT" | "SIGTERM" | undefined;
     const request = (signal: "SIGINT" | "SIGTERM") => {
@@ -613,6 +639,33 @@ export async function holdForegroundStack(root: string, start?: () => Promise<vo
     const terminate = () => stop("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
   });
+}
+
+/** Where a foreground `up` records the process that holds its stack's lifetime. */
+const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
+
+/** The process of another foreground `up` that holds `root`'s stack, while that exact process runs. */
+export function foregroundHolder(root: string): number | undefined {
+  let raw: string;
+  try { raw = readFileSync(foregroundHoldPath(root), "utf8"); } catch { return undefined; }
+  const read = parseRecord(raw);
+  if (read.kind !== "record" || read.record.pid === process.pid) return undefined;
+  return assertRecordIdentity(read.record).kind === "match" ? read.record.pid : undefined;
+}
+
+/** Record this process as the foreground holder of `root`'s stack. A host that cannot pin a process
+ *  start records nothing, so no later `up` refuses on a pid that may have been reused. */
+function claimForegroundHold(root: string): void {
+  const record = identityRecord(process.pid);
+  if ("token" in record) writeSecretFileAtomic(foregroundHoldPath(root), `${formatRecord(record)}\n`);
+}
+
+/** Remove this process's foreground hold record, and leave one another process wrote. */
+function releaseForegroundHold(root: string): void {
+  try {
+    const read = parseRecord(readFileSync(foregroundHoldPath(root), "utf8"));
+    if (read.kind === "record" && read.record.pid === process.pid) unlinkSync(foregroundHoldPath(root));
+  } catch { /* nothing recorded */ }
 }
 
 /** The registered `up` command. When a background run is the main process of a systemd unit, it
@@ -865,7 +918,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // The cap is part of the preserved launch, like the store: a resume re-renders it, and a
         // different --max-file-store is refused rather than silently resizing the preserved broker.
         const resumeMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
-        const requestedMaxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+        const requestedMaxFileStore = parseMaxFileStore(values["max-file-store"]);
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore)
           throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${resumeMaxFileStore ?? "unset"}); ordinary up resumes exactly the preserved cap - omit --max-file-store`);
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
@@ -924,7 +977,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         };
         const attemptId = journal.ordinaryResume.attemptId;
         const recoveredMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
-        const requestedMaxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+        const requestedMaxFileStore = parseMaxFileStore(values["max-file-store"]);
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== recoveredMaxFileStore)
           throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${recoveredMaxFileStore ?? "unset"}); resume attempt ${attemptId} re-renders exactly the preserved cap - omit --max-file-store`);
         // Recovery re-asserts the source identity rather than trusting the journaled spelling.
@@ -1058,7 +1111,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const noManager = Boolean(values["no-manager"]);
   const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
-  const maxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+  const maxFileStore = parseMaxFileStore(values["max-file-store"]);
   // The manifest path renders its broker from the manifest, which has no store fields, so the flag
   // would be accepted and never rendered. Refuse it rather than drop it.
   if (maxFileStore !== undefined && values.file)
@@ -1161,13 +1214,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
+    // A foreground up holds a stack only one terminal holds. Over a stack that already runs without
+    // one, it takes that stack's lifetime over and says so before it blocks.
+    const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
+    if (holder !== undefined)
+      throw new CommandFailure("refused", "CONFLICT", `a foreground cotal up in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with cotal down --yes from ${meshRoot} and run cotal up --foreground again` });
+    const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
     const stackLock = acquireStackOperationLock(meshRoot);
     const native = controllerStackNative();
     // A foreground terminal holds the start as well, so a signal during it stops what it started.
     const start = async () => {
       try {
-        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
-        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), foreground: values.foreground === true, presentation }, native);
+        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
+        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
       } finally { releaseMaintenanceLock(stackLock); }
     };
     if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -1180,6 +1239,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
   // port / runtime / auth without editing it. Its space is its target: `--space` may only repeat it.
   if (values.file) {
+    // A manifest start takes the legacy launcher, which never runs beside a controller stack, running
+    // or stopped, so a dry run refuses as the start would.
+    const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
+    if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
+      target: { root: meshRoot, space: controller.journal.space },
+      remedy: `add the manifest's channels and agents to the running stack with cotal team deploy ${values.file}, or stop it with cotal down --yes and start the manifest through the controller with cotal team boot ${values.file}`,
+    });
     if (values["dry-run"]) {
       await upManifest(values.file, {
         transport,
@@ -1282,14 +1348,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // team summary remains, and a start that would differ from it refuses, naming its manifest.
     const implicit = !resumeAttempt && registeredServer === undefined && values.server === undefined && values.host === undefined && !values["user-auth"];
     const retained = implicit ? retainedLegacyBroker(cotalRoot()) : undefined;
+    // An address up chooses for a TLS broker names TLS, as an explicit one must.
+    const serving = (url: string) => transport.kind === "tls-required" ? tlsAddress(url) : url;
     if (retained) {
       if (retained.open) values.open = true;
-      console.log(c.dim(`starting this folder's stopped stack as it last ran: ${retained.server}${values.open ? ", open" : ""}`));
+      console.log(c.dim(`starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`));
     } else if (implicit) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${cleaned.command}` });
     }
-    const implicitServer = registeredServer ?? retained?.server ?? DEFAULT_SERVER;
+    // A registered address stays as recorded, so a running stack is still found by it.
+    const implicitServer = registeredServer ?? serving(retained?.server ?? DEFAULT_SERVER);
     let server = values.server ?? implicitServer;
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
@@ -1671,6 +1740,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   }
 
+  await assertBrokerAddressFree(server, "cotal up");
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
@@ -1806,7 +1876,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
   // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
   // before signalling the broker. Keep the child referenced and its output in this terminal.
-  const child = spawn(bin, natsArgs, { stdio: "inherit", detached: process.platform !== "win32" });
+  // The configuration names a store inside the root relative to it, so the broker runs from the root.
+  const child = spawn(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
@@ -2973,6 +3044,12 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, "broker.host", "broker.servers") : (m.broker?.servers ?? DEFAULT_SERVER);
   assertTlsIntentServed(server, opts.transport, opts.server !== undefined ? "--server" : "the manifest's broker.servers");
+  // A --tls-cert broker serves TLS only, so its address says tls://, as a bare up requires of --server.
+  if (opts.transport.kind === "tls-required" && server.split(",").some((url) => /^nats:\/\//i.test(url.trim())))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--tls-cert serves the broker over TLS, so ${opts.server !== undefined ? "--server" : "the manifest's broker.servers"} must be a tls:// address; nothing was started or written`, {
+      target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable" },
+      remedy: opts.server !== undefined ? `pass --server ${tlsAddress(server)}` : `set broker.servers to ${tlsAddress(server)} in ${file}`,
+    });
   const open = m.broker?.auth === false; // default is auth
   const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
   const runtime = m.runtime ?? "pty";
@@ -3045,6 +3122,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.error(c.red(`✗ ${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`));
     process.exit(1);
   }
+  await assertBrokerAddressFree(server, `cotal up -f ${file}`);
   // Connectors + their required binaries must exist before any mutation (no fallback).
   const conn = await preflightConnectors(prepared);
   if (conn) {
@@ -3448,7 +3526,7 @@ async function serveReadyListener(l: {
   // Commit the policy only for a listener that is up and recorded (S5), and before the control
   // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
   // the file at all.
-  commitTransportPolicy(cotalRoot(), transport, l.quietBoot);
+  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server);
   // The delivery daemon self-gates on `.cotal/auth`, so an open mesh has none. Class-2 credential
   // renewal is NOT wired here: the MANAGER is the renewal owner (it is resident in every mesh mode,
   // where a foreground `up` process is not).
@@ -3607,7 +3685,7 @@ export async function startMeshDetached(
   const fd = openBrokerLog(logPath);
   const startOffset = fstatSync(fd).size;
   const listenerStartedAt = new Date().toISOString();
-  const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
+  const child = spawn(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
@@ -3642,6 +3720,19 @@ export async function startMeshDetached(
     delivery: useAuth && deliveryUp(space),
     manager: managerUp(space),
   };
+}
+
+/** Refuse a broker address another program holds without answering NATS, such as a web server, as
+ *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
+ *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
+async function assertBrokerAddressFree(server: string, command: string): Promise<void> {
+  const bindError = await listenerBindError(server);
+  if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
+  const { host, port } = brokerListenAddress(server), address = new URL(server);
+  throw new CommandFailure("refused", "CONFLICT", `another process holds the broker address ${host}:${port} (bind failed: address already in use); no broker was launched`, {
+    target: { root: cotalRoot(), server, bindError: bindError.code },
+    remedy: `start it at another address with ${command} --server ${address.protocol}//${address.hostname}:<port>, or stop the process listening on ${host}:${port} and run ${command} again`,
+  });
 }
 
 /** THE FLIP, open-boot edition: `--open` must never boot a credless broker over a root whose
@@ -3910,8 +4001,8 @@ export const recordOurMeshForTest = (m: MeshEntry, provenance: Provenance): void
 
 /** Record this mesh in the registry, and set it as the `current` default when there's no usable one
  *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
- *  ghost pointer is not a default). Never silently redirect a `current` that still resolves to a live
- *  mesh; just say another is the default and how to switch. */
+ *  ghost pointer is not a default), and say so. Never silently redirect a `current` that still resolves
+ *  to a live mesh; just say another is the default and how to switch. */
 function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false): void {
   const cur = getCurrent();
   const usableCurrent = cur && (findMesh(cur) || findPreparedSpace(cur)) ? cur : undefined; // compute before recording m
@@ -3929,10 +4020,11 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setCurrent(m.space);
+    if (!quietBoot) console.log(c.dim(selectedOnUp(m.space)));
     return;
   }
   if (usableCurrent !== m.space && !quietBoot)
-    console.log(c.dim(`"${m.space}" up; current is still "${usableCurrent}" - \`cotal use ${m.space}\` to switch`));
+    console.log(c.dim(keptOnUp(m.space, usableCurrent)));
 }
 
 /** Write the default persona into the root this `up` started or refreshed when it has none, and
@@ -4259,6 +4351,15 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
   return true;
 }
 
+/** `--max-file-store`, refused below the bytes the space's membership bucket reserves from the
+ *  broker's file store: a smaller cap cannot create the space's streams. */
+function parseMaxFileStore(raw: string | undefined): number | undefined {
+  const cap = parsePositiveIntegerFlag("--max-file-store", raw);
+  if (cap !== undefined && cap < MEMBERSHIP_MAX_BYTES)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB), which the space's membership bucket reserves from the broker's file store; nothing was started`, { remedy: `pass --max-file-store ${MEMBERSHIP_MAX_BYTES} or more, leaving room for messages, or omit it` });
+  return cap;
+}
+
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`
  *  path that's missing is a hard error; the default `.cotal/channels.json` is optional (absent
  *  ⇒ nothing to seed). */
@@ -4275,6 +4376,8 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
 function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   const remedy = explicit ? "fix the file, or omit --channels" : `fix or remove ${path}`;
   let text: string;
+  // A FIFO or a device would block the read, so only a regular file is opened.
+  if (statSync(path, { throwIfNoEntry: false })?.isFile() === false) throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not a regular file, such as a FIFO; it was not read`, { remedy });
   try { text = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
   let value: unknown;
@@ -4393,17 +4496,20 @@ function assertTlsIntentServed(server: string, transport: BrokerTransport, sourc
 }
 
 /** Persist a transport after its listener starts; a structured boot leaves stdout to its receipt. */
-function commitTransportPolicy(root: string, transport: BrokerTransport, quietBoot = false): void {
+function commitTransportPolicy(root: string, transport: BrokerTransport, quietBoot = false, server?: string): void {
   if (transport.kind !== "tls-required") return;
   writeBrokerPolicy(root, { version: 1, transport });
-  if (!quietBoot) announceTransport(transport);
+  if (!quietBoot) announceTransport(transport, server);
 }
 
-function announceTransport(transport: BrokerTransport): void {
+/** The `tls://` form of a broker URL, or of each URL in a list. */
+const tlsAddress = (server: string): string => server.split(",").map((url) => url.trim().replace(/^nats:/i, "tls:")).join(",");
+
+function announceTransport(transport: BrokerTransport, server?: string): void {
   if (transport.kind !== "tls-required") return;
   try {
     const material = validateTlsMaterial(transport, {});
-    console.log(c.dim(`TLS: serving ${material.subject}, valid until ${material.notAfter.toISOString()}`));
+    console.log(c.dim(`TLS: serving ${material.subject}${server ? ` at ${server}` : ""}, valid until ${material.notAfter.toISOString()}`));
   } catch {
     // Already validated at decide-time; announce is best-effort display.
   }
@@ -4545,7 +4651,7 @@ function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: strin
   const confPath = cotalPath("server-open.conf");
   writeSecretFile(
     confPath,
-    openServerConfig({ port: opts.port, host: opts.host, storeDir, maxFileStore: opts.maxFileStore, transport: opts.transport }),
+    openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, transport: opts.transport }),
   );
   return confPath;
 }
@@ -4693,7 +4799,7 @@ async function authSetup(
   }
   // Owner-private regardless of umask, as `writeOpenBrokerConf` writes the open configuration: the
   // broker preset refuses a configuration that other local users can write.
-  writeSecretFile(confPath, serverConfig(auth, spaces, { transport, port, storeDir, maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
+  writeSecretFile(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.

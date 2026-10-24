@@ -4,7 +4,9 @@
  * Ready static stacks are probed through public status/ps. A bounded startup-refusal cell suspends
  * only its pinned manager before natural capability publication and always resumes it for cleanup.
  * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
- * and another cuts a ready one's stop as a closed terminal does.
+ * and another cuts a ready one's stop as a closed terminal does. A third shows that a second
+ * foreground `up` refuses while one holds the stack, and that one over a stack whose holder was
+ * killed says it takes the running stack over before a signal stops it.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -340,6 +342,62 @@ async function controllerHangupCell(): Promise<void> {
   }
 }
 
+async function controllerHoldCell(): Promise<void> {
+  const name = "controller-hold";
+  const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
+  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  const port = await freePort(); assert.notEqual(port, 4222);
+  const space = `foreground-${name}`;
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
+  assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
+  const foreground = (args: string[]) => {
+    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const io = { out: "", err: "" };
+    child.stdout?.on("data", (b: Buffer) => { io.out += b.toString(); });
+    child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
+    return { child, io, state: observeOwnedChild(child) };
+  };
+  const holder = foreground(["--server", `nats://127.0.0.1:${port}`]);
+  let taker: ReturnType<typeof foreground> | undefined;
+  try {
+    await until(() => {
+      if (holder.state.error) throw holder.state.error;
+      if (holder.state.exited) throw new Error(`CLI exited before the stack was ready: ${holder.io.err}`);
+      return holder.io.out.includes("Controller stack started");
+    }, 120_000, () => holder.io.err.slice(-3000));
+    assert.ok(holder.child.pid);
+    const second = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"], 60_000);
+    assert.ok(second.code === 2 && second.err.includes(`a foreground cotal up in process ${holder.child.pid} already holds this stack's lifetime`) && !holder.state.exited, `a second foreground up refuses CONFLICT, naming the holder, and the holder keeps the stack: ${second.out}${second.err}`); passed++;
+    // A killed holder leaves its record and the running stack, which the next foreground up takes over.
+    process.kill(holder.child.pid, "SIGKILL");
+    await until(() => holder.state.exited, 10_000, () => "the killed foreground up did not exit");
+    await waitForOwnedChild(() => holder.state.closed, 3_000, `${root}: holder streams drained`);
+    assert.ok(existsSync(join(mesh, ".cotal", "stack-foreground.hold")) && await portOpen(port), "the killed holder left its record and the running stack"); passed++;
+    taker = foreground([]);
+    await until(() => {
+      if (taker!.state.error) throw taker!.state.error;
+      if (taker!.state.exited) throw new Error(`the taking-over foreground up exited: ${taker!.io.err}`);
+      return taker!.io.out.includes("Controller stack already running");
+    }, 120_000, () => taker!.io.err.slice(-3000));
+    assert.ok(taker.io.out.includes("This stack is already running, and this terminal now takes over its lifetime") && taker.io.out.indexOf("takes over its lifetime") < taker.io.out.indexOf("Controller stack already running"), `a foreground up over the running stack says it takes it over before it blocks: ${taker.io.out}`); passed++;
+    assert.ok(taker.child.pid); process.kill(taker.child.pid, "SIGTERM");
+    await until(() => taker!.state.exited, 120_000, () => taker!.io.err.slice(-3000));
+    assert.ok(taker.state.code === 143 && !(await portOpen(port)) && !existsSync(join(mesh, ".cotal", "stack-foreground.hold")), `SIGTERM there stops the whole stack and removes the hold record: ${taker.state.code} ${taker.io.err.slice(-1500)}`); passed++;
+    console.log(`PASS foreground-up-signals ${name}`);
+  } finally {
+    try {
+      for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
+      // A failed cell still stops what its start left, through the product's own down.
+      if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+    } finally {
+      writeFileSync(join(root, "stdout.log"), holder.io.out + (taker?.io.out ?? ""), { mode: 0o600 });
+      writeFileSync(join(root, "stderr.log"), holder.io.err + (taker?.io.err ?? ""), { mode: 0o600 });
+    }
+  }
+}
+
 console.log(`foreground-up-signals retained evidence: ${base}`);
 await checkInheritedPipeCleanup();
 passed += 10;
@@ -356,5 +414,6 @@ assert.ok(refusalObserved, "native unavailable-capability refusal must be observ
 await cell("crash", { crash: true });
 await controllerStartupCell();
 await controllerHangupCell();
+await controllerHoldCell();
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });

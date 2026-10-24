@@ -6,13 +6,21 @@
  * succeed or refuse on that same cause, never on the retained instance. A second record makes the
  * bare forms ambiguous until `remove --instance` clears one.
  *
- * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started and no service
- * process is launched. The named `down <service>` form runs the same stop path as `service stop`
- * and is not driven here.
+ * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started, and the only
+ * service process launched is the HTTP readiness one below, which its own Next stops. The named
+ * `down <service>` form runs the same stop path as `service stop` and is not driven here.
  *
  * A process definition whose envRefs read a variable the environment does not set refuses its start
  * before anything launches, naming that variable and the child variable it feeds, and `service show`
  * lists the references by name.
+ *
+ * A process definition whose HTTP readiness never answers exits 3 naming the loopback address, the
+ * expected status, the deadline and the refused connection it saw, never the URL's path, and its
+ * Next stops that exact instance and names `service show`. One that answers 503 exits 5 naming that
+ * status. A second instance whose readiness address the first one answers is refused before launch,
+ * naming the address and that instance, and no instance is recorded for it. A process with process
+ * readiness that exits at once fails its start, exit 5, recording its exit code, and its restart is
+ * partial, exit 4, naming that exit code and its log.
  *
  * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
  * before a child in two isolated homes: with the account only in the child's home and only in the
@@ -28,7 +36,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSpaceAuth } from "@cotal-ai/core";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -127,6 +135,73 @@ const shownText = spawnSync(process.execPath, [BIN, "service", "show", "envsvc",
 check("service show lists the reference by name", shownText.status === 0 && /Environment references:\s+REVIEWS_TOKEN from SMOKE_UNSET_REVIEWS_TOKEN/.test(shownText.stdout), { status: shownText.status, stdout: shownText.stdout.slice(0, 900) });
 const envRemoved = run(["service", "remove", "envsvc", "--space", "b1", "--yes"]);
 check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemoved));
+const gone = run(["service", "show", "envsvc", "--space", "b1"]);
+check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 2, naming where the saved ones are", gone.status === 2 && gone.envelope?.error?.code === "TARGET_NOT_FOUND" && gone.envelope.error.remedy === "see the saved definitions with `cotal service`", shown(gone));
+
+// A process service whose HTTP readiness never answers: nothing listens at its loopback address.
+{
+  const port = await freePort(), httpDefinition = join(home, "http.json");
+  writeFileSync(httpDefinition, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exec sleep 60"], cwd: root }, readiness: { type: "http", url: `http://127.0.0.1:${port}/health?token=smoke-hidden`, expectedStatus: 200, timeoutMs: 1500 } }));
+  const httpAdded = run(["service", "add", "httpsvc", "--file", httpDefinition, "--space", "b1"]);
+  check("rig: a process definition with HTTP readiness is saved", httpAdded.status === 0 && httpAdded.envelope?.outcome === "ok", shown(httpAdded));
+  const late = run(["service", "start", "httpsvc", "--space", "b1"]);
+  const id = late.envelope?.target?.instanceId, message = late.envelope?.error?.message ?? "", remedy = late.envelope?.error?.remedy ?? "";
+  check("a start whose HTTP readiness never answers exits 3, naming the address, status, deadline and the refused connection",
+    late.status === 3 && late.envelope?.error?.code === "OPERATION_UNKNOWN" && message.includes(`on 127.0.0.1:${port} with status 200 within 1500 ms; the last check saw connection refused`) && message.includes("left running"), shown(late));
+  check("it never prints the URL's path or query", !`${late.stdout}${late.stderr}`.includes("/health") && !`${late.stdout}${late.stderr}`.includes("smoke-hidden"), shown(late));
+  check("its Next names the logs and the stop for that exact instance, and service show for the deadline", typeof id === "string" && remedy.includes(`cotal service logs httpsvc --instance ${id} --space b1`) && remedy.includes(`cotal service stop httpsvc --instance ${id} --space b1 --yes`) && remedy.endsWith("cotal service show httpsvc --space b1 shows the readiness deadline it missed"), late.envelope?.error);
+  const stopped = run(["service", "stop", "httpsvc", "--instance", String(id), "--space", "b1", "--yes"]);
+  check("following it stops the process, exit 0", stopped.status === 0 && stopped.envelope?.outcome === "ok", shown(stopped));
+  check("rig: the definition is forgotten", run(["service", "remove", "httpsvc", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A process service that answers its own HTTP readiness with a status, as a Node child on a free port.
+const answering = (port: number, status: number) => ({ type: "process", executable: process.execPath, args: ["-e", `require("node:http").createServer((_, res) => { res.statusCode = ${status}; res.end(); }).listen(${port}, "127.0.0.1")`], cwd: root });
+{
+  const port = await freePort(), file = join(home, "unready.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: answering(port, 503), readiness: { type: "http", url: `http://127.0.0.1:${port}/health`, expectedStatus: 200, timeoutMs: 1500 } }));
+  check("rig: a definition whose process answers 503 is saved", run(["service", "add", "unready", "--file", file, "--space", "b1"]).status === 0);
+  const unready = run(["service", "start", "unready", "--space", "b1"]);
+  const id = unready.envelope?.target?.instanceId, message = unready.envelope?.error?.message ?? "";
+  check("a start whose process answers 503 until the deadline fails OPERATION_FAILED, exit 5, naming that status and the process left running",
+    unready.status === 5 && unready.envelope?.error?.code === "OPERATION_FAILED" && message.includes(`on 127.0.0.1:${port} with status 503, not 200, until its 1500 ms deadline passed`) && message.includes("left running") && (unready.envelope.error.remedy ?? "").includes(`cotal service stop unready --instance ${id} --space b1 --yes`), shown(unready));
+  check("following it stops the process, exit 0", run(["service", "stop", "unready", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
+  check("rig: the definition is forgotten", run(["service", "remove", "unready", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A process with process readiness that exits at once, as a bad configuration makes it.
+{
+  const file = join(home, "broken.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "echo broken; exit 1"], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));
+  check("rig: a definition whose process exits 1 at once is saved", run(["service", "add", "broken", "--file", file, "--space", "b1"]).status === 0);
+  const exited = (r: ReturnType<typeof run>) => r.status === 5 && r.envelope?.error?.code === "OPERATION_FAILED" && (r.envelope.error.message ?? "").includes("exited before readiness was established (exit code 1")
+    && r.envelope.target?.recordedState === "failed" && (r.envelope.target.exit as { code?: number } | null)?.code === 1;
+  const start = run(["service", "start", "broken", "--space", "b1"]);
+  check("its start fails OPERATION_FAILED, exit 5, and records exit code 1", exited(start), shown(start));
+  const restart = run(["service", "restart", "broken", "--space", "b1", "--yes"]);
+  check("its restart is partial, exit 4, naming the replacement's exit code and its log",
+    restart.status === 4 && restart.envelope?.error?.code === "OPERATION_PARTIAL" && (restart.envelope.error.message ?? "").includes("exited before readiness was established (exit code 1") && (restart.envelope.error.remedy ?? "").startsWith("read its log with cotal service logs broken --instance "), shown(restart));
+  const after = run(["service", "status", "broken", "--space", "b1"]);
+  check("status then shows it failed with exit code 1", after.envelope?.result?.recordedState === "failed" && (after.envelope.result.exit as { code?: number } | null)?.code === 1, after.envelope?.result);
+  check("rig: the definition is forgotten", run(["service", "remove", "broken", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A second instance of a service whose readiness address its first instance answers.
+{
+  const port = await freePort(), file = join(home, "web.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: answering(port, 200), readiness: { type: "http", url: `http://127.0.0.1:${port}/health`, expectedStatus: 200, timeoutMs: 5000 } }));
+  check("rig: a definition whose process answers 200 is saved", run(["service", "add", "web", "--file", file, "--space", "b1"]).status === 0);
+  const first = run(["service", "start", "web", "--space", "b1"]);
+  const id = first.envelope?.result?.instanceId;
+  check("rig: its first instance starts reachable", first.status === 0 && first.envelope?.result?.readinessObservation === "http-reachable", shown(first));
+  const second = run(["service", "start", "web", "--new-instance", "--space", "b1"]);
+  check("a second instance on that address refuses CONFLICT, exit 2, naming the address and the first instance, before any launch",
+    second.status === 2 && second.envelope?.error?.code === "CONFLICT" && (second.envelope.error.message ?? "").startsWith(`something already answers 127.0.0.1:${port}, where web's HTTP readiness is checked`) && (second.envelope.error.remedy ?? "").startsWith(`instance ${id} of web answers there`), shown(second));
+  const listed = run(["service", "--space", "b1"]);
+  check("no instance was recorded for it", (listed.envelope?.result?.instances as { definition?: string }[] | undefined)?.filter((row) => row.definition === "web").length === 1, listed.envelope?.result);
+  check("rig: the first instance stops", run(["service", "stop", "web", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
+  check("rig: the definition is forgotten", run(["service", "remove", "web", "--space", "b1", "--yes"]).status === 0);
+}
 
 // A Linear service whose envRefs give the child HOME from SERVICE_HOME. With COTAL_HOME unset, each
 // process reads the Cotal home under its own HOME: the controller's is `a`, the child's `b`.

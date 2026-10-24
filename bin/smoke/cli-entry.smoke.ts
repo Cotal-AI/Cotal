@@ -211,6 +211,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const extra = cotal(["version", "-j", "extra"]);
   refused("an unexpected argument under -j is refused", extra, /Unexpected argument 'extra'/);
   check("an unexpected argument under -j is a USAGE_INVALID envelope", envelopes(extra)[0]?.error?.code === "USAGE_INVALID", shown(extra));
+  // `--replay` takes no value, so `--replay off` used to be refused as a second channel name.
+  const replayOff = cotal(["channel", "set", "general", "--replay", "off", "--json"]);
+  check("`channel set <name> --replay off` names the stray value and points to --no-replay",
+    envelopes(replayOff)[0]?.error?.code === "USAGE_INVALID" && envelopes(replayOff)[0]?.error?.message?.startsWith('--replay takes no value, so "off" was read as a channel name') === true
+      && envelopes(replayOff)[0]?.error?.remedy === "run cotal channel set general --no-replay", shown(replayOff));
   const human = cotal(["version", "--bogus"]);
   refused("a usage error without --json is refused", human, /Unknown option '--bogus'/);
   check("a usage error without --json writes no envelope and prints the help on stderr", envelopes(human).length === 0 && human.stdout === "" && /^Usage\n  cotal version /m.test(human.stderr), shown(human));
@@ -241,7 +246,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`cotal ${argv.join(" ")} prints with no ANSI color`, r.status === 0 && r.stdout.length > 0 && !ansi.test(r.stdout), shown(r));
   }
   // Under a locale whose character set is not UTF-8, marks and punctuation are written as plain writes
-  // them. An empty variable counts as unset, and with none set the marks stay UTF-8.
+  // them, and a usage error, which has no mark there, is the classified report. An empty variable
+  // counts as unset, and with none set the marks stay UTF-8.
   const nonAscii = /[^\x00-\x7f]/;
   const locales: [Record<string, string>, boolean][] = [
     [{}, false], [{ LC_ALL: "C.UTF-8" }, false], [{ LC_ALL: "en_US.utf8" }, false], [{ LC_CTYPE: "C.UTF-8", LANG: "C" }, false],
@@ -253,7 +259,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const help = cotal(["help"], undefined, env);
     const error = cotal(["nope"], undefined, env);
     check(`under ${named} help and an error are ${ascii ? "ASCII" : "drawn with UTF-8 marks"}`,
-      help.status === 0 && error.status === 1 && nonAscii.test(help.stdout + error.stderr) === !ascii && error.stderr.startsWith(ascii ? "! unknown command: nope" : "✗ unknown command: nope"), { help: help.stdout.slice(0, 200), error: shown(error) });
+      help.status === 0 && error.status === 1 && nonAscii.test(help.stdout + error.stderr) === !ascii && error.stderr.startsWith(ascii ? "Request refused\n  unknown command: nope" : "✗ unknown command: nope"), { help: help.stdout.slice(0, 200), error: shown(error) });
   }
   for (const value of ["0", "false", "FALSE", "False"]) {
     const r = cotal(["help"], undefined, { FORCE_COLOR: value });
@@ -296,6 +302,19 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
   const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
+  // A catalog file that is a FIFO would block a read, so the list marks it unreadable and names it
+  // rather than waiting on it.
+  if (process.platform !== "win32") {
+    const fifo = (home: string) => {
+      seeded(home);
+      spawnSync("mkfifo", [join(home, "..", ".cotal", "agents", "x.md")]);
+    };
+    const listed = cotal(["persona", "--json"], fifo, noSeed);
+    const doc = (() => { try { return JSON.parse(listed.stdout) as { result?: { items?: { name: string; valid: boolean }[] }; warnings?: { code: string; message: string }[] }; } catch { return {}; } })();
+    check("persona lists a FIFO in its catalog as unreadable, naming it, without waiting on it",
+      listed.status === 4 && doc.result?.items?.some((item) => item.name === "x" && !item.valid) === true && doc.result.items.some((item) => item.name === "default" && item.valid) &&
+        doc.warnings?.some((w) => w.code === "PERMISSION_DENIED" && /^persona is not a regular file: \S+\/x\.md; it was not read$/.test(w.message)) === true, shown(listed));
+  }
   for (const sub of ["list", "show", "edit", "new", "rm"]) {
     const help = cotal(["help", "personas", sub]);
     check(`help personas ${sub} prints that subcommand's help`, help.status === 0 && help.stdout.includes(`cotal personas ${sub}`), shown(help));
@@ -362,6 +381,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }, noSeed);
   check("personas list prints a YAML diagnostic as lines, with no escaped line breaks",
     unparseable.status === 0 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
+  // The preview was cut at 100 characters whatever the width, so a wide terminal lost its end.
+  const longLine = `A reviewer persona whose one-line prompt runs past the old hundred-character cut ${"x".repeat(40)} END`;
+  const wide = cotal(["personas", "list"], (home) => {
+    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", ".cotal", "agents", "long.md"), `---\nname: long\n---\n${longLine}\n`);
+  }, noSeed);
+  check("personas list prints a long first prompt line whole when nothing limits the width",
+    wide.status === 0 && wide.stdout.includes(`  ${longLine}\n`) && !wide.stdout.includes("…"), shown(wide));
   const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
   const piped = cotal(["personas", "show", "h"], hostile, noSeed);
   check("personas show piped writes the file byte for byte", piped.status === 0 && piped.stdout.endsWith(`\n${card}`), shown(piped));
@@ -416,6 +443,18 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`team check names ${label} by file, line and reason`,
       r.status === 1 && located.every((part) => r.stderr.includes(part)) && r.stderr.includes("fix each named problem and run team check again") && !r.stderr.includes("SECRETPERSONA42"), shown(r));
   }
+  // `space:` takes only a name `space create` takes, so the check and both dry runs refuse any other
+  // with the reason, before a later step fails on it. A dead broker address keeps any probe local.
+  const named = (space: string) => `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: nats://127.0.0.1:9\nchannels: {}\n`;
+  const notName = "is not a space name: a space name is 1 to 200 letters, digits, underscores or hyphens";
+  for (const args of [["team", "check", "m.yaml"], ["team", "boot", "m.yaml", "--dry-run"], ["up", "-f", "m.yaml", "--dry-run"]]) {
+    const r = cotal(args, files(named('"bad name"')), noSeed);
+    check(`${args.join(" ")} refuses a space name that space create refuses, naming it`, r.status === 1 && r.stderr.includes(`m.yaml:3:8: space "bad name" ${notName}`), shown(r));
+  }
+  const escaped = cotal(["team", "check", "m.yaml"], files(named('"e\\u001b]0;X\\u0007c"')), noSeed);
+  check("team check shows a space name with control characters escaped", escaped.status === 1 && escaped.stderr.includes(`space "e\\u001b]0;X\\u0007c" ${notName}`) && !/[\u0000-\u0009\u000b-\u001f]/u.test(escaped.stdout + escaped.stderr), shown(escaped));
+  const lead = cotal(["team", "check", "m.yaml"], files(named('"-lead"')), noSeed);
+  check("team check resolves a name space create takes, such as -lead", lead.status === 0 && lead.stdout.includes("Team manifest resolved"), shown(lead));
 }
 
 // ── Unknown words, prefixes, uninstalled seeded commands ──────────────────────────────────────────

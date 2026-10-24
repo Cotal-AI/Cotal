@@ -1,24 +1,32 @@
 import { writeSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  cotalDirProblem,
   cotalHomeProblem,
+  findCotalRoot,
   disableColor,
   disableInput,
   envelopeLine,
   exitCode,
   failureEnvelope,
+  globalConfigDirProblem,
   globalFlagDeclarationProblems,
   hasMeshTargetFlags,
   inOperationSpace,
   isCommandFailure,
   isConnectRefusal,
+  isMeshRegistryError,
   isSeededCommand,
   isWorkspaceTargetError,
+  localeIsUtf8,
   operationWarnings,
   outputDeclarationProblems,
+  preferencesFolderWarning,
+  recordOperationWarning,
   renderReport,
   renderWorkspaceError,
   runOperation,
@@ -46,6 +54,7 @@ import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.
 import { servicePresetCommand } from "./lib/service-presets.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
+import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
@@ -133,9 +142,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // whole fix. A file the command cannot use is reported like one that does not exist, and a refused
   // flag value names its corrected value, so it gets the classified report.
   if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
-    stderrLine("✗ ", failure.message, c.red);
-    if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
-    if (!failure.selfContained) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+    usageRefusal(failure, plain, failure.selfContained ? undefined : cmd);
     debugStacks(failure);
     process.exit(1);
   }
@@ -147,13 +154,20 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   process.exit(exitCode(failure.outcome, failure.code));
 }
 
+type ConfigFolderProblem = NonNullable<ReturnType<typeof globalConfigDirProblem>>;
+
+/** The refusal of a command that would read or write a config folder that is a file. */
+function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
+  return new CommandFailure("refused", "SCHEMA_INVALID", `${problem.message}; Cotal keeps your preferences, config and extensions there, so the command did not run`, { remedy: problem.remedy });
+}
+
 /**
  * `ext seed [--repair|--reset|--force]`, dispatched before the manifest overlay so repair survives a
  * corrupt manifest. Returns `true` iff `argv` was that command (or its help), so the caller returns.
  * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
  * which resolves its alias too.
  */
-async function extSeedGate(registry: Registry, argv: string[]): Promise<boolean> {
+async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined): Promise<boolean> {
   const [word, sub] = argv;
   const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
   if (extCmd?.name !== "ext" || sub !== "seed") return false;
@@ -163,6 +177,7 @@ async function extSeedGate(registry: Registry, argv: string[]): Promise<boolean>
     printCommandHelp(extCmd);
     return true;
   }
+  if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
   await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1))));
   return true;
 }
@@ -286,16 +301,30 @@ export interface RunCliOptions {
   extensions?: boolean;
 }
 
-/** A usage error, rendered as one red line plus the command's help when there is one. Exit 1. */
-function usageExit(message: string, cmd?: Command, json = false): never {
+/** A usage refusal on stderr, then `cmd`'s help when one is given. Plain output and a locale without
+ *  UTF-8 have no refusal mark, so there the refusal is the classified report, which names its outcome
+ *  in words. */
+function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command): void {
+  const report = plain || !localeIsUtf8();
+  if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+  else {
+    stderrLine("✗ ", failure.message, c.red);
+    if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
+  }
+  if (!cmd) return;
+  if (report) console.error("");
+  printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+}
+
+/** A usage error, written by {@link usageRefusal} with the command's help when there is one. Exit 1. */
+function usageExit(message: string, cmd?: Command, json = false, plain = false): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
   if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
-  stderrLine("✗ ", message, c.red);
-  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+  usageRefusal(new CommandFailure("refused", "USAGE_INVALID", message), plain, cmd);
   process.exit(1);
 }
 
@@ -304,17 +333,18 @@ function usageExit(message: string, cmd?: Command, json = false): never {
  *  starting with a '-' …" tail is dropped. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const json = asksForJson(cmd, rest);
+  const plain = rest.includes("--plain");
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
-    if (isArgError(e)) usageExit(parseErrorMessage(cmd, e as Error), cmd, json);
+    if (isArgError(e)) usageExit(parseErrorMessage(cmd, e as Error), cmd, json, plain);
     throw e;
   }
   const first = parsed.positionals[0];
   // History also accepts a root channel positional; only its reserved clear token is a mode.
   if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
-    usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json);
+    usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json, plain);
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
@@ -323,14 +353,28 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
   const canonical = canonicalSubcommand(cmd, parsed);
+  refuseRemovedFolder(cmd, canonical);
   try {
     cmd.validate?.(canonical);
   } catch (error) {
     if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true);
-    if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json);
+    if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain);
     throw error;
   }
   return canonical;
+}
+
+/** A working folder removed before this process read it fails every cwd read the command makes, and
+ *  Node caches the first read that succeeds. One read refuses that case before the command's own
+ *  checks, such as `up`'s, or any effect. Help, version and completion never read the folder. */
+function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs): void {
+  if (cmd.name.startsWith("__") || ["help", "version", "completion"].includes(cmd.name)) return;
+  try {
+    process.cwd();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+  }
 }
 
 /** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
@@ -418,9 +462,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
   else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
+  const configFolder = globalConfigDirProblem();
   if (opts.extensions) {
     try {
-      if (await extSeedGate(registry, argv)) return;
+      if (await extSeedGate(registry, argv, configFolder)) return;
     } catch (e) {
       stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
@@ -485,6 +530,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
   let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;
   // ---- Effects: only a validated invocation reaches this line. ----
+  // A config folder that is a file fails every read and write of the preferences, the config file and
+  // the extensions, so a command that could use them stops here, before the seed would write there.
+  // Help, shell completion, version and docs use none of them.
+  if (configFolder && cmd && parsed && !cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name))
+    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
@@ -529,9 +579,17 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // completion, version and docs use no preference, and status reports the file as a warning, so they
   // still run. `--help` on a command has already returned above.
   if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
-    // A COTAL_HOME that cannot be a directory stops them the same way, before any command reads it.
+    // A relative COTAL_HOME would name another home in each folder a command runs in, and a
+    // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
+    // reads it.
+    const home = process.env.COTAL_HOME;
+    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+    // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
+    // records, and every reader would otherwise report a different wrong cause.
+    const dirProblem = cmd.name === "version" ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
+    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     if (!["version", "docs", "status"].includes(cmd.name)) {
       try {
         cachedPreferences();
@@ -549,6 +607,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     }
     await prepareCatalogForCommand(cmd, parsed);
     await runOperation(scope, async () => {
+      // Preferences that another local account could change still apply, so each command that uses
+      // them says so, with the change that protects their folder.
+      if (!cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name)) {
+        const folder = preferencesFolderWarning();
+        if (folder) recordOperationWarning(folder.warning);
+      }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
     });
@@ -565,7 +629,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true);
     // A refused manager selection among several live managers becomes the choice: each manager
     // and the command again with `--on` for it.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
@@ -581,6 +645,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         const target = spaceRootTarget(e.details);
         failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true, scope.warnings);
       }
+      // A registry record or directory it could not read is refused by its file, as `space` reports
+      // it, and as a target it could not resolve is refused above.
+      if (isMeshRegistryError(e)) failureExit(cmd, inOperationSpace(registryFailure(e), scope.space), json, parsed.values.plain === true, scope.warnings);
       if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true, scope.warnings);
       failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true, scope.warnings);
     }

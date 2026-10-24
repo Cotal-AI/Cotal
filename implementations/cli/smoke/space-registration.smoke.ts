@@ -6,10 +6,12 @@
  * record it writes and for leaving the selection as it was. An open space must be one the broker
  * serves, so the open broker serves the names that are added and refuses one it does not. A forget
  * removes the space's per-space preferences with it, refuses on a preferences file it cannot read,
- * and is partial when it cannot remove them. On Linux, a space started as a controller
+ * and is partial when it cannot remove them, naming the chmod first when other accounts can write
+ * their folder. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
  * whose members this home has no record of, with a live manager, stands for a stack running under
- * another Cotal home: create, down and status there name that home. A stopped stack whose broker
+ * another Cotal home: create, down and status there name that home. A folder path with a control
+ * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
@@ -405,11 +407,11 @@ setCurrent("keep");
   const setUp: number[] = [];
   // These are open spaces, so the open broker serves them before they are added.
   const { setupSpaceStreams } = await import("@cotal-ai/core");
-  for (const space of ["withprefs", "shownprefs", "badprefs", "lockedprefs"]) await setupSpaceStreams({ servers: LIVE, space });
-  for (const name of ["withprefs", "shownprefs", "badprefs", "lockedprefs"]) setUp.push((await json(["space", "add", name, "--server", LIVE, "--root", root])).status ?? -1);
-  for (const [name, key, value] of [["withprefs", "persona", "rev"], ["withprefs", "harness", "opencode"], ["shownprefs", "persona", "rev"], ["badprefs", "persona", "rev"], ["lockedprefs", "persona", "rev"]])
+  for (const space of ["withprefs", "shownprefs", "badprefs", "lockedprefs", "exposedprefs"]) await setupSpaceStreams({ servers: LIVE, space });
+  for (const name of ["withprefs", "shownprefs", "badprefs", "lockedprefs", "exposedprefs"]) setUp.push((await json(["space", "add", name, "--server", LIVE, "--root", root])).status ?? -1);
+  for (const [name, key, value] of [["withprefs", "persona", "rev"], ["withprefs", "harness", "opencode"], ["shownprefs", "persona", "rev"], ["badprefs", "persona", "rev"], ["lockedprefs", "persona", "rev"], ["exposedprefs", "persona", "rev"]])
     setUp.push((await json(["config", "set", key!, value!, "--space", name!])).status ?? -1);
-  check("four spaces are added and their preferences saved", setUp.every((status) => status === 0), setUp);
+  check("five spaces are added and their preferences saved", setUp.every((status) => status === 0), setUp);
   const withPrefs = await json(["space", "forget", "withprefs"]);
   check("forget removes the space's preferences, lists each key and value, and keeps another space's",
     withPrefs.status === 0 && JSON.stringify(withPrefs.env?.result.removedPreferences) === JSON.stringify({ persona: "rev", harness: "opencode" }) && saved().withprefs === undefined && saved().shownprefs?.persona === "rev", shown(withPrefs));
@@ -428,6 +430,13 @@ setCurrent("keep");
     check("preferences that cannot be removed leave the forget partial, exit 4, naming config unset",
       locked.status === 4 && locked.env?.outcome === "partial" && findMesh("lockedprefs") === undefined && saved().lockedprefs?.persona === "rev" &&
         (locked.env?.error?.remedy ?? "").includes("cotal config unset <key> --space lockedprefs"), shown(locked));
+    // A folder other accounts can write refuses the removal, and the remedy protects it first.
+    chmodSync(prefsDir, 0o757);
+    const exposed = await json(["space", "forget", "exposedprefs"]);
+    chmodSync(prefsDir, 0o700);
+    check("preferences in a folder other accounts can write are kept, and the partial's remedy starts with its chmod",
+      exposed.status === 4 && exposed.env?.outcome === "partial" && findMesh("exposedprefs") === undefined && saved().exposedprefs?.persona === "rev" &&
+        (exposed.env?.error?.remedy ?? "").startsWith(`chmod o-w ${prefsDir}; then see them with`), shown(exposed));
   }
 }
 
@@ -536,6 +545,32 @@ if (process.platform === "linux") {
   if (selected === undefined) clearCurrent(); else setCurrent(selected);
 } else console.log("  - recorded bind host cells skipped: a controller stack needs Linux machine and boot identity");
 
+// ── up says when it selects the space it started ───────────────────────────────────────────────────────
+if (process.platform === "linux") {
+  const selected = getCurrent();
+  clearCurrent();
+  const first = join(home, "selfirst"), second = join(home, "selsecond");
+  mkdirSync(first);
+  mkdirSync(second);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  await json(["space", "create", "selfirst"], first);
+  await json(["space", "create", "selsecond"], second);
+  const sandbox = recordSmokeSandbox({ root: first, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, first);
+  check("with nothing selected, up selects the space it started and says so",
+    up.status === 0 && getCurrent() === "selfirst" && up.stdout.includes(`selected "selfirst": a command without --space targets it, except in another space's project folder`), shown(up));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
+  await run(["down", "--yes"], {}, first);
+  const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
+  check("with another space selected, up keeps it and says it stays selected outside this folder",
+    kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays selected for commands run outside this folder - \`cotal use selsecond\` to switch`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
+  assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
+  const stopped = await run(["down", "--yes"], {}, second);
+  check("and down stops it", stopped.status === 0, shown(stopped));
+  if (selected === undefined) clearCurrent(); else setCurrent(selected);
+} else console.log("  - up selection cells skipped: a controller stack needs Linux machine and boot identity");
+
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
   const before = registryFiles();
@@ -627,6 +662,24 @@ if (process.platform === "linux") {
   const linked = await json(["space", "create", "other", "--root", dangling]);
   check("a .cotal linking to a missing folder is TARGET_NOT_FOUND, exit 2, naming the link and its target",
     refused(linked, 2, "TARGET_NOT_FOUND") && linked.env?.error?.message === `${join(dangling, ".cotal")} links to ${join(home, "nowhere")}, which does not exist; nothing was written` && !existsSync(join(home, "nowhere")) && findPreparedSpace("other") === undefined, shown(linked));
+  // A folder whose path holds a control character could be prepared but never started, and a
+  // bidirectional formatting mark can show one path as another, so create and up refuse both before
+  // anything is written.
+  // Outside the home folder, whose .cotal up would otherwise refuse to inherit first.
+  const { oneLine } = await import("@cotal-ai/core");
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-odd-")));
+  for (const [label, name] of [["a tab", "tab\tfolder"], ["a newline", "line\nfolder"], ["an escape character", "esc\u001bfolder"], ["a delete character", "del\u007ffolder"], ["the bidirectional formatting mark U+202E", "rlo\u202efolder"]]) {
+    const odd = join(outside, name);
+    mkdirSync(odd);
+    const created = await json(["space", "create", "oddpath", "--root", odd]);
+    check(`a --root whose path holds ${label} is USAGE_INVALID, exit 1, naming it, with nothing written`,
+      refused(created, 1, "USAGE_INVALID") && (created.env?.error?.message ?? "") === `the folder path ${oneLine(odd)} contains ${label}, and a project path may hold neither control characters nor bidirectional formatting marks; nothing was written` && !existsSync(join(odd, ".cotal")) && findPreparedSpace("oddpath") === undefined, shown(created));
+    const up = await json(["up", "--server", DEAD], odd);
+    check(`up in that folder is USAGE_INVALID, exit 1, and writes no stack journal`,
+      refused(up, 1, "USAGE_INVALID") && (up.env?.error?.message ?? "").startsWith(`the folder path ${oneLine(odd)} contains ${label}`) && !existsSync(join(odd, ".cotal")), shown(up));
+    rmSync(odd, { recursive: true, force: true });
+  }
+  rmSync(outside, { recursive: true, force: true });
   // A prepared folder that is moved keeps none of its space, so a bare up there would start the
   // default. With that space selected and its recorded folder gone, up refuses and names the step.
   {
@@ -755,6 +808,15 @@ if (process.platform === "linux") {
     refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
   unlinkSync(defaultSeed);
+  // A FIFO there would block the read, so it is refused by its file type before it is opened.
+  if (process.platform !== "win32") {
+    spawnSync("mkfifo", [defaultSeed]);
+    const fifoDefault = await json(["up", "--open", "--server", server], fresh);
+    check("a default .cotal/channels.json that is a FIFO refuses naming it, without waiting on it, before a store or a registration",
+      refused(fifoDefault, 1, "USAGE_INVALID") && fifoDefault.env?.error?.message === `the channels file ${defaultSeed} is not a regular file, such as a FIFO; it was not read` &&
+        !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(fifoDefault));
+    unlinkSync(defaultSeed);
+  }
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");

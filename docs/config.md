@@ -175,7 +175,18 @@ completion, `version` and `docs` use no preference and still run. `status` repor
 it could not read, exit 4, and gives the fix as its next step.
 Nothing resets it: fix or remove the file. A `preferences.json` that is a symbolic link stops them the
 same way with `PERMISSION_DENIED` (exit 2), naming the file it points to: `editor` runs as a shell
-command, so the file is neither read through the link nor replaced by `cotal config set`.
+command, so the file is neither read through the link nor replaced by `cotal config set`. A
+`preferences.json` that is a FIFO, a device or a folder stops them with `PERMISSION_DENIED` too,
+before it is opened, so no command waits on it.
+
+The folder that holds the file, and every folder above it, must be one only you or root can write.
+Group write is accepted only for your own private group with no extended ACL, and world write never
+is. Another account that could write one of them could replace the file. In such a folder every
+command that uses your preferences still applies them, with a `PREFERENCES_FOLDER_UNPROTECTED` warning
+that names the folder and the `chmod` that fixes it, and `cotal status` lists that `chmod` under Next. A
+write there (`config set` or `unset`, `setup`, or `space forget` removing a space's values) is refused
+with `PERMISSION_DENIED` (exit 2) before anything is changed. When the folder does not exist yet, the
+nearest folder above it is checked.
 
 ## Environment variables
 
@@ -228,7 +239,7 @@ other value when it starts, naming the variable.
 | `COTAL_MANAGED_HANDOFF_FILE` | `cotal` entry, foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; taken and deleted before anything else runs | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |
 | `COTAL_SERVE_HEADLESS` | OpenCode runtime | Run the OpenCode server without a foreground TUI (`1`). Stdout gets one `[cotal-serve]` line with the server's port and session and no password; a host that drives the server passes its own `OPENCODE_SERVER_PASSWORD` to the launcher | off |
-| `COTAL_HOME` | workspace | Override the machine-home dir: the mesh registry (`meshes/`, `current-mesh`, onboard marker) and records such as prepared spaces and service records. Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
+| `COTAL_HOME` | workspace | Override the machine-home dir with an absolute path: the mesh registry (`meshes/`, `current-mesh`, onboard marker) and records such as prepared spaces and service records. Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
 
 > `--console-port` is a `cotal supervise` flag, not an environment variable; there is no
 > `COTAL_CONSOLE_PORT`.
@@ -418,7 +429,15 @@ rather than read as absent. A process record's read error names the record's pat
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:
 `~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`. A `COTAL_HOME`
 that names a file, or a path under one, stops every command except help and shell completion with
-`SCHEMA_INVALID`, naming the variable: point it at a directory or unset it.
+`SCHEMA_INVALID`, naming the variable: point it at a directory or unset it. A relative `COTAL_HOME`
+stops them the same way with `USAGE_INVALID`: set an absolute path.
+
+On POSIX, a space, a registry entry, the current selection or a service record is written into the
+home only while no other account can replace or write the home or a folder above it. Otherwise the
+write is refused with `PERMISSION_DENIED`, naming each path and the `chmod` that fixes it, and nothing
+is written. A home other accounts can only read is made private (`0700`) on the write, because
+service records are read only from a private home; reading them from one others can read is refused
+with the `chmod` that fixes it.
 
 `COTAL_HOME` overrides **this tree only**: the registry, current pointer and onboard marker, and
 records such as prepared spaces and service records. It is not a full workstation sandbox. Broker launch policy, the JetStream
@@ -446,7 +465,9 @@ that home prepared a space at the same root. `up`, `down` and `space create` for
 ### Configuration files
 
 Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/cotal` on POSIX, or
-`%APPDATA%\Cotal` on Windows.
+`%APPDATA%\Cotal` on Windows. A file at that path, or at a folder above it, stops every command except
+help, version, docs and shell completion with `SCHEMA_INVALID`, naming the file: move it aside, and
+Cotal makes the folder when it next saves there.
 
 | Path | What it is |
 |---|---|

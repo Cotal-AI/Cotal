@@ -1,8 +1,8 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure } from "./output.js";
-import { localRecordAccess } from "./protected-records.js";
+import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
+import { localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 
 /**
@@ -120,7 +120,7 @@ export const PREFERENCE_KEYS: readonly PreferenceKey[] = KEYS.map((k) => k.key);
 
 function specOf(key: string): KeySpec {
   const spec = KEYS.find((k) => k.key === key);
-  if (!spec) throw new CommandFailure("refused", "USAGE_INVALID", `unknown preference "${key}"; valid keys: ${PREFERENCE_KEYS.join(", ")}`);
+  if (!spec) throw new CommandFailure("refused", "USAGE_INVALID", `unknown preference "${key}"; valid keys: ${PREFERENCE_KEYS.join(", ")}`, { remedy: "run `cotal config` to see each key and its value" });
   return spec;
 }
 
@@ -149,6 +149,8 @@ const invalid = (problem: string): CommandFailure =>
   new CommandFailure("refused", "SCHEMA_INVALID", `the preferences file ${preferencesPath()} is invalid: ${problem}`, {
     remedy: `fix or remove ${preferencesPath()}; nothing resets it`,
   });
+
+const SPACE_NAME_REMEDY = "run `cotal space` for the names of the spaces this machine knows";
 
 /** Why a space name cannot hold preferences, or undefined. */
 export function preferenceSpaceProblem(space: string): string | undefined {
@@ -203,13 +205,57 @@ function assertPreferencesNotLinked(path: string): void {
     });
 }
 
+/** Refuse a preferences write into a folder another local account could write, by the rule every
+ *  protected path follows (see {@link protectedLocalDirectory}): that account could replace the file,
+ *  and `editor` runs as a shell command. A folder not made yet is checked from the nearest one above
+ *  it that exists. */
+export function assertPreferencesFolderProtected(): void {
+  let dir = globalConfigDir();
+  while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
+  try {
+    protectedLocalDirectory(dir, "the preferences folder");
+  } catch (e) {
+    if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
+    throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was changed`, { remedy: e.remedy, target: e.target });
+  }
+}
+
+/** The warning a command gives when the preferences file it read sits in a folder another local
+ *  account could write, and the change that fixes the folder; undefined when there is no file or the
+ *  folder is protected. The saved values still apply, and a write is refused (see
+ *  {@link assertPreferencesFolderProtected}). */
+export function preferencesFolderWarning(): { warning: OutputWarning; remedy: string } | undefined {
+  if (!lstatSync(preferencesPath(), { throwIfNoEntry: false })) return undefined;
+  try {
+    protectedLocalDirectory(globalConfigDir(), "the preferences folder");
+    return undefined;
+  } catch (e) {
+    if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
+    const remedy = e.remedy ?? `make ${globalConfigDir()} a folder only you can write`;
+    return { warning: { code: "PREFERENCES_FOLDER_UNPROTECTED", target: e.target, message: `${e.message}; the saved preferences still apply, and a write to them is refused until this is fixed: ${remedy}` }, remedy };
+  }
+}
+
+/** Refuse a preferences path that is a FIFO, a device or a folder: opening one would block or fail,
+ *  and preferences are kept only in a regular file. */
+function assertPreferencesRegular(path: string): void {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat && !stat.isFile())
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences file ${path} is not a regular file, such as a FIFO or a device; preferences are kept only in a regular file, so nothing was read or changed`, {
+      target: { path },
+      remedy: `remove ${path}, or replace it with a regular file`,
+    });
+}
+
 /** The saved preferences. A missing file is no preferences at revision 0; a file that does not
  *  validate refuses with `SCHEMA_INVALID`, and is never reset. A linked file refuses with
- *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}). */
+ *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}), and so does a FIFO or another file
+ *  that is not regular (see {@link assertPreferencesRegular}). */
 export function readPreferences(): Preferences {
   let text: string;
   try {
     assertPreferencesNotLinked(preferencesPath());
+    assertPreferencesRegular(preferencesPath());
     text = readFileSync(preferencesPath(), "utf8");
   } catch (e) {
     if (isCommandFailure(e)) throw e;
@@ -235,6 +281,8 @@ export function preferenceValueProblem(key: string, value: string): string | und
  * Set (`value` a string) or clear (`value` undefined) one key in one scope, and report whether the
  * file changed. The write holds the preferences lock, refuses with `CONFLICT` when the file is no
  * longer at `expectedRevision`, and replaces the file atomically, so a concurrent edit is never lost.
+ * A folder another local account could write refuses it with `PERMISSION_DENIED` before anything is
+ * written (see {@link assertPreferencesFolderProtected}).
  * The new file is private (`0600`); `replacedMode` is the old file's mode when it was another, such as
  * a read-only `0400`, so the caller can say the mode changed.
  */
@@ -242,14 +290,16 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
   const spec = specOf(key);
   if (scope.space !== undefined) {
     const problem = preferenceSpaceProblem(scope.space);
-    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
-    if (!spec.perSpace) throw new CommandFailure("refused", "USAGE_INVALID", `${key} has no per-space value; set it for the user`);
+    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: SPACE_NAME_REMEDY });
+    if (!spec.perSpace) throw new CommandFailure("refused", "USAGE_INVALID", `${key} has no per-space value; set it for the user`, { remedy: "run it again without --space" });
   }
   if (value !== undefined) {
     const problem = preferenceValueProblem(key, value);
-    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
+    const space = scope.space === undefined ? "" : ` --space ${scope.space}`;
+    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: `give ${key} a value of that form; \`cotal config unset ${key}${space}\` returns it to its default` });
   }
   const dir = globalConfigDir();
+  assertPreferencesFolderProtected();
   let lock: ReturnType<typeof acquireLock>;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -292,15 +342,16 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
 }
 
 /**
- * Clear every value saved for `space`, under the same lock and `expectedRevision` check as
- * {@link writePreference}, in one atomic replace. Returns what was removed, empty when the space had none.
+ * Clear every value saved for `space`, under the same folder check, lock and `expectedRevision` check
+ * as {@link writePreference}, in one atomic replace. Returns what was removed, empty when the space had none.
  */
 export function removeSpacePreferences(space: string, expectedRevision: number): { removed: Partial<Record<PreferenceKey, string>>; revision: number } {
   const problem = preferenceSpaceProblem(space);
-  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: SPACE_NAME_REMEDY });
   // A space with nothing saved needs no write, so no lock and no configuration folder.
   const before = readPreferences();
   if (!Object.keys(before.spaces[space] ?? {}).length) return { removed: {}, revision: before.revision };
+  assertPreferencesFolderProtected();
   const lock = acquireLock(`${preferencesPath()}.lock`, { label: "a preferences write", waitMs: 10_000 });
   try {
     const current = readPreferences();

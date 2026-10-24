@@ -33,7 +33,7 @@ import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, r
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
-import { runningStackManagerPid, stackManagerAbsent } from "../lib/stack-journal.js";
+import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
 
 /**
@@ -757,10 +757,15 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
   // An empty manager registry on this root's own controller stack, whose manager does not run, is
   // a known boundary with a remedy; the registry's own failure stays the cause. So is a registry
-  // that still lists that manager after its process died: no manager answered the read.
-  if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined && stackManagerAbsent(t.root, t.space))
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
-  // A stack manager whose process runs but does not answer, as a hung one, is named with the way out.
+  // that still lists that manager after its process died: no manager answered the read. While an
+  // `up` is still starting that manager, the answer is to wait for it, not to start another.
+  if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
+    const native = { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) };
+    if (stackManagerStarting(t.root, t.space))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: "run cotal ps again once cotal up reports the manager started" });
+    if (stackManagerAbsent(t.root, t.space))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  }
   const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
   if (!scatter.ok && silentPid !== undefined)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare cotal up starts the manager again` });

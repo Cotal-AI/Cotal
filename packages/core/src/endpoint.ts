@@ -3062,8 +3062,9 @@ export class CotalEndpoint extends EventEmitter {
 
   /** A channel's effective replay policy read straight from the registry bucket, for a caller that
    *  reads it right after start, before any watch cache has caught up, or that watches nothing. A
-   *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy. */
-  async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null }> {
+   *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy.
+   *  `registered` says whether the channel has its own registry entry. */
+  async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null; registered: boolean }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.space, { create: false }));
     let cfg: ChannelConfig | undefined;
@@ -3077,7 +3078,7 @@ export class CotalEndpoint extends EventEmitter {
       // `open` binds lazily, so a space with no registry bucket surfaces on the first read.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
     }
-    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null };
+    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null, registered: cfg !== undefined };
   }
 
   /** Effective delivery class for a channel (per-channel override ?? space default ?? "durable"),
@@ -3197,9 +3198,10 @@ export class CotalEndpoint extends EventEmitter {
    * message on the channel is discarded. `maxAgeMs` is the stream's age limit. Each is `null` when
    * the stream sets none. `senders` counts each sender's retained messages per channel, so a sender
    * at the cap marks a channel whose retained history has lost that sender's older messages while
-   * other senders' messages from the same time remain.
+   * other senders' messages from the same time remain. `stream` is false when the chat stream does
+   * not exist, which holds nothing. `lastSeq` is the stream's newest sequence, 0 when it has none.
    */
-  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[] }> {
+  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[]; stream: boolean; lastSeq: number }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const mgr = await jetstreamManager(this.nc);
     let info;
@@ -3208,7 +3210,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch (e) {
       // As in listChannels: an absent CHAT stream holds nothing yet; any other failure stays loud.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
-      return { perSender: null, maxAgeMs: null, senders: [] };
+      return { perSender: null, maxAgeMs: null, senders: [], stream: false, lastSeq: 0 };
     }
     const senders: { channel: string; sender: string; messages: number }[] = [];
     for (const [subject, messages] of Object.entries(info.state.subjects ?? {})) {
@@ -3221,6 +3223,8 @@ export class CotalEndpoint extends EventEmitter {
       perSender: typeof cap === "number" && cap > 0 ? cap : null,
       maxAgeMs: typeof age === "number" && age > 0 ? Math.round(age / 1_000_000) : null,
       senders: senders.sort((a, b) => a.channel.localeCompare(b.channel) || a.sender.localeCompare(b.sender)),
+      stream: true,
+      lastSeq: info.state.last_seq,
     };
   }
 

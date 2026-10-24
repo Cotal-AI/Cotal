@@ -283,6 +283,12 @@ check("/history 0, 1001, 2.5 and abc are refused", ["/history 0", "/history 1001
 check("/inbox --peek peeks; /inbox x is refused", (sl("/inbox --peek") as { command: { peek: boolean } }).command.peek === true && !sl("/inbox x").ok);
 check("/who takes no arguments", !sl("/who x").ok);
 check("/join needs exactly one channel", !sl("/join").ok && !sl("/join a b").ok && sl("/join a").ok);
+{
+  // The view prints a channel as #name, so a channel slash command reads it with or without the #.
+  const channelOf = (l: string) => (sl(l) as { command?: { channel?: string } }).command?.channel;
+  check("a channel slash command strips one leading #", ["/join #bad", "/leave #bad", "/info #bad", "/quiet #bad", "/mute #bad", "/normal #bad"].every((l) => channelOf(l) === "bad"));
+  check("a bare # names no channel", !sl("/join #").ok && !sl("/quiet #").ok);
+}
 check("/status keeps a multi-word activity", (sl("/status working on it") as { command: { activity?: string } }).command.activity === "on it");
 check("/help is a command, takes no arguments and runs while disconnected",
   (sl("/help") as { command: { name: string } }).command?.name === "help" && !sl("/help x").ok && runsOffline({ name: "help" }));

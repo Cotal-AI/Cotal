@@ -140,16 +140,16 @@ export async function writeChannelConfig(
   kv: KV,
   channel: string,
   patch: ChannelConfig,
-): Promise<void> {
+): Promise<boolean> {
   validateChannelConfig(patch);
-  await mergeRegistryEntry(kv, channel, patch);
+  return mergeRegistryEntry(kv, channel, patch);
 }
 
 /** Privileged write of the space-wide defaults (merged over any existing). Validated before the
  *  write — a bad default would otherwise feed {@link effectiveDeliveryClass} silently. */
-export async function writeChannelDefaults(kv: KV, patch: ChannelDefaults): Promise<void> {
+export async function writeChannelDefaults(kv: KV, patch: ChannelDefaults): Promise<boolean> {
   validateChannelDefaults(patch);
-  await mergeRegistryEntry(kv, CHANNEL_DEFAULTS_KEY, patch);
+  return mergeRegistryEntry(kv, CHANNEL_DEFAULTS_KEY, patch);
 }
 
 /** A registry write that other writers kept changing the entry under, so nothing was written. */
@@ -159,17 +159,20 @@ const MERGE_ATTEMPTS = 10;
 
 /** Merge `patch` over the entry at `key` and write it on the revision that was read, so two writers
  *  setting different fields both land: the one that loses the race reads again and merges again.
+ *  An entry that already holds every value in `patch` is not written, and the result is false.
  *  An entry other writers keep changing for {@link MERGE_ATTEMPTS} reads throws
  *  {@link ChannelRegistryConflict}. */
-async function mergeRegistryEntry(kv: KV, key: string, patch: ChannelConfig | ChannelDefaults): Promise<void> {
+async function mergeRegistryEntry(kv: KV, key: string, patch: ChannelConfig | ChannelDefaults): Promise<boolean> {
   for (let attempt = 0; attempt < MERGE_ATTEMPTS; attempt++) {
     const entry = await kv.get(key);
-    const merged = JSON.stringify({ ...entryValue(entry), ...patch });
+    const current = entryValue(entry);
+    if (current && Object.entries(patch).every(([field, value]) => JSON.stringify((current as Record<string, unknown>)[field]) === JSON.stringify(value))) return false;
+    const merged = JSON.stringify({ ...current, ...patch });
     try {
       // With no entry yet the write is create-only, so a writer that created it first is merged over.
       if (entry) await kv.update(key, merged, entry.revision);
       else await kv.put(key, merged, { previousSeq: 0 });
-      return;
+      return true;
     } catch (e) {
       if (!isCasLoss(e)) throw e;
     }
@@ -211,7 +214,8 @@ export function channelDeliveryDefaultPatch(deliveryClass: DeliveryClass): Chann
 /** Connect (with the given privileged creds, or open if none), seed the registry from a
  *  declarative {@link ChannelRegistryFile} (defaults + per-channel config, merged), disconnect.
  *  Used by `cotal up` to seed once at setup, and by `cotal channels` for runtime writes.
- *  Each field in the file overwrites that field in the registry; unspecified fields are kept. */
+ *  Each field in the file overwrites that field in the registry; unspecified fields are kept.
+ *  Resolves true when it wrote an entry, and false when every entry already held the file's values. */
 export async function seedChannelRegistry(opts: {
   servers: string;
   space: string;
@@ -220,17 +224,18 @@ export async function seedChannelRegistry(opts: {
   bearer?: string;
   sentinelCreds?: string;
   file: ChannelRegistryFile;
-}): Promise<void> {
+}): Promise<boolean> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // The seed path is privileged (`provisioner` or `channel-writer` creds, or open) so it may CREATE the bucket — this
     // makes `cotal channels` work on a space whose bucket wasn't pre-created (e.g. one set up
     // before this feature). Idempotent when `cotal up` already created it.
     const kv = await openChannelRegistry(nc, opts.space, { create: true });
+    let wrote = false;
     for (const entry of channelRegistrySeedEntries(opts.file)) {
-      if (entry.kind === "defaults") await writeChannelDefaults(kv, entry.patch);
-      else await writeChannelConfig(kv, entry.key, entry.patch);
+      if (entry.kind === "defaults" ? await writeChannelDefaults(kv, entry.patch) : await writeChannelConfig(kv, entry.key, entry.patch)) wrote = true;
     }
+    return wrote;
   } finally {
     await nc.drain();
   }

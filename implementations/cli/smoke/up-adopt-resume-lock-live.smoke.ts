@@ -57,7 +57,8 @@ const openConfPath = join(root, ".cotal", "server-open.conf");
 // remains is a 64 MiB membership bucket), so the cap is honored without refusing provisioning. What is
 // under test is that the cap is RENDERED and RESUMED, not where it sits.
 const CAP = 17179869184;
-const cappedBlock = `jetstream { store_dir: ${JSON.stringify(join(root, ".cotal", "nats"))}, max_file_store: ${CAP} }`;
+// The broker runs from the root, so a store inside it is named relative to it.
+const cappedBlock = `jetstream { store_dir: ${JSON.stringify(join(".cotal", "nats"))}, max_file_store: ${CAP} }`;
 const openConfJetStream = (): string =>
   existsSync(openConfPath) ? readFileSync(openConfPath, "utf8").split("\n").filter((l) => l.startsWith("jetstream")).join("\n") : "";
 const recordedCap = (space: string): unknown => {

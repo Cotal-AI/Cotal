@@ -17,11 +17,12 @@ import {
   CotalEndpoint,
   type FlagSpec,
   type FlagValues,
+  type PeerCandidate,
   type Presence,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
@@ -91,7 +92,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
     throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `run cotal send ${flag} <${what}> "<message>"` });
   }
-  const again = (body: string) => `run cotal send ${flag} ${shellWord(destination.target)} ${body}`;
+  const again = (body: string) => sendAgain(destination, body);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
@@ -115,11 +116,27 @@ export function sendArguments(args: ParsedArgs): SendInput {
   if (values["reply-to"] !== undefined && (destination.mode !== "dm" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");
   if (values.mention?.length && destination.mode !== "msg")
-    throw new CommandFailure("refused", "UNSUPPORTED", "native mention hints belong to channel publications; they do not change a direct or role destination");
+    throw new CommandFailure("refused", "USAGE_INVALID", "native mention hints belong to channel publications; they do not change a direct or role destination", { remedy: "drop --mention, or send to a channel with -c <channel>" });
   if (values.mention?.some((name) => !name.replace(/^@/, "").trim() || /[\/\u0000-\u001f\u007f]/u.test(name)))
     throw new CommandFailure("refused", "USAGE_INVALID", "each --mention names one agent or full instance id");
   // `--file -` is stdin, as `persona create --from -` reads it.
   return { ...destination, source: values.file !== undefined ? (values.file === "-" ? "stdin" : "file") : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
+}
+
+/** A remedy's rerun of the destination the caller gave, with another body. */
+function sendAgain(destination: Pick<SendInput, "mode" | "target">, body: string): string {
+  return `run cotal send ${destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t"} ${shellWord(destination.target)} ${body}`;
+}
+
+/** How a refused message file is reported: with the mesh the send was aimed at, as a refusal after
+ *  connecting names it, and a remedy that keeps the destination with a quoted body instead. */
+interface FileRefusal { target(file: string): { space?: string; file: string }; instead: string }
+
+function fileRefusal(input: SendInput, values: Values): FileRefusal {
+  return {
+    target: (file) => { const space = connectSpace(values); return { ...(space === undefined ? {} : { space }), file }; },
+    instead: `or ${sendAgain(input, '"<message>"')}`,
+  };
 }
 
 /** NATS's default max_payload. A file or stdin body is read up to it, plus one byte, before
@@ -131,7 +148,7 @@ const PREREAD_BYTES = 1024 * 1024;
  *  broker's limit. `size` is a regular file's length, known without reading it. */
 type Body = { text: string } | { fd: number; file?: string; head: Buffer; size: number | null };
 
-async function bodyOf(input: SendInput, values: Values): Promise<Body> {
+async function bodyOf(input: SendInput, values: Values, refusal: FileRefusal): Promise<Body> {
   if (input.source === "argument") return { text: input.text! };
   if (input.source === "stdin" && process.stdin.isTTY)
     throw new CommandFailure("refused", "USAGE_INVALID", "pipe the message to --stdin, or use a quoted body or --file");
@@ -147,16 +164,16 @@ async function bodyOf(input: SendInput, values: Values): Promise<Body> {
     held = await fill(fd, head, 0);
   } catch (error) {
     if (file !== undefined && fd !== undefined) closeSync(fd);
-    throw readFailure(error, file);
+    throw readFailure(error, file, refusal);
   }
   if (held > PREREAD_BYTES) return { fd, file, head, size };
   if (file !== undefined) closeSync(fd);
-  return { text: decoded(head.subarray(0, held), file) };
+  return { text: decoded(head.subarray(0, held), file, refusal) };
 }
 
 /** Read the rest of a body past the pre-read, up to one byte over the broker's `limit` and no
  *  further. `over` refuses it: the regular file's size, or null when only the limit is known. */
-async function bodyRest(body: Body, limit: number): Promise<{ text: string } | { over: number | null }> {
+async function bodyRest(body: Body, limit: number, refusal: FileRefusal): Promise<{ text: string } | { over: number | null }> {
   if ("text" in body) return body;
   try {
     if (body.size !== null && body.size > limit) return { over: body.size };
@@ -166,9 +183,9 @@ async function bodyRest(body: Body, limit: number): Promise<{ text: string } | {
       bytes = Buffer.allocUnsafe(limit + 1);
       body.head.copy(bytes);
       try { held = await fill(body.fd, bytes, held); }
-      catch (error) { throw readFailure(error, body.file); }
+      catch (error) { throw readFailure(error, body.file, refusal); }
     }
-    return held > limit ? { over: null } : { text: decoded(bytes.subarray(0, held), body.file) };
+    return held > limit ? { over: null } : { text: decoded(bytes.subarray(0, held), body.file, refusal) };
   } finally {
     if (body.file !== undefined) closeSync(body.fd);
   }
@@ -195,19 +212,22 @@ async function fill(fd: number, bytes: Buffer, at: number): Promise<number> {
   return at;
 }
 
-function readFailure(error: unknown, file: string | undefined): Error {
+function readFailure(error: unknown, file: string | undefined, { target, instead }: FileRefusal): Error {
   const code = (error as NodeJS.ErrnoException).code;
   if (file === undefined) return new CommandFailure("refused", "USAGE_INVALID", "the message on stdin could not be read");
-  if (code === "EACCES" || code === "EPERM" || code === "ENOENT")
-    return new CommandFailure("refused", code === "ENOENT" ? "TARGET_NOT_FOUND" : "PERMISSION_DENIED", `the message file ${JSON.stringify(file)} could not be read`, { target: { file } });
-  return new UnusableFile(`the message file ${JSON.stringify(file)} ${code === "EISDIR" ? "is a directory; --file reads one file" : `could not be read (${code ?? "no error code"})`}`, file);
+  if (code === "ENOENT")
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `the message file ${JSON.stringify(file)} does not exist`, { target: target(file), remedy: `check the path, ${instead}` });
+  if (code === "EACCES" || code === "EPERM")
+    return new CommandFailure("refused", "PERMISSION_DENIED", `the message file ${JSON.stringify(file)} could not be read`, { target: target(file), remedy: `make it readable by this user, ${instead}` });
+  if (code === "EISDIR") return new UnusableFile(`the message file ${JSON.stringify(file)} is a directory; --file reads one file`, target(file), `give --file one file in it, ${instead}`);
+  return new UnusableFile(`the message file ${JSON.stringify(file)} could not be read (${code ?? "no error code"})`, target(file), `check the file, ${instead}`);
 }
 
-function decoded(bytes: Buffer, file: string | undefined): string {
+function decoded(bytes: Buffer, file: string | undefined, { target, instead }: FileRefusal): string {
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch {
-    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, file);
+    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, target(file), `save it as UTF-8 text, ${instead}`);
     throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8");
   }
   if (!text.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
@@ -222,12 +242,13 @@ function sharedNameRemedy(use: "to" | "mention", identities: readonly string[]):
     : `a mention carries the name, so it cannot single one of them out; send to one with --to <full identity> instead: ${identities.join(", ")}`;
 }
 
-/** A full identity with what tells it apart from another of the same name: its kind and, when its
- *  presence reports one, the local time its process started. */
-function identityLabel(id: string, p: Presence | undefined): string {
-  if (!p) return id;
+/** A full identity with what tells it apart from another of the same name: its display name, whose
+ *  case may differ, its kind and, when its presence reports one, the local time its process started. */
+function identityLabel(candidate: PeerCandidate, p: Presence | undefined): string {
+  const name = JSON.stringify(candidate.name);
+  if (!p) return `${candidate.id} (${name})`;
   const kind = p.card.meta?.sessionKind === "chat" ? "chat session" : p.card.kind ?? "endpoint";
-  return `${id} (${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
+  return `${candidate.id} (${name}, ${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
 }
 
 async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention"): Promise<Presence> {
@@ -239,7 +260,7 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
     } catch (error) {
       if (!(error instanceof AmbiguousPeerError)) throw error;
       const roster = ep.getRoster();
-      throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name", { target: { space, name, candidates: error.candidates }, remedy: sharedNameRemedy(use, error.candidates.map((candidate) => identityLabel(candidate.id, roster.find((p) => p.card.id === candidate.id)))) });
+      throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name", { target: { space, name, candidates: error.candidates }, remedy: sharedNameRemedy(use, error.candidates.map((candidate) => identityLabel(candidate, roster.find((p) => p.card.id === candidate.id)))) });
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -347,7 +368,8 @@ export async function send(args: ParsedArgs): Promise<void> {
   const input = sendArguments(args);
   const values = args.values as Values;
   const presentation = presentationOf(values);
-  const body = await bodyOf(input, values);
+  const refusal = fileRefusal(input, values);
+  const body = await bodyOf(input, values, refusal);
   const warnings: OutputWarning[] = [];
   const opened = await openTransient(values, senderName(), { throwOnRefusal: true, report: (level) => {
     warnings.push({ code: level === "error" ? "SENDER_CONNECTION_WARNING" : "SENDER_WARNING", target: { destination: input.target }, message: "The transient sender reported a connection or delivery warning; its receipt confirms only the stated storage outcome." });
@@ -368,7 +390,7 @@ export async function send(args: ParsedArgs): Promise<void> {
     ? `the message is longer than this broker's ${ep.maxPayload}-byte message limit; nothing was sent`
     : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
   try {
-    const rest = await bodyRest(body, ep.maxPayload);
+    const rest = await bodyRest(body, ep.maxPayload, refusal);
     if ("over" in rest) throw tooLarge(rest.over);
     const { text } = rest;
     const bytes = Buffer.byteLength(text, "utf8");
