@@ -6050,9 +6050,9 @@ run-token shape. Keep the pin on later status, answer and resume calls.
 A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
 on every verb that takes one, before anything is contacted.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
-`--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
-denied credential, a step in the wrong state or a program that does not validate, is refused, exit
-2. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
+`--json` as one refusal envelope on stdout. A refusal the manager makes before acting is refused: a
+denied credential or a step in the wrong state exits 2, and a program that does not validate is
+`SCHEMA_INVALID`, exit 1, like other invalid input. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
 `cotal run show <runId>` as the next step. A manager activates at most 8 runs at once, counting
 each `start` or `resume` until its run is recorded. One more is refused `LIFECYCLE_BLOCKED`, exit 2,
 before anything is written; the refusal names the runs still activating, and the next step is to
