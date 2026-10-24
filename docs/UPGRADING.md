@@ -34,6 +34,16 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Missing $SYS credentials after 0.100.2
+
+`cotal doctor auth` reports a missing `membership-observer` or `connection-evictor` credential as a
+finding, exit 5, once the root holds the space's trust. Before, it noted that pair as not
+provisioned and exited 0. A space started before the pair existed, or one whose files were
+removed, therefore has a finding after the upgrade. Without the pair, the membership feed and live
+connection eviction do not run, as before the upgrade. A plain `cotal up` does not mint them,
+because it reuses the existing trust record. Run `cotal down`, then `cotal up --rotate-sys`. The
+rotation makes earlier full backups unrestorable, so take a new `cotal backup` after it.
+
 ## Minted credential lifetime after 0.100.2
 
 `cotal auth mint` gives a fixed-profile credential a 24-hour lifetime when no lifetime flag names
