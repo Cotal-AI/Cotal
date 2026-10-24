@@ -254,6 +254,7 @@ try {
   const secretA = newActorToken();
   const lifecycleA = mintLifecycleUid();
   grantManagedActor(hostDir, {
+    custody: { kind: "foreground" },
     owner,
     actor: AGENT,
     scope: ["role:worker"],
@@ -268,6 +269,7 @@ try {
   const secretVirgin = newActorToken();
   const lifecycleVirgin = mintLifecycleUid();
   grantManagedActor(hostDir, {
+    custody: { kind: "foreground" },
     owner,
     actor: VIRGIN_AGENT,
     scope: ["role:worker"],
@@ -282,6 +284,7 @@ try {
   const secretOther = newActorToken();
   const lifecycleOther = mintLifecycleUid();
   grantManagedActor(hostDir, {
+    custody: { kind: "foreground" },
     owner: otherOwner,
     actor: OTHER_AGENT,
     scope: ["role:worker"],
