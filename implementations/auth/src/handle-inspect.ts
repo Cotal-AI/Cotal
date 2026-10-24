@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
 import { canonicalJson, HANDLE_MAX_BYTES, HANDLE_MAX_CHAIN_LENGTH, parseHandle } from "@cotal-ai/core";
 import { CommandFailure, decodeLocalJson, isCommandFailure, protectedCredentialReference, readLocalRecordSource } from "@cotal-ai/workspace";
@@ -11,6 +12,9 @@ const date = (milliseconds: number): string | null => {
  * snapshot; rereading after verification must not substitute different claims for the result. */
 export function readHandleFile(file: string) {
   const path = resolve(file);
+  // A path that names nothing is the operator's to correct, so it is named, not reported as an
+  // unreadable credential.
+  if (!lstatSync(path, { throwIfNoEntry: false })) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the handle file ${path} does not exist; nothing was read`, { target: { path }, remedy: "check the path and name the handle file you were given" });
   protectedCredentialReference(path);
   const bytes = readLocalRecordSource(path, HANDLE_MAX_BYTES * HANDLE_MAX_CHAIN_LENGTH + 1024, true);
   if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the protected handle file was not found");

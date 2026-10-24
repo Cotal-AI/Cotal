@@ -1878,7 +1878,8 @@ the same file and fault, before they stage or change anything.
 A directory with no `manifest.json` that holds files a `backup create` writes is refused as an
 incomplete artifact, the kind an interrupted create leaves, with the fault `manifest-missing`. A
 file, or a directory that holds neither a manifest nor such a file, is not a backup artifact and
-refuses `TARGET_NOT_FOUND` (exit 2), naming it. The folder of a create in this root that was
+refuses `TARGET_NOT_FOUND` (exit 2), naming it and saying whether it is a file, an empty folder or
+a folder with other files. The folder of a create in this root that was
 interrupted before it wrote a file is still an incomplete artifact. A path that names nothing refuses
 `TARGET_NOT_FOUND` (exit 2) and says in `missing` whether its folder or the artifact is missing, as
 `backup restore` does. A full artifact of an authenticated space
@@ -1946,6 +1947,12 @@ an artifact made before the state it replaced was preserved, such as a backup ta
 `cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
 after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
 store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
+When that restore brought the workflow runs back, it also names each run it rolled back and each
+step that was answered after the artifact and is open again, and says that answer is only in the
+store it set aside. A reopened step accepts an answer again. `cotal status` and the
+`backup cleanup-fallback` preview name the same runs. To find them, the restore copies the store it
+sets aside and reads its run journals on one more isolated broker, so such a restore takes longer
+and needs disk space for that copy.
 `up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
@@ -1953,7 +1960,10 @@ maintenance journal refuses before the restore takes its maintenance lock, so th
 state from the attempt, and `up --restore` refuses the same way. An artifact path that names
 nothing refuses `TARGET_NOT_FOUND` (exit 2) at the same point. It names the path, and its JSON
 target says in `missing` whether the folder that should hold the artifact (`folder`) or only the
-artifact (`artifact`) is missing. A restore that fails after it
+artifact (`artifact`) is missing. A path that is not an artifact, or is an incomplete one, refuses
+there too, as `backup verify` refuses it. A path that is, holds or sits inside the preserved store
+or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (exit 1) there, naming
+that store or folder. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
@@ -1969,7 +1979,8 @@ resumes only a stopped stack whose manager never launched, and a restored stack'
 ran, so start it with bare `cotal up` instead. `cotal up -f` boots a fresh mesh, so it starts only
 once the restore is retired. While the restored broker runs, it refuses `CONFLICT`, exit 2, naming
 the broker's PID, and its Next is `cotal down`, then `backup cleanup-fallback <attempt> --yes`, then
-`cotal up -f` again. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
+`cotal up -f` again. After a restore that left history or workflow runs out, that cleanup step
+includes `--discard-history` and says it deletes the previous store. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
 the cleanup. Nothing is started either way. While the restored broker runs, any other `cotal up`,
 bare or with `--server`, refuses `CONFLICT` too, naming its PID, and leaves the restore journal as it
 was. Its Next is `cotal down`, then `cotal up`, which starts the restored stack again.
@@ -3372,7 +3383,8 @@ issuer authority, parent links, holder currency and revocation remain not checke
 is contacted or credential issued. Signature bytes and original signed artifacts are never printed.
 A handle is a signed JSON grant, so a file that is not JSON, such as a NATS credential file, refuses
 `SCHEMA_INVALID` and says what it is. For a credential file, the Next names
-[`cotal whoami --creds <file>`](#whoami), which reports what it may do.
+[`cotal whoami --creds <file>`](#whoami), which reports what it may do. A path that names nothing
+refuses `TARGET_NOT_FOUND` (exit 2) and names the path.
 The human report shows at most 50 scope rows and names omissions; JSON retains public metadata.
 
 An explicit `--space` selects online inspection on a registered static-auth space whose root

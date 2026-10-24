@@ -26,7 +26,7 @@ import {
   realDirNoSymlink,
   spaceBackupInventory,
 } from "@cotal-ai/core";
-import { protectedLocalEntries, readLocalRecordSource, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
+import { CommandFailure, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
 
 export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v2" as const;
@@ -451,6 +451,46 @@ export function missingBackupPath(path: string): "folder" | "artifact" | undefin
 /** What a {@link missingBackupPath} answer means, naming the missing folder or artifact. */
 export function missingBackupPathText(path: string, missing: "folder" | "artifact"): string {
   return missing === "folder" ? `there is no folder ${dirname(path)}, so there is no backup artifact ${path}` : `the folder ${dirname(path)} holds no backup artifact ${basename(path)}`;
+}
+
+/** The refusal for a path that is not a backup artifact, or for one a backup create never finished,
+ *  or `undefined` when it may be an artifact. `outcome` ends its message, saying what did not run. A
+ *  file, or a folder no backup create wrote to, is not an artifact, and the refusal says which it
+ *  is. The folder of a create interrupted before it wrote a file, which the claim on `root` names, is
+ *  an incomplete artifact, as is a real folder with no manifest: create writes the manifest last. */
+export function notAnArtifactRefusal(root: string, path: string, outcome: string, target: Readonly<Record<string, unknown>> = {}): CommandFailure | undefined {
+  if (notAnArtifact(path) && !claimedDestination(root, path)) {
+    const stat = statSync(path);
+    const what = !stat.isDirectory() ? (stat.isFile() ? "is a file" : "is not a folder") : readdirSync(path).length === 0 ? "is an empty folder" : "holds no manifest.json and no file a backup create writes";
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `${path} is not a backup artifact: it ${what}; ${outcome}`, { target: { ...target, directory: path }, remedy: "name the folder backup create wrote" });
+  }
+  if (manifestMissing(path)) return new CommandFailure("refused", "SCHEMA_INVALID", `${path} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; ${outcome}`, { target: { ...target, directory: path, fault: "manifest-missing" }, remedy: "it cannot be verified or restored. In the folder it was created from, cotal status names the interrupted backup attempt, and cotal backup recover <attempt> --yes removes this directory; then create a new backup" });
+  return undefined;
+}
+
+/** Whether `path` is not a folder, or is a folder, linked or not, with no manifest that holds none of
+ *  the files a backup create writes: snapshots, the checkpoints file or a manifest's temporary name. */
+function notAnArtifact(path: string): boolean {
+  try {
+    if (!statSync(path).isDirectory()) return true;
+    if (lstatSync(join(path, "manifest.json"), { throwIfNoEntry: false })) return false;
+    return !readdirSync(path).some((name) => /^stream-[0-9a-f]{24}\.snap$/.test(name) || name === "checkpoints.json" || /^manifest\.json\..+\.tmp$/.test(name));
+  } catch { return false; }
+}
+
+/** Whether the claim on `root` names `path` as its backup destination. */
+function claimedDestination(root: string, path: string): boolean {
+  try {
+    const journal = readMaintenanceJournal(root);
+    return journal?.state === "claimed" && !!journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === path);
+  } catch { return false; }
+}
+
+/** A real directory with no `manifest.json`: create writes the manifest last, so this is a backup that
+ *  never published. */
+function manifestMissing(directory: string): boolean {
+  try { return lstatSync(directory).isDirectory() && !lstatSync(join(directory, "manifest.json"), { throwIfNoEntry: false }); }
+  catch { return false; }
 }
 
 export function readStagedCheckpoints(staged: StagedArtifact): PersistentConsumerCheckpoint[] {

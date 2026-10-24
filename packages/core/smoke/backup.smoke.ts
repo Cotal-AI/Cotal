@@ -283,6 +283,10 @@ assert.deepEqual(restoreCheckpoint.pub.allow, [
   `$JS.API.CONSUMER.INFO.${dmCheckpoint.stream}.${dmCheckpoint.name}`,
 ]);
 assert.ok(!restoreCheckpoint.pub.allow.some((subject) => subject.includes("MSG.NEXT") || subject.includes("MSG.GET")));
+// The journal read a restore over a newer cut uses names the WFJ stream alone, and only reads it.
+const restoreJournal = restoreProfilePermissions(space, connId, { operation: "journal" }) as { pub: { allow: string[] }; sub: { allow: string[] } };
+assert.deepEqual(restoreJournal.pub.allow, [`$JS.API.STREAM.INFO.${wfjStreamName(space)}`, `$JS.API.STREAM.MSG.GET.${wfjStreamName(space)}`]);
+assert.deepEqual(restoreJournal.sub.allow, [`_INBOX_${connId}.>`]);
 assert.throws(
   () => restoreProfilePermissions(space, connId, {
     operation: "checkpoint",
