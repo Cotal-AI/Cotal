@@ -317,6 +317,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("control: personas edit runs the editor, and a draft left as it was saves nothing", edited.status === 0 && edited.stdout.includes('"x" is unchanged, so nothing was saved'), shown(edited));
   const forbidden = cotal(["personas", "edit", "x", "--no-input"], persona, editor);
   check("personas edit --no-input refuses to open an editor", forbidden.status === 1 && /--no-input forbids one/.test(forbidden.stderr) && !forbidden.stdout.includes("saved"), shown(forbidden));
+  // A refusal only a terminal could lift gives its fix, not the command's help.
+  for (const argv of [["persona", "edit", "x", "--no-input"], ["persona", "remove", "x", "--no-input"]]) {
+    const r = cotal(argv, persona, editor);
+    check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && /^✗ .*\n {2}(edit interactively|confirm with cotal persona remove x --yes)/.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
+  }
   // An editor setting that is the path of an existing file runs as that program, spaces and all.
   const spacedDir = mkdtempSync(join(tmpdir(), "cotal entry editor "));
   cleanup.push(spacedDir);

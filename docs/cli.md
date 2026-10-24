@@ -3918,7 +3918,8 @@ CLI create, edit and remove share a per-persona lock during comparison and commi
 editor or confirmation is open. Manager and external writes do not participate in that lock.
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
 with `PERMISSION_DENIED`, and leave it and its files as they were.
-`--json` and `--no-input` refuse editing before an editor opens.
+`--json` and `--no-input` refuse editing before an editor opens. That refusal, and a removal
+refused for want of `--yes`, give the fix without the command's help.
 
 A catalog file that is not a regular file, such as a FIFO, is not opened: show, edit and remove
 refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names it in a

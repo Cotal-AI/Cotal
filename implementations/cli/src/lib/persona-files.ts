@@ -8,7 +8,7 @@ import {
   type AgentDef,
 } from "@cotal-ai/core";
 import {
-  cachedPreferences, CommandFailure, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
+  cachedPreferences, CommandFailure, ConfirmationRequired, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
   resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
@@ -240,7 +240,7 @@ export type PersonaEdit = { action: "saved" } | { action: "unchanged" } | { acti
  *  exits with the signal's code. */
 export async function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): Promise<PersonaEdit> {
   if (json || inputDisabledByFlag())
-    throw new CommandFailure("refused", "USAGE_INVALID", "persona edit opens an editor, --no-input forbids one, as does --json", { remedy: "edit interactively without --json or --no-input" });
+    throw new ConfirmationRequired("persona edit opens an editor, --no-input forbids one, as does --json", { remedy: "edit interactively without --json or --no-input" });
   const source = requirePersonaSource(path);
   validatePersona(source.bytes, path);
   assertCatalogWritable(dirname(path));
