@@ -159,9 +159,11 @@ const QUESTION = "Which one?";
   mkdirSync(join(delta, ".cotal"), { recursive: true });
   recordPreparedSpace({ space: "delta", root: delta, ts: new Date(0).toISOString() });
   const inDelta = run(["who", "--json"], delta), inDeltaText = run(["who"], delta);
-  check("in a prepared space's folder, before its first up, that space is the target and the note says so",
-    envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
-      !/^! this targets/m.test(inDelta.stderr) && /this folder's space; the selected space "alpha" applies outside it/.test(inDeltaText.stdout + inDeltaText.stderr), { json: shown(inDelta), text: shown(inDeltaText) });
+  // The refusal is the prepared space's own: it is not started yet, and its next step is there.
+  check("in a prepared space's folder, before its first up, that space is the target and the refusal is its own",
+    envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
+      envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
+      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout + inDeltaText.stderr), { json: shown(inDelta), text: shown(inDeltaText) });
   removePreparedSpace("delta");
   clearCurrent();
 }
