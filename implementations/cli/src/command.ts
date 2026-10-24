@@ -59,6 +59,7 @@ import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { servicePresetCommand } from "./lib/service-presets.js";
+import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
@@ -326,9 +327,10 @@ export interface RunCliOptions {
    *  specs. OFF by default — library composition roots keep the explicit-import model; only the
    *  published binary opts in. */
   extensions?: boolean;
-  /** Awaited once, as the command's own work begins. The published entry releases its startup
-   *  interrupt notice here, so from this point an interrupt is the command's to report. */
-  onCommandStart?: () => void | Promise<void>;
+  /** The published entry's notice for an interrupt before the command begins. It is released as the
+   *  command's work begins, or kept for a command that declares `keepsStartupNotice`, whose own
+   *  notice takes it over. */
+  startupNotice?: StartupNotice;
 }
 
 /** A usage refusal on stderr, then `cmd`'s help when one is given. Plain output and a locale without
@@ -703,7 +705,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       await cmd.run(parsed);
     });
   };
-  await opts.onCommandStart?.();
+  if (opts.startupNotice && cmd.keepsStartupNotice) keepStartupNotice(opts.startupNotice);
+  else await opts.startupNotice?.release();
   try {
     await execute();
   } catch (e) {

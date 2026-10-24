@@ -228,7 +228,7 @@ import {
   type StackUpNative,
   unparsableDaemonCredsNotice,
 } from "./stack-up.js";
-import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
+import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
@@ -658,6 +658,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     };
     const interrupt = () => request("SIGINT"), terminate = () => request("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    handOverStartupNotice();
     let failure: { error: unknown } | undefined;
     try { await start(); } catch (error) { failure = { error }; }
     finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
@@ -693,6 +694,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    handOverStartupNotice();
   });
 }
 
@@ -812,6 +814,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // A restore rewrites the shared store and the trust root under it, from an artifact that names
     // one space (see `cotal backup`) - it cannot leave the root's other tenants standing.
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal up --restore");
+    // `up` keeps the startup interrupt notice (`keepsStartupNotice`); a restore reports its own.
+    await releaseStartupNotice();
     // A `backup restore` owns stdout for its receipt, so its seat admission lines go to stderr.
     const prepared = await prepareRestore(cotalRoot(), values as RestoreFlags, restoreSink ? (line) => console.error(line) : undefined);
     pendingRestores.set(prepared.attemptId, prepared);
@@ -923,6 +927,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     let handedOff = false;
     try {
       const journal = readMaintenanceJournal(root);
+      // A recorded maintenance attempt is recovered on its own terms, with no startup notice.
+      if (journal) await releaseStartupNotice();
       if (journal?.state === "restore-ready") {
         // Ordinary up NEVER rolls back an in-progress restore: a live attempt's target may still be
         // written by its isolated broker. Refuse with the exact recovery recourse instead.
@@ -1316,6 +1322,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     } finally { release?.(); }
     return;
   }
+  // A manifest or retained-launcher start reports no interrupt notice of its own.
+  await releaseStartupNotice();
   // A named space this machine runs from another folder is refused before anything is written here,
   // and in every presentation, since the launcher below has no structured receipt.
   if (!values.file && values.space !== undefined) await refuseRunningElsewhere(values.space, meshRoot);

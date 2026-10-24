@@ -139,6 +139,9 @@
  * 17. An `up` interrupted while it writes a new space's trust material, held there by
  *     `COTAL_SMOKE_HOLD_IN_SPACE_AUTH` with part of it written. It exits 130, and the next `up`
  *     writes all of it again and starts the stack, delivery included.
+ * 18. An `up` signalled the moment it makes the root's maintenance folder, for the lock of its
+ *     recovery check, before it reaches the stack. It keeps the CLI's startup notice until its own
+ *     takes over, so it exits 130 with a notice, and the next `up` starts the stack.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -1476,6 +1479,25 @@ try {
     const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
     track(space);
     check("the next up writes it again and starts the stack, delivery included", started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
+    const last = cli(root, "down", "--yes", "--json");
+    check("and down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 18. An up signalled during its recovery check, before its own notice exists.
+  {
+    const space = "recovery-lock";
+    const root = prepare(space);
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "", signalled = false;
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
+    const watcher = watch(join(root, ".cotal"), (_event, file) => { if (file === "maintenance" && !signalled) { signalled = true; child.kill("SIGINT"); } });
+    await exited(child);
+    watcher.close();
+    check("an up signalled as it makes its maintenance folder exits 130 with a notice", signalled && child.exitCode === 130 && /^Interrupted /m.test(upErr), { signalled, exitCode: child.exitCode, signal: child.signalCode, stderr: upErr.slice(-400) });
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    track(space);
+    check("the next up starts the stack", started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
     const last = cli(root, "down", "--yes", "--json");
     check("and down --yes stops it", last.status === 0, shown(last));
   }

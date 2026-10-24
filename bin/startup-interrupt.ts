@@ -1,8 +1,9 @@
 /**
  * The interrupt notice for the time before a command begins. Until a listener exists, Node ends the
  * process on SIGINT, SIGTERM or SIGHUP with no output, and loading the CLI takes a moment. So the
- * entry holds this notice from before it loads the CLI until `runCli` starts the command, which then
- * reports its own interrupt. This module imports nothing, so the entry can load it on any Node.
+ * entry holds this notice from before it loads the CLI until `runCli` starts the command, or, for a
+ * command that keeps it, until the command's own notice takes it over. This module imports nothing,
+ * so the entry can load it on any Node.
  */
 const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 type ExitSignal = keyof typeof SIGNAL_EXIT;
@@ -24,5 +25,11 @@ export function holdStartupInterrupt(): void {
  *  the first turn runs before the next poll. */
 export async function releaseStartupInterrupt(): Promise<void> {
   for (let turn = 0; turn < 2; turn++) await new Promise((resolve) => setImmediate(resolve));
+  for (const signal of SIGNALS) process.off(signal, notice);
+}
+
+/** The command's own notice is installed. Its listener keeps every signal, so this removes the
+ *  startup notice at once. */
+export function handOverStartupInterrupt(): void {
   for (const signal of SIGNALS) process.off(signal, notice);
 }

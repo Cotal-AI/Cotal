@@ -705,7 +705,8 @@ the members still running; `cotal down --yes` finishes the stop. When it had sig
 had not yet exited, it also names that stop's request: `cotal down --yes` stops the member again
 while it runs, and once it has exited, `cotal down --abandon-stop <request-id> --yes` finishes the
 stop. Any command interrupted while the CLI is still loading, before the command begins, exits with
-the same codes and says it did nothing.
+the same codes and says it did nothing. `up` keeps that notice until its own takes over, so no moment
+of a detached start exits without one.
 
 `up` runs the `nats-server` on PATH when one answers `--version`, and the bundled one otherwise. One
 on PATH must report version 2.12 or newer. An older one, or one that reports no version, refuses
