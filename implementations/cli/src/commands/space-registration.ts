@@ -439,7 +439,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   // A stack this home cannot see runs here under another Cotal home; a space prepared over it could
   // not start, and the root's status would stop naming that home.
   let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
-  try { journal = readStackJournal(root)?.journal; } catch { journal = undefined; }
+  // A journal that is not JSON or has an unsupported shape is named with its way out. The trust it
+  // leaves would otherwise read as a space that already holds this root.
+  try { journal = readStackJournal(root)?.journal; } catch (error) { if (error instanceof CommandFailure && error.code === "SCHEMA_INVALID") throw error; journal = undefined; }
   if (journal && stackRunsUnderOtherHome(root, journal))
     throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} runs under another Cotal home; ${homeCotalDir()} holds no record of its members`, target, stackHomeRemedy());
   // A stack journal another folder recorded, as a copy or a moved folder keeps it, is taken over only
