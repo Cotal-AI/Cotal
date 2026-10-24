@@ -169,6 +169,7 @@ try {
     assert.equal(exitCode(retire.failure!.outcome, retire.failure!.code), 2, "auth retire exits 2");
     assert.match(retire.failure?.message ?? "", /^this CLI cannot retire a lifecycle or revoke one minted credential: .*no request was sent$/, "auth retire says what it cannot do");
     assert.ok(retire.failure?.remedy?.includes(`cotal reset space ${space}`) && retire.failure.remedy.includes("stops every credential it issued"), `auth retire names identity rotation as its next step: ${retire.failure?.remedy}`);
+    assert.ok(retire.failure?.remedy?.includes("The reset also removes the space's store, with its workflow runs and their journals, channel history") && retire.failure.remedy.includes(`cotal reset space ${space} --dry-run`), `auth retire's next step says the reset removes the store and names its dry run: ${retire.failure?.remedy}`);
     const retireHelp = authCommand.subcommands?.find((sub) => sub.name === "retire")?.summary ?? "";
     assert.ok(retireHelp.startsWith("not available from this CLI") && retireHelp.includes("reset space"), `help says retire is not available here and names the lever: ${retireHelp}`);
   }

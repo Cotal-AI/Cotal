@@ -37,6 +37,8 @@ import {
   resolveMeshTarget,
   spaceAccountPath,
   staleSystemCreds,
+  STORE_CONTENTS,
+  storeContentsText,
   type StaleSystemCred, type MaterialMigrationReceipt,
   unparsableDaemonCreds,
   workspaceSecretStore,
@@ -320,7 +322,7 @@ function agentUnboundedRepair(path: string, space: string, record?: string): str
   const cmd = displayCmd();
   const replace = standingReplace(path, space);
   const bound = replace ? `stop what uses it, then replace it with ${replace}` : `stop what uses it, remove ${path}${record ? ` and ${record}` : ""} and mint a replacement without --no-expiry, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
-  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`. Or bound it: ${bound}; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
+  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`; the reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}. Or bound it: ${bound}; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
 }
 
 /** Classify every `agent` file by alias family, so a superseded incarnation is never reported as a

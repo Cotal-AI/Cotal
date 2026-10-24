@@ -13,7 +13,8 @@
  *     a remedy naming `cotal down`, and `reset space --dry-run` refuses with that remedy.
  *  4. Reset after a normal down. `reset store` is offered and removes the store, naming the
  *     workflow runs that go with it in its preview and receipt and saying why the down listed
- *     none, and `up` starts again. `reset space` is offered and removes the identity, keeping the
+ *     none, and `up` starts again. `reset space` is offered, its preview names the store contents
+ *     that go with the identity as `reset store`'s does, and it removes the identity, keeping the
  *     prepared record and the stack journal, and `up` starts again with a new account. It clears
  *     the credentialRef of a saved service whose credential the removed account issued, names it,
  *     and keeps any other.
@@ -186,6 +187,12 @@ try {
 
     const spacePreview = cli(root, "reset", "space", space, "--dry-run", "--json");
     check("reset space --dry-run after down offers the apply", spacePreview.status === 0 && spacePreview.env?.result?.applyVerdict?.offered === true, shown(spacePreview));
+    // The store goes with the identity, so the preview names what it holds, as reset store's does.
+    const spaceContents = spacePreview.env?.result?.storeContents as { removed?: string[] } | undefined;
+    const spacePreviewText = cli(root, "reset", "space", space, "--dry-run");
+    check("the reset space preview names the store's workflow runs and channel history in JSON and in its Store contents section",
+      Boolean(spaceContents?.removed?.includes("workflow runs and their journals") && spaceContents.removed.includes("channel history")) && spacePreviewText.status === 0 && /^Store contents$/m.test(spacePreviewText.stdout) && spacePreviewText.stdout.includes("Removing the store removes workflow runs and their journals, channel history"),
+      { json: spaceContents, text: shown(spacePreviewText) });
     const issuedRefs = JSON.stringify([{ definition: "minted", path: minted }]);
     check("the preview names the one credentialRef this identity issued", JSON.stringify(spacePreview.env?.result?.clearsCredentialRefs) === issuedRefs, spacePreview.env?.result?.clearsCredentialRefs);
     const spaceApplied = cli(root, "reset", "space", space, "--yes", "--json");

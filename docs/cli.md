@@ -1568,8 +1568,11 @@ deprovisioning hooks. The inventory is bounded to 10,000 paths. Foreign space
 segments, symlinks, hard-linked files, foreign ownership, group/world-writable
 paths and providers without bounded cleanup metadata refuse. The refusal names the path and its
 reason; for a group- or world-writable path it names `chmod go-w <path>`. Values and content
-fingerprints are not printed. No maintenance lock is taken by the preview. A preview that passes
-every check says the apply is offered and names `cotal reset space <space> --yes` as Next.
+fingerprints are not printed. No maintenance lock is taken by the preview. Like the store dry-run, it
+has a Store contents section when a store is present, naming what removing it removes and the runs
+the last down recorded, and `--json` carries them as `storeContents`. The apply's confirmation shows
+the same section. A preview that passes every check says the apply is offered and names
+`cotal reset space <space> --yes` as Next.
 
 Apply shows the path inventory and defaults to cancellation, or requires
 `--yes` in a script. Under the maintenance lock it repeats the eligibility
@@ -5062,7 +5065,10 @@ is refused with the literal namespace replacement.
 A minted credential cannot be revoked on its own, and `auth retire` refuses. It stays valid until it
 expires, and one minted with `--no-expiry` until the space identity rotates: `cotal down`, then
 `cotal reset space <space>` (or `cotal clean all --force` from the root when `down` left no
-registration), then `cotal up`. That stops every credential the space issued.
+registration), then `cotal up`. That stops every credential the space issued. The reset also
+removes the space's store, with its workflow runs and their journals, channel history and stored
+messages, so the space starts again with no history. `cotal reset space <space> --dry-run` lists
+what the store holds first.
 
 ### Endpoint caller credentials
 
@@ -5243,7 +5249,8 @@ stays a finding until its file is gone. The exception is one `auth mint --no-exp
 record beside it still names the file's bytes: someone asked for it, so it is a
 `CREDENTIAL_UNBOUNDED_BY_REQUEST` warning instead, and the run ends ok, exit 0. Both get guidance that
 names both ways out. Rotating the space identity (`cotal down`, `cotal reset space <space>`, then
-`cotal up`) retires it with every other credential the space issued and removes the file. Replacing
+`cotal up`) retires it with every other credential the space issued and removes the file, and the
+reset removes the space's store with its history. Replacing
 a label's file with `cotal auth mint <label> --replace` once nothing uses it bounds it from then on,
 and so does removing any other file and its record and minting a replacement without `--no-expiry`;
 a copy made before stays valid until that rotation. An expired label's file is a finding too, and
@@ -7290,7 +7297,7 @@ endpoint accepts retirement only from the requester's own current serve identity
 CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
 loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal
 names the lever that works, rotating the space identity, which stops every credential the space issued
-(see [auth mint](#auth-mint)).
+and removes the space's store with its history (see [auth mint](#auth-mint)).
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
 refuses with `UNSUPPORTED` because its conferring-handle redemption path is not exposed. It does
