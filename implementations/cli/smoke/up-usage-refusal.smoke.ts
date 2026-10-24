@@ -19,8 +19,7 @@
  * there, and `down` and `down --dry-run` there find no stack. In a prepared folder whose broker store
  * this account cannot write, `up` refuses PERMISSION_DENIED naming the store and the `chmod` that
  * fixes it, where the broker used to exit naming the cause only in its log, and status names the same
- * step in place of `cotal up`.
- * there, and `down` and `down --dry-run` there find no stack. Every broker address the cells after
+ * step in place of `cotal up`. Every broker address the cells after
  * those use is held by a loopback listener that never answers NATS, so a regression still cannot
  * start a broker there.
  *
