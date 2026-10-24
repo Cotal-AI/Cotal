@@ -22,9 +22,11 @@ import {
   candidateTarget,
   checkDialPolicy,
   checkEnforcement,
+  checkEnforcementAt,
   checkMode,
   checkRoot,
   checkServer,
+  checkSpaceName,
   checkTrust,
   checkUserBundle,
   persistRemoteUserEntry,
@@ -172,6 +174,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     console.error(c.red("usage: cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user]"));
     process.exit(1);
   }
+  if (space !== undefined) take(checkSpaceName(space));
   // THE USER ARM — its own path because everything about it inverts the static flow: the server
   // comes from the supplied bundle rather than --server, trust composes against a pinned exchange
   // rather than on-disk material, and the enforcement PASS is the broker's refusal.
@@ -340,6 +343,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
     console.error(c.red(`✗ the bundle is for space "${bundle.space}" but the command names "${spaceArg}" - a bundle registers the space it was exported for`));
     process.exit(1);
   }
+  take(checkSpaceName(space));
 
   // A FETCHED document is displayed and explicitly confirmed before anything trusts it: the
   // operator, not the network, adopts the pins. A file the operator already holds needs no
@@ -387,7 +391,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   // under --force: unlike a static mesh, there is no "register it while it is down" story here —
   // an unverifiable pin set is not a record worth writing.
   take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)));
-  take(checkEnforcement("user", await probeEnforcement(server), server, space, root));
+  take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"));
 
   const result = persistRemoteUserEntry(space, server, root, bundle, tlsRequired, Boolean(dial.residual));
   console.log(c.green(`✓ registered "${space}"`), c.dim(`${server}  user  ${root}`));
@@ -400,6 +404,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
 function take<T>(r: Check<T>): T {
   if (r.ok) return r.value;
   console.error(c.red(r.message));
+  if (r.remedy) console.error(c.dim(r.remedy));
   process.exit(1);
 }
 

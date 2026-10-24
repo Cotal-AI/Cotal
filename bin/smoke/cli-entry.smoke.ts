@@ -140,7 +140,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`help lists alias ${alias} beside ${cmd.name}`, new RegExp(`^\\s+${cmd.name}(, [^ ]+)*, ${alias}(,|\\s)`, "m").test(all.stdout), shown(all));
   const spawnHelp = cotal(["help", "spawn"]);
   local("help spawn writes nothing", spawnHelp);
-  check("command help shows the usage and the aliases", /^Usage\n  spawn /m.test(spawnHelp.stdout) && /^Shorthands\n  cotal sp$/m.test(spawnHelp.stdout), shown(spawnHelp));
+  check("command help shows the usage and the aliases", /^Usage\n  cotal spawn /m.test(spawnHelp.stdout) && /^Shorthands\n  cotal sp$/m.test(spawnHelp.stdout), shown(spawnHelp));
   check("help sp, spawn --help and sp -h print the same help", same(spawnHelp, cotal(["help", "sp"])) && same(spawnHelp, cotal(["spawn", "--help"])) && same(spawnHelp, cotal(["sp", "-h"])));
   const subHelp = cotal(["help", "ext", "remove"]);
   local("help ext remove writes nothing", subHelp);

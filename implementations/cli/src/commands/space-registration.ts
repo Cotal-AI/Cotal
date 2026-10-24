@@ -49,9 +49,11 @@ import {
   candidateTarget,
   checkDialPolicy,
   checkEnforcement,
+  checkEnforcementAt,
   checkMode,
   checkRoot,
   checkServer,
+  checkSpaceName,
   checkTrust,
   checkUserBundle,
   probeEnforcement,
@@ -132,7 +134,7 @@ const usage = (message: string, remedy?: string): CommandFailure => new CommandF
 function take<T>(check: Check<T>, target: unknown): T {
   if (check.ok) return check.value;
   if (!check.code) throw new Error(`internal error: a registration rule refused without a code: ${check.message}`);
-  throw new CommandFailure("refused", check.code, check.message.replace(/^✗ /, ""), { target });
+  throw new CommandFailure("refused", check.code, check.message.replace(/^✗ /, ""), { target, ...(check.remedy === undefined ? {} : { remedy: check.remedy }) });
 }
 
 const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: string): CommandFailure =>
@@ -182,6 +184,7 @@ async function review(prompt: boolean, skip: boolean, rows: readonly (readonly [
 export async function spaceAdd(rest: readonly string[], v: AddValues, presentation: Presentation): Promise<void> {
   if (rest.length > 1) throw usage("usage: cotal space add [<name>] --server <url> | --file <bundle.json> | --from <https url>");
   const name = rest[0];
+  if (name !== undefined) take(checkSpaceName(name), { space: name });
   if (v.file !== undefined && v.from !== undefined) throw usage("pass --file or --from, not both: they are two sources for the same pinned trust");
   const bundled = v.file !== undefined || v.from !== undefined;
   if (bundled && v.mode !== undefined && v.mode !== "user") throw usage(`--file and --from add a user-auth space, so they do not take --mode ${v.mode}`);
@@ -219,8 +222,9 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   if (verified) {
     take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);
     const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired));
-    // A broker that does not answer may be down right now, which is what --force is for.
-    if (!reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `pass --force to add "${name}" unchecked, as for a space that is down right now`);
+    // A broker that does not answer may be down right now, which is what --force is for. The
+    // diagnosis's own next step comes first.
+    if (!reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
     take(reached, target);
     if (mode === "open") await servedOrThrow(server, name, target);
   }
@@ -287,6 +291,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   const space = name ?? bundle.space;
   const spaceTarget = { space };
   if (name !== undefined && bundle.space !== name) throw refuse("CONFLICT", `the bundle is for "${bundle.space}", not "${name}": a bundle adds the space it was exported for`, spaceTarget);
+  take(checkSpaceName(space), spaceTarget);
   const server = take(v.server === undefined ? checkServer(bundle.server, "the bundle's server") : checkServer(v.server, "--server"), spaceTarget);
   const tlsRequired = bundle.tlsRequired || tlsIntent(server, v.tls === true);
   const dial = take(checkDialPolicy(server, { tlsRequired, allowUnencryptedOverlay: v["allow-unencrypted-overlay"] === true }), spaceTarget);
@@ -294,7 +299,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   take(checkMode(space, root, [], "user", true), spaceTarget);
   const replaced = replaceable(space, v.force === true, spaceTarget);
   take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)), spaceTarget);
-  take(checkEnforcement("user", await probeEnforcement(server), server, space, root), spaceTarget);
+  take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"), spaceTarget);
   const rows: [string, string][] = [
     ["space", space],
     ["broker", `${server}${tlsRequired ? " (TLS required)" : ""}`],
@@ -418,6 +423,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, target, `choose a name of at most ${SPACE_NAME_MAX} characters`);
   if (token(name) !== name)
     throw refuse("USAGE_INVALID", `a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, target);
+  take(checkSpaceName(name), target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
   // Such a space could be prepared but never started: its first `up` would refuse to record the root.
