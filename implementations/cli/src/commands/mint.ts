@@ -30,18 +30,22 @@ const expiry = (seconds: number | undefined): string => {
   return Number.isFinite(date.getTime()) ? date.toISOString() : `${seconds} native Unix seconds`;
 };
 
-/** What `--replace` found at the label: a standing credential that has expired, or one with no
- *  expiry claim. Any other standing credential stays, because something may still use it. */
-interface Replaced { state: "expired" | "unbounded"; expiresAt: number | null; publicKey: string }
+/** What `--replace` found at the label: a standing credential that has expired, one with no expiry
+ *  claim, or one whose key the space's account revoked. Any other standing credential stays,
+ *  because something may still use it. */
+interface Replaced { state: "expired" | "unbounded" | "revoked"; expiresAt: number | null; publicKey: string; revokedAt: number | null }
 
-function replaceable(standing: string, name: string, target: object): Replaced {
+function replaceable(standing: string, name: string, target: object, revocations: Readonly<Record<string, number>>): Replaced {
   let claims: ReturnType<typeof credsClaims> | undefined;
   try { claims = credsClaims(standing); } catch { claims = undefined; }
   if (!claims?.sub) throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is not a native credential this command can read; it was not replaced`, { target });
   const exp = claims.exp, publicKey = claims.sub;
-  if (exp === undefined) return { state: "unbounded", expiresAt: null, publicKey };
+  // The broker refuses a revoked key whatever the expiry, and the replacement takes a new key.
+  const revokedAt = revocations[publicKey];
+  if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt)) return { state: "revoked", expiresAt: exp ?? null, publicKey, revokedAt };
+  if (exp === undefined) return { state: "unbounded", expiresAt: null, publicKey, revokedAt: null };
   if (exp * 1000 > Date.now()) throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is valid until ${expiry(exp)}, so --replace left it in place`, { target, remedy: "choose a new label, or run it again with --replace once that credential has expired" });
-  return { state: "expired", expiresAt: exp, publicKey };
+  return { state: "expired", expiresAt: exp, publicKey, revokedAt: null };
 }
 
 /** A replaced credential with no expiry claim is not revoked by its replacement, so any copy of it
@@ -137,8 +141,8 @@ export async function mint(args: ParsedArgs): Promise<void> {
       }
     } else {
       standing = await store.get(key);
-      if (standing !== undefined && !values.replace) throw new CommandFailure("refused", "CONFLICT", "the named standing credential already exists; it was not replaced", { target, remedy: "choose a new label or an explicit separate private --out path, or replace it with --replace once it has expired or if it has no expiry" });
-      if (standing !== undefined) replaced = replaceable(standing, name, target);
+      if (standing !== undefined && !values.replace) throw new CommandFailure("refused", "CONFLICT", "the named standing credential already exists; it was not replaced", { target, remedy: "choose a new label or an explicit separate private --out path, or replace it with --replace once it has expired, if it has no expiry or if its key was revoked" });
+      if (standing !== undefined) replaced = replaceable(standing, name, target, accountRevocations(auth.account.jwt));
     }
     let allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, role: string | undefined;
     if (profile === "agent") {
@@ -222,7 +226,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       ...replacedStillValid(replaced, identity.id, space, name),
     ];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
-      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", `${data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : "a credential with no expiry claim"}, key ${data.replaced.publicKey}`]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
+      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", `${data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : data.replaced.state === "revoked" ? `a credential whose key was revoked at ${expiry(data.replaced.revokedAt ?? undefined)}` : "a credential with no expiry claim"}, key ${data.replaced.publicKey}`]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
     ] }));
   } catch (error) {
     if (isCommandFailure(error)) {

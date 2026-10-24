@@ -15,7 +15,9 @@
  *     a new key with the file's grants, for `who` and `send`; `whoami --creds` reports when the key
  *     was revoked. Another minted credential still reads, and the channel history is kept. `auth mint
  *     --identity` refuses the revoked key, CONFLICT, and a fresh mint works. A post that fresh file
- *     may not make names its post grant, read from the file.
+ *     may not make names its post grant, read from the file. A label's own revoked standing file is a
+ *     revoked finding in doctor auth, whose repair is --replace with its grants, and --replace gives
+ *     the label a new key that posts.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:auth-revoke-credential:live
  */
@@ -87,6 +89,10 @@ try {
   const mintKept = cli(root, "auth", "mint", "kept", "--no-expiry", "--out", kept, "--json");
   const key = String(mintLeaked.env?.result?.identity ?? "");
   check("auth mint writes two credentials", mintLeaked.status === 0 && mintKept.status === 0 && /^U[A-Z2-7]{55}$/.test(key), { leaked: shown(mintLeaked), kept: shown(mintKept) });
+  // A label's own standing file, at the path auth mint writes without --out.
+  const mintLabel = cli(root, "auth", "mint", "standing", "--allow-subscribe", "general", "--allow-publish", "general", "--json");
+  const labelFile = String(mintLabel.env?.result?.output ?? ""), labelKey = String(mintLabel.env?.result?.identity ?? "");
+  check("auth mint writes a label's standing credential", mintLabel.status === 0 && existsSync(labelFile) && /^U[A-Z2-7]{55}$/.test(labelKey), shown(mintLabel));
 
   // 1. A running stack refuses, naming the route, and changes nothing.
   {
@@ -154,6 +160,8 @@ try {
           && sys.env.error.remedy === `cotal down --yes, then cotal up --rotate-sys, from ${root}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
     }
     check("  and none of them changes the account record", accountDigest(root) === unchanged);
+    const labelRevoked = cli(root, "auth", "revoke-credential", labelFile, "--yes", "--json");
+    check("the label's standing file is revoked by its path", labelRevoked.status === 0 && labelRevoked.env?.result?.publicKey === labelKey, shown(labelRevoked));
   }
 
   // 3. The next up loads it: the one credential is refused, the rest and the store stay.
@@ -166,6 +174,19 @@ try {
     const revokedAt = new Date(Number(revocation) * 1000).toISOString();
     check("  and names the revoked key, its file and when it was revoked",
       refused.env?.error?.message === `credentials rejected at ${server}: the key ${key} in ${leaked} was revoked at ${revokedAt} with auth revoke-credential`, refused.env?.error);
+    // A revoked label file is no healthy row, and --replace gives the label a new key at once.
+    const labelDoctor = cli(root, "doctor", "auth", "--json");
+    const labelRow = ((labelDoctor.env?.result?.items ?? []) as { label: string; state: string; problem: string | null; repair: string | null; revokedAt: number | null }[]).find((row) => row.label === "standing.creds");
+    check("doctor auth reports the revoked label file as a revoked finding, with when it was revoked",
+      labelRow?.state === "revoked" && typeof labelRow.revokedAt === "number" && labelRow.problem?.startsWith(`REVOKED - its key ${labelKey} was revoked at `) === true && labelDoctor.env?.outcome === "failed", { labelRow, doctor: shown(labelDoctor) });
+    check("  and its repair is --replace with a new key and the file's grants",
+      labelRow?.repair?.includes(`auth mint standing --replace --space ${space} --allow-subscribe general --allow-publish general\``) === true && labelRow.repair.startsWith("a revoked key is not signed again"), labelRow);
+    const replaced = cli(root, "auth", "mint", "standing", "--replace", "--allow-subscribe", "general", "--allow-publish", "general", "--json");
+    const replacedBy = replaced.env?.result as { identity?: string; replaced?: { state?: string; publicKey?: string; revokedAt?: number } } | undefined;
+    check("auth mint --replace replaces the revoked label credential under a new key, naming the revocation",
+      replaced.status === 0 && replacedBy?.replaced?.state === "revoked" && replacedBy.replaced.publicKey === labelKey && replacedBy.replaced.revokedAt === labelRow?.revokedAt && replacedBy.identity !== labelKey, shown(replaced));
+    const labelSend = cli(root, "send", "-c", "general", "with the new label key", "--json", "--creds", labelFile, "--space", space, "--server", server);
+    check("  and the label's file posts again", labelSend.status === 0, shown(labelSend));
     check("  and its Next is a new key with the grants the file held",
       refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --out <new file>", refused.env?.error);
     const sendRevoked = cli(root, "send", "-c", "general", "after the revocation", "--json", "--creds", leaked, "--space", space, "--server", server);

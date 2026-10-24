@@ -609,7 +609,7 @@ try {
     await wait(2_100);
     const taken = await runMint(["kurz"]);
     check("minting that label again refuses CONFLICT and names --replace",
-      taken.code === 2 && /^\s*Code:\s+CONFLICT$/m.test(taken.out) && taken.out.includes("replace it with --replace once it has expired or if it has no expiry"), taken.out);
+      taken.code === 2 && /^\s*Code:\s+CONFLICT$/m.test(taken.out) && taken.out.includes("replace it with --replace once it has expired, if it has no expiry or if its key was revoked"), taken.out);
     const expired = readFileSync(standing("kurz"), "utf8");
     const swapped = await runMint(["kurz", "--replace", "--expires-in", "3600"]);
     const fresh = credsClaims(readFileSync(standing("kurz"), "utf8"));

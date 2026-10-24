@@ -75,6 +75,8 @@ interface CredReport {
    *  given a cleanup, but deliberately NOT a `problem`: it is a leftover file, not a broken agent,
    *  and counting it as one is what reported a healthy fleet as 15 failures. */
   superseded?: boolean;
+  /** When the space's account revoked this agent file's key, at or after the file was issued. */
+  revokedAt?: number;
   /** An unbounded agent credential `auth mint --no-expiry` asked for: reported with its ways out,
    *  but not a `problem`, because someone chose it. */
   warning?: string;
@@ -146,9 +148,10 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     userMode = hasUserAuthState(root, auth.space, { readOnly: true });
     if (values.fix && userMode) throw new CommandFailure("refused", "UNSUPPORTED", "this static daemon repair cannot replace a user-auth space's supported issuer authority", { target });
     repair.migrationAttempted = values.fix === true;
-    reports = inventory(root, auth.space, auth.sys.pub, !values.fix, (receipt) => repair.migrations.push(receipt));
+    const revocations = accountRevocations(auth.account.jwt);
+    reports = inventory(root, auth.space, auth.sys.pub, !values.fix, (receipt) => repair.migrations.push(receipt), revocations);
     if (values.fix && reports.some((row) => row.problem && isRemintable(row.kind))) await repairDoctorCredentials(root, auth, repair, new Set(reports.filter((row) => row.unparsable && isRemintable(row.kind)).map((row) => row.label)));
-    if (repair.attempted) reports = inventory(root, auth.space, auth.sys.pub, true);
+    if (repair.attempted) reports = inventory(root, auth.space, auth.sys.pub, true, undefined, revocations);
   } catch (error) {
     const changed = [...repair.migrations.map((receipt) => ({ kind: "credential-material-migrated", materialKind: receipt.kind, from: receipt.from, to: receipt.to, space: receipt.space })), ...repair.results.filter((row) => row.ok).map((row) => ({ kind: "daemon-credential-resigned", file: row.file, space: auth!.space }))];
     if (isCommandFailure(error) && !repair.attempted && !repair.migrations.length) throw error;
@@ -157,12 +160,12 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   }
   const renewal = renewalObservation(root, auth.space);
   const items = reports.map((row) => ({
-    label: row.label, kind: row.kind, path: row.path, state: row.superseded ? "superseded-local-file" : row.health?.state ?? (row.problem ? "missing" : "not-provisioned-here"),
+    label: row.label, kind: row.kind, path: row.path, state: row.revokedAt !== undefined ? "revoked" : row.superseded ? "superseded-local-file" : row.health?.state ?? (row.problem ? "missing" : "not-provisioned-here"),
     issuedAt: Number.isFinite(row.health?.iat) ? row.health!.iat! : null,
     expiresAt: Number.isFinite(row.health?.exp) ? row.health!.exp! : null,
     renewAt: Number.isFinite(row.health?.renewAt) ? row.health!.renewAt! : null,
     problem: row.problem ?? null, warning: row.warning ?? null,
-    repair: row.repair ?? null, superseded: row.superseded === true,
+    repair: row.repair ?? null, superseded: row.superseded === true, revokedAt: row.revokedAt ?? null,
   }));
   let exported: ExportedRow[] | null;
   try { exported = exportedCredentials(root, auth); } catch { exported = null; }
@@ -380,6 +383,17 @@ function standingReplace(path: string, space?: string): string | undefined {
   return `\`${displayCmd()} auth mint ${aliasOf(label)} --replace --space ${space}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
 }
 
+/** The repair for an agent file whose key was revoked. A revoked key is never signed again, so a
+ *  label's standing file is replaced under a new key that holds the grants this one did, and any
+ *  other agent file belongs to an agent to stop. */
+function revokedAgentRepair(path: string, claims: ReturnType<typeof credsClaims>, space?: string): string {
+  const label = basename(path);
+  if (space === undefined || !label.endsWith(".creds") || incarnationUidOf(label) !== undefined)
+    return "a revoked key is not signed again; stop or despawn the agent that uses this file";
+  const grants = claims.name === "agent" ? agentGrants(claims.nats ?? {}, space) : undefined;
+  return `a revoked key is not signed again, so replace it with a new key${grants ? " that holds the grants this file holds" : ""}: \`${displayCmd()} auth mint ${aliasOf(label)} --replace --space ${space}${grants ? grantMintFlags(grants) : ""}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
+}
+
 function agentUnrenewableRepair(): string {
   return "native renewal skips unbounded or unreadable material; inspect the exact lifecycle and authority before choosing an explicit replacement. This diagnosis does not prove the agent is stopped or authorize a blind respawn";
 }
@@ -457,7 +471,7 @@ function aliasOf(label: string): string {
 /** Inspect every managed credential file for this folder. Missing files are noted (with how they
  *  get provisioned) but only EXISTING-but-bad material is a problem — process presence is `cotal
  *  status`'s job; this surface owns credential health. */
-function inventory(root: string, space: string, sysPub?: string, readOnly = false, onMigrated?: (receipt: MaterialMigrationReceipt) => void): CredReport[] {
+function inventory(root: string, space: string, sysPub?: string, readOnly = false, onMigrated?: (receipt: MaterialMigrationReceipt) => void, revocations: Readonly<Record<string, number>> = {}): CredReport[] {
   // Through the choke point, not a hand-composed `.cotal/<file>` (P7 §2 rule 1). The four kinds are
   // per-space now, and a diagnosis that read the canonical location past an unmigrated copy would
   // report every one of them "missing" on a root `up` has not re-provisioned — the worst possible
@@ -482,7 +496,7 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   const agentDir = agentCredsDir(root, space, { readOnly, onMigrated });
   if (existsSync(agentDir)) {
     for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
-      reports.push(report(basename(f), "agent", join(agentDir, f), undefined, undefined, undefined, space));
+      reports.push(report(basename(f), "agent", join(agentDir, f), undefined, undefined, undefined, space, revocations));
     }
   }
   // SECOND PASS over the agent files (#1576). Supersession is a property of an alias's FAMILY, not of
@@ -491,11 +505,11 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   // classified once every member is known, and the affected rows are re-derived with that role.
   const roles = classifyAgentFamilies(reports);
   return reports.map((r) =>
-    r.kind === "agent" && r.health ? report(r.label, r.kind, r.path, undefined, undefined, { role: roles.get(r.label) ?? "sole" }, space) : r,
+    r.kind === "agent" && r.health ? report(r.label, r.kind, r.path, undefined, undefined, { role: roles.get(r.label) ?? "sole" }, space, revocations) : r,
   );
 }
 
-function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily, space?: string): CredReport {
+function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily, space?: string, revocations: Readonly<Record<string, number>> = {}): CredReport {
   let health: CredHealth;
   // A cause the operator can act on, reported in place of the generic parse finding. Its text is
   // fixed and never quotes the file.
@@ -541,6 +555,18 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
     r.problem = stale.iss ? `the claimed system-account issuer ${stale.iss} differs from this root's ${sysPub}; current broker acceptance is not checked` : "the system-account issuer could not be established; current broker acceptance is not checked";
     r.repair = repair;
     return r;
+  }
+  // The broker refuses a key the space's account revoked, so a file signed for it before then is dead
+  // however far off its expiry is, and nothing signs that key again.
+  if (kind === "agent" && live?.role !== "superseded" && health.state !== "unreadable" && bytes) {
+    const claims = credsClaims(bytes.toString("utf8"));
+    const revokedAt = claims.sub === undefined ? undefined : revocations[claims.sub];
+    if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt)) {
+      r.revokedAt = revokedAt;
+      r.problem = `REVOKED - its key ${claims.sub} was revoked at ${at(revokedAt)} with auth revoke-credential, so the broker refuses this credential`;
+      r.repair = revokedAgentRepair(path, claims, space);
+      return r;
+    }
   }
   switch (health.state) {
     case "unreadable":

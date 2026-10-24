@@ -5735,8 +5735,9 @@ rather than implying those inputs narrowed anything.
 
 The default credential is created through its canonical secret-store kind. An existing label is
 not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
-standing credential when it has expired or has no expiry claim, under a new identity unless
-`--identity` names one, and removes a no-expiry record beside it unless `--no-expiry` writes a new
+standing credential when it has expired, has no expiry claim or has a key that
+`auth revoke-credential` revoked. It mints under a new identity unless `--identity` names one, which
+a revoked key never is, and removes a no-expiry record beside it unless `--no-expiry` writes a new
 one. The receipt names what it replaced and its public key under `result.replaced`. A replacement
 does not revoke the credential it replaced, so a copy of one with no expiry claim stays valid. The
 receipt then warns `REPLACED_CREDENTIAL_VALID`, naming that key and the
@@ -6022,7 +6023,10 @@ a copy made before stays valid until it is revoked. Rotating the space identity 
 `cotal reset space <space>`, then `cotal up`) retires every credential the space issued and removes
 the file, and the reset removes the space's store with its history. An expired label's file is a finding too, and
 its guidance names that same `--replace`, next to the managed renewal that re-signs an agent a
-manager runs.
+manager runs. An agent file whose key was revoked is a finding in state `revoked`, with
+`result.items[].revokedAt`, however far off its expiry is. A revoked key is not signed again, so
+for a label's file the guidance names `--replace` with the file's read and post channels and role,
+and for any other agent file it names stopping the agent that uses it.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
