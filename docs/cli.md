@@ -5780,13 +5780,16 @@ takes letters, digits, `_` and `-`. A label or role with any other character, or
 refuses `USAGE_INVALID` without the command's help. The refusal names the character, the value and
 the characters allowed, and its Next names the value with each such character replaced by `_`.
 
-`agent` is the default profile. Its channel ACLs and role come from the selected root's persona
-when present; explicit `--allow-subscribe`, `--allow-publish` and `--role` override them. With
+`agent` is the default profile. Its channel ACLs and role come from the selected root's
+`<name>.md` persona file, when present. It does not fall back to `default.md` for a different name.
+Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. With
 `--identity` naming an agent credential this space issued, the new credential keeps that
 credential's read channels, post channels and role in place of the persona's, and each flag still
 replaces its own grant. The receipt lists the grants as May read, May post and Role, marking those
 carried from `--identity`; JSON has them under `result.grants`, with `fromIdentity` naming the
 carried ones. An empty ACL flag means no explicit entries. The native read-ACL resolver still enforces boot membership.
+Without a matching persona, `--identity` or grant flags, the agent credential has no channel grants
+or role. Its validity does not establish that it can perform a particular task.
 Observer and admin have fixed native scope and reject agent ACL, role and provisioning flags
 rather than implying those inputs narrowed anything.
 
