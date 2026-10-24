@@ -4,7 +4,8 @@
  * terminal the command asks which space, uses the answer for that one run and leaves the selection
  * alone; a script, `--json` and `--no-input` refuse with `TARGET_AMBIGUOUS` and the remedy apart from
  * the message. A manifest's declared space is the target of `up -f` and `spawn -f`, so a `--space`
- * that names another space is refused before anything is written. `up -f --json` checks its manifest
+ * that names another space is refused before anything is written. In another space's root, `up -f`
+ * meets the same root pin as `up --space` there. `up -f --json` checks its manifest
  * first: one that does not validate refuses `SCHEMA_INVALID` with its problem, and a valid one refuses
  * `UNSUPPORTED`, naming only `--json` to omit. In a folder whose records name no
  * space, as after `space forget`, `whoami` and `spawn --dry-run` keep exit 0 under the held default's
@@ -202,6 +203,11 @@ const QUESTION = "Which one?";
   check("up -f with a --space repeating the manifest's space runs", dry.status === 0 && /space "alpha"/.test(dry.stdout), shown(dry));
   const deploy = run(["team", "deploy", "mesh.yaml", "--space", "beta"], project);
   check("team deploy with a --space naming another space refuses before it connects", deploy.status === 2 && /--space differs from this manifest's exact target; no broker was contacted/.test(`${deploy.stdout}${deploy.stderr}`) && !existsSync(join(project, ".cotal")), shown(deploy));
+  // In beta's own root, a manifest for another space on beta's running broker meets the root pin
+  // that `up --space` meets there, not the running-broker refusal.
+  writeFileSync(join(home, "beta", "other.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: epsilon\nbroker: { servers: "${B}", auth: false }\nchannels: {}\n`);
+  const pinned = run(["up", "-f", "other.yaml"], join(home, "beta"));
+  check("up -f in another space's root refuses CONFLICT, exit 2, naming both spaces", pinned.status === 2 && /this folder is the root of "beta" \(.*\), so it can't also run "epsilon"/.test(pinned.stderr) && !/already has a broker/.test(pinned.stderr), shown(pinned));
 }
 
 // ── A refused start leaves the folder as it found it ───────────────────────────────────────────────

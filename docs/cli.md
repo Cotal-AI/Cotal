@@ -2435,7 +2435,8 @@ and so does `cotal up --space <name>` run from another folder. Its Next names
 was cut off before it recorded an outcome, as an `up` interrupted before it registered the space
 leaves it, the refusal says so and names `cotal status` in that root, which names the step that
 finishes or settles it. `cotal up --space <name>` in a folder
-that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
+that is already another space's root refuses with `CONFLICT`, exit 2, and so does `cotal up -f` with a
+manifest whose `space:` names another space. `space add` refuses a prepared
 name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
 names the space. A bare `cotal up` in a folder that names no space, while the selected space is
 prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start the

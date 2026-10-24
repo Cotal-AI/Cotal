@@ -1208,13 +1208,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (!values["dry-run"]) {
     const spaceForRoot = values.space ?? folderSpace();
     if (values.file) {
+      let prepared: PreparedManifest | undefined;
       try {
-        const prepared = loadManifest(resolve(values.file));
-        // A --space that names another space is refused by the -f path below, before anything is written.
-        if (values.space === undefined || values.space === prepared.manifest.space) ensureRootForSpace(prepared.manifest.space);
+        prepared = loadManifest(resolve(values.file));
       } catch {
         // Manifest errors are reported by the -f path with the same load; do not double-print.
       }
+      // A --space that names another space is refused by the -f path below, before anything is written.
+      if (prepared && (values.space === undefined || values.space === prepared.manifest.space)) ensureRootForSpace(prepared.manifest.space);
     } else {
       ensureRootForSpace(spaceForRoot);
     }

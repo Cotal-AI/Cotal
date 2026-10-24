@@ -85,8 +85,8 @@
     {
       "name": "up -f prepares the root before the mismatch is refused",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "if (values.space === undefined || values.space === prepared.manifest.space) ensureRootForSpace(prepared.manifest.space);",
-      "replace": "ensureRootForSpace(prepared.manifest.space);",
+      "find": "if (prepared && (values.space === undefined || values.space === prepared.manifest.space)) ensureRootForSpace(prepared.manifest.space);",
+      "replace": "if (prepared) ensureRootForSpace(prepared.manifest.space);",
       "expectRed": "the refused up -f wrote nothing",
       "cell": "the refused up -f wrote nothing",
       "afterRestore": "pnpm --filter cotal-ai... build"
