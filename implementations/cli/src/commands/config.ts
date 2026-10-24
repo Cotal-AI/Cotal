@@ -101,7 +101,8 @@ interface PreferenceWrite {
   readonly key: PreferenceKey;
   readonly previous: string | null;
   readonly value: string | null;
-  /** The key as a command in this scope now resolves it, from this shell. */
+  /** The key as a command here now resolves it, from this shell: through `--space`, else the space a
+   *  launch here uses, whichever scope was written. */
   readonly effective: Setting;
 }
 
@@ -153,10 +154,12 @@ export async function config(args: ParsedArgs): Promise<void> {
     if (scope.space !== null && preferenceInfo(key).perSpace && (sub === "unset" || !preferenceValueProblem(key, value!))) assertKnownSpace(scope.space, prefs, sub === "unset");
     const previous = (scope.space === null ? prefs.defaults[key] : prefs.spaces[scope.space]?.[key]) ?? null;
     const { changed, revision } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
-    // What a command here uses next: through the written space, or the selected one for a default.
-    const effective = setting(key, readScope(v), readPreferences());
+    // What a command here uses next, whichever scope was written: through `--space`, else the space a
+    // launch here uses, as `spawn` resolves it. `--user` chooses where the value is saved, not that.
+    const here = readScope({ ...v, user: undefined });
+    const effective = setting(key, here, readPreferences());
     const result: PreferenceWrite = { kind: "preference-write", file: preferencesPath(), revision, scope, key, previous, value: value ?? null, effective };
-    const missing = key === "persona" && value?.trim() ? missingPersona(value, readScope(v)) : undefined;
+    const missing = key === "persona" && value?.trim() ? missingPersona(value, here) : undefined;
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: [...shadowedWrite(result), ...(missing ? [missing] : [])], noOp: !changed }, writeView);
     return;
   }

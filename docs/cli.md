@@ -5309,8 +5309,9 @@ machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the kno
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
 a space you removed can be read and removed, and refuse any other name the same way. A write that
 another value outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming
-that value: a variable, or your value for the selected space when you write your defaults without
-`--user`. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
+that value: a variable, or your value for the space a command here uses when you write your
+defaults, with or without `--user`. The receipt's effective value is the one a command here uses,
+read through `--space`, else that space. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
 warning naming the catalog. A variable whose value `config set` would refuse still wins, and
 `config`, `config get` and `status` name it in a `PREFERENCE_INVALID` warning with the reason.
 Setting a value that is already saved, or

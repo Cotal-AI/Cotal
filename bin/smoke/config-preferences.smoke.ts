@@ -209,7 +209,19 @@ const ansi = /\x1b\[/;
   check("--user ignores the selection", settingOf(run(["config", "--user", "--json"]), "persona")?.value === "default");
   const write = run(["config", "set", "persona", "mine", "--json"]);
   check("a write without --space goes to your defaults, and reports the selected space's value still winning here", saved().defaults.persona === "mine" && (write.envelope?.result as { effective?: Setting } | null)?.effective?.value === "demo-lead" && write.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED" && /your preference for space demo \(demo-lead\)/.test(w.message)) === true, shown(write));
+  // --user chooses where the value is saved, not what a command here uses: the receipt used to give
+  // your defaults' value while spawn took the selected space's.
+  const userWrite = run(["config", "set", "persona", "solo", "--user", "--json"]);
+  check("a write with --user reports the selected space's value still winning here, and warns",
+    saved().defaults.persona === "solo" && (userWrite.envelope?.result as { effective?: Setting } | null)?.effective?.value === "demo-lead" && userWrite.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, userWrite.envelope);
   rmSync(join(cotalHome, "current-mesh"));
+  const folderWrite = run(["config", "set", "harness", "claude", "--user", "--json"], {}, join(home, "demo"));
+  run(["config", "set", "harness", "opencode", "--space", "demo"]);
+  const folderAgain = run(["config", "set", "harness", "codex", "--user", "--json"], {}, join(home, "demo"));
+  check("with nothing selected, a --user write in a prepared folder reports that folder's value",
+    folderWrite.status === 0 && (folderAgain.envelope?.result as { effective?: Setting } | null)?.effective?.value === "opencode" && folderAgain.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, folderAgain.envelope);
+  run(["config", "unset", "harness"]);
+  run(["config", "unset", "harness", "--space", "demo"]);
   run(["config", "unset", "persona"]);
   run(["config", "unset", "persona", "--space", "demo"]);
 }
