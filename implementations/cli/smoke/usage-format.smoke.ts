@@ -5,8 +5,7 @@
  * `usage:` line or a lowercase "refusing to clean store without --force"; and `help service nosuch`
  * refused without listing the subcommands. A missing `--yes` is the exception: its refusal and remedy
  * are the whole fix, so it prints without the help. A mistyped word that is near a command, leading
- * flag, subcommand or option names it.
- * refused without listing the subcommands. Under `--plain` or a locale without UTF-8, which have no
+ * flag, subcommand or option names it. Under `--plain` or a locale without UTF-8, which have no
  * refusal mark, the error is the classified report instead, still followed by the help; it used to
  * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
  *
