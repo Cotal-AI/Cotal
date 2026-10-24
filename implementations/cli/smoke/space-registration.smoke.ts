@@ -14,7 +14,8 @@
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
- * default channels file, have refused and left the root as it was. Create and a later `up` write the
+ * default channels file, have refused and left the root as it was. That `up` reads its `--channels`
+ * seed once, from a FIFO written once, and seeds the channel from it. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -762,9 +763,17 @@ if (process.platform === "linux") {
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(unparsedDefault));
   unlinkSync(defaultSeed);
 
-  const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
+  // Its seed comes through a FIFO written once, which a second open would wait on forever.
+  const seedFifo = join(home, "channels-seed.fifo");
+  spawnSync("mkfifo", ["-m", "600", seedFifo]);
+  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten"}}}', seedFifo], { stdio: "ignore" });
+  const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--channels", seedFifo], {}, fresh);
+  feeder.kill();
+  unlinkSync(seedFifo);
   const started = findMesh("demo");
   check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
+  const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
+  check("it reads a --channels FIFO written once a single time and seeds the channel from it", seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), shown(seeded));
   check("the selection still names it", getCurrent() === "demo", getCurrent());
   const reads = await json(["space", "show", "demo"]);
   check("space show now reports its broker answering", reads.env?.result.kind === "space" && reads.env.result.check === "reachable", reads.env?.result);

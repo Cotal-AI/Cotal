@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { createConnection, createServer, isIP } from "node:net";
 import { homedir, hostname } from "node:os";
@@ -381,9 +382,6 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
   if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
-  // The broker reads an explicit channels file only once it is being prepared, so a file it would
-  // refuse is named here, before the stack journal or anything else is written.
-  if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
   if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: cotal down, then cotal up --rotate-sys" });
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else if (!(args.values.file && args.values["dry-run"] === true)) {
@@ -629,10 +627,15 @@ export async function upCommand(args: ParsedArgs): Promise<void> {
 /** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
  *  below). Ownership transfers with it: this call releases it at its own release point. */
 export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
+  // One `up`, its re-entries included, reads each channels file once (see `channelsReads`).
+  if (!channelsReads.getStore()) return channelsReads.run(new Map(), () => up(args, inheritedLock, freshTeamBoot, restoreSink));
   // A re-entry owns its inherited lock even if mode validation refuses before runUp adopts it.
   let adopted = false;
   try {
     validateUpArguments(args);
+    // The broker reads an explicit channels file only once it is being prepared, so a file it would
+    // refuse is named here, before the stack journal or anything else is written.
+    if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
     // Path flags still mean paths relative to the invoking directory, not the selected root.
@@ -4291,11 +4294,18 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
   return readChannelsFile(path, false);
 }
 
+/** The channels files one `up` has read, by path. It reads its seed when it checks the flags, when it
+ *  prepares the broker and when it seeds the registry, and `--channels` may name a pipe or a FIFO,
+ *  which a second open finds empty or waits on for a writer that is gone. */
+const channelsReads = new AsyncLocalStorage<Map<string, ChannelRegistryFile>>();
+
 /** Read, parse and check a channels file: `explicit` is a `--channels` path, else the root's default
  *  `.cotal/channels.json`. A `--channels` path that is missing, unreadable or not JSON is a usage
  *  refusal. A default file that is not JSON, and either file whose content the registry would not
  *  take, is a schema refusal. Each names the file. */
 function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
+  const read = channelsReads.getStore()?.get(path);
+  if (read) return read;
   const remedy = explicit ? "fix the file, or omit --channels" : `fix or remove ${path}`;
   let text: string;
   try { text = readFileSync(path, "utf8"); }
@@ -4305,6 +4315,7 @@ function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   catch (error) { throw new CommandFailure("refused", explicit ? "USAGE_INVALID" : "SCHEMA_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy }); }
   const problem = channelsFileProblem(value);
   if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `the channels file ${path} is invalid: ${problem}`, { remedy });
+  channelsReads.getStore()?.set(path, value as ChannelRegistryFile);
   return value as ChannelRegistryFile;
 }
 
