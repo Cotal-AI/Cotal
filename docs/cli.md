@@ -5690,6 +5690,11 @@ resolved root supplies the persona ACL, signer and default storage together. A r
 resolved refuses with its next step, such as `cotal up`. Conflicting current-folder and
 selected-root accounts refuse before issuance.
 
+A label takes letters, digits and `_`, since `-` separates the parts of a principal's name. `--role`
+takes letters, digits, `_` and `-`. A label or role with any other character, or an empty one,
+refuses `USAGE_INVALID` without the command's help. The refusal names the character, the value and
+the characters allowed, and its Next names the value with each such character replaced by `_`.
+
 `agent` is the default profile. Its channel ACLs and role come from the selected root's persona
 when present; explicit `--allow-subscribe`, `--allow-publish` and `--role` override them. With
 `--identity` naming an agent credential this space issued, the new credential keeps that

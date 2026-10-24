@@ -1,6 +1,6 @@
-import { assertValidOwnerToken, assertValidRole, assertValidChannel, endpointToken, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { assertValidOwnerToken, assertValidRole, assertValidChannel, boundedValue, endpointToken, oneLine, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { spaceFlag, serverFlag } from "./flags.js";
-import { CommandFailure, jsonFlag, plainFlag } from "./output.js";
+import { CommandFailure, jsonFlag, plainFlag, SHOWN_VALUE_MAX } from "./output.js";
 import { presentationOf } from "./present.js";
 
 export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance", completion: "files" } as const satisfies FlagSpec;
@@ -51,6 +51,22 @@ export function validateCredentialRevokeArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "the credential must be a user public key or a creds file path with no terminal controls");
 }
 
+/** The refusal for a credential label or `--role` that its token grammar does not take. `other`
+ *  matches one character the grammar does not allow. The refusal names the first such character, the
+ *  value and the characters allowed, and its Next names the value with each such character replaced
+ *  by `_`, unless the value is too long to repeat. */
+function tokenRefusal(what: "credential label" | "--role", value: string, other: RegExp, allowed: string): CommandFailure {
+  const noun = what === "--role" ? "a role" : "a label";
+  const pass = `use ${allowed} only`;
+  const found = new RegExp(other.source, "u").exec(value)?.[0];
+  if (found === undefined) return new CommandFailure("refused", "USAGE_INVALID", `the ${what} is empty; ${noun} takes ${allowed}`, { remedy: pass, selfContained: true });
+  const fixed = value.replace(new RegExp(other.source, "gu"), "_");
+  return new CommandFailure("refused", "USAGE_INVALID", `the ${what} "${oneLine(boundedValue(value, SHOWN_VALUE_MAX))}" has "${oneLine(found)}", which ${noun} cannot hold; ${noun} takes only ${allowed}`, {
+    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${fixed}`,
+    selfContained: true,
+  });
+}
+
 export function validateCredentialMintArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.positionals.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint needs one credential label");
@@ -58,8 +74,12 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   if (values.signer !== undefined || values.force !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "signing material and its replacement flag belong to auth signer", { remedy: "use cotal auth signer --out <private-file> [--force]" });
   const allowed = new Set(credentialMintFlags.map((flag) => flag.name));
   if (Object.keys(values).some((key) => !allowed.has(key as typeof credentialMintFlags[number]["name"]))) throw new CommandFailure("refused", "USAGE_INVALID", "a flag does not belong to credential minting");
-  try { assertValidOwnerToken(args.positionals[0]!); if (values.role !== undefined) assertValidRole(String(values.role)); }
-  catch { throw new CommandFailure("refused", "USAGE_INVALID", "use a valid credential label and role without path or terminal controls"); }
+  const label = args.positionals[0]!;
+  try { assertValidOwnerToken(label); } catch { throw tokenRefusal("credential label", label, /[^A-Za-z0-9_]/, "letters, digits and _"); }
+  if (values.role !== undefined) {
+    const role = String(values.role);
+    try { assertValidRole(role); } catch { throw tokenRefusal("--role", role, /[^A-Za-z0-9_-]/, "letters, digits, _ and -"); }
+  }
   if (values.endpoint !== undefined) {
     if (typeof values.endpoint !== "string" || values.channels !== undefined && (typeof values.channels !== "string" || values.channels.length > 16384)) throw new CommandFailure("refused", "USAGE_INVALID", "endpoint and channel selectors must be bounded text; no input coercion was used");
     const own = new Set(["endpoint", "channels", "out", "expires-in", "space", "server", "json", "plain"]);
