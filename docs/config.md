@@ -153,7 +153,7 @@ value is visible.
 `harness` is checked against the official connectors and the ones installed extensions provide.
 `persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
 with no control characters. When the catalog of the space a command here uses (`--space`, else the
-selected space) does not hold it, the value is still saved, since the file may be created later,
+selected space, else the space `spawn` resolves from this folder) does not hold it, the value is still saved, since the file may be created later,
 with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A
 value is checked when it is written, and an unknown key or an invalid value is refused with the valid
 ones. Preferences hold no credentials. They change future commands, not agents already running.
@@ -165,7 +165,10 @@ The file is private to its owner and versioned:
 ```
 
 `revision` counts the writes. A write holds a lock, refuses with `CONFLICT` if the file changed after
-the command read it, and replaces the file atomically, so two writers never lose an edit. A file that
+the command read it, and replaces the file atomically, so two writers never lose an edit. The new
+file is private, mode `0600`, whatever mode the old one had. When that was another mode, such as a
+read-only `0400`, the write names it in a `PREFERENCES_MODE_CHANGED` warning, since a file's mode does
+not stop `config set` or `unset`. A file that
 does not validate (not JSON, a newer `schemaVersion`, an unknown key or an invalid value) stops every
 command that could act on a default, with an error that names the file and the problem. Help, shell
 completion, `version` and `docs` use no preference and still run. `status` reports the file as a part
@@ -173,6 +176,15 @@ it could not read, exit 4, and gives the fix as its next step.
 Nothing resets it: fix or remove the file. A `preferences.json` that is a symbolic link stops them the
 same way with `PERMISSION_DENIED` (exit 2), naming the file it points to: `editor` runs as a shell
 command, so the file is neither read through the link nor replaced by `cotal config set`.
+
+The folder that holds the file, and every folder above it, must be one only you or root can write.
+Group write is accepted only for your own private group with no extended ACL, and world write never
+is. Another account that could write one of them could replace the file. In such a folder every
+command that uses your preferences still applies them, with a `PREFERENCES_FOLDER_UNPROTECTED` warning
+that names the folder and the `chmod` that fixes it, and `cotal status` lists that `chmod` under Next. A
+write there (`config set` or `unset`, `setup`, or `space forget` removing a space's values) is refused
+with `PERMISSION_DENIED` (exit 2) before anything is changed. When the folder does not exist yet, the
+nearest folder above it is checked.
 
 ## Environment variables
 
