@@ -48,8 +48,9 @@ import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/serv
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
-import { maintenanceNextStep } from "../lib/restore.js";
-import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { maintenanceNextStep, preservedSourceState, restoreNextStep } from "../lib/restore.js";
+import { attemptProcessesGone } from "../lib/isolated-broker.js";
+import { readStackJournal, STACK_DEFINITION, stackStartedWithoutManager } from "../lib/stack-journal.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
@@ -162,6 +163,8 @@ export interface StatusResult {
     /** Whether this root records a controller stack for the process space. Its members are service
      *  instances, so the legacy pidfile rows say nothing about them. */
     controllerStack: boolean;
+    /** Whether that controller stack was started with `--no-manager`, so it runs no manager by choice. */
+    noManager: boolean;
   };
   meshes: {
     current: string | null;
@@ -561,7 +564,7 @@ async function readResponderAxis(selected: Selected): Promise<{ state: DeliveryR
 
 async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<StatusResult["folder"]> {
   const cmd = displayCmd();
-  const folder = (auth: StatusResult["folder"]["auth"], processes: ProcessRow[] | null = null, storedState = false, processSpace: string | null = null, controllerStack = false): StatusResult["folder"] => ({
+  const folder = (auth: StatusResult["folder"]["auth"], processes: ProcessRow[] | null = null, storedState = false, processSpace: string | null = null, controllerStack = false, noManager = false): StatusResult["folder"] => ({
     root,
     auth,
     ...folderPersonas(root, selected, values, gaps, hints),
@@ -569,6 +572,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     processSpace,
     storedState,
     controllerStack,
+    noManager,
   });
   const unreadable = (error: string, hint: string): StatusResult["folder"] => {
     gaps.add("AUTH_UNREADABLE", `this folder's trust material could not be read: ${error}`, { root });
@@ -652,14 +656,18 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
   // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
   // A controller stack's broker has no legacy pidfile, so that heuristic says nothing about it.
-  let controllerStack = false;
-  try { controllerStack = readStackJournal(root)?.journal.space === space; } catch { controllerStack = false; }
+  let controllerStack = false, noManager = false;
+  try {
+    const journal = readStackJournal(root)?.journal;
+    controllerStack = journal?.space === space;
+    noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
+  } catch { controllerStack = false; }
   const storedState = !controllerStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
   if (storedState && !maintained) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
-  return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack);
+  return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager);
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does
@@ -1317,6 +1325,8 @@ function selectedOverview(r: StatusResult): Section | undefined {
     }
   }
   if (s.snapshot.state === "unavailable") rows.push(["Live details", stateCell(`unavailable · ${s.snapshot.reason}`, "waiting")]);
+  if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack && r.folder.noManager)
+    rows.push(["Manager", stateCell("none · this stack was started with --no-manager; bare cotal up adds it", "hint")]);
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
     blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] });

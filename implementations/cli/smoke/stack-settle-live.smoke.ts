@@ -199,9 +199,12 @@ try {
     check("ps on a --no-manager stack refuses TARGET_UNAVAILABLE, exit 2", ps.status === 2 && ps.env?.error?.code === "TARGET_UNAVAILABLE" && !ps.env.error.message.includes("SPEC"), shown(ps));
     check("...and its native detail says the manager has no live instance, with no spec rule in it",
       ps.env?.error?.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' && ps.env.error.remedy === "start the stack's manager with bare cotal up; a stack started with --no-manager has none", shown(ps));
+    const noManager = () => (cli(root, "status", "--json").env?.result?.folder as { noManager?: boolean } | undefined)?.noManager;
+    check("status on that stack reports that it runs no manager by choice", noManager() === true);
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
+    check("...and status no longer reports the stack as manager-less", noManager() === false);
 
     const crashed = pidOf(space, "stack-broker");
     if (crashed !== null) process.kill(crashed, "SIGKILL");

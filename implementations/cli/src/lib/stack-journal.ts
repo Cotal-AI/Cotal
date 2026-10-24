@@ -388,6 +388,12 @@ export function newStackOperation(kind: "up" | "down", withAgents = false): Stac
   return { id: randomUUID(), kind, phase: "planned", recordedAt: new Date().toISOString(), withAgents };
 }
 
+/** Whether the stack's last `up` completed with its manager not attempted, as `up --no-manager`
+ *  records it, so the stack runs no manager by choice. */
+export function stackStartedWithoutManager(journal: StackJournal): boolean {
+  return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+}
+
 /** Whether this root records a controller stack for `space` with no live manager instance. False
  *  when it records none, or an unreadable one, so a remote or legacy mesh keeps its own answer. */
 export function stackManagerAbsent(root: string, space: string): boolean {
