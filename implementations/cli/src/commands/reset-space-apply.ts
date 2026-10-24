@@ -16,6 +16,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { assertResetEligible, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
 import { acquireStackOperationLock } from "../lib/stack-journal.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
+import { verdictSection } from "../lib/verdict.js";
 
 /** This space's saved service definitions whose credential file the account `accountPub` issued.
  *  A reset removes that account, so the next identity rejects each such credential. A file that
@@ -78,7 +79,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     // Every check passed, so the verdict is that the apply is offered; it runs them all again.
     writeResult(presentation, { command: "reset", target, result: { ...impact, applyVerdict: { offered: true } } }, () => {
       const view = impactView();
-      return { ...view, sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal reset space ${space} --yes`, description: "Apply it; every check runs again under the root's maintenance lock" }] }] }] };
+      return { ...view, sections: [verdictSection(`reset space ${space}`, undefined, { command: `cotal reset space ${space} --yes`, description: "Remove the stopped store and local identity", recheck: "The apply runs every check again under the root's maintenance lock." }), ...view.sections] };
     });
     return;
   }

@@ -131,7 +131,8 @@ try {
     assert.equal(envelope.result.findings, 0, "no findings");
     assert.equal(envelope.outcome, "ok", "the diagnosis ends ok");
     assert.equal(code, 0, "exit 0");
-    assert.match(text, /No local credential findings/, "the text report says there are no findings");
+    assert.match(text, /No findings; 1 credential has no expiry by request/, "the heading says there are no findings and names the warning");
+    assert.doesNotMatch(text, /No local credential findings/, "and never reads as nothing to do beside a warning");
     assert.match(text, /carol\.creds: unbounded by request/, "and prints the warning");
     rmSync(requested);
     rmSync(noExpiryRecordPath(requested));
