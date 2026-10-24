@@ -34,6 +34,7 @@
  * original rather than somewhere else.
  */
 import {
+  readRunRecord,
   replayRunJournal,
   newTakeoverId,
   recordCheckpointAnswer,
@@ -130,6 +131,8 @@ export async function locateOpenCheckpoint(
   deps: ResolveCheckpointDeps,
   req: { readonly runId: string; readonly stepKey: string; readonly takeoverId: string },
 ): Promise<OpenCheckpoint> {
+  // A run nothing records has no steps either, so the run is what to name as missing.
+  if (await readRunRecord(deps.kv, deps.endpoint, req.runId) === undefined) throw new CheckpointNotOpen(req.runId, req.stepKey, "no-run");
   const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
   const token = openCheckpointToken(entries, req.runId, req.stepKey);
   const spec = await readSpecPastTheMintWindow(deps, token);
@@ -187,7 +190,7 @@ async function readSpecPastTheMintWindow(
  *  revoked, or its marker could not be read. */
 export class RunAnswerBlocked extends EpEnvelopeError {
   constructor(message: string) {
-    super("failed-precondition", `${message}; no answer was filed (SPEC 14.8)`, undefined, "not-executed");
+    super("failed-precondition", `${message}; no answer was filed`, undefined, "not-executed");
     this.name = "RunAnswerBlocked";
   }
 }
@@ -251,6 +254,7 @@ export async function locateAcceptedAnswer(
   deps: ResolveCheckpointDeps,
   req: { readonly runId: string; readonly stepKey: string; readonly takeoverId: string },
 ): Promise<AcceptedAnswer> {
+  if (await readRunRecord(deps.kv, deps.endpoint, req.runId) === undefined) throw new CheckpointNotAmendable(req.runId, req.stepKey, "no-run");
   const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
   let token: string | undefined;
   try {

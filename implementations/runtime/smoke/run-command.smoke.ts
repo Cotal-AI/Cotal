@@ -403,6 +403,20 @@ let P = "";
   const late = await wf(["answer", rid, "/race:doppel#0/b:zwei/checkpoint:zwei#0"], { by: "smoke", value: '"B"' }).then(() => undefined, (e: Error) => e);
   c("an answer at the losing branch's cancelled checkpoint says the race cancelled it and which branch won",
     late?.message === `run ${rid} has no open checkpoint at /race:doppel#0/b:zwei/checkpoint:zwei#0: that step was cancelled because branch eins won the race /race:doppel#0`, late?.message);
+  // A run ID nothing records used to read "no step is recorded under that key", and the local
+  // answer reported it as an unknown outcome although locating a pause writes nothing.
+  const nowhere = await wf(["answer", "run-0123456789abcdef0123456789abcdef", "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
+  c("an answer to a run ID nothing records is refused TARGET_NOT_FOUND, saying no run is recorded under that ID",
+    isCommandFailure(nowhere) && nowhere.code === "TARGET_NOT_FOUND"
+      && nowhere.message === "run run-0123456789abcdef0123456789abcdef has no open checkpoint at /checkpoint:approve#0: no run is recorded under that id", nowhere?.message);
+  // An amend located nothing either, and the local amend reported that as an unknown outcome too.
+  const nowhereAmend = await wf(["amend", "run-0123456789abcdef0123456789abcdef", "/checkpoint:approve#0"], { by: "smoke", value: '"no"' }).then(() => undefined, (e: Error) => e);
+  c("an amend of a run ID nothing records is refused TARGET_NOT_FOUND, saying no run is recorded under that ID",
+    isCommandFailure(nowhereAmend) && nowhereAmend.code === "TARGET_NOT_FOUND"
+      && nowhereAmend.message === "run run-0123456789abcdef0123456789abcdef has no accepted answer to amend at /checkpoint:approve#0: no run is recorded under that id", nowhereAmend?.message);
+  const noStep = await wf(["amend", rid, "/checkpoint:nosuch#0"], { by: "smoke", value: '"no"' }).then(() => undefined, (e: Error) => e);
+  c("an amend at a step the run does not have is refused TARGET_NOT_FOUND, since nothing was written",
+    isCommandFailure(noStep) && noStep.code === "TARGET_NOT_FOUND" && noStep.message.endsWith("no step is recorded under that key"), noStep?.message);
 
   // Which branch a second, concurrent answer lands in is decided by the broker, so the not-acted-on
   // lines are read from the rows a lost race leaves: one resolved and one cancelled after it
@@ -555,13 +569,17 @@ let P = "";
   c("revoke acknowledges with the revoker and the reason",
     captured().includes("revoked by smoke-operator (broker outage)"), captured());
   c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
-    captured().includes(`run ps now lists ${rid} as revoked`), captured());
+    captured().includes(`cotal run now lists ${rid} as revoked`), captured());
+  c("...and says a revoke does not cancel the run, since work that touches no channel never reads the marker",
+    captured().includes("a revoke does not cancel the run: work that touches no channel, such as sleep or log, keeps running until the host driving it stops"), captured());
 
   reset();
   await wf(["ps"]);
   const after = psRow(rid);
   c("ps prints revoked for it afterwards, whatever the record says",
     stateOf(after) === "admission revoked" && !after.includes("running"), after);
+  c("...and names who revoked it and why under the table, as the docs promise",
+    lines().some((l) => l.trim() === `${rid}: revoked by smoke-operator (broker outage)`), captured());
   // THE CONTROL for block 10's exit status: every marker on this table was read, so the listing is
   // complete and the command exits 0.
   c("a listing whose every marker was read exits 0", process.exitCode === 0, process.exitCode);
@@ -587,7 +605,7 @@ let P = "";
   reset();
   const answered = await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
   c("an answer to the revoked run's open checkpoint is refused LIFECYCLE_BLOCKED, naming who revoked it and why",
-    isCommandFailure(answered) && answered.code === "LIFECYCLE_BLOCKED" && answered.message.includes("revoked by smoke-operator (broker outage)") && answered.message.includes("no answer was filed"), answered?.message ?? captured());
+    isCommandFailure(answered) && answered.code === "LIFECYCLE_BLOCKED" && answered.message.includes("revoked by smoke-operator (broker outage)") && answered.message.endsWith("; no answer was filed"), answered?.message ?? captured());
   const parked: string[] = [];
   for (const r of (await journal(rid)).records) {
     if (r.record.kind !== "step") continue;
@@ -663,10 +681,14 @@ let P = "";
   const store = { create: async () => { created = true; return 0; } } as unknown as Parameters<typeof revokeRunAdmission>[0];
   const writer = await revokeRunAdmission(store, EP, { version: 1, runId: eid, by: "", reason: "", revokedAt: Date.now() })
     .then(() => undefined, (e: Error) => e);
-  c("revoke refuses an empty --by and --reason",
-    eid !== "" && isCommandFailure(refused) && refused.code === "USAGE_INVALID" && refused.message.includes("run revoke requires --local --by <actor> --reason <text>")
+  c("revoke refuses an empty --by and --reason, naming --by, with no help",
+    eid !== "" && isCommandFailure(refused) && refused.code === "USAGE_INVALID" && refused.message === "--by is empty; nothing was written" && refused.selfContained === true
       && writer !== undefined && writer.message.includes("by and reason must be non-empty") && !created,
     { command: refused?.message ?? captured(), writer: writer?.message, created });
+  const blankReason = await wf(["revoke", eid], { by: "smoke-operator", reason: "  " }).then(() => undefined, (e: Error) => e);
+  c("a blank --reason is refused naming --reason, with the command to run instead",
+    isCommandFailure(blankReason) && blankReason.code === "USAGE_INVALID" && blankReason.message === "--reason is empty; nothing was written"
+      && blankReason.remedy === `name why it is revoked: cotal run revoke ${eid} --local --by <who> --reason <text>`, blankReason);
 
   reset();
   await withStderr(() => wf(["ps"])).catch(() => undefined);
@@ -765,7 +787,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 81;
+const DECLARED = 87;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

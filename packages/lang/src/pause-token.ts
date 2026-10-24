@@ -7,17 +7,19 @@ import { holdRequestId } from "./keys.js";
 import { journalEntryKeyString, type JournalEntry } from "./journal.js";
 
 /** No open checkpoint (or ask) answers to this address in this run. A `cancelled` step names the
- *  race it lost and the branch that won it, when a race cancelled it. */
+ *  race it lost and the branch that won it, when a race cancelled it. `no-run`: nothing records a
+ *  run under that id. */
 export class CheckpointNotOpen extends Error {
   constructor(
     readonly runId: string,
     readonly stepKey: string,
-    readonly why: "unknown" | "settled" | "cancelled" | "not-a-checkpoint" | "no-identity",
+    readonly why: "no-run" | "unknown" | "settled" | "cancelled" | "not-a-checkpoint" | "no-identity",
     readonly lostRace?: { readonly race: string; readonly winner?: string },
   ) {
     super(
       `run ${runId} has no open checkpoint at ${stepKey}: ${
         {
+          "no-run": "no run is recorded under that id",
           unknown: "no step is recorded under that key",
           settled: "that step has already settled",
           cancelled: lostRace === undefined ? "that step was cancelled"
@@ -48,17 +50,19 @@ function lostRaceOf(entries: readonly JournalEntry[], stepKey: string): { race: 
 }
 
 /** No accepted answer at this address that an amendment could be filed beside, or (`unrecorded`)
- *  one the pause accepted that the run's journal does not record yet. */
+ *  one the pause accepted that the run's journal does not record yet. `no-run`: nothing records a
+ *  run under that id. */
 export class CheckpointNotAmendable extends Error {
   constructor(
     readonly runId: string,
     readonly stepKey: string,
-    readonly why: "unknown" | "open" | "unrecorded" | "not-a-checkpoint" | "unanswered",
+    readonly why: "no-run" | "unknown" | "open" | "unrecorded" | "not-a-checkpoint" | "unanswered",
   ) {
     super(why === "unrecorded"
       ? `run ${runId} accepted an answer at ${stepKey} and has not recorded it yet; amend it once the step lists that answer`
       : `run ${runId} has no accepted answer to amend at ${stepKey}: ${
         {
+          "no-run": "no run is recorded under that id",
           unknown: "no step is recorded under that key",
           open: "that step is still open, so answer it instead",
           "not-a-checkpoint": "that step is neither a checkpoint nor an ask",

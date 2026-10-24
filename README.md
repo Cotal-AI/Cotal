@@ -173,8 +173,8 @@ checkpoint, from a terminal or from an agent session through the `cotal_run` too
 
 ```bash
 cotal run start --file build.cotal.js               # validate, start on the manager, print the run id
-cotal run ps                                        # list runs and their state
-cotal run journal <runId>                           # the step journal, with each open question
+cotal run                                           # list runs and their state
+cotal run show <runId>                              # the step journal, with each open question
 cotal run answer <runId> <stepKey> --value '"yes"'  # resolve the checkpoint
 cotal run resume <runId>                            # the manager takes the run back
 ```

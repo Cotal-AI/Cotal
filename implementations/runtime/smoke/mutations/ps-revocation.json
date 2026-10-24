@@ -86,7 +86,7 @@
     {
       "name": "revoke stops saying what the table will show",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "    console.log(`run ps now lists ${runId} as revoked; the status record is left as its driver last wrote it`);",
+      "find": "    console.log(`cotal run now lists ${runId} as revoked; the status record is left as its driver last wrote it`);",
       "replace": "    void runId;",
       "cell": "...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
       "expectRed": "...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",

@@ -167,6 +167,7 @@ try {
   await local.reconcile();
   const resumeRefusal = await refused(local.resume({ runId: waiting }));
   cell("U6-6 manager resume of a revoked run is refused", resumeRefusal.includes("was revoked") && resumeRefusal.includes("not resumed"));
+  cell("U6-6b the refusal cites no spec section", resumeRefusal !== "" && !resumeRefusal.includes("SPEC"));
   await local.stop();
 
   const pairRun = newRun(); await admit(pairRun);

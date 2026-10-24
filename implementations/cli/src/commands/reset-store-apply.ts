@@ -74,7 +74,7 @@ export function storeRunBlocks(runs: StackRuns | undefined, remedy: string | und
 export function storeContentsSection(removed: readonly string[], runs: StackRuns | undefined, root: string): Section[] {
   return removed.length ? [{ title: "Store contents", blocks: [
     { kind: "lines", lines: [`Removing the store removes ${storeContentsText(removed)}. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards.`] },
-    ...storeRunBlocks(runs, `Only the broker reads the store, and it is stopped. To see the runs, run cotal up and cotal run ps from ${root}, then cotal down --yes.`),
+    ...storeRunBlocks(runs, `Only the broker reads the store, and it is stopped. To see the runs, run cotal up and cotal run from ${root}, then cotal down --yes.`),
   ] }] : [];
 }
 

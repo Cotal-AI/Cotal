@@ -703,7 +703,7 @@ export class RunHosting {
         // re-admits under the resuming caller, and a revoked run is not continued.
         const admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, args.runId);
         if (admission.revoked !== undefined)
-          throw new EpEnvelopeError("permission-denied", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed (SPEC 14.8)`);
+          throw new EpEnvelopeError("permission-denied", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed`);
         return { status: record.status?.value, program, admission };
       });
       if (found === undefined)
@@ -1212,7 +1212,7 @@ export class RunHosting {
         );
       }
       if (Date.now() > deadline)
-        throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${RUN_ACTIVATION_WAIT_MS / 1000}s and was released; \`cotal run ps\` shows what it recorded, and a \`cotal run resume ${req.runId}\` tries again`);
+        throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${RUN_ACTIVATION_WAIT_MS / 1000}s and was released; \`cotal run\` shows what it recorded, and a \`cotal run resume ${req.runId}\` tries again`);
     }
   }
 
