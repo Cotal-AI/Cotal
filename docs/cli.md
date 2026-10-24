@@ -5144,6 +5144,7 @@ cotal actor list
 | `--parent <owner.actor>` | none | Audit link to the spawning principal. An operator grant is the authority, so the link does not narrow the row |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
+`cotal help actor` lists `grant`, `revoke` and `list`, and shell completion offers them.
 `actor list`, `grant` and `revoke` resolve their space and root as `auth grants`, `auth grant` and
 `auth revoke` do, and refuse the same way. With no space to resolve they refuse with a next step,
 such as `cotal up`, rather than assume one, and a root that does not hold the space's user-auth
