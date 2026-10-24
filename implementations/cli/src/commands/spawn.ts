@@ -101,6 +101,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
+import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { askManager, describeUnanswered, failIfNotOk, liveManagerIds, managerRailGone, onInstance, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
@@ -658,6 +659,8 @@ export async function launchManagedPersona(
     // A pinned describe that drew no answer means the launch was never sent, as ps and stop --on say.
     if (on !== undefined && describeUnanswered(reply))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not answer, so the launch was not sent and nothing was launched`, { target, native: { code: reply.code, ...(reply.error ? { detail: oneLine(reply.error) } : {}) }, remedy: "cotal ps shows which managers answer; rerun the spawn on one of them with --on <instance>" });
+    // So does an unpinned one: no manager answered, and the launch was never published.
+    if (on === undefined && describeUnanswered(reply)) throw unansweredClassLaunch(t, { target, native: { code: reply.code, ...(reply.error ? { detail: oneLine(reply.error) } : {}) } });
     // A manager without the connector: it is added where that manager runs, not on this machine.
     const absent = reply.nativeOutcome === "not-executed" && reply.error !== undefined ? hintedConnector(reply.error) : undefined;
     if (absent !== undefined) {
@@ -718,6 +721,17 @@ async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTa
       remedy: `add one where ${census.managers.length > 1 ? "one of them" : "that manager"} runs, such as ${extAddFor(agent ?? DEFAULT_CONNECTOR)}, then restart that manager; it reads its agent applications when it starts` });
   }
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager of yours received this unpinned launch; nothing was launched", { ...at, remedy: "run the spawn again, or pin one manager with --on <instance> from cotal ps" });
+}
+
+/** Why no manager answered an unpinned launch's describe, so the launch was never sent. This root's
+ *  own stack says why when it records one, in the words `ps` uses for the same silence. */
+function unansweredClassLaunch(t: ControlTarget, at: { target: object; native: object }): CommandFailure {
+  const refused = (message: string, remedy: string) => new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}, so the launch was not sent and nothing was launched`, { ...at, remedy });
+  if (t.root !== undefined && stackManagerStarting(t.root, t.space)) return refused("the stack's manager is starting", "run the spawn again once cotal up reports the manager started");
+  if (t.root !== undefined && stackManagerAbsent(t.root, t.space)) return refused("no manager is running for this space", "start the stack's manager with bare cotal up; a stack started with --no-manager has none");
+  const pid = t.root === undefined ? undefined : runningStackManagerPid(t.root, t.space);
+  if (pid !== undefined) return refused(`this space's stack manager (pid ${pid}) is running but did not answer`, `if it stays unresponsive, end that process with kill -KILL ${pid}; then bare cotal up starts the manager again`);
+  return refused("no manager answered", "cotal ps shows which managers answer; run the spawn again once one does");
 }
 
 /** What the registered managers say about unpinned launches. `noApplication` holds when one answered

@@ -53,7 +53,7 @@ const { Manager } = await import("../../manager/src/manager.js");
 const { managerRailGone, pinnedLivenessProbe } = await import("../src/lib/control.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
-const EXPECTED_CELLS = 27; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census, +2 for section 8's removal
+const EXPECTED_CELLS = 28; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census, +2 for section 8's removal, +1 for section 9's unanswered describe
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -285,6 +285,18 @@ try {
   const legacy = await cli(["deregister-instance", "--instance", IID_CORPSE]);
   check("deregister-instance refuses naming endpoint deregister, and prints no usage after it",
     legacy.status === 1 && legacy.stderr.includes("the legacy deregistration spelling no longer executes") && legacy.stderr.includes("cotal endpoint deregister <class> <full-instance-id>") && !/^(Usage|Options)$/m.test(legacy.stderr), legacy.stderr);
+
+  console.log("9. with every registered manager gone, an unpinned launch's describe draws no answer and nothing is sent");
+  // The live manager now crashes the same way, so the registry lists two managers and neither answers.
+  (live as unknown as MgrPriv).leaseStopping = true;
+  await ((live as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await wait(500);
+  const unanswered = await cli(["spawn", "nobody", "-d", "--json", "--space", SPACE]);
+  let silent: { target?: { requestId?: string }; error?: { code?: string; message?: string } } | undefined;
+  try { silent = JSON.parse(unanswered.stdout); } catch { /* reported below */ }
+  check("the spawn refuses TARGET_UNAVAILABLE, exit 2, saying the launch was not sent, with no request id",
+    unanswered.status === 2 && silent?.error?.code === "TARGET_UNAVAILABLE" && silent.error.message === "no manager answered, so the launch was not sent and nothing was launched" && silent.target?.requestId === undefined,
+    { status: unanswered.status, out: unanswered.stdout.slice(0, 900), err: unanswered.stderr.slice(-600) });
 } finally {
   for (const nc of conns) { try { await nc.drain(); } catch { /* ignore */ } }
   await live?.stop().catch(() => {});

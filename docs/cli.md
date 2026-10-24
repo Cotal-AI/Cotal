@@ -7347,7 +7347,9 @@ persona names the manager, its host and the file it looked for, which is created
 missing connector is `DEPENDENCY_UNAVAILABLE`, as it is for a spawn in this terminal, and the
 refusal names the manager's instance and the host its status reports. An
 unpinned launch that no manager received is refused with `TARGET_UNAVAILABLE` and exit 2. With no
-manager running, the CLI says so before it sends and names bare `cotal up`. When every live manager
+manager running, the CLI says so before it sends and names bare `cotal up`. When registered managers do not answer the launch describe, the launch
+was never sent and is refused the same way. The reason follows `ps` when this folder records
+its manager stopped, starting or running but silent. When every live manager
 reports `classSpawn: false`, the refusal is `DEPENDENCY_UNAVAILABLE`: it names each manager and its
 host, says none has an agent application installed, and names the `cotal ext add` that adds one.
 A registered manager whose rail the broker reports empty is skipped without waiting and named
