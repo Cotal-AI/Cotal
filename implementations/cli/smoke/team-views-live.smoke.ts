@@ -9,6 +9,8 @@
  *     says what to set, and its preview warns `LIVE_DELIVERY_REQUIRED` for the same cards.
  *  C. a reapply of the identical settled deployment is a no-op, and the preview says so instead of
  *     saying a reapply refuses.
+ *  D. a manifest `defaults:` block: `team check` and `team boot --dry-run` show it, and mark each
+ *     channel field that inherits it `(default)` instead of "not declared".
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -49,11 +51,12 @@ const answered = (run: ReturnType<typeof cotal>) => { const e = envelope(run.std
 /** A text read that completed: exit 0, with its caveat in the report on stdout and not on stderr. */
 const reported = (run: ReturnType<typeof cotal>, caveat: string) => run.status === 0 && run.stdout.includes(caveat) && !run.stderr.includes(caveat);
 
-const manifest = (name: string, space: string, channels: Record<string, string>) => {
-  writeFileSync(join(s, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${SERVER}\nchannels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
+const manifest = (name: string, space: string, channels: Record<string, string>, head = "") => {
+  writeFileSync(join(s, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${SERVER}\n${head}channels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
 };
 manifest("live.yaml", SPACE, { live1: "    deliveryClass: live\n", live2: "    deliveryClass: live\n" });
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
+manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n");
 
 let up = false;
 try {
@@ -111,6 +114,17 @@ try {
   const reapplyPreview = cotal(s, "team", "deploy", "live.yaml", "--dry-run");
   check("its preview says a reapply of an identical settled deployment changes nothing, not that it refuses",
     reapplyPreview.stdout.includes("Reapplying an identical settled deployment changes nothing") && !reapplyPreview.stdout.includes("reapply refuse"), reapplyPreview.stdout.slice(-900));
+
+  console.log("\nD. a manifest defaults block");
+  const checked = cotal(s, "team", "check", "defaults.yaml");
+  const inheritedRow = /#dops\s+live \(default\)\s+off \(default\)\s+2h \(default\)/;
+  check("team check shows the manifest defaults", /Manifest defaults:\s+delivery live, replay off, window 2h/.test(checked.stdout), checked.stdout);
+  check("team check marks each field a channel inherits from them (default)", inheritedRow.test(checked.stdout) && /#own\s+live \(default\)\s+on\s+2h \(default\)/.test(checked.stdout), checked.stdout);
+  check("team check --json carries the defaults", JSON.stringify(envelope(cotal(s, "team", "check", "defaults.yaml", "--json").stdout)?.result?.defaults) === JSON.stringify({ replay: false, replayWindow: "2h", deliveryClass: "live" }));
+  const bootDefaults = cotal(s, "team", "boot", "defaults.yaml", "--dry-run");
+  check("team boot --dry-run shows them the same way", /Manifest defaults:\s+delivery live, replay off, window 2h/.test(bootDefaults.stdout) && inheritedRow.test(bootDefaults.stdout), bootDefaults.stdout.slice(-1500));
+  const noDefaults = cotal(s, "team", "check", "live.yaml");
+  check("a manifest with no defaults block says none are declared", /Manifest defaults:\s+none declared/.test(noDefaults.stdout) && /#live1\s+live\s+not declared\s+not declared/.test(noDefaults.stdout), noDefaults.stdout);
 } finally {
   if (up) {
     const down = cotal(s, "down", "--yes");

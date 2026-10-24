@@ -6182,8 +6182,9 @@ attempts. Retained verification and guarded removal use the paths below.
 
 `team boot <file> --dry-run` shows the resolved fresh topology, its target root,
 requested applications, roles, models and channels with declared delivery,
-replay and window settings. Absent channel settings are not inferred from a
-saved registry that this preview does not read. An open manifest with an
+replay and window settings. It shows the manifest's `defaults:` too, and a channel field that
+inherits one is marked `(default)`, because boot seeds them as the space defaults. A setting
+neither declares is not inferred from a saved registry that this preview does not read. An open manifest with an
 explicit durable default or channel declaration is warned as unsupported:
 its native fresh apply refuses before effects because open mode starts no
 delivery daemon. Direct `up -f --dry-run` refuses the same contradiction.
@@ -6409,8 +6410,10 @@ there without replaying its effects. An interrupted transition can continue only
 retirement and before any card-removal intent exists. Open and user-auth mixed removal refuse.
 
 `team check <file>` resolves the native manifest and referenced personas without a broker.
-It lists declared per-channel delivery class, replay and replay window without claiming an
-absent field's live registry value; the native seed may merge over saved metadata.
+It lists the manifest's `defaults:` and each channel's delivery class, replay and replay window.
+A field the channel leaves out shows the manifest default it inherits at boot, marked `(default)`.
+A field neither declares does not claim a live registry value; the native seed may merge over
+saved metadata. The JSON result carries `defaults` beside the channels.
 `--graph` shows effective channel access edges from merged agent policies, marking persona-inherited
 channels that have no manifest card. It also shows each agent's role, capabilities and whether
 capabilities came from the manifest, a persona or neither. Terminal tables show up to 100
