@@ -9,7 +9,7 @@
  * divergence the differential suite could only find program-by-program.
  */
 import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
-import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, stepKeyString, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
+import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, stepKeyString, type JournalKind, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError, type JournalEntry, type LookupVerdict } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { HOLDABLE_KINDS, PRIMITIVES, type EffectKind } from "./primitives.js";
@@ -168,10 +168,11 @@ function recordableError(e: EffectError, kind: string): { readonly error: EntryE
 }
 
 /**
- * L4028: an effect kind `once` does not admit (spec/cotal-lang.md §7.8), refused before its entry
- * begins, so no handler method is called and a resume reaches the same refusal.
+ * L4028: an effect kind `once` does not admit, or a scope that dispatches (spec/cotal-lang.md §7.8),
+ * refused before its entry begins, so no handler method is called and a resume reaches the same
+ * refusal.
  */
-function notHoldable(kind: EffectKind, path: readonly ScopeFrame[]): RuntimeFault {
+function notHoldable(kind: JournalKind, path: readonly ScopeFrame[]): RuntimeFault {
   return new RuntimeFault(
     "L4028",
     `\`${kind}\` runs inside \`once\` at ${scopePathString(path)}, and \`once\` admits only \`ask\`: a resume could not hold any other kind without dispatching it again or losing run state it builds. Move the \`${kind}\` outside the \`once\` that wraps the write.`,
@@ -1368,8 +1369,8 @@ export async function performScope(
   /** The `branchDigest` over a named loser set. Absent where there is nothing to digest. */
   branchDigest?: (losers: readonly string[]) => string | undefined,
 ): Promise<unknown> {
-  if (scopeKey.kind === "conclave" && atMostOnce(scopeKey.scope)) throw notHoldable("conclave", scopeKey.scope);
   const dispatches = scopeTraits(scopeKey.kind)?.dispatches === true;
+  if (dispatches && atMostOnce(scopeKey.scope)) throw notHoldable(scopeKey.kind, scopeKey.scope);
   const inputHash = digest(
     subject === undefined
       ? { kind: scopeKey.kind, name: scopeKey.name }

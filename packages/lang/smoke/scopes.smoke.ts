@@ -683,6 +683,39 @@ log(r.index);
   ok("and the race resolves as the live run did", JSON.stringify(logged) === '[["reached"],["fast"]]', logged);
 }
 
+{
+  // A scope that dispatches is refused inside `once` (L4028) by its `dispatches` trait, before its
+  // entry begins. The body arrives through a parameter, so the validator's L2033 cannot see it and the
+  // run's own refusal is what this cell grades; the validator control comes first.
+  const IN_ONCE = `
+const a = await spawn("a", { name: "a" });
+async function inside(body) {
+  return await once(body, { name: "o" });
+}
+await inside(async () => await conclave([a], async (ch) => 1, { name: "c" }));
+`;
+  let staticError: unknown;
+  try {
+    validate(IN_ONCE);
+  } catch (e) {
+    staticError = e;
+  }
+  ok("a conclave reached inside once through a parameter passes the validator", staticError === undefined,
+    String(staticError).slice(0, 120));
+  const { handler, calls } = watching(new SimHandler({}));
+  const j = new Journal({ run: "c-once" });
+  let caught: unknown;
+  try {
+    await run(IN_ONCE, { runId: "c-once", journal: j, handler });
+  } catch (e) {
+    caught = e;
+  }
+  ok("and the run refuses it with L4028", (caught as { code?: string })?.code === "L4028", String(caught).slice(0, 120));
+  ok("before its entry begins, so the room is never opened",
+    calls.length === 0 && !j.entries().some((e) => e.kind === "conclave"),
+    { calls, entries: j.entries().map((e) => e.kind) });
+}
+
 // ---- 7) a race arm that FAILS is still a settle ------------------------------------------------
 
 {
