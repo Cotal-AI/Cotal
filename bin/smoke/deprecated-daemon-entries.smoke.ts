@@ -1,7 +1,8 @@
 /**
  * Deprecated daemon entries: `supervise`, `deliver`, `auth-service` and `feedback-intake` keep their
  * pre-cut argv for the units, scripts and containers written before the CLI redesign, hidden from
- * help and completion. Each run prints one stderr line naming its service preset and the removal
+ * help and completion. `help --all` and the entry's own help mark it deprecated and name its preset;
+ * they listed it unmarked. Each run prints one stderr line naming its service preset and the removal
  * release, which is one value for all four and is recorded in docs/UPGRADING.md. Stdout and the run
  * itself stay the entry's own. `up` launches a hidden twin of `supervise`, `deliver` and
  * `auth-service` that has the same parser, validation and runner without the warning.
@@ -59,6 +60,7 @@ for (const [entry, preset] of Object.entries(DEPRECATED_DAEMON_PRESETS) as [keyo
   const command = registry.all<Command>("command").find((row) => row.name === entry);
   check(`${entry} is still a registered entry`, command !== undefined);
   check(`${entry} is hidden from help and completion`, command?.hidden === true);
+  check(`${entry} is marked deprecated where help --all and its own help show it, naming ${preset}`, command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${preset} service preset) `) === true, command?.summary);
   check(`${entry} keeps its pre-cut argv`, (() => { try { parseCommandArgs(command!, lines[entry].slice(1)); return true; } catch { return false; } })());
   check(`${entry} names the registered ${preset} preset`, presets.has(preset) && warning.includes(`--preset ${preset} `), warning);
   check(`${entry} names the shared removal release`, warning.includes(` removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}.`), warning);
@@ -109,10 +111,12 @@ for (const [entry, twinName] of Object.entries(DAEMON_ENTRY_TWINS) as [keyof typ
   const twin = registry.all<Command>("command").find((row) => row.name === twinName);
   check(`${twinName} is registered and hidden`, twin?.hidden === true);
   if (!twin) continue;
-  // Same flags, positionals, usage, validate, requiredExtensions, prepare and target policy, by reference.
-  const fields = [...new Set([...Object.keys(command), ...Object.keys(twin)])].filter((key) => key !== "name" && key !== "run");
+  // Same flags, positionals, usage, validate, requiredExtensions, prepare and target policy, by
+  // reference. Only the entry's summary carries the deprecation mark, so it is compared apart.
+  const fields = [...new Set([...Object.keys(command), ...Object.keys(twin)])].filter((key) => key !== "name" && key !== "run" && key !== "summary");
   const differ = fields.filter((key) => (command as unknown as Record<string, unknown>)[key] !== (twin as unknown as Record<string, unknown>)[key]);
   check(`${twinName} declares what ${entry} declares`, differ.length === 0, differ);
+  check(`${entry}'s summary is its twin's under the deprecation mark`, command.summary === `(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset) ${twin.summary}`, command.summary);
   const line = lines[entry].slice(1);
   check(`${twinName} parses ${entry}'s pre-cut line as ${entry} does`,
     JSON.stringify(parseCommandArgs(twin, line)) === JSON.stringify(parseCommandArgs(command, line)));

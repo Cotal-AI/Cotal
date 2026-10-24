@@ -3461,7 +3461,8 @@ cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--s
 ```
 
 `supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
-completion omit it. It accepts the same flags and prints a warning on every run naming the
+completion omit it. `help --all` and `help supervise` mark it deprecated and name the `manager`
+preset. It accepts the same flags and prints a warning on every run naming the
 `manager` service preset and the release that removes it; see
 [deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries). The manager that `cotal up`
 starts runs the same code through a hidden entry and prints no warning.
@@ -5535,7 +5536,8 @@ Two long-lived infra roles ship with the CLI. They are not part of everyday oper
 daemon comes up automatically with `cotal up --detach` in auth mode.
 
 `deliver`, `auth-service` and `feedback-intake` are deprecated entries kept for existing units and
-scripts, as is `supervise`; help and completion omit them. Each accepts its existing flags and
+scripts, as is `supervise`; help and completion omit them. `help --all` and each entry's own help
+mark it deprecated, with its removal release and the preset that replaces it. Each accepts its existing flags and
 prints a warning on every run naming its service preset and the release that removes it. The
 delivery daemon and auth service that `cotal up` starts run the same code through hidden entries
 and print no warning. New setups use `cotal service add <name> --preset <preset>`; see

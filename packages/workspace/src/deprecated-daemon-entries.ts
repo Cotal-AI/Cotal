@@ -33,6 +33,12 @@ export function deprecatedDaemonEntryWarning(entry: DeprecatedDaemonEntry): stri
   return `! cotal ${entry} is deprecated and will be removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}. Use ${replacement}.`;
 }
 
+/** The summary `help --all` and the entry's own help show: marked deprecated, with its removal
+ *  release and the service preset that replaces it. */
+export function deprecatedDaemonEntrySummary(entry: keyof typeof DEPRECATED_DAEMON_PRESETS, summary: string): string {
+  return `(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset) ${summary}`;
+}
+
 /** Print {@link deprecatedDaemonEntryWarning} to stderr, leaving stdout to the entry itself. */
 export function warnDeprecatedDaemonEntry(entry: DeprecatedDaemonEntry): void {
   console.error(c.yellow(deprecatedDaemonEntryWarning(entry)));
@@ -46,5 +52,5 @@ export function deprecatedDaemonEntry(
   twin: Command,
   warning: (args: ParsedArgs) => DeprecatedDaemonEntry = () => entry,
 ): Command {
-  return { ...twin, name: entry, run: (args) => { warnDeprecatedDaemonEntry(warning(args)); return twin.run(args); } };
+  return { ...twin, name: entry, summary: deprecatedDaemonEntrySummary(entry, twin.summary), run: (args) => { warnDeprecatedDaemonEntry(warning(args)); return twin.run(args); } };
 }
