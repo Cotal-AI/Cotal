@@ -246,11 +246,8 @@ export function packUnits(opts: {
     const aloneBytes = measure(alone);
     if (aloneBytes > limit)
       throw new AguiVocabularyError(
-        `a single source observation does not fit in one frame (${aloneBytes} > ${limit} bytes, ` +
-          `${unit.events.length} event(s), run ${unit.runId}). One source observation is one frame, ` +
-          `and that rule requires this to fail loud rather ` +
-          `than be truncated at a frame boundary: a frame that ends mid-record has no cursor it can ` +
-          `honestly store, and a dropped boundary with no gap marker is worse than a halt.`,
+        `a single unit does not fit in one frame (${aloneBytes} > ${limit} bytes, ` +
+          `${unit.events.length} event(s), run ${unit.runId}).`,
       );
     batch = [...unit.events];
     batchRun = unit.runId;

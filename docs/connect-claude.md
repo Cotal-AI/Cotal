@@ -592,8 +592,10 @@ A personal connection makes manager calls only with its own selected grant.
 
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
-before it re-establishes the plane: at once after a failure, then every second while the plane
-stays down, a fixed wait that neither grows nor is capped, so the plane is back within a second
+before it re-establishes the plane. A size refusal reports the unit's measured bytes, payload
+limit, event count and run. The unit can be a source observation or an authored run terminal.
+It tries to re-establish the plane at once after a failure, then every second while the plane
+stays down. This fixed wait neither grows nor is capped, so the plane is back within a second
 of the fault clearing. The re-establish
 is a fresh start: it reopens the write-ahead log, settles any frame it left pending, builds the
 mapper from the run the log has open, and reads on from the stored cursor, which is the same

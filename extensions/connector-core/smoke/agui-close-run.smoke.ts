@@ -50,6 +50,9 @@ import { join } from "node:path";
 import type { Part } from "@cotal-ai/core";
 import {
   AguiVocabularyError,
+  aguiFrame,
+  runFinished,
+  runError,
   runStarted,
   textMessageStart,
   textMessageContent,
@@ -274,6 +277,56 @@ try {
       { err: late.err?.message, pumped: late.value },
     );
   });
+
+  // An authored terminal consumes no record. Its size refusal must describe the unit, not a
+  // source observation cut mid-record. Exercise both terminals through closeRun itself.
+  for (const error of [undefined, { message: "upstream failed" }]) {
+    const type = error ? "RUN_ERROR" : "RUN_FINISHED";
+    await block(`OVERSIZED ${type} UNIT`, async () => {
+      const { src, walPath, wal, source } = await fresh(`unit-size-${type}`);
+      const ep = new FakeEndpoint();
+      const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
+      await em.pump();
+      append(src, { open: "run-a" });
+      ep.answers = [{ seq: 11, duplicate: false }];
+      await em.pump();
+      const before = await reopen(walPath);
+      const event = error
+        ? runError({ message: RUN_ERROR_EGRESS_MESSAGE, timestamp: 99 })
+        : runFinished({ threadId: THREAD, runId: "run-a", timestamp: 99 });
+      const bytes = ep.encodedSize({
+        channel: em.channel,
+        parts: [aguiFrame({ threadId: THREAD, runId: "run-a", epoch: wal.epoch, seq: before.frontier.seq + 1, events: [event] }) as unknown as Part],
+        id: "S".repeat(64),
+        expectedLastSubjectSeq: Number.MAX_SAFE_INTEGER,
+      });
+      ep.maxPayload = bytes - 1;
+      const refused = await attempt(() => em.closeRun({ timestamp: 99, error }));
+      c(
+        `close:${type}-size-refusal-describes-the-unit`,
+        refused.err instanceof AguiVocabularyError &&
+          refused.err.message === `a single unit does not fit in one frame (${bytes} > ${bytes - 1} bytes, 1 event(s), run run-a).`,
+        refused.err?.message ?? "no throw",
+      );
+      const after = await reopen(walPath);
+      c(
+        `close:${type}-size-refusal-publishes-and-consumes-nothing`,
+        ep.publishes.length === 1 && after.pending === null &&
+          after.frontier.seq === before.frontier.seq && after.frontier.sourceCursor === before.frontier.sourceCursor,
+        { publishes: ep.publishes.length, frontier: after.frontier, pending: after.pending },
+      );
+      ep.maxPayload = bytes;
+      ep.answers = [{ seq: 12, duplicate: false }];
+      const closed = await attempt(() => em.closeRun({ timestamp: 99, error }));
+      const fitted = await reopen(walPath);
+      c(
+        `close:CONTROL-${type}-unit-fits-at-its-measured-size-with-unchanged-cursor`,
+        closed.err === undefined && closed.value === "run-a" && ep.publishes.length === 2 &&
+          frameOf(ep.publishes[1]!).events[0]?.type === type && fitted.frontier.sourceCursor === before.frontier.sourceCursor,
+        { err: closed.err?.message, closed: closed.value, publishes: ep.publishes.length },
+      );
+    });
+  }
 
   // ── A CLOSE THAT WOULD BE A PROTOCOL VIOLATION IS REFUSED, NOT PUBLISHED ─────────────────────
   await block("A CLOSE THAT WOULD BE A PROTOCOL VIOLATION IS REFUSED, NOT PUBLISHED", async () => {
