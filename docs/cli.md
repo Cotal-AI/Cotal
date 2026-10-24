@@ -299,6 +299,9 @@ interrupted. Ctrl-C ends it at once: `watch` exits 130, and the other three exit
 | Agents & personas | [`attach`](#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
 | Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
+| Agents & personas | [`personas`](#persona) | The legacy persona parser, kept during migration; use `persona` |
+| Agents & personas | [`manager`](#manager-maintenance) | Inspect retained local seats or repair an owned manager gate |
+| Agents & personas | [`app-identity`](#plumbing) | Plumbing: open or retire one Claude app conversation's identity on a local mesh |
 | Agents & personas | [`supervise`](#supervise) | Deprecated and hidden from help: run a manager daemon; use the `manager` service preset |
 | Agents & personas | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
 | Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
@@ -310,23 +313,29 @@ interrupted. Ctrl-C ends it at once: `watch` exits 130, and the other three exit
 | Messaging & watching | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`describe` / `invoke`](#endpoint-control) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
+| Messaging & watching | [`endpoint`](#endpoint-authoring) | Save endpoint references, author contracts offline, and inspect or invoke native endpoints |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging & watching | [`chat`](#chat) | Open a live session under its own identity: terminal view, `--plain` lines, or `--stdio` for programs |
-| Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry |
+| Messaging & watching | [`channel`](#channel) | Read channel metadata and observed members, or change a channel's settings |
 | Messaging & watching | [`history`](#history) | Read retained messages, or clear them |
 | Messaging & watching | [`pending`](#pending) | Inspect one DM durable's native counts and bounded candidate IDs |
+| Messaging & watching | [`watch`](#watch) | Follow authorized activity without starting, stopping or attaching agents |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Messaging & watching | [Web dashboard](#web) | Browser dashboard, run as the `web` service preset (installed as the `@cotal-ai/web` extension) |
 | Extensions & misc | [`linear`](#linear) | Serve the official Linear MCP server as an endpoint agents can call (installed as the `@cotal-ai/linear` extension) |
-| Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (static auth mode) |
+| Auth & meshes | [`auth`](#auth-mint) | Mint a creds file for a space (`auth mint`, static auth mode), inspect a protected handle or export an account signer |
+| Auth & meshes | [`service-endpoint`](#service-endpoint) | Decide and inspect service endpoint registrations on the space's auth service |
 | Auth & meshes | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
 | Auth & meshes | [`logout`](#login) | Revoke the IdP session and clear the cached login |
 | Auth & meshes | [`actor`](#actor) | Manage a user-auth space's actor ledger (grant / revoke / list) |
 | Auth & meshes | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
 | Auth & meshes | [`join`](#join) | Join a space as your own presence (interactive) |
+| Manifest | [`team`](#manifest-deploys) | Deploy a manifest onto a running mesh, inspect teams, or remove a deployment |
 | Manifest | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
 | Extensions & misc | [`ext`](#ext) | List, install and remove operator CLI extensions |
 | Extensions & misc | [`docs`](#docs) | Read this version's protocol and CLI docs, offline |
+| Extensions & misc | [`help`](#running-it) | List the commands, or show one command's help |
+| Extensions & misc | [`version`](#running-it) | Print this binary's version and each installed extension's |
 | Extensions & misc | [`config`](#config) | Show and set your preferences: the defaults your commands use |
 | Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
