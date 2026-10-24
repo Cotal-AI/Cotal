@@ -30,6 +30,8 @@
  *  J. after a clean `down` of folder `s`, `team remove <id>` refuses CONFLICT naming `cotal up` in
  *     its root and the remove again, a bare `up` starts the stack again with the deployment's records
  *     as they were, and a removal after one of its cards was edited names that card.
+ *  K. after `team remove --yes` of an 11-card deployment, `team show` lists each card's delete
+ *     submission before its outcome, and the cards in manifest order, in text and JSON.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -74,6 +76,7 @@ const manifest = (name: string, space: string, channels: Record<string, string>,
   writeFileSync(join(dir, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${server}\n${open ? "  auth: false\n" : ""}${head}channels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
 };
 manifest("live.yaml", SPACE, { live1: "    deliveryClass: live\n", live2: "    deliveryClass: live\n" });
+manifest("order.yaml", SPACE, Object.fromEntries(Array.from({ length: 11 }, (_, n) => [`order${n}`, "    deliveryClass: live\n"])));
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
 const OTHER = `other-${process.pid}`, SERVER_OTHER = `nats://127.0.0.1:${await freePort()}`;
 for (const dir of [s, c]) manifest("other.yaml", OTHER, { x: "    deliveryClass: live\n" }, { dir, server: SERVER_OTHER });
@@ -239,6 +242,19 @@ try {
   const removeEdited = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
   check("team remove after a card was edited refuses CONFLICT naming that card",
     edited.status === 0 && removeEdited?.code === "CONFLICT" && removeEdited.message === "the card #live1 changed after this deployment created it; changed metadata is not owned and no card was deleted", { edited: edited.out.slice(-400), removeEdited });
+
+  console.log("\nK. a card removal's steps in the order they were written");
+  const ordered = envelope(cotal(s, "team", "deploy", "order.yaml", "--json").stdout)?.result?.deploymentId;
+  const orderedId = String(ordered);
+  const removedOrder = cotal(s, "team", "remove", orderedId, "--yes");
+  const orderShow = cotal(s, "team", "show", orderedId);
+  const steps = (envelope(cotal(s, "team", "show", orderedId, "--json").stdout)?.result?.channelRemoval as { steps?: { name: string; phase: string }[] } | undefined)?.steps ?? [];
+  const expected = Array.from({ length: 11 }, (_, n) => [`order${n}:submitted`, `order${n}:deleted`]).flat();
+  check("team show lists each removed card's submission before its outcome, the cards in manifest order",
+    typeof ordered === "string" && removedOrder.status === 0 && JSON.stringify(steps.map((step) => `${step.name}:${step.phase}`)) === JSON.stringify(expected), { remove: removedOrder.out.slice(-600), steps });
+  const rows = orderShow.stdout.split("\n").filter((line) => /^\s+#order\d+\s/.test(line)).map((line) => line.trim().replace(/\s+/g, " "));
+  check("  and its text ends each card on its deletion, not on the submitted step",
+    orderShow.status === 0 && rows.at(-1)?.startsWith("#order10 deleted at created revision") === true && rows.indexOf("#order0 delete submitted; outcome not implied none") < rows.findIndex((row) => row.startsWith("#order0 deleted at created revision")), rows);
 } finally {
   if (bUp) {
     const down = cotal(b, "down", "--yes");

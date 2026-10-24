@@ -1830,7 +1830,9 @@ no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. So doe
 no stack has run for, which also names `cotal space forget`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
-`cotal down` from its root. A member that exited without a recorded stop, as after a crash, is
+`cotal down` from its root, and lists each process that may run once. A stack member whose
+process also holds its component's record, such as the manager's pidfile, is listed as that member
+with the record's pid. A member that exited without a recorded stop, as after a crash, is
 settled by `cotal down --yes`: it finds the member gone and records it as already stopped, and the
 reset then accepts it. Only a member that no completed `down` recorded that way needs `cotal up` and
 then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
@@ -6222,8 +6224,8 @@ user-auth agents. `team remove` retires a returned deployment by its full ID wit
 ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. `up -f`,
 `team deploy` and `team remove` take `--dry-run` to print the plan without mutating anything.
 `topology` validates the manifest and renders its channel / role / ACL graph. Given a folder
-instead of a manifest file, `topology view`, `up -f` and `down -f` refuse with exit 1, naming the
-path and that it is a directory. See [Define a team](define-a-team.md) and the
+instead of a manifest file, `topology view`, `up -f`, `down -f` and the `team` commands that take a
+manifest refuse with exit 1, naming the path and that it is a directory. See [Define a team](define-a-team.md) and the
 [manifest reference](manifest.md).
 
 ## ext
@@ -7449,7 +7451,9 @@ Only a complete matching retirement sequence yields the create-only full removal
 receipt. Earlier confirmed retirements and stop requests remain in rich/plain/JSON
 output on a partial or unknown result. An unsettled removal intent stays blocking
 and is never resumed by repeating its effects. `team show` keeps its original creation and removal
-journals, and inventory/status/down/reset distinguish historical retired receipts.
+journals, and inventory/status/down/reset distinguish historical retired receipts. It lists a card
+removal's steps in the order they were written: the cards in manifest order, and each card's delete
+submission before its outcome.
 The full receipt releases only this deployment's known additive blocker, not any
 other service, broker, shared-root or process guard. It never authorizes stopping
 current alias holders. No channel, broker, service or remote account is removed.
@@ -7547,7 +7551,9 @@ key meant. A problem in a referenced persona
 names that file and the parser's reason without quoting its contents. A persona file that does not
 exist is named at its entry's line along with the manifest's other problems, so fixing those does
 not uncover it later. A manifest file that does not exist is refused with `TARGET_NOT_FOUND`
-(exit 2), naming its path. `team boot` and
+(exit 2), naming its path. A folder given as the manifest, such as `team check .`, is refused with
+`USAGE_INVALID` (exit 1), naming the path and that it is a directory, as `topology view` refuses it,
+and `--json` gives the path as `target.file`. `team boot` and
 `team deploy` refuse a manifest they cannot resolve the same way, before they contact a broker.
 This file check does not prove live authorization, installed applications or launch readiness.
 These read views do not apply a boot, an additive deployment or a removal.

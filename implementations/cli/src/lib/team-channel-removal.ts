@@ -108,6 +108,10 @@ export function readChannelTeamRemovals(root: string, attempts: readonly Additiv
       inventory.steps.push(value);
     } catch { inventory.refused.push({ path, why: "the channel removal step or its registry observation is unreadable" }); }
   }
+  // The steps in the order they were written: by channel, each submission before its outcome. Their
+  // file names sort an outcome first, and a tenth channel before the second.
+  inventory.steps.sort((a, b) => a.deploymentId < b.deploymentId ? -1 : a.deploymentId > b.deploymentId ? 1
+    : a.ordinal - b.ordinal || Number(b.phase === "submitted") - Number(a.phase === "submitted"));
   for (const name of files.filter((name) => name.startsWith(`${PREFIX}returned-`))) {
     const path = join(dir, name);
     try {

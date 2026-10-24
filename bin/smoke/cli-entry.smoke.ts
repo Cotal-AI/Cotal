@@ -15,7 +15,9 @@
  * official extension adds, run or asked for help before that extension is added, names the package
  * to add. FORCE_COLOR with NO_COLOR prints no Node warning about the pair. A failing command prints
  * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
- * A folder given to `topology view -f`, `up -f` or `down -f` is refused by its path as a directory.
+ * A folder given to `topology view -f`, `up -f`, `down -f`, `team check`, `team boot --dry-run` or
+ * `team deploy --dry-run` is refused by its path as a directory, and `team check --json` names it as
+ * `target.file`.
  * A signal while the CLI loads prints that the command did not begin and exits with that signal's
  * code, and an internal entry keeps Node's default signal exit.
  *
@@ -787,7 +789,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }
 }
 
-// ── A folder given where a manifest file goes is refused by its path ───────────────────────────────
+// ── A folder given where a manifest file goes is refused by its path, team commands included ──────
 {
   const dir = mkdtempSync(join(tmpdir(), "cotal-entry-manifest-dir-"));
   cleanup.push(dir);
@@ -797,6 +799,17 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       r.status === 1 && r.stdout === "" && r.stderr.includes(`✗ the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`)
         && r.stderr.includes("↳ name the manifest file in it") && !r.stderr.includes("EISDIR"), shown(r));
   }
+  // The team commands report it through their classified refusal, with the same reason and Next.
+  for (const [what, args] of [["team check", ["team", "check", dir]], ["team boot --dry-run", ["team", "boot", dir, "--dry-run"]], ["team deploy --dry-run", ["team", "deploy", dir, "--dry-run"]]] as const) {
+    const r = cotal([...args], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
+    check(`${what} of a folder is refused with exit 1, naming the path and that it is a directory`,
+      r.status === 1 && r.stdout === "" && r.stderr.includes(`the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`)
+        && r.stderr.includes("name the manifest file in it, such as its cotal.yaml") && !r.stderr.includes("could not be read and resolved") && !r.stderr.includes("EISDIR"), shown(r));
+  }
+  const json = cotal(["team", "check", dir, "--json"], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
+  const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { file?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
+  check("team check --json of a folder gives USAGE_INVALID with the folder as target.file and the Next",
+    json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === "name the manifest file in it, such as its cotal.yaml", shown(json));
 }
 
 // ── Every alias is its command: same help, same refusal ───────────────────────────────────────────

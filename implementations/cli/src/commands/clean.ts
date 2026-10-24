@@ -297,12 +297,16 @@ export function liveMeshOwner(root: string, space?: string): string | undefined 
  *  `settledByDown` is for the commands that remove the store, as {@link liveStackMembers} says. */
 export function liveMeshProcesses(root: string, space?: string, settledByDown = false): string[] {
   const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
-  const running: string[] = [];
+  // A stack member's process can also hold its component's record, such as the manager's pidfile.
+  // That process is named once, as the member with the record's pid.
+  const members = stackMembers(root, undefined, settledByDown).filter((row) => !row.gone || !row.receipted);
+  const memberPids = new Set(members.flatMap((row) => row.gone || row.pid === undefined ? [] : [row.pid]));
+  const held = new Set<number>(), running: string[] = [];
   for (const component of localProcessSurface()) {
-    const record = possiblyRunning(component, context);
+    const record = possiblyRunning(component, context, memberPids, held);
     if (record) running.push(record);
   }
-  return [...running, ...liveStackMembers(root, undefined, true, settledByDown)];
+  return [...running, ...members.map((row) => row.pid !== undefined && held.has(row.pid) ? `${row.definition}, pid ${row.pid}, instance ${row.instance}` : `${row.label}${row.gone ? ", no stop receipt" : ""}`)];
 }
 
 /** The members of the controller stack recorded at this root that may still run. A member counts as
@@ -327,7 +331,7 @@ export function unsettledStackMembers(root: string, space: string): string[] {
  *  stack's own recorded space. A space derived from the root's pidfiles or accounts can name another
  *  tenant, or the default, once the stack is stopped. `space` limits the answer to that space's
  *  stack. */
-function stackMembers(root: string, space?: string, settledByDown = false): { label: string; gone: boolean; receipted: boolean }[] {
+function stackMembers(root: string, space?: string, settledByDown = false): { definition: string; instance: string; label: string; gone: boolean; receipted: boolean; pid?: number }[] {
   const stack = readStackJournal(root);
   if (!stack || space !== undefined && stack.journal.space !== space) return [];
   const { operation, members } = stack.journal;
@@ -335,7 +339,8 @@ function stackMembers(root: string, space?: string, settledByDown = false): { la
   return Object.values(STACK_DEFINITION).flatMap((definition) => serviceInstances(stack.journal.space, definition).map((row) => {
     const value = row.record.value;
     return {
-      label: `${definition}, instance ${row.name}`,
+      definition, instance: row.name, label: `${definition}, instance ${row.name}`,
+      pid: value.process?.pid,
       gone: ["gone", "previous-boot"].includes(observeServiceProcess(value)),
       receipted: value.state === "stopped" && Boolean(value.nativeStop ?? value.kernelStop ?? value.processStop)
         || down && members.some((member) => member.instanceId === row.name && member.state === "already-stopped"),
@@ -346,10 +351,12 @@ function stackMembers(root: string, space?: string, settledByDown = false): { la
 /** "label, pid N" for a record that may still front a process, with the probe's note when it is not
  *  proven alive; undefined only for no record, an empty husk or a pid proven dead. Every caller
  *  guards a delete or a snapshot, so a record `cotal down` refuses as unattributable or of unknown
- *  liveness must not read as stopped here. */
-function possiblyRunning(component: LocalProcess, context: LocalProcessContext): string | undefined {
+ *  liveness must not read as stopped here. A record whose pid is in `members` is a stack member's
+ *  own, so it is added to `held` instead, and the caller names it with that member. */
+function possiblyRunning(component: LocalProcess, context: LocalProcessContext, members?: ReadonlySet<number>, held?: Set<number>): string | undefined {
   const state = pidfileState(localProcessPath(component.pidFile, context));
   if (state.liveness === "dead") return undefined;
+  if (held && state.pid !== undefined && members?.has(state.pid)) { held.add(state.pid); return undefined; }
   return `${component.label}, ${[state.pid && `pid ${state.pid}`, state.note].filter(Boolean).join(", ")}`;
 }
 
