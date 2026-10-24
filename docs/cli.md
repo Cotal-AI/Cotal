@@ -7264,6 +7264,12 @@ saw, and its Next also names `cotal service show <name>`, which shows the readin
 way the process is left running, and the Next names the `service logs` and `service stop` for that
 exact instance.
 
+A Ctrl-C or `SIGTERM` while a background `service start` waits does not reach the service, which
+keeps running. The start exits 130 or 143 and names the instance it left. Its Next is
+`cotal service start <name>` to wait for that instance's readiness again, or the `service stop` for
+it. Until a later command settles that start, `service status` and `cotal status` say the start was
+interrupted.
+
 Stop and restart default to cancellation in a terminal and need `--yes` in scripts. The selected
 record revision and creation identity are checked before signals, including escalation. A reused
 PID is never signalled as the old process. Restart holds the definition operation across the
