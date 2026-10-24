@@ -103,7 +103,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
         confirmed = !prompts.isCancel(answer) && answer;
       }
       if (!confirmed) {
-        writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona-cancelled", name, path }, noOp: true, warnings: [{ code: "USER_CANCELLED", target: { name, path }, message: "persona removal cancelled" }] }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: ["persona removal cancelled"] }] }] }));
+        writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona-cancelled", name, path }, noOp: true, warnings: [{ code: "USER_CANCELLED", target: { name, path }, message: "nothing was removed" }] }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: [`Removal cancelled: ${name} is kept at ${path}.`] }] }] }));
         return;
       }
     }

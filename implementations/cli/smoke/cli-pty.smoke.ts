@@ -298,6 +298,26 @@ try {
   await until(() => shownCard.exitCode !== undefined);
   check("personas show on a terminal escapes the file's control characters",
     shownCard.exitCode === 0 && !/\x1b\]0;|\x07|\x1b\[2J/.test(shownCard.raw) && shownCard.raw.includes("body \\u001b]0;PWN\\u0007\\u001b[2JB"), JSON.stringify(shownCard.raw.slice(-300)));
+
+  // A cancelled `persona remove` says once that it was cancelled, and its warning says what that
+  // left, whether Enter takes the default or `--plain` takes the numbered choice.
+  const spacePty = cotalPty(["space", "create", "ptyspace", "--root", catalog, "--plain"], { cwd: catalog, env });
+  ptys.push(spacePty);
+  const created = session(spacePty);
+  await until(() => created.exitCode !== undefined);
+  check("control: a space is created over the catalog", created.exitCode === 0, created.text());
+  for (const [label, argv, ready, answer] of [["Enter", [], "Remove 'evb'", "\r"], ["--plain choice 1", ["--plain"], "Choice [1]", "1\r"]] as const) {
+    const removePty = cotalPty(["persona", "remove", "evb", ...argv], { cwd: catalog, env });
+    ptys.push(removePty);
+    const r = session(removePty);
+    const asked = await until(() => r.text().includes(ready));
+    removePty.write(answer);
+    await until(() => r.exitCode !== undefined);
+    const shown = await screen(r.raw, 80, 24);
+    check(`persona remove cancelled by ${label} says so once and keeps the file`,
+      asked && r.exitCode === 0 && shown.split("Removal cancelled: evb is kept at ").length === 2 && shown.includes("nothing was removed") && !shown.includes("persona removal cancelled")
+        && readFileSync(join(catalog, ".cotal", "agents", "evb.md"), "utf8").startsWith("---\nname: evb\n"), shown);
+  }
 } catch (err) {
   check(`suite ran without throwing: ${err instanceof Error ? err.message : String(err)}`, false, err instanceof Error ? err.stack : err);
 } finally {
