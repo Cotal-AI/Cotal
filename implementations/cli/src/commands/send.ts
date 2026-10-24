@@ -115,7 +115,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
   if (values["reply-to"] !== undefined && (destination.mode !== "dm" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");
   if (values.mention?.length && destination.mode !== "msg")
-    throw new CommandFailure("refused", "UNSUPPORTED", "native mention hints belong to channel publications; they do not change a direct or role destination");
+    throw new CommandFailure("refused", "USAGE_INVALID", "native mention hints belong to channel publications; they do not change a direct or role destination", { remedy: "drop --mention, or send to a channel with -c <channel>" });
   if (values.mention?.some((name) => !name.replace(/^@/, "").trim() || /[\/\u0000-\u001f\u007f]/u.test(name)))
     throw new CommandFailure("refused", "USAGE_INVALID", "each --mention names one agent or full instance id");
   // `--file -` is stdin, as `persona create --from -` reads it.

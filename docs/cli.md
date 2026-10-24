@@ -4145,7 +4145,8 @@ For a channel post, repeat `--mention <agent>` to add explicit wake hints withou
 destination. Each one resolves like a direct target and is sent as that agent's name, which is what
 a receiving session compares. An instance id is refused when its name also resolves to another
 participant, and a shared name refuses with the full identities to send to with `--to` instead.
-Direct and role sends have no native mention field and refuse that option.
+Direct and role sends have no native mention field and refuse that option as `USAGE_INVALID`
+(exit 1), before connecting.
 A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
 still has no inbox and does not promise thread continuity.
 

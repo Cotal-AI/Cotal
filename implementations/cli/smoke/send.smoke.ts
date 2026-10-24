@@ -55,7 +55,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 72;
+const EXPECTED = 73;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -452,6 +452,10 @@ try {
   const spaced = await run(["send", "-c", "gen eral", "x", "--json"]);
   check("`cotal send -c` with a space in the name names the segment, not wildcards",
     spaced.code === 1 && spaced.stdout.includes('segment \\"gen eral\\" must be a NATS-safe token') && !spaced.stdout.includes("wildcards") && !spaced.stdout.includes("'*', or '>'"), spaced);
+  // A flag combination the parser can judge used to be a boundary refusal, exit 2.
+  const mentionDm = await run(["send", "-t", "bob", "--mention", "carol", "x", "--json"]);
+  check("`cotal send -t` with --mention is USAGE_INVALID, exit 1, naming the channel-only rule",
+    mentionDm.code === 1 && mentionDm.stdout.includes('"code":"USAGE_INVALID"') && mentionDm.stdout.includes("native mention hints belong to channel publications") && mentionDm.stdout.includes("drop --mention, or send to a channel with -c <channel>"), mentionDm);
   const badRole = await run(["send", "-r", "bad role!", "x", "--json"]);
   check("`cotal send -r` with a role that is not one NATS-safe token is USAGE_INVALID, exit 1, with the role rule",
     badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);
