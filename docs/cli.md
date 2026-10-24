@@ -1239,7 +1239,8 @@ nothing. It refuses neither bare `down` nor a stop of `stack-broker`, `down --dr
 a complete bare `down` removes it with its pin and names it in a `STALE_PROCESS_RECORD` warning. The
 process that holds a reused pid is never signalled. The broker scope
 is checked again after its dependants stop. A failure stops the sequence and preserves completed and
-unattempted members.
+unattempted members. A member stopped by signal that has not exited 15 seconds after SIGTERM gets
+SIGKILL. Its row then reads `stopped with SIGKILL`, and a `STOP_ESCALATED` warning names its pid.
 Only a complete confirmed stop removes the delivery credential and local registration. When the
 delivery daemon was already gone, its credential stays: that daemon never released its lease, and
 the next `up` uses the credential to recognise the row and wait it out before it mints a new one.

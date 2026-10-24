@@ -23,7 +23,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
+import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, PROCESS_STOP_GRACE_MS, stopProcessService } from "../lib/service-process.js";
 import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { readStackRuns } from "../lib/stack-runs.js";
 
@@ -425,6 +425,8 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   };
   settle("applying");
   const changed: unknown[] = [];
+  // A member that outlived its SIGTERM grace was killed, which its record keeps; the receipt names it.
+  const killed: { role: StackRole; instanceId: string; pid: number }[] = [];
   let failure: CommandFailure | undefined;
   let deliveryCredentialKept = false;
   for (const member of members) {
@@ -450,6 +452,8 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       const stopped = await stopProcessService(member.definition, current, holds, { plan: role === "manager" ? member.native : undefined, withAgents: role === "manager" && withAgents }, { plan: kernel });
       mark(role, { state: stopped.noOp ? "already-stopped" : "stopped" });
       if (!stopped.noOp) changed.push(instanceProjection(stopped.instance));
+      const stop = stopped.instance.record.value.processStop;
+      if (!stopped.noOp && stop?.signal === "SIGKILL") killed.push({ role, instanceId: stopped.instance.record.value.instanceId, pid: stop.process.pid });
     } catch (error) {
       const classified = isCommandFailure(error) ? error : undefined;
       const uncertain = classified === undefined || classified.outcome === "unknown";
@@ -498,9 +502,10 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       ...(stranded ? [strandedNotice(journal0, stranded.previous)] : []),
       ...cleared.map((row) => staleWarning(root, row)),
     ] : []),
+    ...killed.map(({ role, instanceId, pid }) => ({ code: "STOP_ESCALATED", target: { ...target, role, instanceId, pid }, message: `the ${role} member, pid ${pid}, did not exit within ${PROCESS_STOP_GRACE_MS / 1000} s of SIGTERM, so it was stopped with SIGKILL` })),
     ...await readinessAddressSurvivors(journal.space),
   ];
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(warnings.length ? { warnings } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
-    { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role)).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
+    { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role)).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: killed.some((k) => k.role === row.role) ? "stopped with SIGKILL" : row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
   ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal up", description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
 }

@@ -26,6 +26,9 @@
  *     pin and never signals that process. A record whose pin matches that live process refuses
  *     `down stack-broker` and bare `down`, naming its path and pid in the message and the Next;
  *     once the process ends, `down` removes it.
+ *  7. Started again with its delivery member stopped with SIGSTOP, as a hang, `down --yes` sends
+ *     SIGKILL once 15 seconds pass after SIGTERM, and a `STOP_ESCALATED` warning names the member
+ *     and its pid.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the members its own `up` started and the process it started itself. Needs `nats-server` on PATH.
@@ -210,6 +213,16 @@ try {
   for (let i = 0; i < 50 && alive(held); i++) await sleep(100);
   const after = cli("down", "--yes", "--json");
   check("once that process ends, bare down completes and removes its record, saying its process is gone", after.status === 0 && doc(after)?.warnings?.some((w) => w.code === "STALE_PROCESS_RECORD" && w.message === stale("removed", held, "gone")) === true && !existsSync(record), after.out);
+
+  // 7. A hung delivery member is killed once its SIGTERM grace passes, and the stop says so.
+  const once = cli("up");
+  check("up starts the stack once more", once.status === 0, once.out);
+  const frozen = Number(readFileSync(record, "utf8").trim());
+  process.kill(frozen, "SIGSTOP");
+  const killed = cli("down", "--yes", "--json");
+  const escalated = doc(killed)?.warnings?.find((w) => w.code === "STOP_ESCALATED");
+  check("down --yes stops a hung delivery member with SIGKILL and names it in a STOP_ESCALATED warning",
+    killed.status === 0 && escalated?.message === `the delivery member, pid ${frozen}, did not exit within 15 s of SIGTERM, so it was stopped with SIGKILL` && !alive(frozen), killed.out);
 } finally {
   if (hung !== undefined && alive(hung)) process.kill(hung, "SIGKILL");
   if (other?.pid !== undefined && alive(other.pid)) other.kill("SIGKILL");
