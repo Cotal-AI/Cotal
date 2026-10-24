@@ -6194,6 +6194,10 @@ neither declares is not inferred from a saved registry that this preview does no
 explicit durable default or channel declaration is warned as unsupported:
 its native fresh apply refuses before effects because open mode starts no
 delivery daemon. Direct `up -f --dry-run` refuses the same contradiction.
+A space with no prepared or registered root previews the current folder. Its root source says
+whether that folder belongs to other spaces, and a hint names the `cotal space create` the apply
+needs: `--root .` for an unprepared folder, or a folder of its own when this one belongs to
+another space.
 It reads the local control
 directory, recorded spaces, maintenance journal, the selected manager PID record,
 possibly live process records, the root's additive deployment ledgers and

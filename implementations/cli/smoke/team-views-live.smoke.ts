@@ -22,6 +22,9 @@
  *     space filled in, with no placeholder and no note that the stop is not integrated.
  *  H. a deployment ID that no record names is TARGET_NOT_FOUND, naming the ID, from `team show` and
  *     from `team remove` with and without `--dry-run`.
+ *  I. `team boot --dry-run` of another space's manifest in this prepared folder says the folder
+ *     belongs to the running space and that the apply needs a folder of its own. In folder `c`,
+ *     prepared for no space, it says the folder is not prepared and names `--root .`.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -40,9 +43,9 @@ const SERVER = `nats://127.0.0.1:${await freePort()}`, SERVER_B = `nats://127.0.
 const SPACE = `team-views-${process.pid}`, SPACE_B = `team-boot-${process.pid}`;
 
 const base = mkdtempSync(join(tmpdir(), "cotal-team-views-"));
-const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "b");
+const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "b"), c = join(base, "c");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
-for (const dir of [home, configDir, s, b]) mkdirSync(dir, { mode: 0o700 });
+for (const dir of [home, configDir, s, b, c]) mkdirSync(dir, { mode: 0o700 });
 const sandboxes = new Map([s, b].map((root) => [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })]));
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR") env[key] = value;
@@ -67,6 +70,8 @@ const manifest = (name: string, space: string, channels: Record<string, string>,
 };
 manifest("live.yaml", SPACE, { live1: "    deliveryClass: live\n", live2: "    deliveryClass: live\n" });
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
+const OTHER = `other-${process.pid}`, SERVER_OTHER = `nats://127.0.0.1:${await freePort()}`;
+for (const dir of [s, c]) manifest("other.yaml", OTHER, { x: "    deliveryClass: live\n" }, { dir, server: SERVER_OTHER });
 manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b, server: SERVER_B });
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
@@ -194,6 +199,17 @@ try {
   check("team show <garbage> is TARGET_NOT_FOUND and says what an ID looks like", missing(cotal(s, "team", "show", "nonsense", "--json"), `no team deployment "nonsense" is recorded in this root; a deployment ID is 16 hex characters`));
   check("team remove <unknown id> --dry-run is TARGET_NOT_FOUND", missing(cotal(s, "team", "remove", unknown, "--dry-run", "--json"), `no team deployment "${unknown}" is recorded in this root`));
   check("team remove <unknown id> --yes is TARGET_NOT_FOUND, not a route it does not support", missing(cotal(s, "team", "remove", unknown, "--yes", "--json"), `no team deployment "${unknown}" is recorded in this root`));
+
+  console.log("\nI. another space's manifest in this folder");
+  const other = cotal(s, "team", "boot", "other.yaml", "--dry-run");
+  check("the boot preview says this folder belongs to the running space", other.status === 0 && new RegExp(`Root source:\\s+this folder, which belongs to "${SPACE}"\\n`).test(other.stdout), other.stdout.slice(0, 900));
+  check("its hint says the apply needs the space's own folder, with no placeholder",
+    other.stdout.includes(`the apply refuses until "${OTHER}" has its own folder: prepare one with cotal space create ${OTHER} --root <project-directory>`) && !other.stdout.includes("--root ."), other.stdout.slice(-900));
+  const otherJson = envelope(cotal(s, "team", "boot", "other.yaml", "--dry-run", "--json").stdout)?.result;
+  check("its JSON root source is invoking-folder-of-other-space", otherJson?.rootSource === "invoking-folder-of-other-space", otherJson?.rootSource);
+  const unprepared = cotal(c, "team", "boot", "other.yaml", "--dry-run");
+  check("in a folder prepared for no space, the preview says so and names --root . with the space filled in",
+    unprepared.status === 0 && /Root source:\s+this folder, not prepared\n/.test(unprepared.stdout) && unprepared.stdout.includes(`the apply refuses until "${OTHER}" is prepared: prepare this folder with cotal space create ${OTHER} --root .`), unprepared.stdout.slice(-900));
 } finally {
   if (bUp) {
     const down = cotal(b, "down", "--yes");
