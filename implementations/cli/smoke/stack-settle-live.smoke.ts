@@ -30,7 +30,11 @@
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
  *     naming that cap and the flag. A cap equal to the membership bucket's reservation fails that way
- *     too, and one byte more starts. A project folder renamed while its stack runs: the broker names
+ *     too, and one byte more starts. Once a space holds more than its cap, `send` refuses
+ *     `DEPENDENCY_UNAVAILABLE` naming the store and the cap, `status` shows the store full and leads
+ *     Next with `history clear`, and `down` refuses the same way before any stop, because the
+ *     manager's stop needs an issuance record, which its dry run predicts. After that clear `send`
+ *     stores again. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
  *     `status --space` from the renamed folder name the move and the way back, `status` there offers
  *     no `clean store`, and after the move back `down` stops it.
@@ -113,8 +117,8 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
-import { mintLifecycleUid } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, isCommandFailure, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -470,6 +474,44 @@ try {
     const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
     track(space);
     check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3f. A space over its file store cap. The broker refuses every write and stores nothing.
+  {
+    const space = "fullcap";
+    const root = prepare(space);
+    const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-file-store", "70000000", "--json");
+    track(space);
+    check("up with a 70 MB cap starts", up.status === 0, shown(up));
+    const store = readStackJournal(root)!.journal.broker!.storeDir;
+    const auth = (await getSpaceAuth(workspaceSecretStore(root), space))!;
+    const id = newIdentity();
+    const filler = new CotalEndpoint({ space, servers: findMesh(space)!.server, creds: await mintCreds(auth, id, "operator"), card: { id: id.id, name: "filler", kind: "endpoint" }, consume: false, watchChannels: false, watchPresence: false, registerPresence: false });
+    filler.on("error", () => {});
+    await filler.start();
+    let refused: unknown;
+    try { for (let i = 0; i < 120 && refused === undefined; i++) await filler.multicast("x".repeat(900_000), { channel: "general" }).catch((error: unknown) => { refused = error; }); }
+    finally { await filler.stop().catch(() => {}); }
+    check("rig: the broker refuses a publish once the store is over its cap", (refused as { code?: unknown } | undefined)?.code === 10023, String(refused));
+    const sent = cli(root, "send", "-c", "general", "after the store filled", "--json");
+    check("send on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the store and the cap, and leads with history clear", sent.status === 2 && sent.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && sent.env.error.message === `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, so it refused the message; nothing was stored` && sent.env.error.cause?.code === "10023" && Boolean(sent.env.error.remedy?.startsWith("make room with cotal history clear --yes")), shown(sent));
+    const status = cli(root, "status", "--json");
+    const full = status.env?.result?.store as { state?: string; used?: number; cap?: number; path?: string } | undefined;
+    check("status --json shows the store full with its bytes, cap and path", status.status === 0 && full?.state === "full" && full.cap === 70000000 && (full.used ?? 0) > 70000000 && full.path === store, { status: status.status, store: full });
+    const plain = cli(root, "status", "--plain");
+    check("status shows a full Store row and leads Next with history clear", /Store: +full - \d+ bytes stored, over its --max-file-store cap of 70000000/.test(plain.stdout) && plain.stdout.includes(`history clear --space ${space} --yes`), plain.stdout);
+    const stopRefused = `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, and stopping the manager needs a credential whose issuance record the full store cannot take; no member was stopped`;
+    const preview = cli(root, "down", "--dry-run", "--json");
+    check("down --dry-run predicts the full-store refusal of the manager's stop", preview.status === 0 && (preview.env?.result?.blockedBy as { code?: string; message?: string } | null)?.code === "DEPENDENCY_UNAVAILABLE" && (preview.env?.result?.blockedBy as { message?: string }).message === stopRefused && Boolean(preview.env?.warnings?.some((w) => w.code === "DEPENDENCY_UNAVAILABLE")), shown(preview));
+    const manager = pidOf(space, "stack-manager");
+    const down = cli(root, "down", "--yes", "--json");
+    check("down --yes on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming history clear then down", down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && down.env.error.message === stopRefused && down.env.error.cause?.code === "10023" && down.env.error.remedy === "make room with cotal history clear --yes, then run cotal down" && manager !== null && alive(manager) && !gone(space, "stack-delivery"), shown(down));
+    check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
+    check("down --dry-run then names no refusal", cli(root, "down", "--dry-run", "--json").env?.result?.blockedBy === null);
+    const again = cli(root, "send", "-c", "general", "after the clear", "--json");
+    check("send stores again once room is made", again.status === 0, shown(again));
+    check("status no longer shows the store full", (cli(root, "status", "--json").env?.result?.store as { state?: string } | undefined)?.state !== "full");
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 

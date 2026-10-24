@@ -11,10 +11,11 @@ import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
+import { readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -124,6 +125,11 @@ function readMembers(journal: StackJournal): Member[] {
 async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
   try { return await prepareNativeServiceStop(manager.definition, manager.instance, withAgents); }
   catch (caught) {
+    if (storeRefusedWrite(caught)) {
+      let store: { path: string; cap?: number } | undefined;
+      try { store = recordedStore(journal.root, journal.space); } catch { store = undefined; }
+      throw fullStoreStop(journal, manager, store);
+    }
     // The read connects through the broker, so a gone broker surfaces as the connect refusal.
     const error = isConnectRefusal(caught) ? caught.failure() : caught;
     const broker = members.find((member) => member.role === "broker" && member.live);
@@ -134,6 +140,17 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
     if (broker || !isCommandFailure(error)) throw caught;
     throw new CommandFailure("refused", error.code, "the stack's broker is not running, so the live manager's agent impact cannot be read; no member was stopped", { target: { root: journal.root, space: journal.space, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `run cotal up --space ${journal.space} to restart the broker from its recorded inputs while the manager keeps running, then run cotal down` });
   }
+}
+
+/** The manager's native stop rides a control credential whose issuance record must be stored before
+ *  the credential is released (SPEC 13.15), and a store over its cap refuses that write as every
+ *  other, so the stop refuses before any signal. */
+function fullStoreStop(journal: StackJournal, manager: Member, store: { path: string; cap?: number } | undefined): CommandFailure {
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker's JetStream store${store ? ` ${store.path}` : ""} is full${store?.cap !== undefined ? ` at its --max-file-store cap of ${store.cap} bytes` : ""}, and stopping the manager needs a credential whose issuance record the full store cannot take; no member was stopped`, {
+    target: { root: journal.root, space: journal.space, manager: manager.instance.name, ...(store ? { store: store.path, ...(store.cap !== undefined ? { cap: store.cap } : {}) } : {}) },
+    native: { code: "10023" },
+    remedy: "make room with cotal history clear --yes, then run cotal down",
+  });
 }
 
 /** Everything outside the recorded members that would be cut off refuses before the first signal.
@@ -256,7 +273,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   const root = canonicalRoot(rootInput);
   // The preview reads without the lock and writes nothing. The real stop holds the root's
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
-  if (values["dry-run"] === true) return previewStackStop(root, values, presentation, withAgents);
+  if (values["dry-run"] === true) return await previewStackStop(root, values, presentation, withAgents);
   // A busy root's refusal names the recorded space, as every refusal after the lock does.
   const recorded = readStackJournal(root)?.journal.space;
   if (recorded !== undefined) recordOperationSpace(recorded);
@@ -303,20 +320,29 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
   return { previous, journal0: scoped, settlement, members, target: { root, space: journal0.space, server: journal0.server } };
 }
 
-function previewStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, withAgents: boolean): void {
+async function previewStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, withAgents: boolean): Promise<void> {
   const { journal0, settlement, members, target } = stopTarget(root, values);
   if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, false);
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
   try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); assertJournalWritable(root, values); assertServiceRecordsWritable(root, journal0.space, values); }
   catch (error) { if (!isCommandFailure(error)) throw error; blocked = error; }
+  // A live manager's stop needs room in the store, so the preview reads how much the space holds.
+  const manager = members.find((member) => member.role === "manager" && member.live);
+  const brokerPid = members.find((member) => member.role === "broker" && member.live)?.instance.record.value.process?.pid;
+  if (!blocked && manager && brokerPid !== undefined && !processStopped(brokerPid)) {
+    let used: number | undefined;
+    try { used = await readStoredBytes(resolveMeshTarget(root, { space: journal0.space, readOnly: true }), "down-preview"); } catch { used = undefined; }
+    const full = used === undefined ? undefined : storeFull(root, journal0.space, used);
+    if (full) blocked = fullStoreStop(journal0, manager, full);
+  }
   const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
     : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
   // no manager impact, which the real stop reads and confirms before any signal.
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop-preview", ...target, withAgents, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, process: member.live ? "running" : "gone" })), settlesOperation: settlement ?? null, blockedBy: blocked?.detail() ?? null, nativeImpactChecked: false, dryRun: true, signalled: false, admittedRestore: restore ?? null }, completeness: "partial", warnings }, () => {
     const view = planView(journal0, members, withAgents, settlement);
-    return { ...view, sections: [...view.sections, ...restoreNotice(restore), { title: "Preview", blocks: [{ kind: "lines", lines: ["Nothing was stopped or written. The preview reads recorded members only; it loads no provider and queries no manager impact. The real stop reads and confirms that impact before any signal."] }] }] };
+    return { ...view, sections: [...view.sections, ...restoreNotice(restore), { title: "Preview", blocks: [{ kind: "lines", lines: ["Nothing was stopped or written. The preview reads recorded members and, with a live manager, how much the space's store holds; it loads no provider and queries no manager impact. The real stop reads and confirms that impact before any signal."] }] }] };
   });
 }
 

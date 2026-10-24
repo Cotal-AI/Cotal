@@ -6579,6 +6579,13 @@ export class CotalEndpoint extends EventEmitter {
     return (await jsm.streams.info(chatStream(this.space))).state.last_seq;
   }
 
+  /** The bytes this connection's account holds in JetStream file storage, as `$JS.API.INFO`
+   *  reports them. A broker's `max_file_store` cap counts every account it serves, so this is a
+   *  lower bound on what that cap measures. */
+  async storedBytes(): Promise<number> {
+    return (await (await this.manager()).getAccountInfo()).storage;
+  }
+
   /** Phase 1 of a join — arm each channel's tail-drop watermark at the current frontier. MUST run
    *  BEFORE opening the core subscription so the live tail can never carry a just-joined message
    *  un-watermarked — which would double-emit it (live + backfill).

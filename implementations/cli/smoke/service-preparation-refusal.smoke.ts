@@ -10,6 +10,9 @@
  * service process launched is the HTTP readiness one below, which its own Next stops. The named
  * `down <service>` form runs the same stop path as `service stop` and is not driven here.
  *
+ * A launch argument over 8192 characters refuses SCHEMA_INVALID, and a `--handler-args` argument over
+ * 4096 refuses USAGE_INVALID, each naming its position and that limit, and neither is saved.
+ *
  * A process definition whose envRefs read a variable the environment does not set refuses its start
  * before anything launches, naming that variable and the child variable it feeds, and `service show`
  * lists the references by name.
@@ -177,6 +180,19 @@ for (const [what, readiness, rule] of readinessCases) {
     bad.status === 1 && bad.envelope?.error?.code === "SCHEMA_INVALID" && bad.envelope.error.message === `service definition: ${rule}` && bad.envelope.error.remedy === "correct readiness in the definition as the message says, then add it again", shown(bad));
 }
 check("no refused definition was saved", run(["service", "show", "badready", "--space", "b1"]).envelope?.error?.code === "TARGET_NOT_FOUND");
+
+// An argument over its bound names its position and the bound, not only the field it is in.
+{
+  const file = join(home, "longarg.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "x".repeat(8193)], cwd: root }, readiness: { type: "process", timeoutMs: 5000 } }));
+  const launch = run(["service", "add", "longarg", "--file", file, "--space", "b1"]);
+  check("a launch argument over 8192 characters refuses SCHEMA_INVALID, exit 1, naming its position and the limit",
+    launch.status === 1 && launch.envelope?.error?.code === "SCHEMA_INVALID" && launch.envelope.error.message === "service definition: launch argument 2 (launch.args[1]) has 8193 characters, and a launch argument holds at most 8192", shown(launch));
+  const handler = run(["service", "add", "longep", "--preset", "exec-endpoint", "--root", root, "--contract", file, "--handler", "/bin/sh", "--handler-args", JSON.stringify(["x", "x".repeat(4097)]), "--space", "b1"]);
+  check("a --handler-args argument over 4096 characters refuses USAGE_INVALID, exit 1, naming its position and the limit",
+    handler.status === 1 && handler.envelope?.error?.code === "USAGE_INVALID" && handler.envelope.error.message === "--handler-args argument 2 has 4097 characters, and each holds at most 4096; the value was not printed", shown(handler));
+  check("neither over-long definition was saved", ["longarg", "longep"].every((name) => run(["service", "show", name, "--space", "b1"]).envelope?.error?.code === "TARGET_NOT_FOUND"));
+}
 
 // A controller stack member's definition stays with its stack, whose up and down read it. Its name
 // marks it, so a definition saved under one stands for the stack's here.

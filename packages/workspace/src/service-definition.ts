@@ -33,6 +33,22 @@ function definitionValidator(): ValidateFunction<ServiceDefinitionInput> {
 }
 
 const refuse = (message: string): never => { throw new Error(`service definition: ${message}`); };
+
+/** The schema's bound on one process launch argument, in characters as it counts them. */
+const MAX_LAUNCH_ARG = (schema.properties.launch.oneOf[0] as { properties: { args: { items: { maxLength: number } } } }).properties.args.items.maxLength;
+
+/** The first process launch argument over {@link MAX_LAUNCH_ARG}, by its position, which the schema's
+ *  own error at `launch` does not name. Undefined when there is none or `input` has no such list. */
+function overLongLaunchArg(input: unknown): string | undefined {
+  const launch = typeof input === "object" && input !== null ? (input as { launch?: unknown }).launch : undefined;
+  const args = typeof launch === "object" && launch !== null && (launch as { type?: unknown }).type === "process" ? (launch as { args?: unknown }).args : undefined;
+  if (!Array.isArray(args)) return undefined;
+  for (const [index, arg] of args.entries()) {
+    const length = typeof arg === "string" ? [...arg].length : 0;
+    if (length > MAX_LAUNCH_ARG) return `launch argument ${index + 1} (launch.args[${index}]) has ${length} characters, and a launch argument holds at most ${MAX_LAUNCH_ARG}`;
+  }
+  return undefined;
+}
 const nativeString = (value: string): boolean => !/[\u0000-\u001f\u007f]/u.test(value);
 
 /** Where a closed-schema validator stopped, from its last error, as ` at <field path>` and what is
@@ -92,6 +108,8 @@ export function parseServiceDefinitionInput(raw: string, selectedSpace: string):
   try { input = JSON.parse(raw); } catch { return refuse("input is not JSON"); }
   // Validator details can contain user-controlled property names. Never publish the raw input or
   // the validator's mutable error array as a diagnostic; only an identifier-shaped location.
+  const overLong = overLongLaunchArg(input);
+  if (overLong) return refuse(overLong);
   const validator = definitionValidator();
   if (!validator(input)) {
     const stopped = validator.errors?.at(-1)?.instancePath ?? "";

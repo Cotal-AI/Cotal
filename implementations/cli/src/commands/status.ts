@@ -102,7 +102,7 @@ import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_STALE_TEXT, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
-import { brokerStoreWrite, type StoreWriteObservation } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, storeFull, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -287,7 +287,8 @@ export interface StatusResult {
    *  `rolledBackRuns` names the runs a restore over a newer cut rolled back, and `rolledBackRunsMore`
    *  counts those it did not list. */
   maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null; rolledBackRuns?: readonly RolledBackRun[]; rolledBackRunsMore?: number } | null;
-  /** A store write failure the selected space's running local broker logged; older inputs may omit it. */
+  /** A store write failure the selected space's running local broker logged, or a store over its
+   *  recorded cap; older inputs may omit it. */
   store?: StoreWriteObservation;
   /** One probe of the selected space's running stack manager's own endpoint. Its process record alone
    *  stays `running` while it hangs; absent when no stack manager runs, and older inputs may omit it. */
@@ -324,6 +325,8 @@ type SelectedResult =
        *  here, and `stack` says whether it still runs members other than the broker, null when its
        *  records cannot be read. */
       spaceStreams: { state: "present" | "absent" | "not-checked"; root: string | null; stack: "running" | "stopped" | null };
+      /** The bytes the space's account holds in the broker's JetStream file store, null when not read. */
+      storedBytes: number | null;
     };
 
 /** Collects what each reader could not read, so the report names it on its row and the run is
@@ -393,7 +396,10 @@ export async function status(args: ParsedArgs): Promise<void> {
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
   const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
-  const store = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
+  const logged = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
+  // A store write failure holds until the broker restarts, so it is named before a full store.
+  const full = selected.ok && target.resolved && target.storedBytes !== null && logged?.state !== "write-failed" ? storeFull(selected.target.root, selected.target.space, target.storedBytes) : undefined;
+  const store = full ?? logged;
   const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
   const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: [...new Set(hints)] };
@@ -1106,6 +1112,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     channels: null,
     membershipFeed: null,
     spaceStreams: { state: "not-checked" as const, root: null, stack: null },
+    storedBytes: null,
   };
   if (target.mode === "user") {
     // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
@@ -1214,7 +1221,7 @@ async function readSnapshot(
   space: string,
   streams: boolean,
   gaps: Gaps,
-): Promise<Pick<Extract<SelectedResult, { resolved: true }>, "snapshot" | "channels" | "membershipFeed" | "spaceStreams">> {
+): Promise<Pick<Extract<SelectedResult, { resolved: true }>, "snapshot" | "channels" | "membershipFeed" | "spaceStreams" | "storedBytes">> {
   let ep: CotalEndpoint;
   try {
     ep = await endpoint();
@@ -1226,21 +1233,23 @@ async function readSnapshot(
     await ep.start();
   } catch (e) {
     gaps.add("SNAPSHOT_UNAVAILABLE", `the channels of ${space} could not be read: ${(e as Error).message}`, { space });
-    return { snapshot: { state: "unavailable", reason: (e as Error).message }, channels: null, membershipFeed: null, spaceStreams: { state: "not-checked", root: null, stack: null } };
+    return { snapshot: { state: "unavailable", reason: (e as Error).message }, channels: null, membershipFeed: null, spaceStreams: { state: "not-checked", root: null, stack: null }, storedBytes: null };
   }
   try {
     const channels = await ep.listChannels();
     const feed = await ep.readMembership().catch(() => undefined);
     const gone = streams && await chatStreamGone(ep);
+    const storedBytes = await ep.storedBytes().catch(() => null);
     return {
       snapshot: { state: "read", reason: null },
       channels: channels.map((ch) => ({ channel: ch.channel, messages: ch.messages })),
       membershipFeed: feed ? { entries: feed.members.length, asOf: feed.asOf ? new Date(feed.asOf).toISOString() : null } : null,
       spaceStreams: !streams ? { state: "not-checked", root: null, stack: null } : gone ? absentStreams(space) : { state: "present", root: null, stack: null },
+      storedBytes,
     };
   } catch (e) {
     gaps.add("SNAPSHOT_UNAVAILABLE", `the channels of ${space} could not be read: ${(e as Error).message}`, { space });
-    return { snapshot: { state: "unavailable", reason: (e as Error).message }, channels: null, membershipFeed: null, spaceStreams: { state: "not-checked", root: null, stack: null } };
+    return { snapshot: { state: "unavailable", reason: (e as Error).message }, channels: null, membershipFeed: null, spaceStreams: { state: "not-checked", root: null, stack: null }, storedBytes: null };
   } finally {
     await ep.stop().catch(() => {});
   }
@@ -1540,6 +1549,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ...(s.spaceStreams.state === "absent" ? [["Space streams", stateCell(s.spaceStreams.stack === "running" ? "not on the broker · the space was deleted under its running stack" : "not on the broker · a space delete removed them", "failed")] as [string, Cell]] : []),
     ...(responder ? [["Delivery responder", stateCell(responder.text, responder.tone)] as [string, Cell]] : []),
     ...(r.store?.state === "write-failed" ? [["Store", stateCell(`write failed at ${r.store.at}: ${r.store.cause}${r.store.path ? ` · ${r.store.path}` : ""}`, "failed")] as [string, Cell]] : []),
+    ...(r.store?.state === "full" ? [["Store", stateCell(`full · ${r.store.used} bytes stored, over its --max-file-store cap of ${r.store.cap} · ${r.store.path}`, "failed")] as [string, Cell]] : []),
     ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
     ["Project", s.rootGone ? stateCell(`${s.root} · folder is gone`, "failed") : s.root],
@@ -1647,6 +1657,9 @@ function nextActions(r: StatusResult): Section {
   // The broker keeps a store write error until it restarts, so messages sent meanwhile may be lost.
   if (r.store?.state === "write-failed")
     items.unshift({ command: `${cmd} down`, description: `Free space on the disk that holds ${r.store.path ?? "the broker's store"} first; then ${cmd} up starts the broker again` });
+  // The broker refuses every write while the store is over its cap, so sends store nothing.
+  if (r.store?.state === "full" && r.selected.resolved)
+    items.unshift({ command: `${cmd} history clear --space ${r.selected.space} --yes`, description: `Make room in the full store: this purges the space's channel history; --dms also purges its direct messages` });
   return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 
