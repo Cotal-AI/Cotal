@@ -1190,7 +1190,10 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   // ordinary object keys and `{ runTests: ... }` is legitimate, so requiring kebab-case here would
   // refuse correct programs to fix a forgery that needs `/`, `#` or `:`. The restriction is the
   // narrowest one that closes it.
-  if (name === "parallel" || name === "race" || name === "fanOut") {
+  //
+  // `fanOut` is not here: its first argument is the items, and its branch keys are minted at run
+  // time from `key` or each item's `id`, where `assertKeySafe` refuses a reserved character.
+  if (name === "parallel" || name === "race") {
     const branches = args[0];
     if (branches !== undefined && branches.type === "ObjectExpression") {
       for (const prop of (branches.properties as AnyNode[]) ?? []) {
