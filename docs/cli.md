@@ -35,8 +35,10 @@ to `cotal setup`. Every command generates its own help, usage, and shell complet
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. `-v` is not a
 version flag.
 
-Some commands have short aliases, listed in `cotal help --all`: `sp` (spawn), `a` (attach),
-`s` (status), `r` (run), `x` (ext), `h` (history), `cfg` (config) and `p` (persona). Subcommands can have their own, such as
+Some commands have short aliases, listed in `cotal help --all` and under Shorthands in each
+command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), `h` (history),
+`t` (team), `p` (persona), `ch` (channel), `w` (watch), `ep` (endpoint), `mgr` (manager), `svc` and
+`services` (service), and `cfg` (config). Subcommands can have their own, such as
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
 subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
 unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
