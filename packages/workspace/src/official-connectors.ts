@@ -71,3 +71,9 @@ export function connectorInstallHint(name: string): string {
     ? `no connector "${name}" installed - add it with \`cotal ext add ${pkg}\``
     : `no connector "${name}" - install its integration with \`cotal ext add <npm-package>\`, or check the name`;
 }
+
+/** The connector a {@link connectorInstallHint} at the start of `text` names, or undefined when
+ *  `text` does not start with one. A caller reads a remote manager's refusal with it. */
+export function hintedConnector(text: string): string | undefined {
+  return /^no connector "([^"]+)"(?: installed - add it with | - install its integration with )/.exec(text)?.[1];
+}

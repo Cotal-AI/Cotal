@@ -14,7 +14,7 @@
     {
       "name": "clear accepts an extra channel",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "    if (args.positionals.length !== 1) throw usage(\"history clear takes no channel; it clears all retained channel history in the selected space\");\n",
+      "find": "    if (args.positionals.length !== 1) throw usage(\"history clear takes no channel; it clears all retained channel history in the space it targets\");\n",
       "replace": "",
       "expectRed": "history clear refuses an extra channel before purging either channel",
       "cell": "history clear refuses an extra channel before purging either channel",

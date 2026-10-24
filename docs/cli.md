@@ -29,8 +29,9 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the selected space, or with none selected the space registered or prepared in the current folder,
-and lists common commands. It points a prepared space to the `cotal up` that starts it, with
+the space a command run here targets, the one registered or prepared in the current folder, else
+the selected space, and lists common commands. When that folder's space is not the selection, it
+adds that the selected space applies outside the folder. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
 split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
@@ -2946,7 +2947,10 @@ into agent runs or copy channel and DM text into an event stream. This launch po
 additional broker authorization boundary. The broker still enforces each endpoint's grants.
 
 The selection `cotal use` sets applies from every directory except another space's project folder,
-where the command targets that folder's space. `status` is a read-only report in this order: this machine
+where the command targets that folder's space. There `status` reports that space under its `Mesh:`
+heading and a `This folder's space` section, also while it is prepared or stopped, and says the
+selected space applies outside the folder. `--json` names it in `target.space` and in
+`meshes.folder`, which `cotal space --json` gives as `folder`. `status` is a read-only report in this order: this machine
 (the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
@@ -3255,9 +3259,10 @@ persona is refused in one line with the catalog directory or the file that was c
 line names `--file <persona.md>` for a persona file elsewhere. A missing `default` persona also
 names the command that writes one: `cotal up` in the root of a space this machine started, or
 `cotal persona create default` for any other space. `--dry-run` refuses a missing persona with
-the same text, as `TARGET_NOT_FOUND` (exit 2). When a managed launch on a
-user-auth mesh is refused because the chosen manager's catalog has no `default`, the Next gives the
-spawn again with `--on` for each of your other live managers whose catalog lists one. The launch flags
+the same text, as `TARGET_NOT_FOUND` (exit 2). When a managed launch is refused because the chosen
+manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
+to create there, and the Next gives the spawn again with `--on` for each of your other live managers
+whose catalog lists it. The launch flags
 override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
 spawn is refused with that explanation before any request is sent. A spawn runs the agent attached
@@ -3347,7 +3352,7 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--harness <connector>`, `-H` | all registered applications | Application whose catalog to list |
 | `--on <manager-instance>` | native selection | Ask only the named manager instance, or on a user-auth mesh the manager a name or host picks, as [`ps`](#managed-seats) takes them. An unavailable or unauthorized pin refuses without choosing another. |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
-| `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate |
+| `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate, and `result.notAskedManagerInstanceIds` lists the live managers an unpinned read did not ask, or is `null` when no registry was read |
 | `--plain` | off | The same report without color |
 
 Asks the selected manager for each application's model catalog (model ids plus their variants)
@@ -3362,7 +3367,11 @@ screen points to that warning without repeating it inline. The remedy is to corr
 cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
 refusal is reported separately. When the space's service registry lists no live manager, an
 unpinned operator `models` refuses `TARGET_UNAVAILABLE` (exit 2) at once, as `ps` does, and names
-bare `cotal up` as the next step. A connector whose harness the manager did not find at boot
+bare `cotal up` as the next step. An unpinned operator read reads the registry first and goes to
+the one manager the native selection picks. With several live managers, the report names the others
+in a `Not asked` row, and its Next asks each with `--on`. A manager lists a catalog row for every
+application its install names, so an empty list says the answering manager has no agent
+application installed. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
 printed it. OpenCode and Codex ids are the full
@@ -4786,7 +4795,9 @@ older status may already have been removed. That uncertain outcome retains the t
 not retried. Raw probe diagnostics and credential material are not copied into the receipt.
 
 The old `deregister-instance` spelling is a hidden migration refusal. It starts no operation
-and names the literal replacement; its former default-to-this-folder instance is not retained.
+and names the literal replacement, and says that the replacement needs a static space's signing
+authority, since an open or user-auth space has no command that removes a registration. Its former
+default-to-this-folder instance is not retained.
 
 ## runtimes
 
@@ -5347,7 +5358,7 @@ record names a failure on the live feed, and a lost connection is one `TARGET_UN
 shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
 when the credential ended the follow, or 130 or 143 when SIGINT or SIGTERM ended it.
 
-`history clear` purges retained history from every channel in the selected space; `--dms` extends
+`history clear` purges retained history from every channel in the space it targets; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
 purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](#clean). On a user-auth mesh the purge rides a short-lived
 purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
@@ -7347,14 +7358,20 @@ that class route; an explicit `--on` or credential-bound instance stays pinned. 
 accepting instance ID does not confer an instance route or cause another launch. The native
 follower verifies the returned fact against the original caller and goal. A launch the manager
 refuses before its first effect, such as a missing persona file or connector, carries
-`not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason, which
-names the file it looked for. An unpinned launch that no manager received is refused with
-`TARGET_UNAVAILABLE` and exit 2. With no manager running, the CLI says so before it sends and
-names bare `cotal up`. When every live manager reports `classSpawn: false`, it says none has an
-agent application installed and names the `cotal ext add` that adds one. A registered manager whose
-rail the broker reports empty is skipped without waiting on it and named in a `MANAGER_SILENT`
-warning, and the reason comes from the managers that answered. A manager reads its
-applications when it starts, so restart it after adding one. A failure after the manager reserved
+`not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason. A missing
+persona names the manager, its host and the file it looked for, which is created on that host. A
+missing connector is `DEPENDENCY_UNAVAILABLE`, as it is for a spawn in this terminal, and the
+refusal names the manager's instance and the host its status reports. An
+unpinned launch that no manager received is refused with `TARGET_UNAVAILABLE` and exit 2. With no
+manager running, the CLI says so before it sends and names bare `cotal up`. When registered managers do not answer the launch describe, the launch
+was never sent and is refused the same way. The reason follows `ps` when this folder records
+its manager stopped, starting or running but silent. When every live manager
+reports `classSpawn: false`, the refusal is `DEPENDENCY_UNAVAILABLE`: it names each manager and its
+host, says none has an agent application installed, and names the `cotal ext add` that adds one.
+A registered manager whose rail the broker reports empty is skipped without waiting and named
+in a `MANAGER_SILENT` warning; the reason comes from the managers that answered.
+Both refusals say to add the application where the manager runs, not on your machine. A manager
+reads its applications when it starts, so restart it after adding one. A failure after the manager reserved
 the name or wrote a launch file keeps its native outcome, and the CLI never reclassifies it from
 its message.
 
@@ -7793,9 +7810,10 @@ separate. No active probe or process control is implied by a registration row.
 
 ### Clearing retained history
 
-`history clear` purges all retained channel history in the selected space. It takes no channel
-argument. `--dms` also requests DM history under the existing purger authority. In a terminal,
-confirmation names the space, broker and space-wide scope and defaults to cancellation. Scripts
+`history clear` purges all retained channel history in the space it targets: `--space`, else this
+folder's space, else the selected one. It takes no channel argument. `--dms` also requests DM
+history under the existing purger authority. In a terminal, confirmation names the space, broker
+and space-wide scope and defaults to cancellation. Scripts
 and `--json` require `--yes`. The old `--force` spelling refuses with the replacement.
 
 `history clear --dry-run` resolves the target and names the affected streams offline. It issues no
