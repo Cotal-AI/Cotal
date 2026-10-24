@@ -175,7 +175,8 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
 
 /** A root takes the controller route when it already has a stack journal, or when it is a fresh,
  *  prepared root with nothing legacy, maintenance or team-owned retained under it. On either, an
- *  input the controller has no route for refuses `UNSUPPORTED`. A static-auth request needs an `up`
+ *  input the controller has no route for refuses `UNSUPPORTED`. A recorded stack that launched a
+ *  member keeps its auth mode. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
  *  its native auth service. Anything else keeps the retained path. */
@@ -187,6 +188,8 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   if (recorded) {
     const refused = unsupported.filter((name) => name !== "rotate-sys");
     if (refused.length) throw controllerUnsupported(canonical, refused, false);
+    // A stack that never launched a member pins no mode; its next up plans a first start.
+    if (stackNeverStarted(recorded.journal)) return true;
     if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${recorded.journal.mode === "open" ? "open" : recorded.journal.mode === "user" ? "user auth" : "static auth"}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: "run bare cotal up to keep the recorded mode" });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
     return true;
