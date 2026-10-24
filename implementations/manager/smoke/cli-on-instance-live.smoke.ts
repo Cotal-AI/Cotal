@@ -414,6 +414,10 @@ try {
       { status: r.status, tail: out.slice(-400) });
     check(`...and ${site.what}'s headline names the instance, not an unreachable mesh`,
       !/no manager reachable/i.test(out), out.slice(-300));
+    // The launch and attach blocks name the space as a field; only the refusal's heading names the mesh.
+    if (site.what === "spawn --detach" || site.what === "attach")
+      check(`...and ${site.what} names the mesh once, in the refusal's heading`,
+        (out.match(/^Mesh: /gm) ?? []).length === 1 && !/using mesh/.test(out), out.slice(0, 700));
   }
 
   // ---- 6. AN EMPTY `--on` IS REFUSED AT THE FLAG, ON EVERY SITE ------------------------------

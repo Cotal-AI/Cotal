@@ -6905,7 +6905,10 @@ record has none. The report works out the ages it prints from those times.
 `spawn [<persona>] --on <instance>` launches through that manager and attaches after its native
 readiness result. The attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
 not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capable receipt after
-the same readiness result. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
+the same readiness result. While it waits, it prints the launch it asked for, with the space as a
+field, and one line that says the manager answers when it refuses the launch, or when the agent
+joins or exits, within about 30 seconds. The receipt or refusal that follows names the mesh in its
+`Mesh:` heading. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
 role and model request separately from any provider acceptance claim. When the host granted the
 agent other read or post channels than it asked for, as a host that narrows a request to your grant
 does, the receipt adds a `Granted` line with the channels it got and the ones it asked for, and
