@@ -9,7 +9,7 @@ import { loadManifest } from "../lib/manifest/index.js";
 import { cotalRoot } from "../lib/paths.js";
 import { additiveAgentRequestReceipt, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveAgentReceipt, writeAdditiveAgentStep, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveAgentReceipt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
-import { readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { retainedTeamMatches } from "../lib/team-retained.js";
 import { applyRetainedTeam } from "./team-deploy-apply.js";
@@ -30,7 +30,8 @@ export async function applyAgentTeam(file: string, values: TeamValues): Promise<
   const retained = retainedTeamMatches(root, space, hashManifestSource(source));
   if (retained) return applyRetainedTeam(file, values, retained[0]!);
   if (!prepared.agents.length || prepared.agents.length > 100 || manifest.channels.length > 100 || manifest.defaults !== undefined || manifest.broker?.host !== undefined || values["allow-stale"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this guarded team route accepts one to 100 all-new agents and at most 100 new live channel cards without default/bind changes or stale waivers; no field was dropped", { target });
-  if (manifest.channels.some((channel) => channel.deliveryClass !== "live")) throw new CommandFailure("refused", "UNSUPPORTED", "mixed team creation needs explicit live delivery on every channel; inherited or durable delivery was not silently replaced", { target });
+  const notLive = cardsWithoutLiveDelivery(manifest.channels);
+  if (notLive) throw new CommandFailure("refused", "UNSUPPORTED", `mixed team creation needs explicit live delivery on every channel, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery was not silently replaced`, { target: { ...target, cards: notLive.names }, remedy: LIVE_DELIVERY_REMEDY });
   try { for (const channel of manifest.channels) validateChannelConfig(cardOf(channel)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a declared channel card exceeds native policy or text limits; no channel or agent was created", { target }); }
   if (values.space !== undefined && values.space !== space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this manifest; no target was substituted", { target });

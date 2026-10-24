@@ -17,6 +17,7 @@ import { LangError, LangErrors, type LangErrorCode, type SourceSpan } from "./er
 import {
   BUILTINS,
   FORBIDDEN_GLOBALS,
+  HOLDABLE_KINDS,
   HOST_GLOBAL_HINTS,
   NOTIFY_BOUND,
   PRIMITIVES,
@@ -1191,6 +1192,10 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
     // scope primitive from having its data walked in place of its body.
     const thunks = branchThunks(args[spec.optionsAt - 1], v, scope);
     for (const thunk of thunks) checkCapturedWrites(thunk, name, v, seen);
+    if (spec.scope === "once") {
+      const reached = new Set<AnyNode>();
+      for (const thunk of thunks) checkOnceEffects(thunk, v, reached);
+    }
   }
   // A probe and the functions in its options bag run one level deeper too, in each observation's
   // own frame, and a settled `waitUntil` is replayed without calling them, so a write from one of
@@ -1203,6 +1208,38 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
       if (body !== undefined) checkCapturedWrites(body, name, v, seen);
     }
   }
+}
+
+/**
+ * L2033: an effect `once` does not admit, called in its body or in a function the body calls by
+ * name. Every step under `once` is at-most-once, and only an `ask` can be held on resume, so the run
+ * refuses anything else with L4028 when it reaches it; this refuses the calls the validator can see
+ * before the run starts. A primitive name is reserved, so a call by that name is the primitive.
+ */
+function checkOnceEffects(fn: AnyNode, v: Validator, seen: Set<AnyNode>): void {
+  if (seen.has(fn)) return;
+  seen.add(fn);
+  const visit = (node: AnyNode): void => {
+    const callee = node.type === "CallExpression" && isNode(node.callee) ? node.callee as AnyNode : undefined;
+    if (callee?.type === "Identifier") {
+      const name = callee.name as string;
+      const kind = Object.hasOwn(PRIMITIVES, name) ? PRIMITIVES[name]!.kind : null;
+      if (kind !== null && !HOLDABLE_KINDS.has(kind)) {
+        v.fail(
+          "L2033",
+          node,
+          `\`${name}\` runs inside \`once\`, and \`once\` admits only \`ask\`: a resume could not hold any other effect without performing it again or losing the run state it builds.`,
+          `Move the \`${name}\` outside the \`once\`, so only the \`ask\` it guards stays inside.`,
+          name,
+        );
+      } else {
+        const target = v.functions.get(name);
+        if (target !== undefined && target !== null) checkOnceEffects(target, v, seen);
+      }
+    }
+    for (const c of children(node)) visit(c);
+  };
+  if (isNode(fn.body)) visit(fn.body as AnyNode);
 }
 
 function isFunctionNode(node: AnyNode): boolean {

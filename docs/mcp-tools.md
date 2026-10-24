@@ -10,30 +10,30 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 
 | Tool | Does | Side-effect |
 |---|---|---|
-| [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |
-| [`cotal_connection_status`](#cotalconnectionstatus) | connection status | read-only |
-| [`cotal_docs`](#cotaldocs) | read the docs (version-exact) | read-only |
-| [`cotal_roster`](#cotalroster) | who's present | read-only |
-| [`cotal_inbox`](#cotalinbox) | read incoming messages | clears only the messages it returns (nothing at all when peek is true) |
-| [`cotal_send`](#cotalsend) | broadcast to a channel | publishes to a channel |
-| [`cotal_dm`](#cotaldm) | direct-message a peer | sends a private message to one peer |
-| [`cotal_anycast`](#cotalanycast) | ask any agent of a role | queues a request for one holder of a role |
-| [`cotal_status`](#cotalstatus) | set your status / attention | updates your own presence / attention |
-| [`cotal_channel_info`](#cotalchannelinfo) | what a channel is for | read-only |
-| [`cotal_channels`](#cotalchannels) | list channels | read-only |
-| [`cotal_channel_mode`](#cotalchannelmode) | silence or mute a channel | sets your own per-channel receive preference (quiet / muted / normal) |
-| [`cotal_join`](#cotaljoin) | join a channel | subscribes you to a channel |
-| [`cotal_leave`](#cotalleave) | leave a channel | unsubscribes you from a channel |
-| [`cotal_spawn`](#cotalspawn) | spawn a new teammate | starts a new agent process via the manager |
-| [`cotal_feedback`](#cotalfeedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
-| [`cotal_despawn`](#cotaldespawn) | stop a teammate | stops a teammate (or yourself) |
-| [`cotal_yield`](#cotalyield) | yield a run turn | settles one run turn via the manager (done / blocked / handoff) |
-| [`cotal_run`](#cotalrun) | run a workflow program | starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only |
-| [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
-| [`cotal_personas`](#cotalpersonas) | list or show personas | read-only |
-| [`cotal_describe`](#cotaldescribe) | describe an endpoint | none; reads an endpoint's registered command surface |
-| [`cotal_invoke`](#cotalinvoke) | invoke an endpoint command | whatever the named command does |
-| [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
+| [`cotal_orientation`](#cotal_orientation) | orient (who you are & what you can do) | read-only |
+| [`cotal_connection_status`](#cotal_connection_status) | connection status | read-only |
+| [`cotal_docs`](#cotal_docs) | read the docs (version-exact) | read-only |
+| [`cotal_roster`](#cotal_roster) | who's present | read-only |
+| [`cotal_inbox`](#cotal_inbox) | read incoming messages | clears only the messages it returns (nothing at all when peek is true) |
+| [`cotal_send`](#cotal_send) | broadcast to a channel | publishes to a channel |
+| [`cotal_dm`](#cotal_dm) | direct-message a peer | sends a private message to one peer |
+| [`cotal_anycast`](#cotal_anycast) | ask any agent of a role | queues a request for one holder of a role |
+| [`cotal_status`](#cotal_status) | set your status / attention | updates your own presence / attention |
+| [`cotal_channel_info`](#cotal_channel_info) | what a channel is for | read-only |
+| [`cotal_channels`](#cotal_channels) | list channels | read-only |
+| [`cotal_channel_mode`](#cotal_channel_mode) | silence or mute a channel | sets your own per-channel receive preference (quiet / muted / normal) |
+| [`cotal_join`](#cotal_join) | join a channel | subscribes you to a channel |
+| [`cotal_leave`](#cotal_leave) | leave a channel | unsubscribes you from a channel |
+| [`cotal_spawn`](#cotal_spawn) | spawn a new teammate | starts a new agent process via the manager |
+| [`cotal_feedback`](#cotal_feedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
+| [`cotal_despawn`](#cotal_despawn) | stop a teammate | stops a teammate (or yourself) |
+| [`cotal_yield`](#cotal_yield) | yield a run turn | settles one run turn via the manager (done / blocked / handoff) |
+| [`cotal_run`](#cotal_run) | run a workflow program | starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only |
+| [`cotal_persona`](#cotal_persona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
+| [`cotal_personas`](#cotal_personas) | list or show personas | read-only |
+| [`cotal_describe`](#cotal_describe) | describe an endpoint | none; reads an endpoint's registered command surface |
+| [`cotal_invoke`](#cotal_invoke) | invoke an endpoint command | whatever the named command does |
+| [`cotal_reconnect`](#cotal_reconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
 
 ## `cotal_orientation`
 

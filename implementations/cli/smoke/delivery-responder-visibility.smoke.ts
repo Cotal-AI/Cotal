@@ -281,10 +281,10 @@ try {
   // The row must SAY the record belongs to a dead daemon: "not bound" alone sends an operator looking
   // for a daemon that is starting, when the actual next move is to let the corpse's lease expire.
   const staleSuffix = deliveryRowSuffix(true, "stale", "cotal status --components");
-  check("CELL 6: the stale row names both NOT BOUND and the dead holder's record",
-    /RESPONDER NOT BOUND/.test(staleSuffix) && /DEAD daemon/.test(staleSuffix), staleSuffix);
+  check("CELL 6: the stale row names NOT BOUND and says in plain words that the daemon died",
+    /RESPONDER NOT BOUND/.test(staleSuffix) && staleSuffix.includes("the delivery daemon died and its 30 s lease has not expired yet"), staleSuffix);
   check("CELL 6: the stale row still names the consequence",
-    staleSuffix.includes("no spawn, no retirement, no join until it binds"), staleSuffix);
+    staleSuffix.includes("spawn, retirement and join wait until a new daemon binds"), staleSuffix);
 
   console.log(`\nDELIVERY RESPONDER VISIBILITY SMOKE OK ✅ (${pass} checks)`);
   // Canonical sentinel, not just the banner: the shard runner refuses a suite that exits 0 having

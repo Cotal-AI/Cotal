@@ -8,8 +8,9 @@
  * file + line. Stages 1–4 of the plan — deterministic and unit-testable.
  */
 import { isAbsolute, resolve as resolvePath, dirname } from "node:path";
-import { parseDocument, LineCounter } from "yaml";
-import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral } from "@cotal-ai/core";
+import { parseDocument, LineCounter, isMap, isScalar } from "yaml";
+import type { z } from "zod";
+import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral, utf16Problem, token } from "@cotal-ai/core";
 import { MeshManifestSchema, type RawManifest } from "./schema.js";
 import type { AgentPolicy, PersonaPermissions, ResolvedAgent, ResolvedChannel, ResolvedManifest } from "./model.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -17,6 +18,9 @@ import { ManifestError, type ManifestIssue } from "./errors.js";
 /** Parse + validate a manifest source into the resolved model. `sourcePath` anchors relative
  *  persona refs and locates errors. */
 export function resolveManifest(src: string, sourcePath: string): ResolvedManifest {
+  // Parsed as UTF-8, a UTF-16 file would be one string the schema calls the wrong shape.
+  const encoding = utf16Problem(src);
+  if (encoding) throw new ManifestError(sourcePath, [{ message: `${encoding}; save it as UTF-8` }]);
   const lc = new LineCounter();
   const doc = parseDocument(src, { lineCounter: lc });
   // Best-effort location: try the exact node, then walk up the path (union/object-level errors
@@ -31,7 +35,8 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
         const { line, col } = lc.linePos(node.range[0]);
         return { line, col };
       }
-      if (p.length === 0) return {};
+      // An empty document has no root node; its problem starts at its first line.
+      if (p.length === 0) return { line: 1, col: 1 };
       p.pop();
     }
   };
@@ -58,7 +63,7 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
   }
 
   // 2. Schema (strict): shape + unknown-key rejection. Map every Zod issue back to a located line.
-  const parsed = MeshManifestSchema.safeParse(js);
+  const parsed = MeshManifestSchema.safeParse(js, { error: schemaReason });
   if (!parsed.success)
     throw new ManifestError(
       sourcePath,
@@ -75,6 +80,10 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
   // 3 + 4. Normalize/invert and run pure semantic checks, collecting every problem in one pass.
   const issues: ManifestIssue[] = [];
   const add = (message: string, path?: (string | number)[]) => issues.push({ message, path, ...locate(path) });
+
+  // `space create` and `cotal up` take a space only under a name that is one native routing token.
+  if (raw.space.length > 200 || token(raw.space) !== raw.space)
+    add(`space ${JSON.stringify(raw.space)} is not a space name: a space name is 1 to 200 letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, ["space"]);
 
   const agentNames = new Set(Object.keys(raw.agents ?? {}));
   for (const name of agentNames)
@@ -100,6 +109,41 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
     channels,
     sourcePath,
   };
+}
+
+/** The plain reason for a value the key does not take: one outside its fixed values, a missing
+ *  required key, an empty file, or a value of another YAML shape. Any other issue keeps the
+ *  validator's reason. */
+const schemaReason: z.core.$ZodErrorMap = (issue) => {
+  if (issue.code === "invalid_value") return `must be ${issue.values.map((value) => JSON.stringify(value)).join(" or ")}`;
+  if (issue.code !== "invalid_type") return undefined;
+  const key = issue.path?.at(-1);
+  if (issue.input === undefined && key !== undefined) return `\`${String(key)}:\` is required`;
+  if (issue.input == null && !issue.path?.length) return "the manifest is empty; it needs apiVersion, kind, space and channels";
+  return `expected ${yamlShape(issue.expected)}, not ${issue.input === null ? "an empty value" : yamlShape(Array.isArray(issue.input) ? "array" : typeof issue.input)}`;
+};
+
+function yamlShape(type: string): string {
+  return type === "record" || type === "object" ? "a mapping" : type === "array" ? "a list" : `a ${type}`;
+}
+
+/** Each `agents:` entry that names a persona file: the agent, the file's resolved path and the
+ *  entry's location. Diagnostics only, so a manifest that does not parse names none. */
+export function personaReferences(src: string, sourcePath: string): { name: string; persona: string; line?: number; col?: number }[] {
+  const lc = new LineCounter();
+  const doc = parseDocument(src, { lineCounter: lc });
+  const agents = doc.errors.length ? undefined : doc.get("agents", true);
+  if (!isMap(agents)) return [];
+  const dir = dirname(sourcePath);
+  return agents.items.flatMap((pair) => {
+    const name = isScalar(pair.key) ? pair.key.value : undefined;
+    if (typeof name !== "string") return [];
+    const entry = doc.getIn(["agents", name], true);
+    if (!isScalar(entry) && !isMap(entry)) return [];
+    const persona = isScalar(entry) ? entry.value : entry.get("persona");
+    if (typeof persona !== "string" || !persona) return [];
+    return [{ name, persona: isAbsolute(persona) ? persona : resolvePath(dir, persona), ...(entry.range ? lc.linePos(entry.range[0]) : {}) }];
+  });
 }
 
 /** Normalize each channel (default `allowSubscribe` ⇐ `subscribe`, dedup) and run the channel-level

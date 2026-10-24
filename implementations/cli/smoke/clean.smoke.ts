@@ -5,11 +5,12 @@
  * Covers: the live-process guard (a running recorded pid refuses cleanup; a STALE or corrupt
  * pidfile does not; an EPERM-unsignalable pid DOES), the `store` removal set (JetStream store
  * only), the `all` removal set (store + auth + every derived local cred + crash residue: stale
- * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the refusal of a store
- * directory that holds anything else (with nothing in it removed) and `up`'s warning about one, the
- * dry run, the already-clean no-op, that `clean all` drops only registry entries rooted at THIS
- * project (a named open mesh must never delete the default space's entry), and that a `clean all`
- * removing the space trust says earlier full backups no longer restore into the root.
+ * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the store the last broker
+ * served when `.cotal/nats` holds none, the refusal of a store directory that holds anything else
+ * (with nothing in it removed) and `up`'s warning about one, the dry run, the already-clean no-op,
+ * that `clean all` drops only registry entries rooted at THIS project (a named open mesh must never
+ * delete the default space's entry), and that a `clean all` removing the space trust says earlier
+ * full backups no longer restore into the root.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -295,6 +296,20 @@ try {
   rmSync(shared, { recursive: true, force: true });
   rmSync(decoy, { recursive: true, force: true });
 
+  // --- the broker's own ocsp folder is part of the store ----------------------------------------
+  // nats-server makes `ocsp` in its store directory on every configuration reload, as a restore's
+  // does, so `up` does not warn about it and `clean store` removes it with the store.
+  const ocspRoot = meshRoot();
+  mkdirSync(join(ocspRoot, ".cotal", "nats", "ocsp"));
+  const ocspWarnings: string[] = [];
+  console.error = (...args: unknown[]) => { ocspWarnings.push(args.join(" ")); };
+  try { warnForeignStoreEntries(join(ocspRoot, ".cotal", "nats")); }
+  finally { console.error = consoleError; }
+  const ocspRemoved = await removeLocalState(ocspRoot, { includeAuth: false });
+  check("ocsp: up does not warn about the broker's ocsp folder, and clean store removes it with the store",
+    ocspWarnings.length === 0 && ocspRemoved[0] === ".cotal/nats (JetStream store: jetstream, ocsp)" && !existsSync(join(ocspRoot, ".cotal", "nats")), { ocspWarnings, ocspRemoved });
+  rmSync(ocspRoot, { recursive: true, force: true });
+
   // --- --dry-run lists what store/all would remove and removes nothing ------------------------
   const dryRoot = meshRoot();
   writeFileSync(join(dryRoot, ".cotal", "nats", ".cotal-store-id"), `${randomUUID()}\n`);
@@ -408,6 +423,71 @@ try {
   check("all: removing the space trust says, in the dry run and the receipt, that earlier full backups no longer restore here",
     notes.length === 2 && /full backups taken before this clean would no longer restore into this root/.test(notes[0] ?? "") && /full backups taken before this clean no longer restore into this root.*Take a new full backup/.test(notes[1] ?? ""), notes);
   rmSync(trustRoot, { recursive: true, force: true });
+
+  // A user-auth space's state directory holds its pinned IdP and its actor ledger. `clean all` names
+  // them, in its dry run and in its receipt, with what a later up needs.
+  const userAuthRoot = meshRoot();
+  const userAuthDir = join(userAuthRoot, ".cotal", "auth", spaceSegment("demo"));
+  mkdirSync(join(userAuthDir, "actors"), { recursive: true });
+  writeFileSync(join(userAuthDir, "idp.json"), "{}");
+  writeFileSync(join(userAuthDir, "actors", "u_a.anna.json"), "{}");
+  const userAuthOut: string[] = [];
+  notes.length = 0;
+  const consoleOut = console.log;
+  console.log = (...args: unknown[]) => { userAuthOut.push(args.map(String).join(" ")); };
+  console.error = (...args: unknown[]) => { notes.push(args.map(String).join(" ")); };
+  process.chdir(userAuthRoot);
+  try {
+    await clean({ positionals: ["all"], values: { "dry-run": true }, raw: [] });
+    await clean({ positionals: ["all"], values: { force: true }, raw: [] });
+  } finally {
+    console.log = consoleOut;
+    console.error = consoleWarn;
+    process.chdir(cwd);
+  }
+  const labeled = `.cotal/auth/${spaceSegment("demo")} (IdP trust and actor ledger)`;
+  check("all: a user-auth space's state directory is named as its IdP trust and actor ledger, in the dry run and the receipt",
+    userAuthOut.some((line) => line.includes(`would remove ${labeled}`)) && userAuthOut.some((line) => line.includes(`removed ${labeled}`)), userAuthOut);
+  check("all: the dry run and the receipt say every actor grant is lost and what a later up needs",
+    /would remove the IdP trust and the actor ledger.*would need cotal up --user-auth --idp <auth base URL>/.test(notes[0] ?? "") && /removed the IdP trust and the actor ledger.*every actor grant is lost.*needs cotal up --user-auth --idp <auth base URL>/.test(notes[2] ?? ""), notes);
+  check("all: the receipt names the up a user-auth space needs for its fresh identity",
+    userAuthOut.some((line) => line.includes("minted on the next `cotal up --user-auth --idp <auth base URL>`")), userAuthOut);
+  check("all: the user-auth state directory is gone", !existsSync(userAuthDir));
+  rmSync(userAuthRoot, { recursive: true, force: true });
+
+  // Without --store-dir, clean reads the record a start reads: while the default store holds no data,
+  // the store the last broker served, named in the broker config `up` wrote, is this root's store.
+  const printed: string[] = [];
+  const consoleLog = console.log;
+  const cleanStore = async (root: string, values: Record<string, boolean>) => {
+    console.log = (...args: unknown[]) => { printed.push(args.map(String).join(" ")); };
+    process.chdir(root);
+    try { await clean({ positionals: ["store"], values, raw: [] }); }
+    finally { console.log = consoleLog; process.chdir(cwd); }
+  };
+  const servedStore = (root: string) => {
+    const store = mkdtempSync(join(tmpdir(), "cotal-served-"));
+    mkdirSync(join(store, "jetstream"));
+    writeFileSync(join(store, "jetstream", "stream.dat"), "x");
+    writeFileSync(join(root, ".cotal", "auth", "server.conf"), `jetstream { store_dir: ${JSON.stringify(store)} }\n`);
+    return realpathSync.native(store);
+  };
+  const servedRoot = meshRoot();
+  rmSync(join(servedRoot, ".cotal", "nats"), { recursive: true });
+  const served = servedStore(servedRoot);
+  await cleanStore(servedRoot, { "dry-run": true });
+  check("store: with no data in .cotal/nats, the dry run names the store the last broker served", printed.some((line) => line.includes(`would remove ${served} (JetStream store`)) && existsSync(served), printed);
+  printed.length = 0;
+  await cleanStore(servedRoot, { force: true });
+  check("store: and removes it, instead of saying there is nothing to clean", !existsSync(served) && printed.some((line) => line.includes(`removed ${served}`)), printed);
+  rmSync(servedRoot, { recursive: true, force: true });
+  const bothRoot = meshRoot();
+  const other = servedStore(bothRoot);
+  printed.length = 0;
+  await cleanStore(bothRoot, { force: true });
+  check("store: while .cotal/nats holds data, as a start would open, that store is removed and the other is kept", !existsSync(join(bothRoot, ".cotal", "nats")) && existsSync(join(other, "jetstream", "stream.dat")), printed);
+  rmSync(bothRoot, { recursive: true, force: true });
+  rmSync(other, { recursive: true, force: true });
 
   // A retained bare `down` reaches its pidfile sweep only for one registration that `cotal up`
   // started at this root, and refuses when another registration names the same broker address

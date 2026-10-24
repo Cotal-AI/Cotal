@@ -5,7 +5,9 @@
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, getCurrent, preparedSpaceAt, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
+import { workingFolderRemoved } from "./lib/paths.js";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -158,7 +160,9 @@ export function printEntry(commands: readonly Command[]): void {
   // The `up` that starts a prepared space: no other command works on it until it runs.
   let start: string | undefined;
   let unreadable = false;
-  try {
+  // From a removed folder every command that uses a space refuses, so no space is shown.
+  const removed = workingFolderRemoved();
+  if (!removed) try {
     const selected = getCurrent();
     const root = findCotalRoot(process.cwd());
     // With nothing selected, commands run here target the space prepared in this folder.
@@ -170,13 +174,14 @@ export function printEntry(commands: readonly Command[]): void {
       const preferences = cachedPreferences();
       const harness = resolvePreference("harness", { space, preferences }).value;
       context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
-      if (prepared) start = canonicalRoot(prepared.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${prepared.root}`;
+      if (prepared) start = canonicalRoot(prepared.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${shellWord(prepared.root)}`;
     }
   } catch {
     unreadable = true;
   }
   const sections: Section[] = [];
-  if (unreadable) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "The local space or defaults could not be read. Status reports the affected records.", tone: "waiting" }] }] });
+  if (removed) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.", tone: "waiting" }] }] });
+  else if (unreadable) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "The local space or defaults could not be read. Status reports the affected records.", tone: "waiting" }] }] });
   else if (context) sections.push({ blocks: [{ kind: "lines", lines: [{ text: context, tone: "hint" }] }] });
   else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: "Set up a local space, or connect to a self-hosted one.", tone: "hint" }] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });

@@ -53,7 +53,10 @@ One `command` event is posted as the CLI process exits, whatever the exit path. 
 first command of each UTC day also posts an `install` event first. Each is one `POST` of JSON,
 `content-type: application/json`, to `https://cotal.ai/v1/telemetry`, with a 1.5 second timeout, no
 retry, and every failure ignored: telemetry never changes a command's output, exit code or timing
-beyond that timeout. `COTAL_TELEMETRY_URL` points a self-hosted intake.
+beyond that timeout. `COTAL_TELEMETRY_URL` points a self-hosted intake. It must be an `http` or
+`https` URL, because a send to anything else fails and that failure is ignored too. Any other value
+refuses with `USAGE_INVALID` before the command runs whenever the level in force sends events, and
+`cotal telemetry` refuses it at every level, since it reports that URL.
 
 The first interactive run at `regular` prints one notice to stderr and records it; a run whose
 stderr is not a terminal (CI logs) sends but prints nothing, so a later terminal run still shows it.

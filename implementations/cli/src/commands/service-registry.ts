@@ -10,9 +10,10 @@ import { importServiceDefinition, serviceDefinitionProjection, serviceDefinition
 import { serviceAction } from "./service-actions.js";
 import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
-import { removableServiceInstances, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
+import { removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
 import { STACK_DEFINITION } from "../lib/stack-journal.js";
 import { localRecordName } from "../lib/protected-records.js";
+import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
 
 export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
   { name: "preset", type: "string", value: "<name>", description: "add: use a declared preset and that adapter's schema-derived options; starts nothing" },
@@ -67,7 +68,9 @@ function legacyProcesses(context: LocalProcessContext) {
 export async function service(args: ParsedArgs, commandName = "service"): Promise<void> {
   validateServiceArguments(args);
   const presentation = presentationOf(args.values);
-  const catalog = personaCatalog(args.values as { space?: string });
+  // Only --space selects the space: a preset's own options, such as the broker's --server and --root,
+  // describe the service and never the target.
+  const catalog = personaCatalog({ space: args.values.space as string | undefined });
   const { space, root } = catalog;
   recordOperationSpace(space);
   const store = serviceDefinitionStore(space);
@@ -137,15 +140,20 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       writeResult(presentation, { command: "service", target: at, result: { kind: "service-instance-record-removed", name: row.name, instanceId: id, processesChanged: false, supervisorChanged: false } }, (): Report => ({ sections: [{ title: "Instance record forgotten", blocks: [{ kind: "fields", rows: [["Name", row.name], ["Instance", id], ["Space", space]] }, { kind: "lines", lines: ["Only this stopped instance record was removed. Its logs, the definition and the other instances were kept, and no process or OS unit was changed."] }] }] }));
       return;
     }
+    // A stack member's definition is the stack's: `up` and `down` read it, so it goes with the space.
+    if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy: `it goes with the stack: cotal down --yes, then cotal space forget ${space}` });
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
       if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with cotal svc remove ${row.name} --yes` });
-      const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)}? No process or OS unit will be removed.`, initialValue: false });
+      const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)} and delete its instances' logs? No process or OS unit will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled("Service definition kept");
     }
     removableServiceInstances(space, row.name);
-    store.commit(row.name, row, undefined, () => removeStoppedInstanceRecords(space, row.name));
-    writeResult(presentation, { command: "service", target: { ...target, name: row.name }, result: { kind: "service-definition-removed", name: row.name, removedRevision: row.record.revision, processesChanged: false, supervisorChanged: false } }, (): Report => ({ sections: [{ title: "Service definition forgotten", blocks: [{ kind: "fields", rows: [["Name", row.name], ["Space", space]] }, { kind: "lines", lines: ["Only the unchanged local definition was removed. No process, OS unit, native registration or credential was changed."] }] }] }));
+    let instances: string[] = [];
+    store.commit(row.name, row, undefined, () => { instances = removeStoppedInstanceRecords(space, row.name); });
+    // The logs go once the definition and records are gone, so a refused removal keeps every log.
+    const logsRemoved = removeServiceLogs(space, instances);
+    writeResult(presentation, { command: "service", target: { ...target, name: row.name }, result: { kind: "service-definition-removed", name: row.name, removedRevision: row.record.revision, logsRemoved, processesChanged: false, supervisorChanged: false } }, (result): Report => ({ sections: [{ title: "Service definition forgotten", blocks: [{ kind: "fields", rows: [["Name", row.name], ["Space", space]] }, { kind: "lines", lines: [...(result.logsRemoved.length ? ["Deleted logs:", ...result.logsRemoved.map((path) => `  ${path}`)] : ["No instance log was found to delete."]), "The unchanged local definition and its stopped instances' records were removed. No process, OS unit, native registration or credential was changed."] }] }] }));
     return;
   }
   let name = suppliedName;
@@ -154,19 +162,32 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (prompts.isCancel(answer)) return cancelled("Service creation cancelled");
     name = localRecordName(answer);
   }
-  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: { ...target, name }, remedy: `to change it, stop its instances, forget it with cotal service remove ${name} --space ${oneLine(space)} --yes, then add it again` });
   const named = { ...target, name };
   /** A refusal while the definition is built names the space and name it was for. */
   const forName = <T>(build: () => T): T => {
     try { return build(); }
     catch (error) { throw isCommandFailure(error) && error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target: named, remedy: error.remedy, native: error.native, changed: error.changed }) : error; }
   };
+  // A file names its space, so a definition for another space is refused before its name is looked
+  // up in the selected one, whose service of that name it does not concern.
+  const file = args.values.file;
+  const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
+  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with cotal service remove ${name} --space ${oneLine(space)} --yes, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
+  /** The broker's address is checked before a definition is saved, as its paths are, so a start does
+   *  not record a failed instance for an address the broker cannot serve. */
+  const refuseBrokerServer = (built: ServiceDefinitionInput): void => {
+    const problem = built.launch.type === "adapter" && built.launch.adapter === brokerService.name ? brokerServerProblem(String(built.launch.options.server)) : undefined;
+    if (!problem) return;
+    throw chosenPreset !== undefined
+      ? new CommandFailure("refused", "USAGE_INVALID", `--server ${problem}; nothing was saved`, { target: named, remedy: "pass the one address its configuration serves, for example --server nats://127.0.0.1:<port>", selfContained: true })
+      : new CommandFailure("refused", "SCHEMA_INVALID", `the definition's launch.options.server ${problem}; nothing was saved`, { target: named, remedy: "set launch.options.server to the one address its configuration serves, such as nats://127.0.0.1:<port>" });
+  };
   if (typeof args.values.preset === "string") {
     chosenPreset = args.values.preset;
     const preset = chosenPreset;
     definition = forName(() => servicePresetDefinition(resolveServicePreset(preset), space, args.values));
-  } else if (typeof args.values.file === "string") { const file = args.values.file; definition = forName(() => importServiceDefinition(resolve(file), space)); }
+  } else if (imported !== undefined) definition = imported;
   else {
     const available = servicePresets();
     const choice = available.length ? await prompts.select({ message: "Definition source", options: [{ value: "file:", label: "Import a version-1 definition file" }, ...available.map((row) => ({ value: `preset:${row.preset.name}`, label: oneLine(row.preset.name), hint: oneLine(row.preset.summary) }))] }) : "file:";
@@ -183,13 +204,17 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       if (prompts.isCancel(file)) return cancelled("Service creation cancelled");
       definition = forName(() => importServiceDefinition(resolve(file), space));
     }
+    refuseBrokerServer(definition);
     const answer = await prompts.confirm({ message: `Save ${oneLine(name)} in ${oneLine(space)}? Its program will not be started.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) return cancelled("Service creation cancelled");
   }
   const checked = definition;
   forName(() => validateServiceDefinition(checked, space));
+  refuseBrokerServer(checked);
   const record = store.commit(name, undefined, definition)!;
-  writeResult(presentation, { command: "service", target: { ...target, name }, result: { kind: "service-definition-added", name, revision: record.revision, space, preset: chosenPreset ?? null, started: false, authorityGranted: false } }, (): Report => ({ sections: [{ title: "Service definition saved", blocks: [{ kind: "fields", rows: [["Name", name], ["Space", space], ["Execution host", "this machine"], ["Revision", record.revision], ["Process", "not started"], ["Authority", "not granted"]] }, { kind: "lines", lines: [{ text: "Only the owner-private definition was saved. Referenced credential contents were not read. This declaration is not a process sandbox.", tone: "hint" }] }] },
+  // The executable as saved: a bare name in the input is saved as the absolute path add found for it.
+  const executable = definition.launch.type === "process" ? definition.launch.executable : null;
+  writeResult(presentation, { command: "service", target: { ...target, name }, result: { kind: "service-definition-added", name, revision: record.revision, space, preset: chosenPreset ?? null, executable, started: false, authorityGranted: false } }, (): Report => ({ sections: [{ title: "Service definition saved", blocks: [{ kind: "fields", rows: [["Name", name], ["Space", space], ["Execution host", "this machine"], ...(executable ? [["Executable", executable] as [string, string]] : []), ["Revision", record.revision], ["Process", "not started"], ["Authority", "not granted"]] }, { kind: "lines", lines: [{ text: "Only the owner-private definition was saved. Referenced credential contents were not read. This declaration is not a process sandbox.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal svc start ${name}`, description: "Start it; dependencies are not started for it" }, { command: `cotal svc show ${name}`, description: "Read its saved launch and readiness policy" }] }] }] }));
   function cancelled(title: string): void { writeResult(presentation, { command: "service", target, result: { kind: "service-definition-change", changed: false }, noOp: true }, () => ({ sections: [{ title, blocks: [{ kind: "lines", lines: ["No service definition, process or OS unit was changed."] }] }] })); }
 }

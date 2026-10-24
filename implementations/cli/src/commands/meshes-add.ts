@@ -21,9 +21,11 @@ import {
   JoinRefusal,
   preflightCode,
   preflightTarget,
+  readNatsInfoGreeting,
   PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
   setCurrent,
+  spaceNameTooLong,
   userAuthStateDir,
   type Check,
   type DialPolicy,
@@ -199,8 +201,11 @@ const isSpaceMode = (value: string): value is (typeof SPACE_MODES)[number] => (S
  *  space's account record means auth; anything else is an open broker. `--mode user` is permitted
  *  IFF the pinned trust was SUPPLIED (`userTrustSupplied`) — the old blanket refusal reasoned
  *  that IdP pins must be established, never guessed, and supplying them (a bundle exported where
- *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. */
+ *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. Every
+ *  add path asks it first, so a space name too long for the local files that carry it is refused here. */
 export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined, userTrustSupplied = false): Check<MeshEntry["mode"]> {
+  const tooLong = spaceNameTooLong(space);
+  if (tooLong) return bad(`✗ ${tooLong}; nothing was written`, "USAGE_INVALID");
   if (flag !== undefined && !isSpaceMode(flag))
     return bad(`✗ --mode must be auth, open or user (got "${flag}")`, "USAGE_INVALID");
   if (flag === "user" && !userTrustSupplied)
@@ -386,7 +391,7 @@ export function candidateTarget(space: string, server: string, root: string, mod
 /** The registration-time wording for a failed probe. Deliberately NOT the shared preflight copy:
  *  that speaks to a mesh already in the registry ("stale entry", "re-run `cotal up`"), and here
  *  nothing is recorded yet — the operator is being told what to fix in the command they just ran. */
-export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string): string {
+export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string, pid?: number): string {
   switch (kind) {
     case "unreachable":
       return `✗ no broker answered at ${server} - check the address and that the mesh is up on that machine`;
@@ -402,6 +407,8 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the broker at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, then re-run`;
     case "slow-link":
       return `✗ the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - nothing was registered; retry, and if it keeps happening, check that the broker process is not stopped or overloaded`;
+    case "broker-stopped":
+      return `✗ the broker at ${server} is served by process ${pid}, which is stopped, so it accepts the connection and never answers - nothing was registered; resume it with kill -CONT ${pid} and run this again`;
   }
 }
 

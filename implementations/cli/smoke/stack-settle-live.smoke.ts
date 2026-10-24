@@ -2,12 +2,21 @@
  * LIVE: a controller stack is settled from process evidence instead of wedging its root.
  *
  *  1. Crash mid-start. An `up` killed while delivery waits for readiness leaves an applying
- *     operation. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
+ *     operation. `status` names the half-started stack and leads Next with the `up --root
+ *     <root> --no-manager` that finishes it. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
- *  2. Broker crash after start. The next `up` restarts the broker from its records. After a manager
- *     crash, the next `up` relaunches the manager over the pidfile the killed process left. Once
- *     delivery is killed, `status` reads its ready row as stale instead of bound.
+ *  2. Broker crash after start. The `up` that adds the manager and `service status` list the broker's
+ *     client and websocket listeners and the manager's console, and `status` lists the members by
+ *     definition. With the space's service instance folder unwritable, `down --yes` and `up` refuse
+ *     naming it and stop nothing; a wildcard configuration lists them
+ *     on every interface and names the plaintext ones. `service add` refuses a broker `--server`
+ *     that is no broker address, by preset or `--file`, quoting it unless it may hold a credential, and
+ *     starting such a definition saved earlier names its `server` option. The next `up` restarts the broker from its
+ *     records. After a manager crash, the next `up` relaunches the manager over the pidfile the
+ *     killed process left. Once delivery is killed, `status` reads its ready row as stale instead of
+ *     bound. The `down --yes` that stops it prints one receipt: the mesh once, the members in stop
+ *     order with their results, and `cotal up` as the next step.
  *  2b. A `ps` while an `up` is still starting the manager says it is starting. Once that `up` is
  *     killed, `ps` gives the no-manager refusal again.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
@@ -21,10 +30,17 @@
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
  *     naming that cap and the flag. A project folder renamed while its stack runs: the broker names
- *     its store relative to the root, so it does not create the old path again; `send` and `up` from
- *     the renamed folder name the move and the way back, and after the move back `down` stops it.
+ *     its store relative to the root, so it does not create the old path again; `send`, `up` and
+ *     `status --space` from the renamed folder name the move and the way back, `status` there offers
+ *     no `clean store`, and after the move back `down` stops it.
  *     Stopped and moved again, `up`, `send`, `history` and `status` there all name moving it back.
- *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
+ *     Status there, and in a copy, does not offer `clean store`, which refuses in both.
+ *     With its journal removed after `down`, as the way out of a damaged one says, `up` starts at the
+ *     address its saved broker definition names and warns; with no definition either, it refuses and
+ *     asks for `--server`.
+ *  4. Orphan manager. With the broker suspended under a live manager, `down` refuses
+ *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing. With the broker
+ *     killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
  *     is kept as it is. The legacy name and the broker stop name their stack members. Under umask
@@ -53,7 +69,8 @@
  *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
- *     and reuses it. After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
+ *     and reuses it, and its notice says the earlier up was interrupted with every member running.
+ *     After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
  *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
  *     stack, `up` starts it again and a later `down` stops it.
@@ -71,6 +88,19 @@
  *     under the normal limit starts the stack.
  * 12. A `down --yes` in a folder whose `.cotal` this account cannot write refuses `PERMISSION_DENIED`
  *     before the plan, naming the folder, and stops nothing. Once it is writable, `down` stops it.
+ * 13. An `up` interrupted while its broker readies, before it registers the space. It exits 130
+ *     naming the broker's pid and `cotal down --yes`. The broker keeps running unregistered, so the
+ *     next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and `cotal down --yes`, and starts
+ *     nothing; following it, `down --yes` then `up` start the stack. A `down` interrupted while it
+ *     waits on a frozen manager exits 130 naming the members still running and `cotal down --yes`.
+ * 14. An `up` stopped after it recorded its broker's launch and before it recorded the child. The
+ *     `COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD` hold keeps the launch in that window; a listener that
+ *     holds the port is refused before any launch is recorded. Interrupted there by SIGINT or
+ *     SIGHUP, the `up` exits 130 or 129 and records the launch failed, so `down --yes` settles it.
+ *     Killed there, it leaves a record that names no process: `down --yes` refuses
+ *     `LIFECYCLE_BLOCKED` naming `down --abandon-launch <instance> --yes`, which refuses without
+ *     `--yes` and for another instance, then records the broker failed with a warning. Each stack
+ *     then starts and stops.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -100,14 +130,17 @@ const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTA
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
+// Registers the broker adapter, which a definition saved from this process is checked against.
+await import("../src/lib/broker-service.js");
+const { definitionListeners, exposedPlaintext, listenerRow } = await import("../src/lib/stack-listeners.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 const owned = new Set<number>();
 
-type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string; cause?: { code?: string; detail?: string } } };
-type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stderr: string; env?: Envelope };
+type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; message?: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string; cause?: { code?: string; detail?: string } } };
+type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
@@ -115,7 +148,7 @@ const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
-  return { status: run.status, signal: run.signal, ms: Date.now() - began, stderr: run.stderr, env: parsed };
+  return { status: run.status, signal: run.signal, ms: Date.now() - began, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
 const cli = (cwd: string, ...args: string[]): Run => cliAs(env, cwd, ...args);
 /** `cli` without blocking this process, so a watcher in it can act while the command runs. */
@@ -131,7 +164,7 @@ const cliAsync = (cwd: string, ...args: string[]): Promise<Run> => {
     clearTimeout(timer);
     let parsed: Envelope | undefined;
     try { parsed = JSON.parse(stdout) as Envelope; } catch { parsed = undefined; }
-    done({ status, signal, ms: Date.now() - began, stderr, env: parsed });
+    done({ status, signal, ms: Date.now() - began, stdout, stderr, env: parsed });
   }));
 };
 const shown = (run: Run) => ({ status: run.status, signal: run.signal, ms: run.ms, outcome: run.env?.outcome, error: run.env?.error, stderr: run.stderr.slice(-1500) });
@@ -190,6 +223,12 @@ try {
     if (delivery !== null) process.kill(delivery, "SIGKILL");
     await until(() => gone(space, "stack-delivery"), 10_000);
     check("the killed up left its operation applying", readStackJournal(root)?.journal.operation.phase === "applying", readStackJournal(root)?.journal.operation);
+    const half = cli(root, "status", "--json");
+    const unfinished = (half.env?.result?.folder as { stackUnfinished?: { kind?: string; running?: string[]; stopped?: string[]; noManager?: boolean } | null } | undefined)?.stackUnfinished;
+    check("status names the half-started stack: the broker runs and delivery did not start", half.status === 0 && unfinished?.kind === "up" && unfinished.running?.join() === "broker" && unfinished.stopped?.join() === "delivery" && unfinished.noManager === true, shown(half));
+    const halfShown = cli(root, "status");
+    const halfNext = halfShown.stdout.slice(halfShown.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "";
+    check("its first Next finishes that up, keeping --no-manager", halfShown.stdout.includes("Half started · the last up ended before delivery started; broker runs") && halfNext.includes(`up --root ${root} --no-manager`) && halfNext.includes("Finish starting the stack: the last up ended before delivery started"), { next: halfNext, ...shown(halfShown) });
 
     const preview = cli(root, "down", "--dry-run", "--json");
     check("down --dry-run on the unsettled root exits 0 and names the settlement", preview.status === 0 && preview.env?.outcome === "ok" && preview.env.result?.settlesOperation !== null, shown(preview));
@@ -198,6 +237,11 @@ try {
     check("down --yes settles the earlier operation and stops the live broker", stopped.status === 0 && Boolean(stopped.env?.warnings?.some((warning) => warning.code === "OPERATION_SETTLED")) && (broker === null || !alive(broker)), shown(stopped));
     const again = cli(root, "down", "--yes", "--json");
     check("a second down --yes is a no-op", again.status === 0 && again.env?.outcome === "no-op", shown(again));
+    for (const [flag, name] of [["--open", "open"], ["--user-auth", "user auth"]] as const) {
+      const pinned = cli(root, "up", flag, "--no-manager", "--json");
+      check(`up ${flag} on the stopped static-auth root refuses CONFLICT, exit 2, and names another folder for ${name}`,
+        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run cotal space create <space>, then cotal up ${flag}, in another folder`)), shown(pinned));
+    }
 
     // A bare up adds the manager, so the restart keeps --no-manager for the ps refusal.
     const restarted = cli(root, "up", "--no-manager", "--json");
@@ -212,7 +256,72 @@ try {
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
+    // The rows followed the store's order, by random instance ID, so they moved whenever a member
+    // started under a new one.
+    const statusInstances = (cli(root, "status", "--json").env?.result?.services as { instances?: { definition: string; instanceId: string }[] } | undefined)?.instances ?? [];
+    check("status lists the stack's instances by definition, then instance",
+      JSON.stringify(statusInstances.map((row) => row.definition)) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]), statusInstances);
+    // A service record folder this account cannot write left every member running after an unknown
+    // first stop, and failed up with no cause. Both refuse before any effect now, naming it.
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const instancesDir = join(home, "services", Buffer.from(space).toString("hex"), "instances");
+      chmodSync(instancesDir, 0o500);
+      try {
+        const stop = cli(root, "down", "--yes", "--json");
+        const running = ["stack-broker", "stack-delivery", "stack-manager"].every((definition) => { const pid = pidOf(space, definition); return pid !== null && alive(pid); });
+        check("down --yes with an unwritable instances folder refuses PERMISSION_DENIED, exit 2, naming it and chmod, and stops nothing",
+          stop.status === 2 && stop.env?.error?.code === "PERMISSION_DENIED" && stop.env.error.message.includes(instancesDir) && Boolean(stop.env.error.remedy?.includes(`chmod u+w ${instancesDir}`)) && running, shown(stop));
+        const start = cli(root, "up", "--json");
+        check("up with it refuses the same way", start.status === 2 && start.env?.error?.code === "PERMISSION_DENIED" && Boolean(start.env.error.remedy?.includes(`chmod u+w ${instancesDir}`)), shown(start));
+      } finally { chmodSync(instancesDir, 0o700); }
+    }
+    // The receipt and service status name every listener the stack opened: the broker's client and
+    // websocket listeners and the manager's console, here all on loopback.
+    type Listed = Parameters<typeof exposedPlaintext>[0];
+    const listed = added.env?.result?.listeners as Listed | null | undefined;
+    const brokerListed = cli(root, "service", "status", "stack-broker", "--space", space, "--json").env?.result?.listeners as Listed | undefined;
+    const consoleListed = cli(root, "service", "status", "stack-manager", "--space", space, "--json").env?.result?.listeners as Listed | undefined;
+    check("up's receipt and service status list the broker's client and websocket listeners and the manager's console, on loopback",
+      JSON.stringify(listed?.map((l) => [l.name, l.host, l.name === "client" ? l.port : typeof l.port, l.reach, l.encrypted])) === JSON.stringify([["client", "127.0.0.1", port, "loopback", false], ["websocket", "127.0.0.1", "number", "loopback", false], ["console", "127.0.0.1", "object", "loopback", false]])
+        && JSON.stringify(brokerListed) === JSON.stringify(listed?.slice(0, 2)) && JSON.stringify(consoleListed) === JSON.stringify(listed?.slice(2)), { listed, brokerListed, consoleListed });
+    // A wildcard bind, as `up --host 0.0.0.0` renders it, reaches every interface, and the report says
+    // which listeners are plaintext there. No socket is opened for this.
+    const wildConfig = join(home, "wildcard-server.conf");
+    writeFileSync(wildConfig, "host: 0.0.0.0\nport: 4999\nmax_control_line: 1\nwebsocket {\n  host: 0.0.0.0\n  port: 5000\n  no_tls: true\n}\n");
+    const definitionOf = (adapter: string, options: Record<string, unknown>) => ({ name: "x", record: { revision: 1, value: { launch: { type: "adapter", adapter, options } } } }) as unknown as Parameters<typeof definitionListeners>[0];
+    const wild = [...definitionListeners(definitionOf("nats-broker", { config: wildConfig })) ?? [], ...definitionListeners(definitionOf("manager-service", { "console-host": "0.0.0.0" })) ?? []];
+    check("a wildcard bind lists every listener on every interface and names the plaintext ones",
+      JSON.stringify(wild.map(listenerRow)) === JSON.stringify([["Broker client", "0.0.0.0:4999 · every interface · plaintext"], ["Broker websocket", "0.0.0.0:5000 · every interface · plaintext"], ["Manager console", "0.0.0.0, on a port the manager picks when it starts · every interface · plaintext HTTP"]])
+        && exposedPlaintext(wild) === "The broker client, broker websocket and manager console listeners are plaintext and reachable from other machines, so what crosses them is not encrypted."
+        && exposedPlaintext(listed ?? []) === undefined, wild);
     check("...and status no longer reports the stack as manager-less", noManager() === false);
+
+    // A broker definition's address is checked when it is added, as its paths are. A start applied
+    // the address rules only after it recorded an instance, and named neither the option nor the value.
+    // The stack's own broker configuration and binary, which pass the path checks.
+    const stackLaunch = serviceDefinitionStore(space).read("stack-broker")?.record.value.launch;
+    const [brokerConfig, brokerBinary] = stackLaunch?.type === "adapter" ? [String(stackLaunch.options.config), String(stackLaunch.options.binary)] : ["", ""];
+    const addBroker = (name: string, server: string) => cli(root, "service", "add", name, "--preset", "broker", "--root", root, "--config", brokerConfig, "--binary", brokerBinary, "--server", server, "--json");
+    const word = addBroker("bad-word", "hallo welt");
+    check('service add --preset broker refuses --server "hallo welt" USAGE_INVALID, exit 1, quoting it, and saves nothing',
+      word.status === 1 && word.env?.error?.code === "USAGE_INVALID" && word.env.error.message === '--server "hallo welt": the broker address must be one nats:// or tls:// URL; nothing was saved' && serviceDefinitionStore(space).read("bad-word") === undefined, shown(word));
+    const credential = addBroker("bad-cred", "nats://user:secret@127.0.0.1:4999");
+    check("an address with a credential is refused without printing it",
+      credential.status === 1 && credential.env?.error?.code === "USAGE_INVALID" && /^--server \(not printed/.test(credential.env.error.message) && !`${credential.stdout}${credential.stderr}`.includes("secret") && serviceDefinitionStore(space).read("bad-cred") === undefined, shown(credential));
+    const brokerFile = (server: string) => ({ schemaVersion: 1 as const, space, launch: { type: "adapter" as const, adapter: "nats-broker", options: { root, config: brokerConfig, binary: brokerBinary, server } }, readiness: { type: "adapter" as const, timeoutMs: 30_000 } });
+    const badFile = join(home, "bad-server.json");
+    writeFileSync(badFile, JSON.stringify(brokerFile("nats://127.0.0.1:4999x")));
+    const imported = cli(root, "service", "add", "bad-file", "--file", badFile, "--json");
+    check("service add --file refuses that address SCHEMA_INVALID, exit 1, naming launch.options.server and the value",
+      imported.status === 1 && imported.env?.error?.code === "SCHEMA_INVALID" && imported.env.error.message.startsWith(`the definition's launch.options.server "nats://127.0.0.1:4999x": `) && serviceDefinitionStore(space).read("bad-file") === undefined, shown(imported));
+    // Saved as an older CLI saved it, before the check.
+    serviceDefinitionStore(space).commit("old-broker", undefined, brokerFile("hallo welt"));
+    const oldStart = cli(root, "service", "start", "old-broker", "--json");
+    check("starting a definition saved before the check refuses UNSUPPORTED, exit 2, naming its server option and value and how to add it again",
+      oldStart.status === 2 && oldStart.env?.error?.code === "UNSUPPORTED" && oldStart.env.error.message.includes(`the definition's server option "hallo welt": the broker address must be one nats:// or tls:// URL`)
+        && Boolean(oldStart.env.error.remedy?.startsWith(`remove it with cotal service remove old-broker --space ${space} --yes, then add it again`)), shown(oldStart));
+    const oldRemoved = cli(root, "service", "remove", "old-broker", "--yes", "--json");
+    check("rig: the old definition and its failed instance are removed", oldRemoved.status === 0 && serviceDefinitionStore(space).read("old-broker") === undefined, shown(oldRemoved));
 
     const crashed = pidOf(space, "stack-broker");
     if (crashed !== null) process.kill(crashed, "SIGKILL");
@@ -239,8 +348,15 @@ try {
     await until(() => gone(space, "stack-delivery"), 10_000);
     const deadResponder = responder();
     check("status reads the live daemon's ready row as bound and a killed daemon's as stale", killedDelivery !== null && liveResponder === "bound" && deadResponder === "stale", { killedDelivery, liveResponder, deadResponder });
-    const finalDown = cli(root, "down", "--yes", "--json");
+    const finalDown = cli(root, "down", "--yes", "--plain");
     check("down --yes stops the repaired stack", finalDown.status === 0 && (replacement === null || !alive(replacement)), shown(finalDown));
+    // The receipt names the mesh once, lists the members in the stop order with their results, and
+    // ends with one Next; --yes prints no plan, impact or broker scope ahead of it.
+    const rows = finalDown.stdout.split("\n").filter((line) => /^ {2}(manager|delivery|broker) /.test(line)).map((line) => line.trim().split(/\s+/));
+    check("down --yes prints one receipt: the mesh once, members in stop order with results, and cotal up as the Next",
+      finalDown.stdout.startsWith(`Mesh: ${space}\n`) && finalDown.stdout.split("Mesh: ").length === 2 && !/stop plan|stop impact|stop scope/.test(finalDown.stdout)
+        && JSON.stringify(rows.map((row) => [row[0], row.slice(2).join(" ")])) === JSON.stringify([["manager", "stopped"], ["delivery", "already stopped"], ["broker", "stopped"]])
+        && finalDown.stdout.trimEnd().endsWith("Next\n  cotal up  Start the stack again from its journal and saved definitions"), finalDown.stdout);
   }
 
   // 2b. A ps while an up is still starting the manager. Delivery is frozen once pinned, so the up
@@ -345,6 +461,36 @@ try {
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
+  // 3e. A journal removed after `down` dropped the registration, as the way out of a damaged one
+  // says. The saved broker definition names the address; with none, a root that ran refuses.
+  {
+    const space = "unjournaled";
+    const root = prepare(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const first = cli(root, "up", "--server", server, "--no-manager", "--json");
+    track(space);
+    check("up --no-manager starts the stack to unjournal", first.status === 0, shown(first));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    const journalPath = join(root, ".cotal", "stack-controller.json");
+    rmSync(journalPath);
+    const recovered = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    check("bare up with no journal or registration starts at the address its saved broker definition names, and warns STACK_ADDRESS_RECOVERED",
+      recovered.status === 0 && readStackJournal(root)?.journal.server === server && Boolean(recovered.env?.warnings?.some((warning) => warning.code === "STACK_ADDRESS_RECOVERED")), shown(recovered));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    rmSync(journalPath);
+    const records = join(home, "services", Buffer.from(space).toString("hex"));
+    for (const row of serviceInstances(space, "stack-broker")) rmSync(join(records, "instances", `${Buffer.from(row.record.value.instanceId).toString("hex")}.json`));
+    rmSync(join(records, "definitions", `${Buffer.from("stack-broker").toString("hex")}.json`));
+    const refused = cli(root, "up", "--no-manager", "--json");
+    check("with no saved broker definition either, bare up refuses USAGE_INVALID, exit 1, and asks for --server",
+      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "run cotal up --server <url> with the address it ran at" && !existsSync(journalPath), shown(refused));
+    const named = cli(root, "up", "--server", server, "--no-manager", "--json");
+    track(space);
+    check("up --server with that address starts it", named.status === 0, shown(named));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
   // 3d. A project folder renamed while its stack runs.
   {
     const space = "renamed";
@@ -359,6 +505,10 @@ try {
     check("send from the renamed folder refuses CONFLICT, naming the move and the way back", send.status === 2 && send.env?.error?.code === "CONFLICT" && send.env.error.message.includes(`was started in ${root}`) && send.env.error.message.endsWith("so this folder was moved from there") && send.env.error.remedy === `move this folder back to ${root}, then run the command again there`, shown(send));
     const up = cli(moved, "up", "--json");
     check("up there refuses CONFLICT, saying the folder was moved", up.status === 2 && up.env?.error?.code === "CONFLICT" && up.env.error.message.includes(`recorded at ${root}, so this folder was moved from there`), shown(up));
+    const running = cli(moved, "status", "--space", space, "--json"), bare = cli(moved, "status", "--json");
+    const selected = running.env?.result?.selected as { code?: string; message?: string } | undefined, hints = (running.env?.result?.hints as string[] | undefined) ?? [];
+    check("status --space there says the folder was moved and names the way back", selected?.code === "moved-folder" && Boolean(selected.message?.endsWith("so this folder was moved from there")) && hints.includes(`move this folder back to ${root}, then run the command again there`), { selected, hints });
+    check("status there offers no clean store, which refuses in a moved folder", bare.status === 0 && !((bare.env?.result?.hints as string[] | undefined) ?? []).some((hint) => hint.includes("clean store")), bare.env?.result?.hints);
     // The stack's own clients create consumers within seconds; a broker that named its store by the
     // old absolute path created that path again for them.
     await sleep(10_000);
@@ -372,8 +522,18 @@ try {
     const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
     const status = cli(moved, "status", "--space", space, "--json");
     renameSync(moved, root);
+    // A copy keeps the journal too. Clean store refuses in both, so status does not offer it there.
+    const copy = `${root}-copy`;
+    spawnSync("cp", ["-a", root, copy]);
+    const copyStatus = cli(copy, "status", "--space", space, "--json");
+    rmSync(copy, { recursive: true, force: true });
     check("stopped and moved, up, send and history there all name moving the folder back", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
-    check("status --space there names the same step", String((status.env?.result?.selected as { message?: string } | undefined)?.message ?? "").endsWith(way), shown(status));
+    check("status --space there names the same step", ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), shown(status));
+    const offersNoReset = (r: Run) => {
+      const result = r.env?.result as { folder?: { storedState?: boolean }; hints?: string[] } | undefined;
+      return result?.folder?.storedState === false && Array.isArray(result.hints) && !result.hints.some((hint) => hint.includes("clean store"));
+    };
+    check("status in the moved folder and in a copy offers no clean store for the stack's store", offersNoReset(status) && offersNoReset(copyStatus), { moved: shown(status), copy: shown(copyStatus) });
   }
 
   // 3b. A first up refused at a port another program holds pins nothing.
@@ -390,9 +550,11 @@ try {
     check("no broker instance was recorded", serviceInstances(space, "stack-broker").length === 0, serviceInstances(space, "stack-broker").map((row) => row.record.value.state));
     const nothing = cli(root, "down", "--yes", "--json");
     check("down --yes there stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
-    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    // Nor a mode: the refused up asked for static auth, and the next one may ask for an open stack.
+    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--open", "--no-manager", "--json");
     track(space);
     check("the next up starts at another address while the program still holds the first", moved.status === 0, shown(moved));
+    check("and in the open mode it asked for, which the refused up did not pin", moved.env?.result !== undefined && JSON.stringify(moved.env.result).includes('"mode":"open"'), shown(moved));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
     await new Promise<void>((done) => holder.close(() => done()));
   }
@@ -430,6 +592,14 @@ try {
     const seat = { ...env, COTAL_NAME: "settle-seat", COTAL_ID: "settle-seat", COTAL_LIFECYCLE_UID: uid, COTAL_SPACE: space, COTAL_ACCEPTED_TOKEN: "settle-token" };
     const rejected = cliAs(seat, root, "down", "--yes", "--json");
     check("a live broker's refusal of a managed seat's credential is kept, not reported as a registry mismatch, and nothing stops", rejected.status !== 0 && rejected.env?.error?.message === "Authorization Violation" && broker !== null && alive(broker) && manager !== null && alive(manager), shown(rejected));
+    // A suspended broker takes the connection and sends nothing; down reads its stopped state instead.
+    if (broker !== null) process.kill(broker, "SIGSTOP");
+    const hungAt = Date.now();
+    const hung = cli(root, "down", "--yes", "--json");
+    const hungMs = Date.now() - hungAt;
+    if (broker !== null) process.kill(broker, "SIGCONT");
+    check("down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
+    check("down with a suspended broker refuses naming its pid and kill -CONT, and stops nothing", hung.status === 2 && hung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(hung.env.error.message.includes(`pid ${broker}`)) && Boolean(hung.env.error.remedy?.includes(`kill -CONT ${broker}`)) && broker !== null && alive(broker) && manager !== null && alive(manager), shown(hung));
     if (broker !== null) process.kill(broker, "SIGKILL");
     await until(() => gone(space, "stack-broker"), 10_000);
     const blocked = cli(root, "down", "--yes", "--json");
@@ -688,6 +858,8 @@ try {
     const recovered = cli(root, "up", "--json");
     track("redefup");
     const journal = readStackJournal(root)?.journal, row = journal?.members.find((member) => member.role === "manager");
+    const notice = recovered.env?.warnings?.find((warning) => warning.code === "OPERATION_SETTLED")?.message ?? "";
+    check("its notice says the earlier up was interrupted with every member running, not that it failed", /^the earlier up \S+ was interrupted before it recorded an outcome; every member is running \(broker, delivery, manager\)$/.test(notice), recovered.env?.warnings);
     check("bare up after the interrupted redefinition adopts the journaled replacement and reuses it", recovered.status === 0 && row?.instanceId === replacement && row?.state === "reused" && journal?.operation.phase === "completed" && serviceInstances("redefup", "stack-manager").length === 1, shown(recovered));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down then stops the recovered stack", stopped.status === 0 && gone("redefup", "stack-manager"), shown(stopped));
@@ -846,6 +1018,91 @@ try {
       { up: shown(started), down: shown(refused) });
     const stopped = cli(root, "down", "--yes", "--json");
     check(`${space}: once it is writable, down --yes stops the stack`, stopped.status === 0 && gone(space, "stack-broker"), shown(stopped));
+  }
+
+  // 13. An up interrupted before it registers the space leaves its broker running unregistered.
+  {
+    const space = "stranded";
+    const root = prepare(space);
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
+    // Freeze the broker once its process is pinned, so the up is provably waiting on it when it dies.
+    const pinned = await until(() => pidOf(space, "stack-broker") !== null, 120_000);
+    const broker = pidOf(space, "stack-broker");
+    if (broker !== null) process.kill(broker, "SIGSTOP");
+    track(space);
+    check("the up still waits on broker readiness when it is interrupted", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
+    child.kill("SIGINT");
+    await exited(child);
+    check("the interrupted up exits 130 naming its unregistered broker's pid and cotal down --yes", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}`) && upErr.includes("cotal down --yes"), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    if (broker !== null) process.kill(broker, "SIGCONT");
+    check("the killed up left its broker running and the space unregistered", broker !== null && alive(broker) && findMesh(space) === undefined, { broker, registered: findMesh(space) !== undefined });
+    const blocked = cli(root, "up", "--json");
+    check("the next up refuses LIFECYCLE_BLOCKED naming the broker's pid and down --yes, and starts nothing",
+      blocked.status === 2 && blocked.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(blocked.env.error.message.includes(`pid ${broker}`)) && Boolean(blocked.env.error.remedy?.includes("cotal down --yes")) && pidOf(space, "stack-delivery") === null && broker !== null && alive(broker), shown(blocked));
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down --yes stops that broker", stopped.status === 0 && await until(() => broker === null || !alive(broker), 10_000), shown(stopped));
+    const started = cli(root, "up", "--json");
+    track(space);
+    check("up then starts the whole stack", started.status === 0 && pidOf(space, "stack-manager") !== null, shown(started));
+    // A frozen manager holds the down in its impact read, which holds the root's maintenance lock.
+    const manager = pidOf(space, "stack-manager");
+    if (manager !== null) process.kill(manager, "SIGSTOP");
+    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes"], { cwd: root, env });
+    const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let downErr = "";
+    stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
+    // Node dies on a SIGINT that lands before a listener exists. The down installs its handler right
+    // after it takes the lock, so this waits for a lock this down owns, and a margin, before signalling.
+    const lockFile = join(root, ".cotal", "maintenance", "lock.json");
+    const held = await until(() => { try { return JSON.parse(readFileSync(lockFile, "utf8")).owner?.pid === stopping.pid; } catch { return false; } }, 60_000);
+    await sleep(200);
+    stopping.kill("SIGINT");
+    await exited(stopping);
+    if (manager !== null) process.kill(manager, "SIGCONT");
+    check("a down interrupted on a frozen manager exits 130 naming the members still running and cotal down --yes", held && stopping.exitCode === 130 && downErr.includes("broker, delivery, manager are still running") && downErr.includes("cotal down --yes"), { held, exitCode: stopping.exitCode, stderr: downErr.slice(-400) });
+    const last = cli(root, "down", "--yes", "--json");
+    check("and down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 14. An up stopped between recording its broker's launch and recording the child.
+  for (const [signal, code] of [["SIGINT", 130], ["SIGHUP", 129], ["SIGKILL", null]] as const) {
+    const space = `launch-${signal.slice(3).toLowerCase()}`;
+    const root = prepare(space);
+    // The smoke hold keeps the recorded launch from starting its child until the signal lands.
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env: { ...env, COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD: "1" }, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
+    const broker = () => { try { return serviceInstances(space, "stack-broker")[0]; } catch { return undefined; } };
+    const unpinned = await until(() => { const row = broker(); return row !== undefined && row.record.value.state === "starting" && row.record.value.process === undefined; }, 120_000);
+    child.kill(signal);
+    await exited(child);
+    const row = broker();
+    const record = { state: row?.record.value.state, process: row?.record.value.process ?? null, exitCode: child.exitCode, signal: child.signalCode, stderr: upErr.slice(-400) };
+    if (code !== null) {
+      check(`${signal} after the broker launch is recorded: up exits ${code} and records that launch failed, with no process`, unpinned && child.exitCode === code && row?.record.value.state === "failed" && row.record.value.process === undefined && upErr.includes("Interrupted before any member"), record);
+      const settled = cli(root, "down", "--yes", "--json");
+      check(`${signal}: down --yes settles the earlier up`, settled.status === 0 && Boolean(settled.env?.warnings?.some((warning) => warning.code === "OPERATION_SETTLED")), shown(settled));
+    } else {
+      check("a kill after the broker launch is recorded leaves a broker record that names no process", unpinned && child.signalCode === "SIGKILL" && row !== undefined && observeServiceProcess(row.record.value) === "unresolved-launch", record);
+      const instance = row?.name ?? "none";
+      const refused = cli(root, "down", "--yes", "--json");
+      check("down --yes refuses LIFECYCLE_BLOCKED, exit 2, naming down --abandon-launch for that instance", refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(refused.env.error.remedy?.includes(`cotal down --abandon-launch ${instance} --yes`)), shown(refused));
+      const unacknowledged = cli(root, "down", "--abandon-launch", instance, "--json");
+      check("down --abandon-launch without --yes is a usage error, exit 1, and records nothing", unacknowledged.status === 1 && unacknowledged.env?.error?.code === "USAGE_INVALID" && broker()?.record.value.state === "starting", shown(unacknowledged));
+      const another = cli(root, "down", "--abandon-launch", randomUUID(), "--yes", "--json");
+      check("down --abandon-launch naming another instance refuses TARGET_NOT_FOUND and records nothing", another.status === 2 && another.env?.error?.code === "TARGET_NOT_FOUND" && broker()?.record.value.state === "starting", shown(another));
+      const abandoned = cli(root, "down", "--abandon-launch", instance, "--yes", "--json");
+      check("down --abandon-launch records the broker failed with a LAUNCH_ABANDONED warning", abandoned.status === 0 && Boolean(abandoned.env?.warnings?.some((warning) => warning.code === "LAUNCH_ABANDONED" && warning.target?.instanceId === instance)) && broker()?.record.value.state === "failed", shown(abandoned));
+    }
+    const started = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    check(`${signal}: up then starts the stack`, started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
+    const last = cli(root, "down", "--yes", "--json");
+    check(`${signal}: and down --yes stops it`, last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");

@@ -58,6 +58,8 @@ export const CATALOG = Object.freeze({
   L2012: "Host global is not available",
   L2031: "Mutation of a frozen value",
   L2032: "Write from a concurrent branch to something declared outside it",
+  // The static half of L4028: an effect `once` does not admit, written where the validator sees it.
+  L2033: "Effect not admitted inside `once`",
 
   // ---- L3xxx: effect call shape --------------------------------------------------------------
   L3011: "Unknown option key",

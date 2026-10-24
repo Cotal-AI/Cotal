@@ -7,7 +7,8 @@
  * listing no rows. On a registered static or open space, list, grant and revoke refuse UNSUPPORTED
  * under both spellings and say that actor grants need a user-auth space, grant and revoke before
  * they ask for a subject or the ACL flags; nothing is written. A
- * user-auth space lists its row under both spellings, and bare `cotal auth` fills its Next lines
+ * user-auth space lists its row under both spellings, with its role, label and parent in the table
+ * and in `--json`, which `actor list` takes as `auth grants` does. Bare `cotal auth` fills its Next lines
  * with the named or resolved space. `auth retire` refuses UNSUPPORTED there too, and its help and
  * refusal name the lever that works, rotating the space identity. Broker-free; the mesh registry and
  * the prepared spaces are private to this run.
@@ -122,6 +123,26 @@ try {
     assert.ok(actor.out.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+/g, "").includes(`${owner}.cli`), `actor list shows the granted row: ${actor.out}`);
     const envelope = JSON.parse(auth.out) as { result: { items: { owner: string; actor: string }[] } };
     assert.deepEqual(envelope.result.items.map((item) => `${item.owner}.${item.actor}`), [`${owner}.cli`], "auth grants lists the same row");
+
+    // A re-grant replaces the whole row, so both lists show every field it must spell again, and
+    // the actor spelling takes --json as the auth one does.
+    grantActor(dir, { owner, actor: "rev", scope: ["spawn"], allowSubscribe: ["general"], allowPublish: ["general"], role: "reviewer", label: "Code reviewer", parent: `${owner}.cli` });
+    for (const [name, cmd, verb] of [["actor list", actorCommand, "list"], ["auth grants", authCommand, "grants"]] as const) {
+      const plain = flat((await run(cmd, root, { space }, [verb])).out);
+      assert.ok(plain.includes("May post Role Label Parent"), `${name} names the role, label and parent columns: ${plain}`);
+      assert.ok(plain.includes(`${owner}.rev interactive spawn general general reviewer Code reviewer ${owner}.cli`), `${name} shows the row's role, label and parent: ${plain}`);
+      assert.ok(plain.includes(`${owner}.cli interactive spawn > > none none none`), `${name} shows none for a row with no role, label or parent: ${plain}`);
+    }
+    const actorJson = await run(actorCommand, root, { space, json: true }, ["list"]);
+    const authJson = await run(authCommand, root, { space, json: true }, ["grants"]);
+    assert.equal(actorJson.failure, undefined, `actor list --json succeeds: ${actorJson.failure?.message}`);
+    const actorItems = (JSON.parse(actorJson.out) as { command: string; result: { items: { actor: string; role: string | null; label: string | null; parent: string | null }[] } });
+    assert.equal(actorItems.command, "actor", "actor list --json is the actor command's envelope");
+    assert.deepEqual(actorItems.result.items.map(({ actor, role, label, parent }) => ({ actor, role, label, parent })), [
+      { actor: "cli", role: null, label: null, parent: null },
+      { actor: "rev", role: "reviewer", label: "Code reviewer", parent: `${owner}.cli` },
+    ], "actor list --json carries each row's role, label and parent");
+    assert.deepEqual(actorItems.result, (JSON.parse(authJson.out) as { result: unknown }).result, "actor list --json and auth grants --json list the same rows");
   }
 
   // 4. A registered static space has no user-auth ledger anywhere: list, grant and revoke refuse

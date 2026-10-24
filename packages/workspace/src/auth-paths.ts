@@ -70,6 +70,16 @@ export function movedRootRemedy(recordedRoot: string): string {
     : `move this folder back to ${recordedRoot}, then run the command again there`;
 }
 
+/** The longest space name `space create` and `cotal up` accept. A local file that carries a space
+ *  spells its {@link spaceKey}, twice the name's length, beside up to about 90 other bytes, and a
+ *  file name holds at most 255 bytes, so a longer name could be prepared but not started. */
+export const SPACE_NAME_MAX = 64;
+
+/** The one-line refusal for a space name longer than {@link SPACE_NAME_MAX}, or undefined. */
+export function spaceNameTooLong(space: string): string | undefined {
+  return space.length > SPACE_NAME_MAX ? `the space name has ${space.length} characters, and a space name holds at most ${SPACE_NAME_MAX}, because the names of the local files that carry it spell it twice over` : undefined;
+}
+
 /** The ONE injective, case-safe space key: lowercase hex of the space's UTF-8 bytes. Every
  *  tenant-keyed namespace derives its key from this — the account filename, the user-auth state
  *  dir, the auth secret-store keys, and the machine mesh registry — because every namespace that

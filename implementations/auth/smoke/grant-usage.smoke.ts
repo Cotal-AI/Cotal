@@ -3,8 +3,10 @@
  * grant|revoke` and `cotal auth grant|revoke`; only a space registered as static or open refuses
  * first, which `smoke:actor-target` covers. A grant missing its `--sub`/`--owner` and its
  * ACL flags refuses once with USAGE_INVALID (exit 1) and names every missing input, never exit 5,
- * and that holds with no space to resolve. With complete flags on a space whose root holds no
- * user-auth ledger, the capability refusal (UNSUPPORTED, exit 2) comes only after usage passed.
+ * and that holds with no space to resolve. An input that is not valid is named with its field and
+ * reason, and `--scope` takes only the known capability names. With complete flags on a space whose
+ * root holds no user-auth ledger, the capability refusal (UNSUPPORTED, exit 2) comes only after usage
+ * passed.
  * `auth handle inspect` on a NATS credential file says it is not a handle, names `whoami --creds`
  * and echoes none of it, and `auth retire` names the lifecycle UID format and where to find one.
  * Broker-free; the mesh registry and the prepared spaces are private to this run.
@@ -112,6 +114,31 @@ try {
     const failure = await failureOf("run", cmd, staticRoot, values, ["grant", "alice"]);
     assert.equal(failure.code, "UNSUPPORTED", `${cmd.name} grant with full flags: the capability refusal (${failure.message})`);
     assert.equal(exitCode(failure.outcome, failure.code), 2, `${cmd.name} grant with full flags: exit code`);
+  }
+
+  // 4b. An input that is not valid is named with its field and reason, every one in one refusal,
+  //     and --scope takes only the capability names the ledger is checked for.
+  {
+    const scopes = await failureOf("validate", authCommand, bare, { sub: "someone", scope: "spwan,admn", "allow-subscribe": ">", "allow-publish": ">" }, ["grant", "alice"]);
+    assertUsage(scopes, "auth grant with unknown capabilities");
+    assert.match(scopes.message, /--scope: unknown capabilities "spwan", "admn"; the capabilities are admin, run, spawn, supervise and role:<role>/, "unknown capabilities: names each one and the valid set");
+    assert.match(scopes.message, /no grant was changed$/, "unknown capabilities: nothing was written");
+    const one = await failureOf("validate", actorCommand, bare, { sub: "someone", scope: "fliegen", "allow-subscribe": "", "allow-publish": "" }, ["grant", "alice"]);
+    assert.match(one.message, /--scope: an unknown capability "fliegen"/, "one unknown capability is named alone");
+    const role = await failureOf("validate", actorCommand, bare, { sub: "someone", scope: "role:a b", "allow-subscribe": "", "allow-publish": "" }, ["grant", "alice"]);
+    assert.match(role.message, /--scope: an unknown capability "role:a b"/, "a role capability with an invalid role is refused");
+    const fields = await failureOf("validate", authCommand, bare, { sub: "someone", full: true, role: "r r", parent: "nodot", "allow-subscribe": "a b" }, ["grant", "bad.actor"]);
+    assertUsage(fields, "auth grant with several invalid fields");
+    for (const field of ["the actor: invalid owner/actor token \"bad\.actor\"", "--role: invalid role \"r r\"", "--parent: \"nodot\" is not <owner>\.<actor>", "--allow-subscribe: invalid channel \"a b\""])
+      assert.match(fields.message, new RegExp(field), `several invalid fields: names ${field.split(":")[0]}`);
+    const owner = await failureOf("validate", actorCommand, bare, { owner: "notatoken" }, ["revoke", "alice"]);
+    assertUsage(owner, "actor revoke with an invalid --owner");
+    assert.match(owner.message, /--owner: invalid derived owner token "notatoken"/, "revoke: names --owner");
+    // Every known capability passes, so the grant reaches its capability refusal on this space.
+    const known = { space: "static-space", sub: "someone", scope: "admin,run,spawn,supervise,role:reviewer", "allow-subscribe": ">", "allow-publish": "" };
+    process.chdir(staticRoot);
+    try { authCommand.validate?.({ values: known, positionals: ["grant", "alice"], raw: [] }); }
+    finally { process.chdir(startCwd); }
   }
 
   // 5. handle inspect says a NATS credential file is not a handle, and what a handle is.

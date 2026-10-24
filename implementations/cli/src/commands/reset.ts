@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, brokerAddressForDisplay, canonicalRoot, CommandFailure, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, STORE_CONTENTS, writeResult, type Report } from "@cotal-ai/workspace";
 import { liveMeshProcesses, safeStoreCleanupPath } from "./clean.js";
-import { assertResetEligible, resetStoreApply, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
+import { assertResetEligible, resetStoreApply, resetStorePath, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
@@ -62,7 +62,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
   let bootAttempts: ReturnType<typeof listFreshTeamAttempts>, bootSummaries: ReturnType<typeof listFreshTeamSummaries>;
   let otherBrokerRegistrations: Array<{ space: string; root: string; origin: string }>;
   try {
-    store = safeStoreCleanupPath(root, mesh.storeDir);
+    store = resetStorePath(root, mesh.storeDir, { space, root }, `cotal reset store ${space} --dry-run`);
     maintenance = readMaintenanceJournal(root);
     possibleProcesses = liveMeshProcesses(root, space, true);
     serviceOwners = serviceInstances(space).map(instanceProjection).map((row) => ({ instanceId: row.instanceId, process: row.observedProcess, supervisor: row.supervisorRecord.mechanism }));

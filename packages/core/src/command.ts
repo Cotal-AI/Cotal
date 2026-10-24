@@ -33,6 +33,9 @@ export interface FlagSpec {
   readonly value?: string;
   /** One-line help text. */
   readonly description?: string;
+  /** For a command with no completer of its own: `files` completes this string flag's value from the
+   *  shell's file names. Without it the value offers no candidates. */
+  readonly completion?: "files";
 }
 
 /** What a command's `run` receives: the declared flags parsed strictly (an undeclared flag is

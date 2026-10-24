@@ -182,12 +182,14 @@
   "cli:actor--allow-publish": "current:auth grant --allow-publish",
   "cli:actor--allow-subscribe": "current:auth grant --allow-subscribe",
   "cli:actor--full": "current:auth grant --full",
+  "cli:actor--json": "current:actor --json",
   "cli:actor--label": "current:auth grant --label",
   "cli:actor--owner": [
    "current:auth grant --owner",
    "current:auth revoke --owner"
   ],
   "cli:actor--parent": "current:auth grant --parent",
+  "cli:actor--plain": "current:actor --plain",
   "cli:actor--role": "current:auth grant --role",
   "cli:actor--scope": "current:auth grant --scope",
   "cli:actor--space": "current:auth",
@@ -248,6 +250,7 @@
   "cli:auth--identity": "current:auth mint --identity",
   "cli:auth--json": "current:auth --json",
   "cli:auth--label": "current:auth grant --label",
+  "cli:auth--no-expiry": "current:auth mint --no-expiry",
   "cli:auth--out": [
    "current:auth signer --out",
    "current:auth mint --out"
@@ -371,6 +374,10 @@
   "cli:clean--creds": "current:history clear",
   "cli:clean--discard-history": "current:backup cleanup-fallback --discard-history",
   "cli:clean--dms": "current:history clear --dms",
+  "cli:clean--dry-run": [
+   "current:reset store --dry-run",
+   "current:reset space --dry-run"
+  ],
   "cli:clean--force": [
    "current:reset store --yes",
    "current:reset space --yes",
@@ -382,6 +389,10 @@
   "cli:clean--store-dir": "pending:reset store",
   "cli:completion": "current:completion",
   "cli:completion uninstall": "current:completion uninstall",
+  "cli:completion--force": [
+   "current:completion install --force",
+   "current:completion uninstall --force"
+  ],
   "cli:completion--json": "current:completion --json",
   "cli:completion--plain": "current:completion --plain",
   "cli:completion install": "current:completion install",
@@ -672,6 +683,7 @@
   "cli:logout": "current:logout",
   "cli:logout--idp": "current:logout --idp",
   "cli:logout--json": "current:logout --json",
+  "cli:logout--local": "current:logout --local",
   "cli:logout--plain": "current:logout --plain",
   "cli:manager": "current:manager",
   "cli:manager reconcile": "current:manager reconcile",
@@ -714,6 +726,7 @@
   "cli:mint--force": "current:auth signer --force",
   "cli:mint--identity": "current:auth mint --identity",
   "cli:mint--json": "current:auth mint --json",
+  "cli:mint--no-expiry": "current:auth mint --no-expiry",
   "cli:mint--out": "current:auth mint --out",
   "cli:mint--plain": "current:auth mint --plain",
   "cli:mint--profile": "current:auth mint --profile",
@@ -978,6 +991,7 @@
   "cli:space delete": "current:space delete",
   "cli:space forget": "current:space forget",
   "cli:space show": "current:space show",
+  "cli:space--adopt": "current:space create --adopt",
   "cli:space--allow-unencrypted-overlay": "current:space add --allow-unencrypted-overlay",
   "cli:space--dry-run": "current:space delete --dry-run",
   "cli:space--file": "current:space add --file",
@@ -1138,6 +1152,7 @@
   "cli:update--server": "current:update",
   "cli:update--space": "current:update",
   "cli:use": "current:use",
+  "cli:use--clear": "current:use --clear",
   "cli:use--json": "current:use --json",
   "cli:use--plain": "current:use --plain",
   "cli:version": "current:version",
@@ -1158,6 +1173,7 @@
   "cli:who--space": "current:who",
   "cli:who--waiting": "current:who --waiting",
   "cli:whoami": "current:whoami",
+  "cli:whoami--creds": "current:whoami --creds",
   "cli:whoami--json": "current:whoami --json",
   "cli:whoami--plain": "current:whoami --plain",
   "cli:whoami--server": "current:whoami",
@@ -1215,6 +1231,8 @@
   "env:COTAL_DELIVERY_MAX_PING_OUT": "pending:config",
   "env:COTAL_DELIVERY_PING_INTERVAL_MS": "pending:config",
   "env:COTAL_DETACH_KEY": "current:config set",
+  "env:COTAL_DIR_DANGLING": "internal:a status warning code, not an environment variable",
+  "env:COTAL_DIR_LINKED": "internal:a status warning code, not an environment variable",
   "env:COTAL_ENROLLMENT_FILE": "current:spawn --foreground --enrollment-file",
   "env:COTAL_ENROLLMENT_URL": "current:spawn --foreground --enrollment-file",
   "env:COTAL_ENVIRONMENT": "internal:seat session variable the launcher writes for a spawned seat",

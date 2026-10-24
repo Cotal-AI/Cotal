@@ -4,7 +4,9 @@
  * terminal the command asks which space, uses the answer for that one run and leaves the selection
  * alone; a script, `--json` and `--no-input` refuse with `TARGET_AMBIGUOUS` and the remedy apart from
  * the message. A manifest's declared space is the target of `up -f` and `spawn -f`, so a `--space`
- * that names another space is refused before anything is written. In a folder whose records name no
+ * that names another space is refused before anything is written. `up -f --json` checks its manifest
+ * first: one that does not validate refuses `SCHEMA_INVALID` with its problem, and a valid one refuses
+ * `UNSUPPORTED`, naming only `--json` to omit. In a folder whose records name no
  * space, as after `space forget`, `whoami` and `spawn --dry-run` keep exit 0 under the held default's
  * heading, say it was assumed, and name the folder and that space in their target.
  *
@@ -22,7 +24,7 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
@@ -133,29 +135,57 @@ const QUESTION = "Which one?";
   const selected = terminal(["who"]);
   check("a selection on a terminal is the target, with no question", await until(() => selected.s.code !== undefined) && !selected.s.text().includes(QUESTION) && /\bin alpha\b/.test(selected.s.text()), { code: selected.s.code, out: selected.s.text().slice(-600) });
 
-  // In beta's own root the selection is still the target, and the run says so before it acts.
-  const NOTE = `this targets the selected space "alpha", not this folder's space "beta"; pass --space beta to target it`;
+  // In beta's own root beta is the target, and its heading says the selection applies outside it.
   const inBeta = run(["who", "--json"], join(home, "beta"));
-  const warned = envelope(inBeta)?.warnings?.find((w: { code: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE");
-  check("in another space's root the selection stays the target and warns, naming both spaces and --space",
-    envelope(inBeta)?.target?.space === "alpha" && warned?.message === NOTE && warned.target?.space === "alpha" && warned.target.folderSpaces?.join() === "beta" &&
-      inBeta.stderr.includes(`! ${NOTE}`), shown(inBeta));
-  const inAlpha = run(["who", "--json"], join(home, "alpha"));
-  const inBetaNamed = run(["who", "--json", "--space", "beta"], join(home, "beta"));
-  check("control: no warning in the selected space's root, from a folder with no project, or with --space",
-    [inAlpha, inBetaNamed, run(["who", "--json"])].every((r) => envelope(r)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") && !r.stderr.includes("SELECTION") && !/^! this targets/m.test(r.stderr)),
-    [inAlpha, inBetaNamed].map(shown));
-  // A space prepared in a folder is that folder's space before its first `up` too, so a send there
-  // does not land in the selection unannounced.
-  const gamma = join(home, "gamma");
-  mkdirSync(join(gamma, ".cotal"), { recursive: true });
-  recordPreparedSpace({ space: "gamma", root: gamma, ts: new Date(0).toISOString() });
-  const GAMMA_NOTE = `this targets the selected space "alpha", not this folder's space "gamma"; pass --space gamma to target it`;
-  const inGamma = run(["who", "--json"], gamma);
-  check("in a prepared space's folder, before its first up, the selection warns the same way",
-    envelope(inGamma)?.target?.space === "alpha" && envelope(inGamma)?.warnings?.some((w: { code: string; message: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE" && w.message === GAMMA_NOTE) &&
-      inGamma.stderr.includes(`! ${GAMMA_NOTE}`), shown(inGamma));
-  removePreparedSpace("gamma");
+  check("in another space's root that folder's space is the target, with no warning",
+    envelope(inBeta)?.target?.space === "beta" && envelope(inBeta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") && !/^! /m.test(inBeta.stderr), shown(inBeta));
+  const inBetaText = run(["who"], join(home, "beta"));
+  check("its heading notes that the selection applies outside the folder",
+    /^Mesh: beta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(inBetaText.stdout + inBetaText.stderr), shown(inBetaText));
+  const inAlpha = run(["who"], join(home, "alpha"));
+  const away = run(["who"]);
+  check("control: the selection is the target in its own root and from a folder with no project, with no note",
+    [inAlpha, away].every((r) => /\bin alpha\b/.test(r.stdout + r.stderr) && !/this folder's space/.test(r.stdout + r.stderr)), [inAlpha, away].map(shown));
+  // A folder prepared for its own space and not started yet refuses there, under the same note.
+  const deltaPrepared = join(home, "delta");
+  mkdirSync(deltaPrepared);
+  const prepared = run(["space", "create", "delta"], deltaPrepared);
+  const unstarted = run(["who"], deltaPrepared);
+  check("a refusal in a folder prepared for another space keeps the note under its heading",
+    prepared.status === 0 && unstarted.status === 2 && /TARGET_UNAVAILABLE/.test(unstarted.stderr) &&
+      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
+  run(["space", "forget", "delta"], deltaPrepared);
+  // A root with several spaces, none of them selected, keeps the selection and warns first.
+  recordMesh({ space: "gamma", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const NOTE = `this targets the selected space "alpha", not this folder's spaces "beta", "gamma"; pass --space <space> to target one of them`;
+  const inShared = run(["who", "--json"], join(home, "beta"));
+  const warned = envelope(inShared)?.warnings?.find((w: { code: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE");
+  check("in a root with several spaces the selection stays the target and warns, naming them and --space",
+    envelope(inShared)?.target?.space === "alpha" && warned?.message === NOTE && warned.target?.space === "alpha" && warned.target.folderSpaces?.slice().sort().join() === "beta,gamma" &&
+      inShared.stderr.includes(`! ${NOTE}`), shown(inShared));
+  removeMesh("gamma");
+  // A space prepared in a folder is that folder's space before its first `up` too, so a command there
+  // targets it, with the note, and nothing lands in the selection unannounced.
+  const delta = join(home, "delta");
+  mkdirSync(join(delta, ".cotal"), { recursive: true });
+  recordPreparedSpace({ space: "delta", root: delta, ts: new Date(0).toISOString() });
+  const inDelta = run(["who", "--json"], delta), inDeltaText = run(["who"], delta);
+  // The refusal is the prepared space's own: it is not started yet, and its next step is there.
+  check("in a prepared space's folder, before its first up, that space is the target and the refusal is its own",
+    envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
+      envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
+      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout), { json: shown(inDelta), text: shown(inDeltaText) });
+  // The listing, `space show` and `use` there name it as the target too.
+  const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
+  check("in that folder space marks it as this folder's, and space show and use name it as the target there",
+    envelope(listed)?.result?.folder === "delta" && /^ {2}delta \(this folder's\) /m.test(listedText.stdout) &&
+      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
+      envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === "delta" && usedText.stdout.includes(`commands in this folder target its space "delta"; the selection applies outside it`),
+    { listed: shown(listed), listedText: shown(listedText), shownSpace: shown(shownSpace), used: shown(used), usedText: shown(usedText) });
+  const listedAway = run(["space", "--json"]), usedAway = run(["use", "--json"]);
+  check("control: from a folder with no project space and use name no folder space",
+    envelope(listedAway)?.result?.folder === null && envelope(usedAway)?.result?.folder === null, { listed: shown(listedAway), used: shown(usedAway) });
+  removePreparedSpace("delta");
   clearCurrent();
 }
 
@@ -185,11 +215,19 @@ const QUESTION = "Which one?";
     writeFileSync(join(fresh, "list.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: ["${A}"] }\nchannels: {}\n`);
     const invalid = run(["up", "-f", "list.yaml"], fresh);
     check("up -f with a manifest that does not validate refuses, exit 1, and leaves the folder as it found it",
-      invalid.status === 1 && /expected string, received array \(at broker\.servers\)/.test(invalid.stderr) && entries() === "list.yaml", { ...shown(invalid), entries: entries() });
+      invalid.status === 1 && /expected a string, not a list \(at broker\.servers\)/.test(invalid.stderr) && entries() === "list.yaml", { ...shown(invalid), entries: entries() });
     writeFileSync(join(fresh, "user.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "${A}", auth: user }\nchannels: {}\n`);
     const contradicted = run(["up", "-f", "user.yaml", "--open"], fresh);
     check("up -f refused after its lock, for a flag the manifest contradicts, leaves the folder as it found it",
       contradicted.status === 1 && /--open contradicts this manifest's broker\.auth/.test(contradicted.stderr) && entries() === "list.yaml,user.yaml", { ...shown(contradicted), entries: entries() });
+    // up -f always takes the retained launcher, so --json is refused after its manifest is checked.
+    const invalidJson = run(["up", "-f", "list.yaml", "--dry-run", "--json"], fresh);
+    check("up -f --dry-run --json with a manifest that does not validate refuses SCHEMA_INVALID, exit 1, naming the problem",
+      invalidJson.status === 1 && envelope(invalidJson)?.error?.code === "SCHEMA_INVALID" && /list\.yaml:4:\d+: [^;]+ \(at broker\.servers\)$/.test(envelope(invalidJson)?.error?.message ?? "") &&
+        envelope(invalidJson)?.target?.issues?.map((issue: { path: string[] }) => issue.path.join(".")).join() === "broker.servers" && entries() === "list.yaml,user.yaml", { ...shown(invalidJson), entries: entries() });
+    const validJson = run(["up", "-f", "user.yaml", "--dry-run", "--json"], fresh);
+    check("up -f --dry-run --json with a valid manifest refuses UNSUPPORTED, exit 2, naming only the flag to omit",
+      validJson.status === 2 && envelope(validJson)?.error?.code === "UNSUPPORTED" && envelope(validJson)?.error?.remedy === "omit --json" && entries() === "list.yaml,user.yaml", { ...shown(validJson), entries: entries() });
     const json = run(["up", "--json", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("up --json on the retained launcher refuses UNSUPPORTED, exit 2, and leaves the folder as it found it",
       json.status === 2 && envelope(json)?.error?.code === "UNSUPPORTED" && entries() === "list.yaml,user.yaml", { ...shown(json), entries: entries() });

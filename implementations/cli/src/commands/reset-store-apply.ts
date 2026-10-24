@@ -1,4 +1,5 @@
 import * as prompts from "../lib/prompts.js";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
@@ -140,6 +141,26 @@ export function assertNoAdditiveLedger(root: string, space: string): void {
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unsettled fresh boot attempt or unreadable boot record remains; store reset did not infer that its broker is stopped", { target: { space, root, unsettledIds: unsettled.map((attempt) => attempt.deploymentId), unreadable: [...attempts.refused, ...summaries.refused].map(({ path }) => path) }, remedy: "inspect the original fresh boot and its process custody before a stopped-store reset" });
 }
 
+/** The recorded store as a reset may remove it, with its directory identity pinned when it exists,
+ *  or a refusal that names the path and why: a link is named with the directory it points to. */
+export function resetStorePath(root: string, storeDir: string | undefined, where: { space: string; root: string }, review: string): ReturnType<typeof safeStoreCleanupPath> {
+  try { return safeStoreCleanupPath(root, storeDir); }
+  catch (error) {
+    if (error instanceof CommandFailure) throw error;
+    const path = resolve(storeDir ?? join(root, ".cotal", "nats"));
+    let linked: string | undefined;
+    try {
+      // A dangling link has no real path, so its own target is named instead.
+      if (lstatSync(path).isSymbolicLink()) {
+        try { linked = realpathSync.native(path); } catch { linked = readlinkSync(path); }
+      }
+    } catch { linked = undefined; }
+    if (linked !== undefined)
+      throw new CommandFailure("refused", "CONFLICT", `the recorded store path ${path} is a link to ${linked}, and a reset removes only a real directory; nothing was removed`, { target: { ...where, storeDir: path, linkTarget: linked }, remedy: `replace the link with the directory it points to, then run ${review} again` });
+    throw new CommandFailure("refused", "CONFLICT", `the recorded store path ${path} is not one real directory the reset may remove (${(error as Error).message}); nothing was removed`, { target: { ...where, storeDir: path } });
+  }
+}
+
 /** Every check a stopped-store or identity reset runs before it is offered, and again under the
  *  maintenance lock. Each refusal names one reason and the command that clears it. Returns the
  *  store path, with its directory identity pinned when it exists. */
@@ -154,12 +175,7 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
     throw new CommandFailure("refused", "CONFLICT", "the root is not one isolated local space with a real .cotal directory; no broker-wide reset scope was inferred", { target: { ...where, localSpaces: local.map((mesh) => mesh.space) } });
   try { assertSingleSpaceBroker(authDir(root), command); }
   catch { throw new CommandFailure("refused", "CONFLICT", "the root's broker holds several spaces or an unreadable tenant record; a single-space reset cannot be scoped", { target: where }); }
-  let store: ReturnType<typeof safeStoreCleanupPath>;
-  try { store = safeStoreCleanupPath(root, target.storeDir); }
-  catch (error) {
-    if (error instanceof CommandFailure) throw error;
-    throw new CommandFailure("refused", "CONFLICT", "the recorded store path is not one real directory the reset may remove; nothing was removed", { target: { ...where, storeDir: target.storeDir ?? null } });
-  }
+  const store = resetStorePath(root, target.storeDir, where, review);
   let maintenance: ReturnType<typeof readMaintenanceJournal>, running: string[], legacy: boolean, stoppedByDown: boolean;
   try {
     maintenance = readMaintenanceJournal(root); running = liveMeshProcesses(root, space, true);

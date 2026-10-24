@@ -167,15 +167,17 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
   return typeof e === "object" && e !== null && (e as { [FAILURE_BRAND]?: unknown })[FAILURE_BRAND] === true;
 }
 
-/** The space one command run resolved, as {@link recordOperationSpace} set it, and the warnings
+/** The space one command run resolved, as {@link recordOperationSpace} set it, the note
+ *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
  *  {@link recordOperationWarning} recorded. */
-export interface OperationScope { space?: string; warnings?: OutputWarning[] }
+export interface OperationScope { space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[] }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
 
-/** Run one command inside `scope`, so the space it records there is readable after it throws. */
-export function runOperation<T>(scope: OperationScope, body: () => Promise<T>): Promise<T> {
+/** Run `body` inside `scope`: one command, so the space it records there is readable after it
+ *  throws, or the rendering of that command's failure, which then reads what the run recorded. */
+export function runOperation<T>(scope: OperationScope, body: () => T): T {
   return operationScope.run(scope, body);
 }
 
@@ -185,6 +187,19 @@ export function runOperation<T>(scope: OperationScope, body: () => Promise<T>): 
 export function recordOperationSpace(space: string): void {
   const scope = operationScope.getStore();
   if (scope) scope.space = space;
+}
+
+/** Record how this command's operation chose `space`, for its `Mesh:` heading to show under the
+ *  name. Outside {@link runOperation} it does nothing. */
+export function recordOperationSpaceNote(space: string, text: string): void {
+  const scope = operationScope.getStore();
+  if (scope) scope.spaceNote = { space, text };
+}
+
+/** The note this run recorded for `space`, if any. */
+export function operationSpaceNote(space: string): string | undefined {
+  const note = operationScope.getStore()?.spaceNote;
+  return note?.space === space ? note.text : undefined;
 }
 
 /** Record a warning about what this command's operation resolved. It is printed on stderr at once,
