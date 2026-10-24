@@ -22,9 +22,10 @@
  * Run: pnpm smoke:send
  */
 import { execFile, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -54,7 +55,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 66;
+const EXPECTED = 72;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -300,6 +301,15 @@ try {
   check("`cotal send -t` outside a seat exits 0", dm.code === 0, dm.stderr);
   check("`cotal send -c` outside a seat exits 0", msg.code === 0, msg.stderr);
   check("`cotal send -r` outside a seat exits 0", ask.code === 0, ask.stderr);
+  // A role send is stored whether or not anyone holds the role, so a mistyped role used to pass with
+  // no word. bob holds reviewer here.
+  const [typo, unheld] = await Promise.all([["reviewr", "--json"], ["planner"]].map((rest) => run(["send", "-r", ...rest, "x"])));
+  check("a role send no present participant holds is stored with ROLE_NOT_HELD naming the closest held role; a held role gets none",
+    typo!.code === 0 && typo!.stdout.includes('"code":"ROLE_NOT_HELD"') && typo!.stdout.includes('"nearest":"reviewer"') && typo!.stdout.includes("Did you mean reviewer?")
+      && !ask.stderr.includes("No present participant holds role"), { typo, ask: ask.stderr });
+  check("a role with no close held role lists the roles present instead",
+    unheld!.code === 0 && unheld!.stderr.includes("No present participant holds role planner; the message waits on that role's queue until one takes it.")
+      && /Present participants hold [^.]*reviewer/.test(unheld!.stderr) && !unheld!.stderr.includes("Did you mean"), unheld);
   check(
     "the `send -t` receipt to a live recipient reports a stored sequence and unconfirmed delivery, never delivered",
     /Stored sequence:\s+\d+/.test(dm.stdout) && /Delivery:\s+not confirmed/.test(dm.stdout) && !dm.stdout.includes("delivered"),
@@ -401,6 +411,24 @@ try {
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);
   check("`cotal send -t` to an absent agent says TARGET_NOT_FOUND and no matching participant", missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes("no matching participant"), missing.stderr);
 
+  // Two participants sharing a name used to be listed by id alone, with nothing saying which is which.
+  const twinProvisioner = provisioner;
+  const twins = await Promise.all([{ kind: "agent" as const }, { kind: "endpoint" as const, meta: { sessionKind: "chat" } }].map(async (card) => {
+    const identity = newIdentity();
+    const lifecycleUid = mintLifecycleUid();
+    const creds = await provisionAgent(twinProvisioner, auth, identity, { lifecycleUid, subscribe: [], allowSubscribe: [] });
+    const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid, card: { name: "twin", id: identity.id, ...card }, channels: [], heartbeatMs: 500, ttlMs: 10_000 });
+    ep.on("error", () => {});
+    await ep.start();
+    return ep;
+  }));
+  await wait(500);
+  const twin = await run(["send", "-t", "twin", "x", "--json"]);
+  const twinRemedy = /"remedy":"([^"]*)"/.exec(twin.stdout)?.[1] ?? "";
+  check("a name two participants share refuses with each full identity labelled by its kind and start time",
+    twin.code === 2 && twin.stdout.includes('"code":"TARGET_AMBIGUOUS"') && twins.every((ep) => twinRemedy.includes(ep.card.id)) && /\(agent, started [^)]+\)/.test(twinRemedy) && /\(chat session, started [^)]+\)/.test(twinRemedy), twin);
+  for (const ep of twins) await ep.stop();
+
   // A lone `-` used to be published as the text "-": stdin is read only when asked for. An empty
   // quoted body used to be told to choose one body, with a remedy for another destination.
   const dash = await run(["send", "-c", "general", "-", "--json"]);
@@ -458,6 +486,37 @@ try {
   const big = await run(["send", "-c", "general", "--file", bigFile, "--json"]);
   check("an oversized `cotal send -c` is refused UNSUPPORTED, exit 2, naming the limit and that nothing was sent",
     big.code === 2 && big.stdout.includes('"code":"UNSUPPORTED"') && big.stdout.includes("1048576-byte message limit; nothing was sent"), big);
+  // A body used to be read whole before the limit was checked, so a 3 GiB file failed to read and a
+  // stream such as /dev/zero grew until the kernel killed it. A sparse file costs no disk.
+  const hugeFile = join(storeDir, "huge.txt");
+  writeFileSync(hugeFile, "");
+  truncateSync(hugeFile, 3 * 2 ** 30);
+  const huge = await run(["send", "-c", "general", "--file", hugeFile, "--json"]);
+  check("a 3 GiB `--file` is refused UNSUPPORTED, exit 2, with its size, without reading it whole",
+    huge.code === 2 && huge.stdout.includes('"code":"UNSUPPORTED"') && huge.stdout.includes(`the message is ${3 * 2 ** 30} bytes`) && huge.stdout.includes("1048576-byte message limit; nothing was sent"), huge);
+  // A piped stdin is nonblocking, so a read that found the pipe empty before its writer was done
+  // used to fail as unreadable. A pipe has no size, so an endless one names the limit alone.
+  const piped = (args: string[], feed: (stdin: Writable) => void) =>
+    new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+      const child = execFile(process.execPath, ["--import", tsx, cli, ...args], { cwd: operatorShell, env: isolatedEnv },
+        (err, stdout, stderr) => resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr }));
+      child.stdin!.on("error", () => {});
+      feed(child.stdin!);
+    });
+  const late = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
+    stdin.write("first half, ");
+    setTimeout(() => stdin.end("second half after a pause"), 5_000);
+  });
+  check("`cotal send --stdin` waits for a writer that pauses, then stores the message",
+    late.code === 0 && late.stdout.includes('"outcome":"ok"') && late.stdout.includes('"bodySource":"stdin"'), late);
+  const endless = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
+    const chunk = "z".repeat(64 * 1024);
+    const more = () => { while (!stdin.destroyed && stdin.write(chunk)); };
+    stdin.on("drain", more);
+    more();
+  });
+  check("an endless piped `--stdin` is refused UNSUPPORTED, exit 2, naming the limit",
+    endless.code === 2 && endless.stdout.includes('"code":"UNSUPPORTED"') && endless.stdout.includes("the message is longer than this broker's 1048576-byte message limit; nothing was sent"), endless);
 
   // The admin credential for the `deliver pending` reads below is minted before bob stops, so no
   // setup sits inside the retained-card window that the by-name read depends on.

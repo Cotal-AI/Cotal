@@ -16,9 +16,9 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 import { disableInput, exitCode, globalFlagDeclarationProblems, isCommandFailure, outputDeclarationProblems, type CommandFailure } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands
 import { printCommandHelp } from "../src/help.js";
-import { USER_CHAT_TTL_SEC, channelDisclosure, chatAdmission, chatArguments, chatComplete, closeExitCode, holdSignals, type ChatInput } from "../src/commands/chat.js";
+import { USER_CHAT_TTL_SEC, channelDisclosure, chatAdmission, chatArguments, chatComplete, closeExitCode, holdSignals, sharedNameWarning, type ChatInput } from "../src/commands/chat.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
-import type { CloseReport } from "../src/chat/session.js";
+import type { AdmittedChatSession, CloseReport, RosterRow } from "../src/chat/session.js";
 
 const { check, finish } = createSuite();
 const cmd = registry.resolve<Command>("command", "chat");
@@ -196,6 +196,19 @@ console.log("10. --no-input leaves only the program protocol");
   check("the terminal view refuses under --no-input", refusal(withTty(true, () => run([])))?.code === "USAGE_INVALID");
   const stdio = run(["--stdio"]);
   check("--stdio still opens", !(stdio instanceof Error) && stdio.frontEnd === "stdio", stdio);
+}
+
+console.log("11. a second session under a name in use is warned at join");
+{
+  // A second `--name bob` used to start with no word that the name was taken.
+  const self = { principal: "local.me", label: "bob" };
+  const sessionWith = (rows: RosterRow[]) => ({ identity: () => self, roster: async () => ({ outcome: "ok" as const, value: { rows, view: "current" as const } }) }) as unknown as AdmittedChatSession;
+  const me: RosterRow = { id: "local.me", name: "bob", kind: "endpoint", status: "idle", sessionKind: "chat" };
+  const shared = await sharedNameWarning(sessionWith([me, { id: "local.other", name: "Bob", kind: "endpoint", status: "idle", sessionKind: "chat" }]));
+  check("a live participant already named bob gets a warning naming it, its kind and the --name to pass",
+    shared === `the name "bob" is already in use here by local.other (chat session); a direct message to "bob" refuses as ambiguous while both are present, so pass another --name to be reached by name`, shared);
+  check("an offline record of the name, or only this session, gets none",
+    await sharedNameWarning(sessionWith([me, { id: "local.gone", name: "bob", kind: "agent", status: "offline" }])) === undefined && await sharedNameWarning(sessionWith([me])) === undefined);
 }
 
 finish();
