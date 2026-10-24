@@ -40,6 +40,7 @@ import {
   type UserBundle,
 } from "@cotal-ai/workspace";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions } from "../lib/stack-journal.js";
 import {
@@ -444,7 +445,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   try { elsewhere = journalRecordedElsewhere(root); } catch { elsewhere = undefined; }
   if (elsewhere && !adopting && cotalDirLink(root) === undefined) {
     const blocked = adoptionRefusal(root, elsewhere);
-    throw refuse("CONFLICT", `${root} holds the stack journal of "${elsewhere.journal.space}" that ${elsewhere.recordedRoot} recorded, as a copy or a moved folder keeps it${blocked ? `, and ${blocked.message}` : ""}; nothing was written`, target, blocked?.remedy ?? `adopt it with cotal space create ${elsewhere.journal.space} --adopt --root ${canonicalRoot(root)}`);
+    throw refuse("CONFLICT", `${root} holds the stack journal of "${elsewhere.journal.space}" that ${elsewhere.recordedRoot} recorded, as a copy or a moved folder keeps it${blocked ? `, and ${blocked.message}` : ""}; nothing was written`, target, blocked?.remedy ?? `adopt it with cotal space create ${elsewhere.journal.space} --adopt --root ${shellWord(canonicalRoot(root))}`);
   }
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.

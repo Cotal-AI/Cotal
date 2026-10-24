@@ -905,7 +905,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       // A bare `up` in a folder whose records name no space starts the default space there, which
       // then holds the folder, so the step that brings a forgotten space back is to prepare it again.
       hints.push(e.namesNoSpace
-        ? `prepare a space with \`${cmd} space create <name> --root ${e.root}\`, or select one with \`${cmd} use <name>\``
+        ? `prepare a space with \`${cmd} space create <name> --root ${shellWord(e.root)}\`, or select one with \`${cmd} use <name>\``
         : `run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
       return { resolved: false, code: "unregistered-root", message };
     }

@@ -17,6 +17,7 @@ import {
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
@@ -57,7 +58,7 @@ function assertJournalWritable(root: string, values: ParsedArgs["values"]): void
   catch {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dir}, where down records each step of the stop in the stack journal; no member was stopped`, {
       target: { root, path: dir },
-      remedy: `make it writable with chmod u+w ${dir}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
+      remedy: `make it writable with chmod u+w ${shellWord(dir)}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
     });
   }
 }
