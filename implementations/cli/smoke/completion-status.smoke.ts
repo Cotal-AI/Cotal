@@ -371,7 +371,8 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 
 // A file value completes from the shell's file names on a command with no completer of its own, a
 // value that is not a file offers none, and spawn offers a prepared space's personas as persona show
-// does.
+// does. `send -c` and `history` offer the channels those personas declare, and `space delete` offers
+// the prepared space, as `space show` does.
 {
   const s = sandbox();
   for (const words of [["run", "start", "--file", ""], ["run", "simulate", "p.cotal.js", "--handler", ""], ["auth", "mint", "x", "--out", ""], ["watch", "--creds", ""]]) {
@@ -388,6 +389,11 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const personas = s.run(["__complete", "spawn", "--space", "prep", ""]);
   check("spawn offers a prepared space's personas, as persona show does", created.status === 0 && persona.status === 0 && /^alpha$/m.test(shown2.stdout) && /^alpha$/m.test(personas.stdout),
     { created: shown(created), persona: shown(persona), show: shown(shown2), spawn: shown(personas) });
+  const channels = s.run(["__complete", "send", "--space", "prep", "-c", ""]);
+  const history = s.run(["__complete", "history", "--space", "prep", ""]);
+  check("send -c and history offer the channels a prepared space's personas declare", /^general$/m.test(channels.stdout) && /^general$/m.test(history.stdout), { send: shown(channels), history: shown(history) });
+  const deletable = s.run(["__complete", "space", "delete", ""]);
+  check("space delete offers a prepared space, as space show does", /^prep$/m.test(deletable.stdout), shown(deletable));
 }
 
 // ── A modified owned integration names its way out ──────────────────────────────────────────────────

@@ -22,11 +22,12 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
+import { personaCatalog } from "../lib/persona-files.js";
 import { brokerStoreWrite, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { chatStreamGone, streamsAbsent } from "../lib/space-streams.js";
 import { mentionsIn } from "../lib/mentions.js";
@@ -488,17 +489,17 @@ export function sendComplete(argv: string[]): CompletionResult {
 
 /** Channels/roles declared by the TARGET mesh's personas — `cotal send` and `cotal chat` act on the
  *  mesh `--space`/`--server` resolve to, so their completions must come from that mesh's catalog and
- *  not from whatever project the operator happens to be standing in. Offline (no probe: a <TAB> never
- *  opens the network) and FAIL CLOSED — with no single resolvable target, or a malformed persona
- *  file (see `declaredValues`), offer nothing rather than throw into the operator's shell. */
+ *  not from whatever project the operator happens to be standing in. The catalog is resolved as
+ *  `spawn` and `persona show` resolve it, so a space prepared and not started offers its own.
+ *  Offline (no probe: a <TAB> never opens the network) and FAIL CLOSED — with no single resolvable
+ *  target, or a malformed persona file (see `declaredValues`), offer nothing rather than throw into
+ *  the operator's shell. */
 export function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
   try {
-    return list(
-      resolveMeshTarget(process.cwd(), {
-        space: completedFlagValue(argv, targetFlags, "space"),
-        server: completedFlagValue(argv, targetFlags, "server"),
-      }).root,
-    );
+    return list(personaCatalog({
+      space: completedFlagValue(argv, targetFlags, "space"),
+      server: completedFlagValue(argv, targetFlags, "server"),
+    }).root);
   } catch {
     return [];
   }

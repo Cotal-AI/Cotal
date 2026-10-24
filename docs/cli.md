@@ -5821,10 +5821,13 @@ cotal completion script powershell | Out-String | Invoke-Expression
 offline. The stable hidden `__complete` entry reads registered command specifications, the spaces
 registered or prepared on this machine, the extension manifest, the bundled docs index and local
 persona files. It does not contact the mesh or refresh extensions. Every `--space` offers the spaces
-`cotal use` offers, and every `--creds` lets the shell complete a file name. `config` offers its keys, and `config set color` and `config set harness` the
+`cotal use` offers, and every `--creds` lets the shell complete a file name. `space show`, `forget`
+and `delete` offer the spaces registered or prepared here. `config` offers its keys, and `config set color` and `config set harness` the
 values a write accepts. `docs` offers its pages, `watch --view` its views and `space add --mode` its
 modes. A channel name for `send -c`, `history` or `channel show`, `members`, `set` and `remove` comes
-from the channels the target space's personas declare, because the broker keeps the others. A
+from the channels the target space's personas declare, as `spawn` reads them, so a space prepared
+and not started offers its own. The broker keeps the others, so a persona that declares only `>`
+offers none. A
 candidate that holds a control character, such as a persona file name with an escape sequence or a
 newline in it, is not offered. `persona` still lists that file with the characters escaped. The bash
 and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own

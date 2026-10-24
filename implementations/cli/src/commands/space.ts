@@ -323,9 +323,7 @@ export function spaceComplete(argv: string[]): CompletionResult {
   if (flag?.name === "mode") return { items: SPACE_MODES.map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "root" || flag?.name === "file") return { items: [], directive: "default" };
   if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }, { value: "delete" }], directive: "nofiles" };
-  if ((argv[0] === "show" || argv[0] === "forget") && argv.length === 2)
+  if ((argv[0] === "show" || argv[0] === "forget" || argv[0] === "delete") && argv.length === 2)
     return { items: [...loadMeshes().map((m) => ({ value: m.space })), ...loadPreparedSpaces().map((p) => ({ value: p.space }))], directive: "nofiles" };
-  if (argv[0] === "delete" && argv.length === 2)
-    return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }
