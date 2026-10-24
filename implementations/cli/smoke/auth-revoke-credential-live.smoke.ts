@@ -9,9 +9,11 @@
  *     new key and the file's read, post and role grants, and its heading says one exported file needs
  *     attention. A creds file another account
  *     issued refuses CONFLICT.
- *  3. After `up`, the broker refuses the revoked credential, another minted credential still reads,
- *     and the channel history is kept. `auth mint --identity` refuses the revoked key, CONFLICT, and
- *     a fresh mint works.
+ *  3. After `up`, the broker refuses the revoked credential, and the refusal names the revocation and
+ *     a new key with the file's grants, for `who` and `send`; `whoami --creds` reports when the key
+ *     was revoked. Another minted credential still reads, and the channel history is kept. `auth mint
+ *     --identity` refuses the revoked key, CONFLICT, and a fresh mint works. A post that fresh file
+ *     may not make names its post grant, read from the file.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:auth-revoke-credential:live
  */
@@ -98,12 +100,14 @@ try {
   check("down --yes stops the stack", stopped.status === 0, shown(stopped));
 
   // 2. After down: confirmation, the revocation, a repeat, and a foreign credential.
+  let revocation: unknown;
   {
     const before = accountDigest(root);
     const unconfirmed = cli(root, "auth", "revoke-credential", leaked, "--json");
     check("without --yes it refuses USAGE_INVALID, exit 1, and changes nothing", unconfirmed.status === 1 && unconfirmed.env?.error?.code === "USAGE_INVALID" && accountDigest(root) === before, shown(unconfirmed));
     const revoked = cli(root, "auth", "revoke-credential", leaked, "--yes", "--json");
     const result = revoked.env?.result ?? {};
+    revocation = result.revokedAt;
     check("with --yes it revokes the creds file's key, to take effect at the next up",
       revoked.status === 0 && result.publicKey === key && result.source === "creds-file" && result.alreadyRevoked === false && result.takesEffect === "next-up" && typeof result.revokedAt === "number", shown(revoked));
     const auth = await getSpaceAuth(workspaceSecretStore(root), space);
@@ -133,6 +137,18 @@ try {
     check("up starts the stack again", restarted.status === 0, shown(restarted));
     const refused = cli(root, "who", "--json", "--creds", leaked, "--space", space, "--server", server);
     check("the broker refuses the revoked credential, PERMISSION_DENIED", refused.status === 2 && refused.env?.error?.code === "PERMISSION_DENIED", shown(refused));
+    // The account here records the revocation, so the refusal names it and a mint with the file's grants.
+    const revokedAt = new Date(Number(revocation) * 1000).toISOString();
+    check("  and names the revoked key, its file and when it was revoked",
+      refused.env?.error?.message === `credentials rejected at ${server}: the key ${key} in ${leaked} was revoked at ${revokedAt} with auth revoke-credential`, refused.env?.error);
+    check("  and its Next is a new key with the grants the file held",
+      refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --out <new file>", refused.env?.error);
+    const sendRevoked = cli(root, "send", "-c", "general", "after the revocation", "--json", "--creds", leaked, "--space", space, "--server", server);
+    check("send with the revoked file names the revocation too", sendRevoked.status === 2 && sendRevoked.env?.error?.message === refused.env?.error?.message, shown(sendRevoked));
+    const whoRevoked = cli(root, "whoami", "--creds", leaked, "--json");
+    const whoKept = cli(root, "whoami", "--creds", kept, "--json");
+    check("whoami --creds reports when the file's key was revoked, and null for a key that was not",
+      whoRevoked.env?.result?.revokedAt === revokedAt && whoKept.status === 0 && whoKept.env?.result?.revokedAt === null, { revoked: shown(whoRevoked), kept: shown(whoKept) });
     const reads = cli(root, "who", "--json", "--creds", kept, "--space", space, "--server", server);
     check("another minted credential still reads", reads.status === 0 && reads.env?.outcome === "ok", shown(reads));
     const history = cli(root, "history", "general", "--json");
@@ -143,6 +159,10 @@ try {
       reuse.status === 2 && reuse.env?.error?.code === "CONFLICT" && reuse.env.error.message.includes(`${key} was revoked at`) && reuse.env.error.remedy === "mint a fresh key: run auth mint without --identity", shown(reuse));
     const fresh = cli(root, "auth", "mint", "fresh", "--out", join(creds, "fresh.creds"), "--json");
     check("a fresh mint works", fresh.status === 0 && fresh.env?.result?.identity !== key, shown(fresh));
+    // A --creds agent file holds its own post grant, so a refused post names it.
+    const unposted = cli(root, "send", "-c", "general", "no post grant", "--json", "--creds", join(creds, "fresh.creds"), "--space", space, "--server", server);
+    check("a post the fresh file may not make names its post grant, read from the file",
+      unposted.status === 2 && unposted.env?.error?.code === "PERMISSION_DENIED" && unposted.env.error.remedy === `this identity may post to no channel in ${space}`, shown(unposted));
   }
 } finally {
   if (anchors.has(root)) cli(root, "down", "--yes", "--json");

@@ -1,25 +1,8 @@
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
-import { isUserNkey, spacePrefix, taskStream } from "@cotal-ai/core";
+import { isUserNkey } from "@cotal-ai/core";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { localRecordObject, localRecordText, ProtectedRecordStore } from "./protected-records.js";
-
-/** The channel ACLs and role an agent credential carries. */
-export interface AgentGrants { read: string[]; post: string[]; role: string | null }
-
-/** An agent credential's grants, read back from the rows the agent profile mints: the
- *  `chat.*.*.<channel>` subscribe rows are its read ACL, its own `chat.<owner>.<actor>.<channel>`
- *  publish rows its post ACL, and the `svc_<role>` TASK bind row its role. */
-export function agentGrants(nats: { pub?: { allow?: string[] }; sub?: { allow?: string[] } }, space: string): AgentGrants {
-  const chat = `${spacePrefix(space)}.chat.`;
-  const channels = (rows: readonly string[], own: boolean) => [...new Set(rows.filter((row) => row.startsWith(chat))
-    .map((row) => row.slice(chat.length).split("."))
-    .filter(([owner, actor]) => own ? owner !== "*" && actor !== "*" : owner === "*" && actor === "*")
-    .map((parts) => parts.slice(2).join(".")).filter(Boolean))];
-  const task = `$JS.API.CONSUMER.INFO.${taskStream(space)}.svc_`;
-  const role = (nats.pub?.allow ?? []).find((row) => row.startsWith(task))?.slice(task.length);
-  return { read: channels(nats.sub?.allow ?? [], false), post: channels(nats.pub?.allow ?? [], true), role: role || null };
-}
 
 /** What `auth mint --out` records about a file it wrote, so `doctor auth` can find the file again.
  *  Public values only; the credential stays in the file. */
