@@ -710,6 +710,9 @@ if (process.platform === "linux") {
   const dashed = await json(["space", "create", "--", "-x"], spare);
   check("a name that starts with - is USAGE_INVALID, saying it cannot be passed as a flag value",
     refused(dashed, 1, "USAGE_INVALID") && /cannot be passed as a flag value/.test(dashed.env?.error?.message ?? "") && dashed.env?.error?.remedy === "choose a name that starts with a letter, digit or underscore", shown(dashed));
+  const dashedUp = await json(["up", "--space=-x", "--server", DEAD, "--no-manager"], spare);
+  check("up --space=-x is USAGE_INVALID before anything is started or written",
+    refused(dashedUp, 1, "USAGE_INVALID") && (dashedUp.env?.error?.message ?? "").endsWith("cannot be passed as a flag value; nothing was started or written") && dashedUp.env?.error?.remedy === "choose a name that starts with a letter, digit or underscore", shown(dashedUp));
   check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é", "-x"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
   check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));

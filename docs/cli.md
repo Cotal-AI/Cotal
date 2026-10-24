@@ -2065,7 +2065,8 @@ it starts in, before it writes anything, so it never starts a stack that `down` 
 stop from that root. A space name is 1 to 200 ASCII letters, digits, underscores or hyphens, which
 `cotal up` needs to start it, and starts with a letter, digit or underscore, because a name that
 starts with `-` cannot be passed as a flag value. `space create` refuses any other name, such as
-`café` or `-x`, with `USAGE_INVALID`, exit 1, before anything is written. It refuses with
+`café` or `-x`, with `USAGE_INVALID`, exit 1, before anything is written, and `cotal up` refuses a
+`--space` that starts with `-` the same way. `space create` refuses with
 `CONFLICT` a name that is registered or prepared, a folder that is already a space's root, and the
 home folder, whose `.cotal` holds this machine's own records. A folder this account cannot write,
 such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so does a Cotal home
