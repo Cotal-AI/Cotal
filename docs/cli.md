@@ -2114,7 +2114,11 @@ store it set aside. A reopened step accepts an answer again. `cotal status` and 
 `backup cleanup-fallback` preview name the same runs. To find them, the restore copies the store it
 sets aside and reads its run journals on one more isolated broker, so such a restore takes longer
 and needs disk space for that copy.
-`up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
+`up --restore --restore-only registry` prints the same two lines. Without `--store-dir`, a restore
+creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as after
+`up --store-dir`; only a controller root restores into its recorded store. The preserved store stays
+where it is until `backup cleanup-fallback` deletes it, so to keep the space on another disk, name a
+new store there with `--store-dir`. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
