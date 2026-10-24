@@ -21,8 +21,9 @@
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
  *     naming that cap and the flag. A project folder renamed while its stack runs: the broker names
- *     its store relative to the root, so it does not create the old path again; `send` and `up` from
- *     the renamed folder name the move and the way back, and after the move back `down` stops it.
+ *     its store relative to the root, so it does not create the old path again; `send`, `up` and
+ *     `status --space` from the renamed folder name the move and the way back, `status` there offers
+ *     no `clean store`, and after the move back `down` stops it.
  *     Stopped and moved again, `up`, `send`, `history` and `status` there all name moving it back.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
@@ -359,6 +360,10 @@ try {
     check("send from the renamed folder refuses CONFLICT, naming the move and the way back", send.status === 2 && send.env?.error?.code === "CONFLICT" && send.env.error.message.includes(`was started in ${root}`) && send.env.error.message.endsWith("so this folder was moved from there") && send.env.error.remedy === `move this folder back to ${root}, then run the command again there`, shown(send));
     const up = cli(moved, "up", "--json");
     check("up there refuses CONFLICT, saying the folder was moved", up.status === 2 && up.env?.error?.code === "CONFLICT" && up.env.error.message.includes(`recorded at ${root}, so this folder was moved from there`), shown(up));
+    const running = cli(moved, "status", "--space", space, "--json"), bare = cli(moved, "status", "--json");
+    const selected = running.env?.result?.selected as { code?: string; message?: string } | undefined, hints = (running.env?.result?.hints as string[] | undefined) ?? [];
+    check("status --space there says the folder was moved and names the way back", selected?.code === "moved-folder" && Boolean(selected.message?.endsWith("so this folder was moved from there")) && hints.includes(`move this folder back to ${root}, then run the command again there`), { selected, hints });
+    check("status there offers no clean store, which refuses in a moved folder", bare.status === 0 && !((bare.env?.result?.hints as string[] | undefined) ?? []).some((hint) => hint.includes("clean store")), bare.env?.result?.hints);
     // The stack's own clients create consumers within seconds; a broker that named its store by the
     // old absolute path created that path again for them.
     await sleep(10_000);

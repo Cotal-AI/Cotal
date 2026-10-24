@@ -702,9 +702,11 @@ folder no longer holds its journal. When this machine records neither the space 
 its stack, as on another machine, moving back would not start it, so a moved folder is told only to
 adopt the journal with `space create --adopt`. `status`, `send` and `history` there name the same
 next step. Commands that reach a static-auth space from a moved folder, such as `send`, `history`,
-`ps` and `service stop`, refuse the same way. The broker names a store inside the project folder
-relative to that folder and runs from it, so a broker still running when its folder is renamed keeps
-writing into the renamed folder and does not create the old path again. A broker an earlier release
+`ps` and `service stop`, refuse the same way. `status` there says the folder was moved, names the
+way back as its next step, and does not offer `clean store`, which refuses there too. The broker
+names a store inside the project folder relative to that folder and runs from it, so a broker still
+running when its folder is renamed keeps writing into the renamed folder and does not create the old
+path again. A broker an earlier release
 started does, so when something is found at the recorded path, the refusal says to move it aside
 before moving the folder back. When the space is prepared or registered here and
 `space create --adopt` could take the journal over instead, the refusal names that command too. A
