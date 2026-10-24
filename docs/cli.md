@@ -7514,9 +7514,16 @@ retention may omit messages, and an empty result does not prove there was no out
 Journald must retain an accessible per-user journal; no alternate file, privilege escalation or
 remote log service is used. These are authorized local logs and can contain secrets.
 
-The process driver tracks its direct child, not arbitrary descendants a program creates. A
-stopped/direct-process-gone observation must not be interpreted as proof that all external work
-or descendant processes ended. The process driver itself provides no service presets, agent-aware
+A background start runs its process as the leader of its own process group. `service stop`, and
+the stop half of a restart, signal that group and wait until the process and every member of the
+group are gone, so a descendant left in the group, such as a server a shell backgrounded, ends with
+it. A foreground start shares the command's group, so only its own process is signalled. A
+descendant that leaves the group, such as one started with `setsid`, is not followed, and a
+stopped/direct-process-gone observation is not proof that all external work ended. When the HTTP
+readiness address of a saved service still answers while none of its instances runs, `service
+stop`, `service status`, `cotal service`, `cotal status` and `cotal down` print a
+`SERVICE_ADDRESS_HELD` warning. It names the address and any process of this account that listens
+there, by PID and program name. The process driver itself provides no service presets, agent-aware
 manager control, owned OS units, non-Linux lifecycle parity or full preset and OS-supervisor
 integration.
 
