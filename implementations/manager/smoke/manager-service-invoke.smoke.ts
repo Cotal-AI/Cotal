@@ -326,7 +326,7 @@ try {
   }
 }
 
-const EXPECTED = 26;
+const EXPECTED = 27;
 check("every declared manager service invoke cell ran", pass + fail === EXPECTED, { ran: pass + fail, expected: EXPECTED });
 console.log(`\n${fail === 0 ? "MANAGER SERVICE INVOKE SMOKE OK ✅" : "MANAGER SERVICE INVOKE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 emitSentinel({ passed: pass, failed: fail });
