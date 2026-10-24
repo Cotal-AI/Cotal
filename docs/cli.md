@@ -3087,6 +3087,8 @@ format. It does not create a caller, rotate a key, start a service or export the
 A cached login is not signing authority. The selected root must hold validated static trust;
 conflicting current-folder and selected-root account authorities refuse before publication. A space
 registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
+A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
+enrollment path, and nothing is written.
 
 `--out` is required. Its parent must exist and pass the protected physical-directory checks. A
 parent that does not exist refuses `TARGET_NOT_FOUND`, naming the folder, before anything is

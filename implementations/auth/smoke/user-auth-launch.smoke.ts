@@ -443,6 +443,16 @@ try {
     observerMint.status === 2 && observerMint.out.includes("UNSUPPORTED") && observerMint.out.includes("static credentials are not issued for open or per-user-auth spaces"),
     observerMint.out,
   );
+  // The data-account signer is not exported from a user mesh either, by the same refusal.
+  const signerDir = mkdtempSync(join(tmpdir(), "cotal-ual-signer-"));
+  const signerOut = join(signerDir, "signer.json");
+  const signerExport = await cotal(["auth", "signer", "--out", signerOut]);
+  check(
+    "the flip: `auth signer` on a user mesh is refused UNSUPPORTED as `auth mint` is, and writes nothing",
+    signerExport.status === 2 && signerExport.out.includes("UNSUPPORTED") && signerExport.out.includes("static credentials are not issued for open or per-user-auth spaces") && signerExport.out.includes("login/enrollment path") && !existsSync(signerOut),
+    signerExport.out,
+  );
+  rmSync(signerDir, { recursive: true, force: true });
   const oldCredsDir = join(root, ".cotal", "auth", "creds");
   mkdirSync(oldCredsDir, { recursive: true });
   const oldStaticCreds = join(oldCredsDir, "old-static.creds");
