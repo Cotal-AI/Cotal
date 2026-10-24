@@ -1,6 +1,6 @@
-import { accessSync, constants, lstatSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { c, CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
+import { authDir, c, CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
 
 /** What a store directory holds: the broker's `jetstream` tree, Cotal's generation marker, and the
  *  `ocsp` folder nats-server makes in its store directory on every configuration reload. */
@@ -18,6 +18,20 @@ export function foreignStoreEntries(dir: string): string[] {
 
 /** The names of the store entries, the only entries a store cleanup removes. */
 export const STORE_ENTRY_NAMES: readonly string[] = [...STORE_ENTRIES.keys()];
+
+/** The store `root`'s last broker served, when it differs from `storeDir` and still holds JetStream
+ *  data. `down` drops the record that named a custom or restored store, but each real start writes
+ *  its `store_dir` into the broker config it renders, and that file outlives `down`. */
+export function lastServedStore(root: string, storeDir: string): string | undefined {
+  for (const conf of [join(authDir(root), "server.conf"), join(root, ".cotal", "server-open.conf")]) {
+    if (!existsSync(conf)) continue;
+    // The core renderer writes the path as a JSON string.
+    const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
+    const last = named === undefined ? undefined : resolve(JSON.parse(named) as string);
+    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream"))) return last;
+  }
+  return undefined;
+}
 
 /** Up to five entry names, then how many more there are. */
 export function listEntries(entries: readonly string[]): string {
