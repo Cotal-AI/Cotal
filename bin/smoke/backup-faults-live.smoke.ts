@@ -4,7 +4,8 @@
  *  or create interrupted by Ctrl-C inside its claim names its recovery, which works once its
  *  processes are gone, before the claim deadline. A create into a missing folder and a restore of a
  *  missing path refuse TARGET_NOT_FOUND before any lock, and so are a destination inside the store
- *  and one in a folder this account cannot write. */
+ *  and one in a folder this account cannot write. A `--store-dir` that is not the cut's store
+ *  refuses CONFLICT naming both. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -156,6 +157,12 @@ async function backupStageFaultScenario(): Promise<void> {
       const deniedEnvelope = JSON.parse(denied.stdout) as { error?: { code?: string; message?: string; remedy?: string } };
       assert.ok(denied.status === 2 && deniedEnvelope.error?.code === "PERMISSION_DENIED" && (deniedEnvelope.error.message ?? "").includes(`cannot write ${locked}`) && (deniedEnvelope.error.remedy ?? "").includes(`chmod u+w ${locked}`), `an unwritable folder is refused by name\n${denied.stdout}${denied.stderr}`);
     }
+    // A --store-dir that is not the cut's store is a conflict naming both stores.
+    const emptyStore = join(root, "empty-store");
+    mkdirSync(emptyStore);
+    const mismatched = run("backup", "create", join(root, "bkw"), "--store-dir", emptyStore, "--json");
+    const mismatchedEnvelope = JSON.parse(mismatched.stdout) as { error?: { code?: string; message?: string } };
+    assert.ok(mismatched.status === 2 && mismatchedEnvelope.error?.code === "CONFLICT" && (mismatchedEnvelope.error.message ?? "").includes(`--store-dir ${emptyStore} is not this cut's preserved store ${sourcePath}`), `a mismatched --store-dir is a conflict naming both stores\n${mismatched.stdout}${mismatched.stderr}`);
     assert.equal(journalState(root), "ready", "the refused create and restores leave the cut ready");
     assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
 

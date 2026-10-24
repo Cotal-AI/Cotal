@@ -109,15 +109,25 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   });
 }
 
-function requireReady(root: string, storeDir: string): MaintenanceReadyRecord {
+/** Refuse a `--store-dir` that is not the cut's preserved store, naming both, with the native reason
+ *  when the named folder holds no readable store identity. */
+function assertNamedStore(root: string, record: MaintenanceReadyRecord, storeDir: string): void {
+  const mismatch = (reason?: string) => new CommandFailure("refused", "CONFLICT", `--store-dir ${storeDir} is not this cut's preserved store ${record.source.path}${reason ? ` (${reason})` : ""}; nothing was backed up`, { target: { root, space: record.space, storeDir, preservedStore: record.source.path }, remedy: `omit --store-dir to back up ${record.source.path}, or name that store` });
+  let actual: ReturnType<typeof readStoreIdentity>;
+  try { actual = readStoreIdentity(storeDir); }
+  catch (error) { if (isMaintenanceError(error)) throw mismatch(error.message); throw error; }
+  if (!sameStoreIdentity(record.source, actual)) throw mismatch();
+}
+
+function requireReady(root: string, storeDir: string, named: boolean): MaintenanceReadyRecord {
   const record = readMaintenanceJournal(root);
   if (!record || record.state !== "ready") throw notReady(root, record);
   const source = preservedSourceState(root, record.source);
   if (source.state === "moved") throw movedFolderRefusal(root, record.space, record.source.path, source, "create the backup");
   if (source.state === "missing")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${record.source.path} is missing; nothing was backed up`, { target: { root, space: record.space, recordedStore: record.source.path }, remedy: "if this folder was moved, move it back so that path exists again" });
-  const actual = readStoreIdentity(storeDir);
-  if (!sameStoreIdentity(record.source, actual))
+  if (named) assertNamedStore(root, record, storeDir);
+  else if (!sameStoreIdentity(record.source, readStoreIdentity(storeDir)))
     throw new CommandFailure("refused", "CONFLICT", `--store-dir does not match the preserved source ${record.source.path}`, { target: { root, space: record.space }, remedy: "omit --store-dir, or name the preserved store" });
   assertStoreIdentity(record.source);
   // Backup coupling: a controller cut is backed up only while every member is the
@@ -509,6 +519,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   catch {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dirname(destinationPath)}, so the backup cannot be created in it; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, remedy: `make that folder writable with chmod u+w ${dirname(destinationPath)}, or name a destination in a folder this account can write` });
   }
+  if (values["store-dir"] !== undefined && journal.state === "ready") assertNamedStore(root, journal, resolve(values["store-dir"]));
   // Omitted, the store is the cut's own source, which a restore into --store-dir put outside
   // .cotal/nats. An interrupted create's claim keeps that source, and this create recovers the claim
   // first. A named store is still checked against it.
@@ -538,7 +549,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       }
       observed.mutationAttempted = true;
     }
-    ready = requireReady(root, storeDir);
+    ready = requireReady(root, storeDir, values["store-dir"] !== undefined);
     assertBackupPaths(root, ready.source.path, destination);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
