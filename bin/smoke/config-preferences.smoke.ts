@@ -214,6 +214,30 @@ const ansi = /\x1b\[/;
   run(["config", "unset", "persona", "--space", "demo"]);
 }
 
+// ── with nothing selected, a read goes through the space spawn uses from this folder ──────────────
+// It used to read your defaults while spawn took the folder's value.
+{
+  const demoRoot = join(home, "demo");
+  run(["config", "set", "harness", "opencode", "--space", "demo"]);
+  run(["config", "set", "harness", "claude"]);
+  const here = run(["config", "get", "harness", "--json"], {}, demoRoot);
+  const res = here.envelope?.result as { scope?: { space: string; from: string }; setting?: Setting } | null;
+  check("in a prepared folder with nothing selected, get reads through that folder's space",
+    here.status === 0 && res?.scope?.space === "demo" && res.scope.from === "folder" && res.setting?.value === "opencode" && JSON.stringify(here.envelope?.target) === JSON.stringify({ space: "demo" }), here.envelope);
+  const plain = run(["config", "--plain"], {}, demoRoot);
+  check("the plain view says the scope is this folder's space", /^Preferences\n {2}space demo \(this folder's\)$/m.test(plain.stdout), shown(plain));
+  const preview = run(["spawn", "--dry-run", "--json"], {}, demoRoot);
+  check("spawn there takes the same value", preview.status === 0 && (preview.envelope?.result as { harness?: string } | null)?.harness === "opencode", shown(preview));
+  const ghost = run(["config", "set", "persona", "ghost", "--json"], {}, demoRoot);
+  check("a persona that folder's catalog does not hold is saved with PERSONA_NOT_FOUND",
+    ghost.status === 0 && saved().defaults.persona === "ghost" && ghost.envelope?.warnings.some((w) => w.code === "PERSONA_NOT_FOUND" && w.message.startsWith('no persona "ghost" in space demo\'s catalog')) === true, ghost.envelope);
+  const away = run(["config", "get", "harness", "--json"]);
+  check("outside a project, with nothing running, a read is your defaults", (away.envelope?.result as { scope?: { space: unknown } } | null)?.scope?.space === null && (away.envelope?.result as { setting?: Setting } | null)?.setting?.value === "claude", away.envelope);
+  run(["config", "unset", "persona"]);
+  run(["config", "unset", "harness"]);
+  run(["config", "unset", "harness", "--space", "demo"]);
+}
+
 // ── a persona the space's catalog does not hold is saved, with a warning naming the catalog ──────
 {
   const catProject = join(home, "cat-project");

@@ -36,6 +36,7 @@ import {
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { personaCatalog, personaNameProblem } from "../lib/persona-files.js";
+import { launchSpace } from "../lib/spawn-defaults.js";
 
 export const configFlags = [
   { name: "user", type: "boolean", description: "read or write your own defaults, with no space's values" },
@@ -66,8 +67,9 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 /** The scope a run reads through or writes to: the user's defaults, or one space's values. */
 interface Scope {
   readonly space: string | null;
-  /** How the space was chosen: `--space`, or the selected space (`cotal use`) for a read. */
-  readonly from: "flag" | "selected" | null;
+  /** How the space was chosen: `--space`, the selected space (`cotal use`), or with nothing selected
+   *  the space a launch here uses: this folder's, or the only running one. */
+  readonly from: "flag" | "selected" | "folder" | "running" | null;
 }
 
 interface Setting extends ResolvedPreference {
@@ -173,12 +175,15 @@ function assertKnownSpace(space: string, prefs: Preferences, saved: boolean): vo
   });
 }
 
-/** A read looks through `--space`, or the selected space when neither scope flag is given. */
+/** A read looks through `--space`, or when neither scope flag is given, the space a launch here uses:
+ *  the selected one, else the one `spawn` resolves from this folder. */
 function readScope(v: FlagValues<typeof configFlags>): Scope {
   if (v.space !== undefined) return { space: v.space, from: "flag" };
   if (v.user) return { space: null, from: null };
   const selected = getCurrent();
-  return selected ? { space: selected, from: "selected" } : { space: null, from: null };
+  if (selected) return { space: selected, from: "selected" };
+  const here = launchSpace(process.cwd());
+  return here ? { space: here.space, from: here.source === "registry" ? "running" : "folder" } : { space: null, from: null };
 }
 
 const target = (scope: Scope) => (scope.space === null ? null : { space: scope.space });
@@ -259,8 +264,9 @@ function shadowedWrite(w: PreferenceWrite): OutputWarning[] {
   return [{ code: "PREFERENCE_SHADOWED", target: target(w.scope), message: `${describeLayer(winner)} (${winner.value}) outranks this value in this shell` }];
 }
 
+const SCOPE_FROM: Partial<Record<NonNullable<Scope["from"]>, string>> = { selected: " (selected)", folder: " (this folder's)", running: " (the only running space)" };
 const scopeText = (scope: Scope): string =>
-  scope.space === null ? "your defaults" : `space ${scope.space}${scope.from === "selected" ? " (selected)" : ""}`;
+  scope.space === null ? "your defaults" : `space ${scope.space}${scope.from ? SCOPE_FROM[scope.from] ?? "" : ""}`;
 
 const layerText = (layer: PreferenceLayer): string => `${describeLayer(layer)}: ${layer.value}`;
 

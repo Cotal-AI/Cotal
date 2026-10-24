@@ -5298,8 +5298,10 @@ cotal config unset <key> [--user | --space <name>] [--json | --plain]
 Your [preferences](config.md#preferences): `harness`, `persona`, `detach-key`, `color` and `editor`.
 Bare `config` lists every key with the value a command uses, where it came from (a variable, your
 value for the space, your own value, or the default) and the values it outranks. `get` shows one
-key. A read looks through `--space`, else the space selected with `cotal use`, else your defaults;
-`--user` reads your defaults alone.
+key. A read looks through `--space`, else the space a launch here uses: the space selected with
+`cotal use`, or with nothing selected the space `spawn` resolves from this folder, which is this
+folder's space or the only running one. With none of those it reads your defaults. `--user` reads
+your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
