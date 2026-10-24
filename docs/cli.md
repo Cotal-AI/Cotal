@@ -6953,7 +6953,9 @@ A manifest it cannot resolve, such as one whose `space:` is not a name `space cr
 refused with `SCHEMA_INVALID` (exit 1). The refusal names each
 problem by file, line and column where the parser has them, the key path, and the reason, and
 `--json` lists every problem under `target.issues`. A missing required key, an empty file, a
-value of the wrong shape and one outside a key's fixed values each get a plain reason. A problem in a referenced persona
+value of the wrong shape and one outside a key's fixed values each get a plain reason. An unknown key
+that misspells a required key left out beside it, such as `chanels`, is one problem that names the
+key meant. A problem in a referenced persona
 names that file and the parser's reason without quoting its contents. A persona file that does not
 exist is named at its entry's line along with the manifest's other problems, so fixing those does
 not uncover it later. A manifest file that does not exist is refused with `TARGET_NOT_FOUND`
