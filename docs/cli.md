@@ -2200,7 +2200,8 @@ is refused with `USAGE_INVALID`, exit 1, by every command that takes `--server`,
 read, written or dialed. The refusal does not repeat the value. The NATS client uses only the host
 and port of that URL, so the command would otherwise connect with the credential it resolves. Pass
 that credential with `--creds`, a login or the space's own trust instead. `up` refuses such a URL
-with its own message.
+with its own message. The manager reads `COTAL_SERVER` when `--server` is unset, and refuses a
+`COTAL_SERVER` with a user name or password the same way, naming `COTAL_SERVER`.
 
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming

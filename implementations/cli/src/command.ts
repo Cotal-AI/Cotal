@@ -17,6 +17,8 @@ import {
   hasMeshTargetFlags,
   inOperationSpace,
   isCommandFailure,
+  brokerUrlCredentialRefusal,
+  brokerUrlHasUserinfo,
   isConnectRefusal,
   isMeshRegistryError,
   isSeededCommand,
@@ -355,15 +357,9 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // The NATS client keeps only the host and port of a broker URL, so a user and password in it were
   // dropped in silence and the command connected with whatever credential it resolved instead. A
   // command whose own check names this, such as `up`'s, has refused above. The value is never repeated.
-  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string" && carriesUserinfo(canonical.values.server))
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "--server must not embed credentials; the command did not run", { remedy: "name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust", selfContained: true }), json, canonical.values.plain === true);
+  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string" && brokerUrlHasUserinfo(canonical.values.server))
+    failureExit(cmd, brokerUrlCredentialRefusal("--server"), json, canonical.values.plain === true);
   return canonical;
-}
-
-/** Whether a broker URL, or any URL in a comma-separated list, has a userinfo part. A value with no
- *  scheme is read as nats://, as the client reads it. */
-function carriesUserinfo(server: string): boolean {
-  return server.split(",").some((entry) => /^[^:/?#]+:\/\/[^/?#]*@/.test(entry.includes("://") ? entry.trim() : `nats://${entry.trim()}`));
 }
 
 /** A working folder removed before this process read it fails every cwd read the command makes, and
