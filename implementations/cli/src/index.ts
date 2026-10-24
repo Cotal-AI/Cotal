@@ -263,6 +263,7 @@ const baseCommands: Command[] = [
       { name: "dry-run", type: "boolean", description: "bare: inspect local records only; named: preview owned stop; mutate nothing" },
       { name: "with-agents", type: "boolean", description: "bare whole stack: also stop and deprovision every managed agent" },
       { name: "abandon-stop", type: "string", value: "<request-id>", description: "bare whole stack, with --yes: abandon a member's stop that no receipt settles, once its process and the down that sent it have exited" },
+      { name: "abandon-launch", type: "string", value: "<instance-id>", description: "bare whole stack, with --yes: record failed a member launch whose record names no process, once the up that launched it has exited" },
       { name: "preserve-state", type: "boolean", description: "bare whole stack: stop without logical teardown and publish an offline backup cut" },
       { name: "store-dir", type: "string", value: "<dir>", description: "with --preserve-state: actual JetStream store (default .cotal/nats)" },
       { name: "session-store", type: "string", multiple: true, value: "<dir>", description: "with --preserve-state: a harness transcript store directory to capture with every continuation-capable seat (repeatable; no default and never inferred)" },

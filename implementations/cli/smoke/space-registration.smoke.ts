@@ -218,7 +218,7 @@ setCurrent("keep");
 
   const before = registryFiles();
   const dead = await json(["space", "add", "dead1", "--server", DEAD, "--root", root]);
-  check("a broker that does not answer is TARGET_UNAVAILABLE, exit 2", refused(dead, 2, "TARGET_UNAVAILABLE"), shown(dead));
+  check("a broker that does not answer is TARGET_UNAVAILABLE, exit 2", refused(dead, 2, "TARGET_UNAVAILABLE") && /no broker answered/.test(dead.env?.error?.message ?? ""), shown(dead));
   check("…and its next step is --force, for a space that is down right now", (dead.env?.error?.remedy ?? "").includes(`pass --force to add "dead1" unchecked`), shown(dead));
   const deadPort = new URL(DEAD).port;
   check("a port that takes no connection says so, with the port check as its remedy",
@@ -754,7 +754,7 @@ if (process.platform === "linux") {
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
   for (const name of ["a b", "dot.name", "é"]) {
     const bad = await json(["space", "create", name], spare);
-    check(`a name cotal up cannot start (${name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
+    check(`a name cotal up cannot start (${name.length > 20 ? `${name.length} characters` : name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
   }
   const dashed = await json(["space", "create", "--", "-x"], spare);
   check("a name that starts with - is USAGE_INVALID, saying it cannot be passed as a flag value",
@@ -814,6 +814,19 @@ if (process.platform === "linux") {
   check("status --verbose notes the selected space is prepared, not started", verbose.status === 0 && /current mesh "demo" is prepared, not started/.test(verbose.stdout), shown(verbose));
   const listed = await json(["space"]);
   check("a selected prepared space is not warned about as missing", listed.status === 0 && listed.env?.warnings.length === 0 && listed.env.result.prepared[0]?.current === true, listed.env?.warnings);
+  // After the prepared-list reads above, so a second prepared space does not reorder them.
+  const longestRoot = join(home, "longestRoot");
+  mkdirSync(longestRoot);
+  const sixtyFour = await json(["space", "create", "b".repeat(64)], longestRoot);
+  check("a 64-character name is prepared", sixtyFour.status === 0 && findPreparedSpace("b".repeat(64)) !== undefined, shown(sixtyFour));
+  // A record an earlier release prepared under a name `up` cannot start: the refusal says no member
+  // was started, and its next step quotes the name.
+  const legacy = join(home, "legacy");
+  mkdirSync(join(legacy, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+  recordPreparedSpace({ space: "sp ace", root: legacy, ts: new Date().toISOString() });
+  const legacyUp = await json(["up", "--root", legacy, "--space", "sp ace", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
+  check("up of a legacy name that is not a routing token says no member was started and quotes the name in its next step",
+    refused(legacyUp, 1, "SCHEMA_INVALID") && /started no member/.test(legacyUp.env?.error?.message ?? "") && (legacyUp.env?.error?.remedy ?? "").includes("--space 'sp ace'"), shown(legacyUp));
   const human = await run(["space", "--plain"]);
   check("the listing shows it under its own heading", /Prepared, not started/.test(human.stdout) && /demo \(selected\)/.test(human.stdout), shown(human));
   const target = await json(["who"]);

@@ -246,7 +246,7 @@ try {
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
   // ── usage ───────────────────────────────────────────────────────────────────────────────────────
-  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "1001"], ["--since", "yesterday-ish"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
+  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "1001"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
@@ -463,6 +463,18 @@ try {
   tty.kill();
   const ttyLines = clean(ttyOut).split(/\r?\n/);
   check("a followed line wraps at word boundaries in a 60-column terminal", clean(ttyOut).includes("papa") && ttyLines.every((l) => l.length <= 60) && words.split(" ").every((w) => ttyLines.some((l) => new RegExp(`\\b${w}\\b`).test(l))), ttyLines.slice(-6));
+
+  // `--limit` bounds messages, and one message can be close to a megabyte, so a row shows the first
+  // 500 characters and names the cut. `--json` carries the text as it was sent.
+  const long = `long ${"y".repeat(5000)}`;
+  await bob.multicast(long, { channel: "ops" });
+  await wait(500);
+  const longPlain = await run(["history", "ops", "--limit", "1", "--plain"]);
+  const longJson = await run(["history", "ops", "--limit", "1", "--json"]);
+  check("a plain row shows the first 500 characters of a long message and names its size; --json keeps the whole text",
+    longPlain.status === 0 && longPlain.stdout.includes(`long ${"y".repeat(495)}`) && !longPlain.stdout.includes("y".repeat(496))
+      && longPlain.stdout.includes("cut from 5005 bytes; --json carries the whole text") && texts(longJson)[0] === long,
+    { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {

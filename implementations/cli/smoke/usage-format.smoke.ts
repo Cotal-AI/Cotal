@@ -51,6 +51,20 @@ const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
 const parser = run(["status", "--bogus"]);
 check("control: a parser usage error has the documented shape", usageShape(parser, /Unknown option '--bogus'/), shown(parser));
 
+// A refusal points the way the command reads its words: a word that starts with "-" goes after
+// --, an option value that starts with "-" is written --name=value, a short option takes its value
+// after a space, and an option typed with a typographic dash is named with hyphens.
+const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
+check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
+const dashValue = run(["history", "--from", "-bob"]);
+check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
+const shortEquals = run(["send", "-c=general", "hello"]);
+check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
+for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
+  const r = run(["status", typed]);
+  check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
+}
+
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
 

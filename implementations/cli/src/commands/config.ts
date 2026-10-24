@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
 import { agentFilePath, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import {
   COLOR_VALUES,

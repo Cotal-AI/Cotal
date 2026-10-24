@@ -63,6 +63,19 @@ const MAX_LIMIT = 1000;
 /** How many message ids a follow remembers to drop duplicates: a re-tap after a reconnect and the
  *  snapshot both overlap the live feed. */
 const SEEN_IDS = 10_000;
+/** How many characters of a message a text or plain row shows. */
+const ROW_TEXT = 500;
+
+/** A message's text as a row shows it: whole up to `ROW_TEXT` characters, else cut there and marked
+ *  with its size, since `--limit` bounds messages and one message can be close to a megabyte. */
+function rowText(text: string): string {
+  let head = "", count = 0;
+  for (const char of text) {
+    if (count++ === ROW_TEXT) return `${head}… (cut from ${Buffer.byteLength(text)} bytes; --json carries the whole text)`;
+    head += char;
+  }
+  return text;
+}
 /** How long a `--dms` read waits for the roster that names DM recipients before it shows principals. */
 const ROSTER_MS = 2_000;
 
@@ -612,7 +625,7 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],
-                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: item.text })),
+                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: rowText(item.text) })),
               }]
             : []),
           { kind: "lines" as const, lines: notes },

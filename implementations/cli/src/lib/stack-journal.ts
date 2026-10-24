@@ -10,9 +10,9 @@ import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, cano
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -24,6 +24,12 @@ export const STACK_ADAPTER: Readonly<Record<StackRole, string>> = { broker: "nat
 
 export const STACK_MODES = ["auth", "open", "user"] as const;
 export type StackMode = (typeof STACK_MODES)[number];
+
+/** The stack roles of `space` whose recorded processes run now. A signal handler reads it, so it
+ *  only reads records and process state. */
+export function runningStackRoles(space: string): StackRole[] {
+  return STACK_ROLES.filter((role) => serviceInstances(space, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
+}
 
 /** Which roles a mode can ever plan. An open stack has no delivery; only a user stack has an auth
  *  service. A role outside its mode stays `not-attempted` with no instance, and validation refuses
@@ -364,7 +370,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : observed === "unresolved-launch" ? `${inspect(row.name)}; ${abandonLaunchRemedy(row.name)}` : inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -434,6 +440,27 @@ export const RESUME_REMEDY = "once the command that sent the stop has exited, `c
 
 /** The remedy a refusal over a retained, published member stop names. */
 export const abandonRemedy = (requestId: string): string => `once its process and the down that sent the request have exited, \`cotal down --abandon-stop ${requestId} --yes\` abandons it`;
+
+/** The remedy a refusal over a member launch whose record names no process names. */
+export const abandonLaunchRemedy = (instanceId: string): string => `once the up that launched it has exited, \`cotal down --abandon-launch ${instanceId} --yes\` records it failed; a process that launch started without recording it is not excluded`;
+
+/** Record `failed`, on an operator's explicit request, the member launch `instanceId` whose record
+ *  names no process, under that member's definition lock, before a `down` classifies the members.
+ *  The caller holds the root's maintenance lock. No member with that instance refuses
+ *  `TARGET_NOT_FOUND`, and nothing is written. */
+export function abandonUnresolvedStackLaunch(journal: StackJournal, instanceId: string): { role: StackRole; row: ServiceInstanceSnapshot } {
+  const store = serviceDefinitionStore(journal.space);
+  for (const role of STACK_ROLES.filter((entry) => stackRoleApplies(journal.mode, entry))) {
+    const definition = store.read(STACK_DEFINITION[role]), launch = definition?.record.value.launch;
+    if (!definition || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root) continue;
+    const hold = store.pin(definition);
+    try {
+      const row = serviceInstances(journal.space, definition.name).find((entry) => entry.name === instanceId);
+      if (row) return { role, row: abandonUnresolvedLaunch(row) };
+    } finally { hold.release(); }
+  }
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack has an instance with that ID; nothing was abandoned", { target: { root: journal.root, space: journal.space, instanceId }, remedy: `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --space ${journal.space}\` for a member's instances` });
+}
 
 /** Abandon the one member stop that retains `requestId`, on an operator's explicit request, under that
  *  member's definition lock, before a `down` classifies the members. The caller holds the root's
