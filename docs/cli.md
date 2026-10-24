@@ -6351,7 +6351,8 @@ escalates again. A settled pause adds its `answer` and its `amendments`, as the 
 them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
 An unreadable revocation marker makes the result partial, exit 4, with a `REVOCATION_NOT_CHECKED`
-warning naming the run. The text view is presentation and is not a stable parsing target. With
+warning naming the run. A `ps --endpoint <endpoint>` that matches no run lists nothing and says so,
+naming the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning. The text view is presentation and is not a stable parsing target. With
 `--local`, only `ps`, `journal`, `answer` and `amend` take `--json` or `--plain`.
 `ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
 diagnostic JSON page instead of the full list:

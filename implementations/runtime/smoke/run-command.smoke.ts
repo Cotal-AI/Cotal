@@ -134,11 +134,11 @@ const wf = (positionals: string[], values: Record<string, string | boolean | und
   runWorkflow({ values: { server: servers, space: SPACE, local: true, ...(positionals[0] === "start" ? { "admit-read": "none", "admit-publish": "none" } : {}), ...values }, positionals, raw: [] });
 /** The same invocation with `--json`: the envelope it writes straight to stdout, parsed. The full
  *  journal and each listed run's revocation are in the JSON result, not the rendered tables. */
-const envelopeOf = async (positionals: string[]): Promise<{ result?: unknown; warnings?: Array<{ code?: string; target?: { run?: string } }> } | undefined> => {
+const envelopeOf = async (positionals: string[], values: Record<string, string> = {}): Promise<{ result?: unknown; warnings?: Array<{ code?: string; message?: string; target?: { run?: string } }> } | undefined> => {
   const chunks: string[] = [];
   const write = process.stdout.write;
   process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; }) as typeof process.stdout.write;
-  try { await wf(positionals, { json: true }); } finally { process.stdout.write = write; }
+  try { await wf(positionals, { json: true, ...values }); } finally { process.stdout.write = write; }
   try { return JSON.parse(chunks.join("")); } catch { return undefined; }
 };
 type JournalRowJson = { step?: string; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
@@ -559,6 +559,12 @@ let P = "";
   // THE CONTROL for block 10's exit status: every marker on this table was read, so the listing is
   // complete and the command exits 0.
   c("a listing whose every marker was read exits 0", process.exitCode === 0, process.exitCode);
+  // An endpoint no run lives under lists nothing and says so, naming the endpoints that hold runs.
+  const nosuch = await envelopeOf(["ps"], { endpoint: "nosuch" });
+  c("ps --endpoint naming an endpoint no run lives under is empty and warns, naming the endpoint runs are recorded under",
+    (nosuch?.result as { items?: unknown[] } | undefined)?.items?.length === 0
+      && (nosuch?.warnings ?? []).some((w) => w.code === "ENDPOINT_HAS_NO_RUNS" && w.message === `no run record in this view lives under endpoint nosuch; runs are recorded under ${EP}`),
+    nosuch);
   const listedRows = (await envelopeOf(["ps"]))?.result as { items?: RunRowJson[] } | undefined;
   const revokedRow = listedRows?.items?.find((r) => r.runId === rid);
   c("...with the revoker and the reason in the listing's JSON result, since the table's columns carry neither",
@@ -753,7 +759,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 78;
+const DECLARED = 79;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

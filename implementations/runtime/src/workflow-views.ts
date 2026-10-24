@@ -6,11 +6,17 @@ const recordedState = (state: string | undefined, failure?: RunFailure): Styled 
 const managerPin = (values: OutputValues) => values.on ? ` --on ${values.on}` : "";
 const runToken = (value: string | undefined) => value && /^run-[0-9a-f]{32}$/.test(value) ? value : "<run-id>";
 
-export function printRunList(space: string | undefined, items: readonly RunListRow[], values: OutputValues): void {
+/** `unmatched` is given when `--endpoint` matched no run: that endpoint, and the endpoints this view
+ *  records runs under. */
+export function printRunList(space: string | undefined, items: readonly RunListRow[], values: OutputValues, unmatched?: { endpoint: string; recordedUnder: readonly string[] }): void {
   const unread = items.filter((row) => row.revocationUnreadable !== undefined);
+  const nowhere = unmatched && !items.length
+    ? `no run record in this view lives under endpoint ${oneLine(unmatched.endpoint)}; ${unmatched.recordedUnder.length ? `runs are recorded under ${unmatched.recordedUnder.map(oneLine).join(", ")}` : "it holds no run record under any endpoint"}`
+    : undefined;
   writeResult(presentationOf(values), {
     command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null }, result: { kind: "runs", items },
-    warnings: unread.map((row) => ({ code: "REVOCATION_NOT_CHECKED", target: { run: row.runId, endpoint: row.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." })),
+    warnings: [...unread.map((row) => ({ code: "REVOCATION_NOT_CHECKED", target: { run: row.runId, endpoint: row.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." })),
+      ...(nowhere ? [{ code: "ENDPOINT_HAS_NO_RUNS", target: { endpoint: unmatched!.endpoint, recordedUnder: unmatched!.recordedUnder }, message: nowhere }] : [])],
     ...(unread.length ? { completeness: "partial" as const, partial: { message: "Some run revocation markers could not be read." } } : {}),
   }, (result): Report => ({ sections: [
     { title: "Workflow runs", blocks: [

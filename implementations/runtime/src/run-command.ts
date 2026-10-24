@@ -452,12 +452,17 @@ async function drive(
   }
 }
 
+/** The endpoints a listing's runs are recorded under, each once. */
+const recordedUnder = (rows: readonly RunListRow[]): string[] => [...new Set(rows.map((row) => row.endpoint))].sort();
+
 async function ps(values: RunValues, planes: Planes): Promise<void> {
   // The same rows the manager answers `run-ps` with, read under this call's operator credential:
   // the record's state beside its revocation marker (SPEC 14.8), so `--local` and hosted agree
   // row for row, `--json` included.
   const rows = await runHost.list(planes, values.endpoint !== undefined ? { endpoint: values.endpoint } : {});
-  printRunList(planes.space, rows, values);
+  // An endpoint no run lives under is named, with the endpoints that hold runs.
+  const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await runHost.list(planes, {})) } : undefined;
+  printRunList(planes.space, rows, values, unmatched);
 }
 
 async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
@@ -908,7 +913,8 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
       return;
     }
     const rows = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
-    printRunList(space, rows, values);
+    const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await ask("run-ps", undefined) as RunListRow[]) } : undefined;
+    printRunList(space, rows, values, unmatched);
     return;
   }
   if (verb === "journal") {
