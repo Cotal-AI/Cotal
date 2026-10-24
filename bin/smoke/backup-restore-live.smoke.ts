@@ -340,6 +340,9 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const preview = run("backup", "cleanup-fallback", active.restore.attemptId, "--dry-run", "--json");
       must("cleanup-fallback preview", preview);
       assert.ok((JSON.parse(preview.stdout) as { warnings: { code: string }[] }).warnings.some((w) => w.code === "HISTORY_ONLY_IN_PREVIOUS_STORE"), `${mode} preview warns about the only copy\n${preview.stdout}`);
+      // The attempt row names a restore attempt, not a full restore, since this one was registry-only.
+      const previewText = run("backup", "cleanup-fallback", active.restore.attemptId, "--dry-run");
+      assert.ok(previewText.status === 0 && /Restore attempt:\s+restore-/.test(previewText.stdout) && !previewText.stdout.includes("Full restore attempt"), `${mode} the preview labels the attempt as a restore attempt\n${previewText.stdout}`);
       const kept = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes", "--json");
       assert.equal(kept.status, 1, `${mode} cleanup-fallback without --discard-history refuses\n${kept.stdout}\n${kept.stderr}`);
       assert.match(kept.stdout, /"code":"USAGE_INVALID"/);
