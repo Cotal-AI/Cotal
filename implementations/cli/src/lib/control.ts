@@ -789,12 +789,13 @@ export async function scatterManager(
  *  manager, rather than after the read's describe has waited out its whole deadline. Only the
  *  operator instrument holds the registry rows, so a caller passes a user's manager view or a pinned
  *  call straight to the read. Any other registry outcome, an unreadable registry included, leaves
- *  the read to decide. `purpose` completes "no manager is running for this space to …". */
-export async function refuseWithoutLiveManager(space: string, server: string, auth: ControlAuth, target: unknown, purpose: string): Promise<void> {
+ *  the read to decide. `purpose` completes "no manager is running for this space to …". Returns the
+ *  live instance ids the registry listed, or undefined when it could not be read. */
+export async function refuseWithoutLiveManager(space: string, server: string, auth: ControlAuth, target: unknown, purpose: string): Promise<string[] | undefined> {
   try {
-    await liveManagerIds(space, server, auth);
+    return await liveManagerIds(space, server, auth);
   } catch (e) {
-    if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
+    if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return undefined;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
   }
 }

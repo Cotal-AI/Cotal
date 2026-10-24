@@ -3343,7 +3343,7 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--harness <connector>`, `-H` | all registered applications | Application whose catalog to list |
 | `--on <manager-instance>` | native selection | Ask only the named manager instance, or on a user-auth mesh the manager a name or host picks, as [`ps`](#managed-seats) takes them. An unavailable or unauthorized pin refuses without choosing another. |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
-| `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate |
+| `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate, and `result.notAskedManagerInstanceIds` lists the live managers an unpinned read did not ask, or is `null` when no registry was read |
 | `--plain` | off | The same report without color |
 
 Asks the selected manager for each application's model catalog (model ids plus their variants)
@@ -3358,7 +3358,11 @@ screen points to that warning without repeating it inline. The remedy is to corr
 cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
 refusal is reported separately. When the space's service registry lists no live manager, an
 unpinned operator `models` refuses `TARGET_UNAVAILABLE` (exit 2) at once, as `ps` does, and names
-bare `cotal up` as the next step. A connector whose harness the manager did not find at boot
+bare `cotal up` as the next step. An unpinned operator read reads the registry first and goes to
+the one manager the native selection picks. With several live managers, the report names the others
+in a `Not asked` row, and its Next asks each with `--on`. A manager lists a catalog row for every
+application its install names, so an empty list says the answering manager has no agent
+application installed. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
 printed it. OpenCode and Codex ids are the full

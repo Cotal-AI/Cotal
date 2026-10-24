@@ -216,6 +216,28 @@ try {
       census.result?.managers.every((m) => m.state === "answered") === true && census.warnings.length === 0,
     { status: unpinnedJson.status, stdout: unpinnedJson.stdout.slice(-600) });
 
+  // An unpinned `models` goes to the one manager the class queue picks. It names the other as not
+  // asked, and an empty catalog list says the answering manager has no application installed.
+  check("rig: no connector is registered yet, so each manager lists no catalog", registry.all<Connector>("connector").length === 0, registry.all<Connector>("connector").map((c) => c.name));
+  const modelsUnpinned = await cotal(["models", "--json", "--space", space], root1);
+  mustHaveRun(modelsUnpinned, "the unpinned `models --json`");
+  let modelsEnv: { result?: { answeringManagerInstanceId?: string | null; notAskedManagerInstanceIds?: string[] | null; items?: unknown[] } } | undefined;
+  try { modelsEnv = JSON.parse(modelsUnpinned.stdout) as typeof modelsEnv; } catch { modelsEnv = undefined; }
+  const answering = modelsEnv?.result?.answeringManagerInstanceId;
+  check("an unpinned models --json names the live manager it did not ask",
+    modelsUnpinned.status === 0 && (answering === IID1 || answering === IID2) && modelsEnv?.result?.items?.length === 0 &&
+      JSON.stringify(modelsEnv.result.notAskedManagerInstanceIds) === JSON.stringify([answering === IID1 ? IID2 : IID1]),
+    { status: modelsUnpinned.status, stdout: modelsUnpinned.stdout.slice(-600) });
+  const modelsHuman = await cotal(["models", "--space", space], root1);
+  mustHaveRun(modelsHuman, "the unpinned `models`");
+  const modelsOut = strip(modelsHuman.out);
+  const asked = /Answering manager: +(\S+)/.exec(modelsOut)?.[1];
+  const notAsked = asked === IID1 ? IID2 : IID1;
+  check("...and its report says why no catalog came back, names the other manager and asks it with --on",
+    modelsHuman.status === 0 && modelsOut.includes("No model catalogs were returned: the answering manager has no agent application installed.") &&
+      (asked === IID1 || asked === IID2) && new RegExp(`Not asked: +${notAsked}$`, "m").test(modelsOut) && modelsOut.includes(`cotal models --space ${space} --on ${notAsked}`),
+    modelsOut.slice(-900));
+
   // ---- 2. THE FLAG IS ACCEPTED AND VALIDATED --------------------------------------------------
   // Cheap, but it separates "the flag is gone" from "the flag is dead", which are different bugs
   // with different fixes. A malformed id must be refused at the CLI, never widened into a subject.
