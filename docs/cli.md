@@ -5779,6 +5779,9 @@ expired names `cotal auth mint <label> --identity <file> --out <file>`, which si
 again with the same grants. One whose key was revoked, or that an earlier space identity issued,
 names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`
 refuses a revoked one.
+A run with no findings says so in its heading only when nothing else is printed. While an exported
+file needs attention, or a credential is unbounded by request, the heading starts `No findings;` and
+names each, such as `2 exported credential files need attention`. The exit code stays 0.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.
