@@ -42,13 +42,15 @@ import {
   readCheckpointAnswer,
   readCheckpointSpec,
   readCheckpointStatus,
+  readRunRevocation,
   resumeCheckpoint,
+  EpEnvelopeError,
   type CheckpointSettleFact,
   type CheckpointSpecValue,
 } from "@cotal-ai/core";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import { CheckpointNotAmendable, openCheckpointToken, settledPauseToken, type JournalEntry } from "@cotal-ai/lang";
+import { CheckpointNotAmendable, CheckpointNotOpen, journalEntryKeyString, openCheckpointToken, settledPauseToken, stepPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import { delay } from "./delay.js";
 
 export interface ResolveCheckpointRequest {
@@ -85,8 +87,9 @@ export interface ResolveCheckpointDeps {
   readonly endpoint: string;
 }
 
-/** The open pause at a step, located: its token and the holder that armed it. */
+/** The open pause at a step, located: its run, its token and the holder that armed it. */
 export interface OpenCheckpoint {
+  readonly runId: string;
   readonly token: string;
   readonly holder: { readonly id: string; readonly lifecycleUid: string };
 }
@@ -97,11 +100,12 @@ export interface OpenCheckpoint {
  * write (the hosting manager, `cotal run --local`) performs the two halves on two credentials; a
  * caller on a standing credential composes them here.
  *
- * Refusals are the plane's own and are not softened here: a checkpoint already resumed is a
- * `conflict` (resume authorization is one-use) and one already expired is a `failed-precondition`
- * (expiry fails closed). Both mean the answer arrived too late, and both leave this resolver's
- * record filed and unaccepted — which is what the caller needs to be told rather than a success
- * that names a settlement somebody else won.
+ * A pause whose status already settled is refused by the locate half as settled. One that settles
+ * between the two halves gets the plane's own refusals, not softened here: a checkpoint already
+ * resumed is a `conflict` (resume authorization is one-use) and one already expired is a
+ * `failed-precondition` (expiry fails closed). Both mean the answer arrived too late, and both leave
+ * this resolver's record filed and unaccepted — which is what the caller needs to be told rather
+ * than a success that names a settlement somebody else won.
  */
 export async function resolveCheckpoint(
   deps: ResolveCheckpointDeps,
@@ -136,7 +140,12 @@ export async function locateOpenCheckpoint(
       + `refusing to guess a presenter — reconcile the store before answering`,
     );
   }
-  return { token, holder: spec.holder };
+  // A pause settles before the driver records the step, so for that moment the journal still reads
+  // open. Its own status says it already took an answer or expired, which is the settled refusal a
+  // later answer gets, not the plane's one-use conflict.
+  const status = await readCheckpointStatus(deps.kv, { endpoint: deps.endpoint, token });
+  if (status !== undefined && status.value.state !== "waiting") throw new CheckpointNotOpen(req.runId, req.stepKey, "settled");
+  return { runId: req.runId, token, holder: spec.holder };
 }
 
 /** Reads long enough to tell a mint in flight from a torn store, and no longer.
@@ -174,16 +183,31 @@ async function readSpecPastTheMintWindow(
   return undefined;
 }
 
+/** An answer the run's revocation marker refuses before anything is filed (SPEC 14.8): the run was
+ *  revoked, or its marker could not be read. */
+export class RunAnswerBlocked extends EpEnvelopeError {
+  constructor(message: string) {
+    super("failed-precondition", `${message}; no answer was filed (SPEC 14.8)`, undefined, "not-executed");
+    this.name = "RunAnswerBlocked";
+  }
+}
+
 /**
  * The WRITE half of an answer: file the answer record for the located pause, then present its
  * token as the arming holder. Every write is keyed by `open.token`, so a credential minted for this
- * half is pinned to the one pause being answered (SPEC 14.3).
+ * half is pinned to the one pause being answered (SPEC 14.3). A revoked run's pause takes no
+ * answer: the marker is read leader-served before the record is filed, and that read orders the
+ * answer against the revocation. A marker that cannot be read refuses the answer too.
  */
 export async function answerOpenCheckpoint(
   deps: ResolveCheckpointDeps,
   req: { readonly open: OpenCheckpoint; readonly by: string; readonly value?: unknown; readonly artifact?: string; readonly now: number },
 ): Promise<ResolveCheckpointResult> {
-  const { token, holder } = req.open;
+  const { runId, token, holder } = req.open;
+  const revoked = await readRunRevocation(deps.jsm, deps.space, deps.endpoint, runId).catch((e: unknown) => {
+    throw new RunAnswerBlocked(`run ${runId}: its revocation marker could not be read (${e instanceof Error ? e.message : String(e)})`);
+  });
+  if (revoked !== undefined) throw new RunAnswerBlocked(`run ${runId} was revoked by ${revoked.by} (${revoked.reason}), so its open requests take no answer`);
   const answerId = checkpointAnswerId({
     token,
     by: req.by,
@@ -228,7 +252,18 @@ export async function locateAcceptedAnswer(
   req: { readonly runId: string; readonly stepKey: string; readonly takeoverId: string },
 ): Promise<AcceptedAnswer> {
   const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
-  const token = settledPauseToken(entries, req.runId, req.stepKey);
+  let token: string | undefined;
+  try {
+    token = settledPauseToken(entries, req.runId, req.stepKey);
+  } catch (e) {
+    // An accepted answer settles the pause before the driver records the step, so for that moment
+    // the journal still reads open. Telling the caller to answer would send them to a pause that
+    // already took an answer.
+    if (!(e instanceof CheckpointNotAmendable) || e.why !== "open") throw e;
+    const pending = stepPauseToken(entries.filter((x) => journalEntryKeyString(x) === req.stepKey));
+    const pause = pending === undefined ? undefined : await readCheckpointStatus(deps.kv, { endpoint: deps.endpoint, token: pending });
+    throw pause?.value.state === "resumed" ? new CheckpointNotAmendable(req.runId, req.stepKey, "unrecorded") : e;
+  }
   if (token === undefined) throw new CheckpointNotAmendable(req.runId, req.stepKey, "unanswered");
   const status = await readCheckpointStatus(deps.kv, { endpoint: deps.endpoint, token });
   const answerId = status?.value.state === "resumed" ? status.value.settledAnswerId : undefined;

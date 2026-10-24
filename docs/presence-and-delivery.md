@@ -30,7 +30,8 @@ observer actually hearing the bucket: if the whole watch has been silent past th
 window, the honest output is that the *view* is stale, not that every peer died in one TTL
 (real rosters do not do that). Offline peers stay in the roster for observability. An
 `activity` string rides along ("what I'm doing right now"), and a peer's **attention**
-preference is mirrored here too (below). Each instance writes *only its own* key; presence
+preference is mirrored here too (below). A connector writes a new status and its activity in one
+record, so a peer never reads the new activity beside the old status. Each instance writes *only its own* key; presence
 is where discovery lives (our equivalent of `.well-known`), not a place to describe others.
 The optional `condition` beside status relays a harness-reported cause such as `rate_limit`,
 `approval`, or `input`; missing means the harness reported none. A condition is cleared when a
@@ -76,7 +77,8 @@ on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.
 and `stale` means the watch has been silent past its liveness window. Both unsafe states carry
 `fresh: false`, so an older consumer degrades instead of treating a partial reconnect refill as a
 complete roster. `waitForPresenceSnapshot()` returns `snapshot` or `timeout`; a timeout is a bounded
-give-up, not proof that the snapshot completed.
+give-up, not proof that the snapshot completed. An observer that does not register completes its
+snapshot at once on a bucket with no keys, and its view is `current` with nobody present.
 
 A stale view under a live connection is not left to stand. The endpoint rebinds its presence watch
 from the bucket's current state once per liveness window and reports the rebind as a `warning`

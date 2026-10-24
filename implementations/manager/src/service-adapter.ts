@@ -1,13 +1,13 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { registry } from "@cotal-ai/core";
+import { registry, unansweredRequest } from "@cotal-ai/core";
 import {
   CommandFailure, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, armManagerShutdownIntent,
-  assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
+  assertManagerName, assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
   colorEnabled, commandIsCotalSupervisor, controllerAttemptBinding, cutController, localProcessPath, maintenanceAdmitsStackWork, publishServiceStopRequest,
   readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, removePidPair, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
-  clearAbandonedServiceStopRequest, disarmManagerShutdownIntent, managerShutdownIntentArmedBy,
+  clearAbandonedServiceStopRequest, connectUserControlOrThrow, credentialRefusalMessage, disarmManagerShutdownIntent, isCommandFailure, managerShutdownIntentArmedBy,
   releaseExitedServiceStopReservation, reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
-  stopReservationPath, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
+  stopReservationPath, userViewAuth, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
   type ServiceAdapterStopAbandonment, type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopRefusal, type ServiceAdapterStopResult,
   type ServicePreset,
 } from "@cotal-ai/workspace";
@@ -42,14 +42,24 @@ export function maintenanceAdmits(root: string, server: string, context: Service
 
 async function prepareStop(context: ServiceAdapterStopContext): Promise<ServiceAdapterStopPlan> {
   if (context.preserved && context.withAgents) throw new CommandFailure("refused", "USAGE_INVALID", "a preserved-exit stop retains agents; --with-agents cannot be combined with it");
-  const observation = await observeManagerService(context);
+  let observation: Awaited<ReturnType<typeof observeManagerService>>;
+  try { observation = await observeManagerService(context); }
+  catch (error) {
+    // A manager that does not answer cannot report its stop impact, so no stop is submitted. Its
+    // process is the operator's to end, and a stop run after that finds it gone.
+    if (!unansweredRequest(error)) throw error;
+    const pid = context.process.pid;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the manager process ${pid} is running but did not answer its endpoint (${(error as Error).message}); no stop was submitted`, { target: { space: context.space, instanceId: context.instanceId, pid }, remedy: `if it stays unresponsive, end that process with kill -KILL ${pid}; the same command then finds it gone and goes on` });
+  }
   if (!observation) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the exact native manager has no complete attributed startup observation; no stop was submitted");
   const registration = observation.registration;
   // An attributed status names the binding the manager holds and must equal the request. An open
   // space's local receipt keeps its older shape, so the request is digested and the native child
   // recomputes the scope against its own binding at acceptance.
   const held = observation.stopImpact.preservation ?? context.preserved;
-  const scopeSha256 = context.preserved ? managerServicePreservedExitScope(observation, context.preserved, held) : managerServiceStopScope(observation, context.withAgents);
+  let scopeSha256: string;
+  try { scopeSha256 = context.preserved ? managerServicePreservedExitScope(observation, context.preserved, held) : managerServiceStopScope(observation, context.withAgents); }
+  catch (error) { throw await withAdminRegrant(context, error); }
   return {
     scopeSha256, observedAt: new Date().toISOString(), withAgents: context.withAgents,
     native: { endpoint: registration.endpoint, instanceId: registration.instanceId, epoch: registration.epoch, owner: registration.principal.owner, actor: registration.principal.actor, lifecycleUid: registration.principal.uid },
@@ -57,6 +67,22 @@ async function prepareStop(context: ServiceAdapterStopContext): Promise<ServiceA
     ...(observation.evidence ? { evidence: observation.evidence } : {}),
     ...(context.preserved ? { preserved: { attemptId: context.preserved.attemptId, inventorySha256: context.preserved.inventorySha256 } } : {}),
   };
+}
+
+/** On a user-auth space the manager shows its whole impact only to a caller whose grant holds
+ *  `admin`. When it answered with owner-filtered impact, this asks the auth plane for that scope; its
+ *  refusal names the whole-row re-grant built from the current ledger row, which becomes the remedy.
+ *  No other caller is tried, and when the grant already holds `admin` the refusal stays as it was. */
+async function withAdminRegrant(context: ServiceAdapterStopContext, error: unknown): Promise<unknown> {
+  const blockers = isCommandFailure(error) ? (error.native?.detail as { blockers?: unknown } | undefined)?.blockers : undefined;
+  if (!isCommandFailure(error) || !Array.isArray(blockers) || !blockers.includes("owner-filtered-visibility")) return error;
+  const selected = resolveNativeServiceTarget(String(context.options.root), context.space, context.options.server as string | undefined);
+  if (selected.mode !== "user") return error;
+  let regrant: string | undefined;
+  try { await userViewAuth(await connectUserControlOrThrow({ space: selected.space, server: selected.server }), "admin"); }
+  catch (refusal) { regrant = credentialRefusalMessage(refusal); }
+  if (regrant === undefined) return error;
+  return new CommandFailure(error.outcome, error.code, error.message, { target: error.target, native: error.native, remedy: `stopping the whole manager needs the admin scope on your grant; ${regrant}` });
 }
 
 /** The reservation is retained after any unconfirmed submission. Only a known refusal or both a
@@ -181,6 +207,7 @@ export const managerService: LocalProcess = {
       launch: { type: "string", minLength: 1, maxLength: 4096, description: "existing private resolved native launch spec for the selected space" },
       "launch-sha256": { type: "string", minLength: 64, maxLength: 64, description: "full SHA-256 of the exact resolved launch file; required with launch" },
       roster: { type: "string", minLength: 1, maxLength: 4096, description: "existing roster file whose agents the manager starts at each launch; a resumed manager takes none" },
+      name: { type: "string", minLength: 1, maxLength: 128, description: "manager name for presence and --on; recorded for this root, so later launches keep it" },
     } },
   },
   buildServiceLaunch(context) {
@@ -206,6 +233,7 @@ export const managerService: LocalProcess = {
       extra.push("--launch", context.options.launch, "--launch-sha256", context.options["launch-sha256"]);
     }
     if (context.options.roster !== undefined) extra.push("--roster", String(context.options.roster));
+    if (context.options.name !== undefined) extra.push("--name", assertManagerName(String(context.options.name)));
     // A killed child leaves its custody record, and the next child claims the slot create-only and
     // never reclaims. A record whose pid is dead is retired here, under the controller's definition
     // lock, after every refusal above; a live, foreign or unreadable one refused there.

@@ -34,7 +34,7 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Manager instance in the exchange response in 0.100.0
+## Manager instance in the exchange response after 0.100.2
 
 `POST /exchange` no longer answers a `manager-caller` exchange with `managerInstanceId`. Both the
 human and the agent exchange answer with `token`, `owner` and `exp`. The instance a bearer may
@@ -47,6 +47,59 @@ Code of your own that reads `managerInstanceId` from an exchange response reads 
 ### Before the upgrade
 
 Read the instance from the bearer's `act.managerInstanceId` claim.
+
+## Missing $SYS credentials after 0.100.2
+
+`cotal doctor auth` reports a missing `membership-observer` or `connection-evictor` credential as a
+finding, exit 5, once the root holds the space's trust. Before, it noted that pair as not
+provisioned and exited 0. A space started before the pair existed, or one whose files were
+removed, therefore has a finding after the upgrade. Without the pair, the membership feed and live
+connection eviction do not run, as before the upgrade. A plain `cotal up` does not mint them,
+because it reuses the existing trust record. Run `cotal down`, then `cotal up --rotate-sys`. The
+rotation makes earlier full backups unrestorable, so take a new `cotal backup` after it.
+
+## Minted credential lifetime after 0.100.2
+
+`cotal auth mint` gives a fixed-profile credential a 24-hour lifetime when no lifetime flag names
+one. Before, such a credential had no expiry claim. Credentials minted before the upgrade keep the
+lifetime they were minted with, and endpoint callers (`auth mint --endpoint`) are unchanged.
+
+After the upgrade, a process that reads a newly minted file for longer than a day stops
+authenticating when the file expires. A dashboard given `--creds` is one. Mint such a file one of two
+ways:
+
+- with `--expires-in <seconds>` or `--expires-at <unix-seconds>`, and mint a replacement before it
+  expires;
+- with `--no-expiry`, which issues the unbounded credential the old default did and records the
+  request beside the file, so `cotal doctor auth` reports it as a warning rather than a finding.
+
+## Spawn in this terminal after 0.100.0
+
+A bare `cotal spawn [<persona>]` runs the application in this terminal again, on every kind of mesh,
+as it did before 0.91.0. No manager is asked, so several live managers no longer stop it. A manager
+runs a launch only with `--detach` (`-d`), which returns once the agent joins, or with
+`--on <instance>`, which attaches to the agent on that manager.
+
+- A script or alias that relied on a bare spawn attaching to a manager's seat adds `--on <instance>`,
+  or `-d` and then `cotal attach <name>`.
+- `--foreground` keeps working and changes nothing.
+- `--restarts`, `--creds`, `--json` and `--plain` belong to a manager's launch, so without `-d` or
+  `--on` they are refused with a Next that adds `-d`.
+- On a user-auth mesh that runs elsewhere, a spawn in this terminal provisions its agent through the
+  agent-provisioning endpoint the mesh advertises. A mesh that advertises none refuses it and names
+  `-d` among the remedies.
+
+## Space selection inside a project folder after 0.100.2
+
+A command run without `--space` inside a project folder whose root has one registered or prepared
+space now targets that space, even when another space is selected. The note under its `Mesh:`
+heading says the selection applies outside the folder. Everywhere else the selection is the target,
+as before. Nothing on a running mesh changes.
+
+- A script that runs in one space's folder and means the selected space names it with `--space`.
+- `SELECTION_NOT_FOLDER_SPACE` is reported only in a folder whose root has several spaces, none of
+  them the selection.
+- `cotal up` says when it selects the space it started.
 
 ## Endpoint caller files after 0.99.0
 
@@ -420,7 +473,8 @@ nothing. A launchd job gets no warning. `cotal up --detach` keeps its meaning. T
 no mode and no unit, and no unit or script is rewritten or restarted.
 
 `cotal spawn <name>` now launches through a manager and attaches. A container or script that ran
-an agent directly with `spawn <name>` adds `--foreground`.
+an agent directly with `spawn <name>` adds `--foreground`. After 0.100.0 a bare spawn runs in the
+terminal again; see [Spawn in this terminal after 0.100.0](#spawn-in-this-terminal-after-01000).
 
 ### Deprecated daemon entries
 

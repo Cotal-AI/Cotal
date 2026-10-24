@@ -1,11 +1,16 @@
 import { readFileSync, statSync, type Stats } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
+  ROOT,
   assertLifecycleToken,
   credsProblem,
+  inspectCredHealth,
   instancePinnedInstrumentCapabilities,
   isReachable,
+  isStreamNotFound,
+  jwtFromCreds,
   managerCallerBinding,
   mintCreds,
   mintLifecycleUid,
@@ -17,21 +22,26 @@ import {
   type IssuedCaller,
   probeConnect,
   registry,
+  token,
   type AuthProvider,
   type EpCaller,
   type MintOpts,
+  type ProbeResult,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { brokerAddressForDisplay } from "./broker-display.js";
 import { c } from "./colors.js";
 import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
-import { findMesh, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags } from "./mesh-target.js";
+import { findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
+import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type RefusalCode } from "./output.js";
-import { credentialFileExposure } from "./protected-records.js";
+import { credentialFileExposure, localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
+import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
+import { stoppedLoopbackListener } from "./pid.js";
 import type { MeshTargetErrorCode } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
 
@@ -353,7 +363,10 @@ export class ConnectRefusal extends Error {
 /** A refusal over a workspace failure: the one-line sentence for a terminal, its parts for a
  *  structured command. */
 function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
-  const target = e.kind === "target" ? spaceRootTarget(e.error.details) : e.kind === "preflight" ? spaceRootTarget(e.target) : undefined;
+  // A folder whose records name no space is probed under the default space, and its refusal names
+  // the folder, so its target names only the folder too.
+  const target = e.kind === "target" ? spaceRootTarget(e.error.details)
+    : e.kind === "preflight" ? spaceRootTarget(e.failure === "unreachable" && e.target.namesNoSpace ? { root: e.target.root } : e.target) : undefined;
   return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e), ...(target ? { target } : {}) });
 }
 
@@ -393,6 +406,7 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
   switch (failure) {
     case "unreachable":
     case "slow-link":
+    case "broker-stopped":
       return "TARGET_UNAVAILABLE";
     case "registry-open-now-auth":
     case "open-wants-auth":
@@ -484,19 +498,40 @@ export async function mintControlInstrument(
   return { creds, epCaller: { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller };
 }
 
+/** The space {@link connectOrThrow} connects `flags` to, read from local records only, with no probe
+ *  and no dial. Undefined when those records name no single space, which connecting then reports. A
+ *  command reads it before it connects, so a refusal of its own input still names the mesh. */
+export function connectSpace(flags: ConnectFlags): string | undefined {
+  if (flags.creds) return flags.space ?? DEFAULT_SPACE;
+  if (flags.server && flags.space && !findMesh(flags.space)) return flags.space;
+  try { return resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }).space; }
+  catch { return undefined; }
+}
+
 /**
  * Resolve where a mesh-touching command connects + with what creds, THROWING {@link ConnectRefusal}
  * on every refusal instead of ending the process. {@link connectOrExit} is this plus the printing
  * and the exit; a caller that must survive a refusal (a reconnect loop) calls this one.
  *  • Explicit `--creds` → a RAW connection to `--server`, or to the address its space is registered
- *    at, except when the target is a known per-user-auth mesh. Those refuse static creds fail-closed
+ *    at: `--space`, else the selected space or this folder's ({@link credsSpace}), else the default.
+ *    Except when the target is a known per-user-auth mesh. Those refuse static creds fail-closed
  *    because old local creds remain broker-valid but are the wrong identity plane after the flip.
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune unless readOnly is requested.
  */
 export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: ConnectOpts = {}): Promise<Connection> {
   if (flags.creds) {
-    const space = flags.space ?? DEFAULT_SPACE;
+    let resolved: { space: string; selected: boolean } | undefined;
+    if (flags.space === undefined && flags.server === undefined) {
+      try { resolved = credsSpace(process.cwd()); }
+      catch (e) {
+        if (isWorkspaceTargetError(e)) throw workspaceRefusal({ kind: "target", error: e }, { cause: e, code: targetErrorCode(e.code) });
+        throw e;
+      }
+    }
+    const space = flags.space ?? resolved?.space ?? DEFAULT_SPACE;
+    // A space the caller named, selected or is in is named in a refusal; the default is not.
+    const named = flags.space !== undefined || resolved !== undefined;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
     // as "any recorded server for this space", so a user mesh on a NON-default port is still
     // recognized when the caller omits --server. Defaulting the server BEFORE the guard would make
@@ -509,9 +544,9 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     const server = flags.server ?? recorded?.server;
     if (server === undefined)
       throw new ConnectRefusal(
-        `✗ --creds needs --server <url> or a registered --space: ${flags.space === undefined ? "the default space" : "space"} "${space}" is not registered here, so nothing was dialed`,
+        `✗ --creds needs --server <url> or a registered --space: ${resolved ? (resolved.selected ? "the selected space" : "this folder's space") : flags.space === undefined ? "the default space" : "space"} "${space}" is not registered here, so nothing was dialed`,
         "  pass the broker this credential belongs to with --server <url>",
-        { code: "TARGET_NOT_FOUND" },
+        { code: "TARGET_NOT_FOUND", ...(named ? { target: { space } } : {}) },
       );
     const creds = readCredsFile(flags.creds);
     // A broker taken from the space's record keeps its recorded TLS requirement. With `--server` the
@@ -519,7 +554,28 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // real (documented) gap rather than a safe default - a `--creds` connect to a TLS broker still
     // upgrades, but is downgradeable.
     const tls = recorded?.tlsRequired === true;
-    await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
+    try {
+      await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
+    } catch (e) {
+      // A rejected credential whose own permissions name another space is reported with that space.
+      const owner = isConnectRefusal(e) && e.code === "PERMISSION_DENIED" ? spaceInCreds(creds) : undefined;
+      if (owner === undefined) throw e;
+      const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
+      // A `--server` other than the one the credential's space is registered at sends it to another
+      // broker, so the step back drops `--server` rather than keeping it.
+      const ownerMesh = findMesh(owner);
+      const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
+      if (owner === space) {
+        if (elsewhere === undefined) throw e;
+        const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
+        const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
+        throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path: flags.creds, server: at } });
+      }
+      const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
+      const use = elsewhere !== undefined ? `use it with --space ${owner} and without --server, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
+      const remedy = `${use}${named ? `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space} --out <file>\`` : ""}`;
+      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path: flags.creds } });
+    }
     return { server, space, tls, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
@@ -614,6 +670,8 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
       // `--on <instanceId>` reaches the mint as `opts.instanceId`. Only the two control-caller
       // tiers take it: `deployer` mints through a different arm that does not consume endpoint
       // capabilities, so pinning it would silently do nothing.
+      // The issuer dial waits out its own budget on a stopped broker, so the preflight names it first.
+      if (stoppedLoopbackListener(target.server) !== undefined) await preflightOrThrow(target, undefined, opts.readOnly === true);
       try {
         ({ creds, epCaller } = await mintControlInstrument({ server: target.server, space: target.space, tlsRequired: target.tlsRequired, auth: target.auth },
           role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId));
@@ -623,6 +681,8 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
         // stale entry as before), not as the raw transport error the dial throws. Anything the
         // preflight does not explain is the issuer's own fault and surfaces as such.
         await preflightOrThrow(target, undefined, opts.readOnly === true);
+        // The issuer reads the space's issuance buckets, which a space delete removes.
+        if (isStreamNotFound(e) && spaceStreamsExpected(target.space, target.mode)) throw spaceStreamsAbsent(target.space, localStackRoot(target.space));
         throw e;
       }
     } else {
@@ -633,6 +693,9 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
   // classify it as "open now wants auth" and prune or attach as open. Refuse here,
   // naming the recorded mode.
   if (target.mode === "auth" && !target.auth) {
+    // A project folder moved after its stack started there keeps its seed under the new path.
+    const moved = movedProject(target.space, target.root);
+    if (moved) throw new ConnectRefusal(`✗ ${moved.message} - ${moved.remedy}`, undefined, { code: "CONFLICT", parts: { message: moved.message, remedy: moved.remedy }, target: moved.target });
     throw new ConnectRefusal(
       `✗ mesh "${target.space}" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,
       undefined,
@@ -765,6 +828,15 @@ export function readCredsFile(path: string): string {
   try {
     stat = statSync(path);
     if (!stat.isFile()) throw refuse(`${path} is not a regular file`, "SCHEMA_INVALID", "pass the credential file itself");
+    // Another local account that can write a folder on its path can swap the file, so it is refused
+    // as auth mint refuses to write one there. POSIX only, as the file-mode warning below is.
+    if (localRecordAccess() === "posix") {
+      try { protectedLocalDirectory(dirname(resolve(path)), "its path"); }
+      catch (error) {
+        if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") throw refuse(`${path} cannot be used: ${error.message}`, "PERMISSION_DENIED", error.remedy ?? "move it to a folder only you can write");
+        throw error;
+      }
+    }
     text = readFileSync(path, "utf8");
   } catch (e) {
     if (isConnectRefusal(e)) throw e;
@@ -781,6 +853,21 @@ export function readCredsFile(path: string): string {
   return text;
 }
 
+/** The one space a credential's own permissions name: the `<space>` of every `cotal.<space>.…`
+ *  subject its user JWT allows or denies. Undefined when they name none, more than one or a
+ *  wildcard, or the JWT does not decode. This is what the file says, not which broker accepts it. */
+export function spaceInCreds(creds: string): string | undefined {
+  try {
+    const claims = JSON.parse(Buffer.from(jwtFromCreds(creds)?.split(".")[1] ?? "", "base64url").toString("utf8")) as { nats?: Record<string, { allow?: unknown; deny?: unknown } | undefined> };
+    const subjects = ["pub", "sub"].flatMap((kind) => [claims.nats?.[kind]?.allow, claims.nats?.[kind]?.deny].flatMap((list) => Array.isArray(list) ? list : []));
+    const spaces = new Set(subjects.filter((subject): subject is string => typeof subject === "string" && subject.startsWith(`${ROOT}.`)).map((subject) => subject.split(".")[1] ?? ""));
+    const [space] = spaces;
+    return spaces.size === 1 && space !== undefined && token(space) === space ? space : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** {@link readCredsFile} with the exiting disposition. */
 export function readCredsFileOrExit(path: string): string {
   try {
@@ -794,7 +881,9 @@ export function readCredsFileOrExit(path: string): string {
  *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
  *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
 export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
-  let probe = await probeConnect(server, auth);
+  // A credential past its own expiry is dead, and no endpoint presents it, but the broker still
+  // accepts it until its last second ends. So it is refused without a dial.
+  let probe: ProbeResult = auth.creds !== undefined && inspectCredHealth(auth.creds).state === "expired" ? { ok: false, reason: "stale-auth" } : await probeConnect(server, auth);
   // CONFIRM BEFORE CONDEMNING, same reason as the registry path's re-probe (preflight.ts:100-110):
   // the default budget is 1s, a real link can need more, and the raw door never got the second try —
   // #709. `timeout`/`unreachable` are both inconclusive misses; `auth-required`/`stale-auth` are
@@ -871,8 +960,8 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string, 
   // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
   const pruned = !readOnly && r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
-  const kind = r.kind === "unreachable" || r.kind === "slow-link" ? "transient" : "permanent";
-  throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned }, { kind, code: preflightCode(r.kind) });
+  const kind = r.kind === "unreachable" || r.kind === "slow-link" || r.kind === "broker-stopped" ? "transient" : "permanent";
+  throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned, ...(r.pid === undefined ? {} : { pid: r.pid }) }, { kind, code: preflightCode(r.kind) });
 }
 
 /** {@link preflightOrThrow} with the exiting disposition. */

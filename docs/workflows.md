@@ -159,7 +159,9 @@ dispatch it again: it opens a hold, a checkpoint under a token derived from the 
 request id, whose prompt names that id. Answer it with
 `cotal run answer <run> <step-key> --value <json>`, and the value becomes the step's result. An
 expired hold fails the step with the catchable L4027. Only `ask` runs inside `once`, so wrap just
-the step that writes: a host restart while it is in flight costs a settle.
+the step that writes: a host restart while it is in flight costs a settle. `run validate` refuses
+another effect in the body, or in a function the body calls by name, with L2033, and the run
+refuses one it reaches any other way with L4028.
 
 ```js
 const publisher = await spawn("publisher")
@@ -194,6 +196,18 @@ the interpreter. Version-2 history is inspected inside a locked-down worker with
 journal, without a live effect handler or durable store. Inspection stops before the fork's cut
 step or any effect that needs new work. Program catch and finally blocks cannot extend the cut.
 The recorded pins are preserved.
+
+**Restore** brings a run back from a full backup (`cotal backup create`) of a static-auth or open
+mesh, which holds each run's journal, records and admission. A run that waited at a checkpoint or a
+timer when the backup was made is back after a full restore, and the manager takes it over as after
+a restart. What the run did after the backup is not in its record. A user-mode backup, and one made
+before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)). After a
+restore from one of them, or a registry-only restore, the store the restore set aside holds the only
+copy of the runs, and `cotal backup cleanup-fallback` deletes it only with `--discard-history`.
+After a full restore of a backup made before the space last ran, that store holds the only copy of
+what the runs did after the backup, under the same rule. The restore names each run it rolled back
+and each checkpoint answered after the backup that is open again, and that checkpoint accepts an
+answer again.
 
 ## From an agent session
 
@@ -246,27 +260,38 @@ The manager hosts runs. `cotal run start` hands the program to the manager of th
 it in its own process, and answers with the id once the run is recorded. The terminal is free the
 moment the id prints; the run continues on the manager through every pause, and a manager restart
 takes back every run it had recorded running, from the journal, under the next epoch. `resume`
-names a run the manager recorded and is refused while the manager is already driving it. `ps` and
+names a run the manager recorded and is refused while the manager is already driving it, and for
+a run recorded `completed` or `failed`, whose journal already holds its outcome. `ps` and
 `journal` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
 
 `journal` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
 accepted answer, it instead prints the answer value as JSON, who answered, the artifact when one was
 cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
-answer line.
+answer line. A settled `race` names on its line the branch it took. An answer the program never read
+is marked `not acted on`: its step was in a branch that lost a race, or its pause accepted it and
+was then cancelled, as a losing branch's pause is. `--json` carries the race's `winner` and, on each
+step of a losing branch, the `lostRace` it lost.
 
 A settled step is never answered twice, so a participant who changes their mind uses `amend`. It
 files a new answer beside the accepted one, naming the answer it supersedes, and `journal` prints
 each amendment under the step as an `amended` line, in the order the store committed them. The last
 line is the current position, whatever clock each amender's `at` came from. The pause stays settled
 and the run keeps the answer it acted on. A step that is still open, or that settled with no answer,
-refuses an amend. The manager records the amender from the credential, as for an answer, and a
+refuses an amend. So does a step whose answer was just accepted and is not in the run's journal
+yet, and that refusal says so. The manager records the amender from the credential, as for an answer, and a
 spawned seat may amend only an answer recorded under its own name.
+
+A program's `log(...)` lines are not journalled, so `journal` and `show` do not print them. A run
+the manager hosts writes each line to the manager's log as `run <run-id>: log <text>`, which
+`cotal service logs stack-manager --space <space>` reads. A run driven with `--local` prints them in
+that terminal, and `run simulate` lists them under `Log`. A resumed run replays its program, so it
+writes the lines before the resume point again.
 
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
-cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
+cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position
@@ -393,8 +418,11 @@ request can read the same marker and a current holder, then report its own obser
 from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
 admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
-takeover or manager restart continues the run. Revoking twice is not an error, and the first
-reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
+takeover or manager restart continues the run. An open checkpoint or `ask` stays listed under
+`Needs an answer`, but `run answer`, hosted or `--local`, refuses it with `LIFECYCLE_BLOCKED`
+naming the revoker and the reason, and files nothing, so the run stays parked at that pause. A
+marker that cannot be read refuses the answer the same way. Revoking twice is not an error, and
+the first reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
 
 `run ps`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a
@@ -564,7 +592,9 @@ retires the seat, and the next `turn` is the catchable L4002. The policy also co
 own death. On a static mesh, when the manager ends without stopping the seat (a crash, or a pty seat
 that ended with its manager), the next manager of the same instance restarts the seat the same way
 and counts that as one restart. A turn the dead manager had accepted for the seat is served to the
-restarted seat, so the interrupted turn runs again and finished turns do not. A seat whose budget
+restarted seat, so the interrupted turn runs again and finished turns do not. A turn an older
+manager accepted is not served again, because its record does not name the seat's owner, and it
+ends at its deadline as L4003. A seat whose budget
 is spent, or whose persona file or credential changed or expired while no manager ran, is retired instead. A policy this host cannot enforce
 (an unknown key, a user-mode seat, or a runtime that cannot respawn a name in place) is refused
 at the spawn rather than accepted and ignored. `events: false` is the workflow form of

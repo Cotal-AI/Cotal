@@ -10,7 +10,7 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
 import { readFileSync } from "node:fs";
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, writePrivateRecord, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -208,8 +208,12 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", localLogin: "absent", serverRevoked: null }, noOp: true }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp]] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }] }] }] }));
     return;
   }
-  try { await revokeIdpSession(idp, session.token); }
-  catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: "retry logout for this provider, or revoke the session at the provider" }); }
+  // `--local` forgets this machine's login without contacting the provider, whose session stays valid.
+  const local = args.values.local === true;
+  if (!local) {
+    try { await revokeIdpSession(idp, session.token); }
+    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run cotal logout --idp ${idp} --local` }); }
+  }
   let localCleared = false;
   let removed: string[] = [];
   try {
@@ -217,10 +221,12 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     localCleared = true;
     if (session.sub) removed = removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session.sub));
   } catch {
+    if (local && !localCleared) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the cached login could not be confirmed cleared; the provider was not contacted", { target: { idp } });
+    if (local) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the cached login was cleared, but discovered-space cleanup was not confirmed; the provider was not contacted", { target: { idp }, changed: [{ kind: "local-login", idp, cleared: true }] });
     throw new CommandFailure("partial", "OPERATION_PARTIAL", localCleared ? "the server session was revoked and the cached login cleared, but discovered-space cleanup was not confirmed" : "the server session was revoked, but local cleanup was not confirmed", { target: { idp }, changed: [{ kind: "idp-session", idp, revoked: true }, ...(localCleared ? [{ kind: "local-login", idp, cleared: true }] : [])] });
   }
-  writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", serverRevoked: true, localLoginCleared: true, removedRegistrations: removed } }, (result) => ({ sections: [
-    { title: "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }] }] },
+  writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", serverRevoked: !local, localLoginCleared: true, removedRegistrations: removed } }, (result) => ({ sections: [
+    { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
   ] }));
 }
@@ -303,13 +309,14 @@ async function evictRevokedPrincipal(space: string, principal: string, rootOverr
 }
 
 function publicActor(row: ActorRow & { kind?: string }) {
-  return { owner: row.owner, actor: row.actor, kind: row.kind, role: row.role ?? null, label: row.label ?? null, scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish };
+  return { owner: row.owner, actor: row.actor, kind: row.kind, role: row.role ?? null, label: row.label ?? null, parent: row.parent ?? null, scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish };
 }
 
 function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[]) {
   return { sections: [{ title: "Recorded actor grants", blocks: [
     { kind: "fields" as const, rows: [["Space", space], ["Source", "local authoritative actor ledger"]] as [string, string][] },
-    rows.length ? { kind: "table" as const, columns: [{ key: "principal", label: "Principal" }, { key: "kind", label: "Kind" }, { key: "scope", label: "Capabilities" }, { key: "read", label: "May read" }, { key: "post", label: "May post" }], rows: rows.map((row) => ({ principal: `${row.owner}.${row.actor}`, kind: row.kind ?? "not recorded", scope: row.scope.join(", ") || "none", read: row.allowSubscribe.join(", ") || "none", post: row.allowPublish.join(", ") || "none" })) } : { kind: "lines" as const, lines: ["No rows in this authoritative ledger snapshot."] },
+    // A re-grant replaces the whole row, so every field it must spell again is shown.
+    rows.length ? { kind: "table" as const, columns: [{ key: "principal", label: "Principal" }, { key: "kind", label: "Kind" }, { key: "scope", label: "Capabilities" }, { key: "read", label: "May read" }, { key: "post", label: "May post" }, { key: "role", label: "Role" }, { key: "label", label: "Label" }, { key: "parent", label: "Parent" }], rows: rows.map((row) => ({ principal: `${row.owner}.${row.actor}`, kind: row.kind ?? "not recorded", scope: row.scope.join(", ") || "none", read: row.allowSubscribe.join(", ") || "none", post: row.allowPublish.join(", ") || "none", role: row.role ?? "none", label: row.label ?? "none", parent: row.parent ?? "none" })) } : { kind: "lines" as const, lines: ["No rows in this authoritative ledger snapshot."] },
     { kind: "lines" as const, lines: [{ text: "Recorded grants are not proof of current connections, task progress or the authority of a cached account session.", tone: "hint" as const }] },
   ] }] };
 }
@@ -401,9 +408,13 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
         }
         return tx.grantInteractive(grantRow);
       });
-      const result = { kind: "actor-grant", grant: publicActor({ ...row, kind: "interactive" }), fullOptionExplicit: values.full === true };
+      // A re-grant writes the row again and rotates its lifecycle even when no field changed, so the
+      // receipt says what the earlier row held relative to this one.
+      const fields = (r: Pick<ActorRow, "scope" | "allowSubscribe" | "allowPublish" | "role" | "label" | "parent">) => JSON.stringify([r.scope, r.allowSubscribe, r.allowPublish, r.role ?? null, r.label ?? null, r.parent ?? null]);
+      const previous = current === undefined ? "none" as const : fields(current) === fields(row) ? "unchanged" as const : "replaced" as const;
+      const result = { kind: "actor-grant", grant: publicActor({ ...row, kind: "interactive" }), fullOptionExplicit: values.full === true, previous, previousLifecycleRetired: retired };
       writeResult(presentationOf(args.values), { command, target: { space, owner: row.owner, actor: row.actor }, result }, (data) => ({ sections: [
-        { title: "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
+        { title: data.previous === "unchanged" ? "Actor grant stored unchanged" : "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Earlier grant", data.previous === "none" ? "none" : data.previous === "unchanged" ? "the same fields" : "replaced"], ...(data.previousLifecycleRetired ? [["Earlier lifecycle", "retired, so a bearer issued under it no longer works"] as [string, string]] : []), ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Role", data.grant.role ?? "none"], ["Label", data.grant.label ?? "none"], ["Parent", data.grant.parent ?? "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
       ] }));
       return;
     }
@@ -578,20 +589,27 @@ const authCommands: Command[] = [
     name: "actor",
     group: "Identity",
     summary: "manage the space's actor ledger - grant/revoke which (user, actor) pairs may run agents",
-    usage: "actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l]",
+    usage: "cotal actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l] [--json|--plain]",
     positionals: "<grant <actor> | revoke <actor> | list>",
+    subcommands: [
+      { name: "grant", flagNames: ["space", "sub", "owner", "full", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent"], summary: "store an actor's whole ledger row: name all three ACL flags, or --full for the wide defaults", usage: "cotal actor grant <actor> (--sub <IdP subject> | --owner <u_…>) (--full | --scope a,b --allow-subscribe a,b --allow-publish a,b) [--role r] [--label l] [--parent <owner.actor>] [--space <s>]" },
+      { name: "revoke", flagNames: ["space", "sub", "owner"], summary: "revoke an actor's ledger row", usage: "cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--space <s>]" },
+      { name: "list", flagNames: ["space"], summary: "list the space's actor ledger", usage: "cotal actor list [--space <s>]" },
+    ],
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the resolved mesh, as for auth grants)" },
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
       { name: "full", type: "boolean", description: "grant: the full row - every ACL flag left off takes its wide default (all channels; scope spawn,role:default). Without it, grant needs --scope, --allow-subscribe and --allow-publish" },
-      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (with --full: default spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
+      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise and role:<r> (with --full: default spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (with --full: default > = all channels) - the user's envelope: their agents can never read beyond it" },
       { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (with --full: default > = all channels) - also the envelope for their agents' posting" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
       { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
       { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority - this does not attenuate)" },
+      jsonFlag, plainFlag,
     ],
+    outputs: ["json", "plain"],
     validate: validateActorArguments,
     run: (args) => {
       validateActorArguments(args);
@@ -603,7 +621,7 @@ const authCommands: Command[] = [
     name: "agent-bearer",
     group: "Manager",
     summary: "print one fresh agent bearer for a spawned user-mode agent (machine-facing; exec'd by agent endpoints)",
-    usage: "agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path>",
+    usage: "cotal agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path>",
     flags: [
       { name: "dir", type: "string", value: "<state-dir>", description: "local arm: the space's user-auth state dir" },
       { name: "exchange-url", type: "string", value: "<https://base>", description: "remote arm: pinned public exchange base URL (HTTPS required; no local capability)" },
@@ -622,14 +640,14 @@ const authCommands: Command[] = [
     name: "service-endpoint",
     group: "Identity",
     summary: "decide and inspect service endpoint registrations on this space's auth service - approve or refuse a proposal as its owner; bind a name as the operator",
-    usage: "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json|--plain]",
+    usage: "cotal service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json|--plain]",
     positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint>>",
     outputs: ["json", "plain"],
     flags: [
       jsonFlag, plainFlag, spaceFlag,
       { name: "owner", type: "string", value: "<u_…>", description: "name-bind: the derived owner token the name is bound to" },
       { name: "claim", type: "string", value: "<ref>", description: "name-bind: your claim reference for the namespace (the host verifies no domain control)" },
-      { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: the capability ceiling callers of this service may be granted (default: none)" },
+      { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: capabilities the proposed commands declare, such as read; callers may be granted every command that declares one (default: none)" },
       { name: "request-id", type: "string", value: "<hex32>", description: "approve, refuse, name-bind: send the request an earlier run here recorded under this id again, as it was; the host replays its answer" },
     ],
     run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
@@ -654,14 +672,15 @@ const authCommands: Command[] = [
     kind: "command",
     name: "logout",
     group: "Identity",
-    summary: "revoke the IdP session and clear the cached login --idp <auth base URL>",
-    usage: "cotal logout [--idp <auth base URL>] [--json|--plain]",
+    summary: "revoke the IdP session and clear the cached login --idp <auth base URL> [--local]",
+    usage: "cotal logout [--idp <auth base URL>] [--local] [--json|--plain]",
     prepareMeshTarget: false,
     outputs: ["json", "plain"],
     validate: (args) => validateAccountArguments(args, "logout"),
     flags: [
       jsonFlag, plainFlag,
       { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
+      { name: "local", type: "boolean", description: "forget this machine's cached login without contacting the provider; its session stays valid until it expires or is revoked there" },
     ],
     run: runLogout,
   },
@@ -669,16 +688,17 @@ const authCommands: Command[] = [
 
 const actorCommand = authCommands.find((command) => command.name === "actor");
 if (!actorCommand?.flags) throw new Error("the native actor command must declare its shared authority flags");
-const authFlagSources = [...actorCommand.flags.filter((flag) => flag.name !== "space"), ...signerExportFlags, ...credentialMintFlags, { name: "yes", short: "y", type: "boolean" as const, description: "retire: explicit intent never bypasses the native caller/serve-gate requirement" }, spaceFlag, jsonFlag, plainFlag];
+const authFlagSources = [...actorCommand.flags.filter((flag) => !["space", "json", "plain"].includes(flag.name)), ...signerExportFlags, ...credentialMintFlags, { name: "yes", short: "y", type: "boolean" as const, description: "revoke-credential: revoke without a prompt; retire: explicit intent never bypasses the native caller/serve-gate requirement" }, spaceFlag, jsonFlag, plainFlag];
 const authFlags = [...new Map(authFlagSources.map((flag) => [flag.name, flag])).values()] as readonly FlagSpec[];
 
 function validateAuthArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const [mode, actor, ...extra] = args.positionals;
   if (mode === "mint") { validateCredentialMintArguments({ ...args, positionals: args.positionals.slice(1) }); return; }
+  if (mode === "revoke-credential") { validateCredentialRevokeArguments({ ...args, positionals: args.positionals.slice(1) }); return; }
   if (mode === "retire") {
     if (!actor || extra.length || Object.keys(args.values).some((key) => !["space", "yes", "json", "plain", "no-color", "no-input"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "use auth retire <full-lifecycle-uid> [--space <space>] [--yes] without actor, credential or grant selectors");
-    try { assertLifecycleToken(actor); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "auth retire needs one exact native lifecycle UID; no alias or prefix was resolved"); }
+    try { assertLifecycleToken(actor); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "auth retire needs one exact native lifecycle UID, 26 to 32 lowercase letters and digits; no alias or prefix was resolved", { remedy: "`cotal ps --wide` shows each seat's lifecycle uid" }); }
     return;
   }
   if (mode === "redeem") {
@@ -711,8 +731,10 @@ function validateActorArguments(args: ParsedArgs): void {
 const GRANT_COMMON_FLAGS: readonly string[] = ["space", "json", "plain", "no-color", "no-input"];
 
 /** The usage of a grant read or change, `auth grants|grant|revoke` or the same verbs spelled
- *  `actor list|grant|revoke`. It runs before any target or authority is read, so a usage error is
- *  never reported as a capability refusal or a failure, and one refusal names every missing input.
+ *  `actor list|grant|revoke`. It runs before any authority is read, so a usage error is never
+ *  reported as a capability refusal or a failure, and one refusal names every missing input. A grant
+ *  or revoke on a space recorded as static or open refuses `UNSUPPORTED` before its inputs are
+ *  checked, since no subject or ACL could make it apply.
  *  A grant is an upsert of the WHOLE row, so every field must be chosen: either all three ACL flags
  *  are named, or `--full` opts in to the wide default for the ones left off. Omission alone never
  *  means "everything": a dropped flag on a narrow reader grant would otherwise mint a space-wide row
@@ -725,6 +747,10 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   const allowed = [...GRANT_COMMON_FLAGS, ...(mode === list ? [] : ["sub", "owner"]), ...(mode === "grant" ? ["scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full"] : [])];
   if (Object.keys(flags).some((key) => !allowed.includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", `a flag does not belong to this ${command} action`);
   if (mode === list) return;
+  // A static or open space has no ledger on any machine, so it refuses before this asks for a subject
+  // or ACL it could never use.
+  const ledgerless = ledgerlessTarget(flags as { space?: string });
+  if (ledgerless) throw noLedger(ledgerless, mode === "grant" ? "no inert grant was written" : "nothing was revoked");
   const values = flags as { owner?: string; sub?: string; role?: string; parent?: string; scope?: string; full?: boolean; "allow-subscribe"?: string; "allow-publish"?: string };
   const problems: string[] = [];
   const omitted = mode === "grant" && !values.full ? (["scope", "allow-subscribe", "allow-publish"] as const).filter((flag) => values[flag] === undefined) : [];
@@ -736,18 +762,45 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
     throw new CommandFailure("refused", "USAGE_INVALID", `refusing to ${mode} "${actor}" ${problems.join("; and ")}`, {
       remedy: mode === "grant" ? `say which grant you mean: ${grantForms(command)}` : `cotal ${command} revoke <actor> --sub <IdP subject>|--owner <u_…>`,
     });
-  try {
-    assertValidOwnerToken(actor!);
-    if (values.owner !== undefined) assertDerivedOwnerToken(values.owner);
-    if (values.role !== undefined) assertValidRole(values.role);
-    if (values.parent !== undefined) {
-      const parts = values.parent.split(".");
-      if (parts.length !== 2) throw new Error();
-      assertDerivedOwnerToken(parts[0]!); assertValidOwnerToken(parts[1]!);
-    }
-    for (const channel of [...csv(values["allow-subscribe"], []), ...csv(values["allow-publish"], [])]) assertValidChannel(channel);
-    if (csv(values.scope, []).some((scope) => !/^[A-Za-z0-9_:-]+$/.test(scope))) throw new Error();
-  } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid actor, owner, parent, role, scope or channel-pattern input; no grant was changed"); }
+  // Each input that does not hold is named with its field and reason, all in one refusal.
+  const invalid: string[] = [];
+  const check = (field: string, test: () => unknown) => {
+    try { test(); } catch (error) { invalid.push(`${field}: ${(error as Error).message.replace(/\.$/, "")}`); }
+  };
+  check("the actor", () => assertValidOwnerToken(actor!));
+  if (values.owner !== undefined) check("--owner", () => assertDerivedOwnerToken(values.owner!));
+  if (values.role !== undefined) check("--role", () => assertValidRole(values.role!));
+  if (values.parent !== undefined) check("--parent", () => {
+    const parts = values.parent!.split(".");
+    if (parts.length !== 2) throw new Error(`"${values.parent}" is not <owner>.<actor>`);
+    assertDerivedOwnerToken(parts[0]!); assertValidOwnerToken(parts[1]!);
+  });
+  for (const flag of ["allow-subscribe", "allow-publish"] as const)
+    for (const channel of csv(values[flag], [])) check(`--${flag}`, () => assertValidChannel(channel));
+  const unknown = csv(values.scope, []).filter((scope) => !isGrantCapability(scope));
+  if (unknown.length) invalid.push(`--scope: ${unknown.length === 1 ? "an unknown capability" : "unknown capabilities"} ${unknown.map((scope) => JSON.stringify(scope)).join(", ")}; the capabilities are ${GRANT_CAPABILITIES.join(", ")} and role:<role>`);
+  if (invalid.length)
+    throw new CommandFailure("refused", "USAGE_INVALID", `refusing to ${mode} "${actor}" with invalid input: ${invalid.join("; and ")}; no grant was changed`, {
+      remedy: mode === "grant" ? `say which grant you mean: ${grantForms(command)}` : `cotal ${command} revoke <actor> --sub <IdP subject>|--owner <u_…>`,
+    });
+}
+
+/** The ledger capabilities a grant's `--scope` may name, besides `role:<role>`: what the auth
+ *  service, the manager and the views check a row's scope for. */
+const GRANT_CAPABILITIES = ["admin", "run", "spawn", "supervise"] as const;
+
+function isGrantCapability(scope: string): boolean {
+  if ((GRANT_CAPABILITIES as readonly string[]).includes(scope)) return true;
+  if (!scope.startsWith("role:")) return false;
+  try { assertValidRole(scope.slice("role:".length)); return true; } catch { return false; }
+}
+
+/** The target when it resolves to a static or open space, which holds no actor ledger. A target that
+ *  does not resolve is left to the run, which resolves it again and names its next step. */
+function ledgerlessTarget(values: { space?: string }): AuthTarget | undefined {
+  let target: AuthTarget;
+  try { target = localAuthTarget(values); } catch { return undefined; }
+  return target.mode === "auth" || target.mode === "open" ? target : undefined;
 }
 
 /** The root and space a local auth command reads, and the space's auth mode when it is recorded or
@@ -770,17 +823,18 @@ function localAuthTarget(values: { space?: string }): AuthTarget {
 async function authGroup(args: ParsedArgs): Promise<void> {
   validateAuthArguments(args);
   const mode = args.positionals[0];
-  if (mode === "mint") {
-    if (!registry.has("credential-action", "mint")) throw new CommandFailure("refused", "UNSUPPORTED", "this composition has no registered native credential mint action; no other implementation was substituted");
-    const action = registry.resolve<CredentialAction>("credential-action", "mint");
+  if (mode === "mint" || mode === "revoke-credential") {
+    if (!registry.has("credential-action", mode)) throw new CommandFailure("refused", "UNSUPPORTED", `this composition has no registered native credential ${mode} action; no other implementation was substituted`);
+    const action = registry.resolve<CredentialAction>("credential-action", mode);
     const request = { ...args, positionals: args.positionals.slice(1) };
     action.validate(request); return action.run(request);
   }
   if (mode === "retire") {
     const target = localAuthTarget(args.values as { space?: string });
-    throw new CommandFailure("refused", "UNSUPPORTED", "registered auth retirement requires the caller's own current serve identity and gate; this standalone CLI has no supported retirement instrument, so no manager identity, signer-selected alias or loopback host door was substituted", {
+    // Revoking the one credential keeps the store; rotating the space identity is the wider lever.
+    throw new CommandFailure("refused", "UNSUPPORTED", "this CLI cannot retire a lifecycle: the registered auth endpoint accepts retirement only from the caller's own current serve identity and gate, so no request was sent", {
       target: { space: target.space, lifecycleUid: args.positionals[1] },
-      remedy: "inspect the registered auth endpoint's contract and restore its supported caller/serve-gate context; --yes is not an authority grant and no retirement request was sent",
+      remedy: `to stop one minted credential and keep the space's store: cotal down, then cotal auth revoke-credential <its creds file or public key> --yes, then cotal up. To stop every credential the space issued, rotate its identity: cotal down, then cotal reset space ${target.space} (or cotal clean all --force from the root when down left no registration), then cotal up. That reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}; cotal reset space ${target.space} --dry-run shows them first`,
     });
   }
   if (mode === "redeem") {
@@ -848,18 +902,19 @@ async function authGroup(args: ParsedArgs): Promise<void> {
 
 const authCommand: Command = {
   kind: "command", name: "auth", group: "Identity",
-  positionals: "[grants | grant <actor> | revoke <actor> | signer | mint <name> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>]",
+  positionals: "[grants | grant <actor> | revoke <actor> | signer | mint <name> | revoke-credential <key | file> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>]",
   summary: "inspect account metadata, manage actor grants and export a protected account signer",
-  usage: "cotal auth [grants | grant <actor> | revoke <actor> | signer --out <private-file> | mint <name> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>] [--space <s>] [--json|--plain]",
+  usage: "cotal auth [grants | grant <actor> | revoke <actor> | signer --out <private-file> | mint <name> | revoke-credential <key | file> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>] [--space <s>] [--json|--plain]",
   flagNames: ["space", "json", "plain"],
   flags: authFlags, outputs: ["json", "plain"], reads: true, prepareMeshTarget: false,
   subcommands: ([
     { name: "mint", flagNames: credentialMintFlags.map((flag) => flag.name), summary: "write a fixed-profile or supported endpoint caller credential privately", usage: "cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] | <name> --endpoint <class> --out <private-file> [--channels <a,b>]", prepareMeshTarget: false },
+    { name: "revoke-credential", flagNames: ["space", "yes", "json", "plain"], summary: "stop one static credential by its public key or creds file on a stopped stack; the broker refuses it from the next up", usage: "cotal auth revoke-credential <public-key | creds-file> [--space <space>] [--yes]", prepareMeshTarget: false },
     { name: "handle", flagNames: ["space", "json", "plain"], summary: "inspect protected claims or static-registry signatures without conferring authority", usage: "cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false, subcommands: [{ name: "inspect", flagNames: ["space", "json", "plain"], summary: "offline metadata; --space checks native static signer/revocation records", usage: "cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false, outputs: ["json", "plain"] }] },
-    { name: "retire", flagNames: ["space", "yes", "json", "plain"], summary: "retire one exact lifecycle only through a supported registered auth caller", usage: "cotal auth retire <full-lifecycle-uid> [--space <space>] [--yes]", prepareMeshTarget: false },
+    { name: "retire", flagNames: ["space", "yes", "json", "plain"], summary: "not available from this CLI; revoke-credential stops one minted credential, and rotating the space identity with reset space stops all of them and removes its store", usage: "cotal auth retire <full-lifecycle-uid> [--space <space>] [--yes]", prepareMeshTarget: false },
     { name: "redeem", flagNames: ["space", "json", "plain"], summary: "conferring-handle redemption requires a supported native auth path", usage: "cotal auth redeem <private-handle-file> [--space <space>]", prepareMeshTarget: false },
     { name: "signer", flagNames: ["space", "out", "force", "json", "plain"], summary: "export existing account-signing material to a protected private file", usage: "cotal auth signer --out <private-file> [--force]", prepareMeshTarget: false },
-    { name: "grants", flagNames: ["space", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", reads: true, prepareMeshTarget: false },
+    { name: "grants", flagNames: ["space", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", usage: "cotal auth grants [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false },
     { name: "grant", flagNames: ["space", "sub", "owner", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full", "json", "plain"], summary: "store a deliberate operator grant through the existing authority path", usage: "cotal auth grant <actor>", prepareMeshTarget: false },
     { name: "revoke", flagNames: ["space", "sub", "owner", "json", "plain"], summary: "retire and revoke an interactive actor grant under its existing authority", usage: "cotal auth revoke <actor>", prepareMeshTarget: false },
   ] as const).map((sub) => ({ ...sub, outputs: ["json", "plain"] as const })),

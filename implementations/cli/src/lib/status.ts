@@ -1,7 +1,7 @@
 import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
 import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
-import { resolveNatsServer } from "./nats-bin.js";
+import { findNatsServer, natsServerProblem } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
 import { serviceInstanceStore, serviceInstances } from "./service-instances.js";
 import { cliVersion } from "./version.js";
@@ -74,6 +74,10 @@ export function webInstalled(): boolean {
 
 export interface MachineStatus {
   nats: "path" | "bundled" | "missing";
+  /** The nats-server a broker start would run and the version it reports, or null when there is none. */
+  natsServer: { path: string; version: string | null } | null;
+  /** Why a broker start refuses that nats-server, or null. */
+  natsProblem: string | null;
 }
 
 /** One installed connector's harness readiness: the executables it declares (`requires`), the ones
@@ -88,13 +92,12 @@ export interface HarnessStatus {
 
 /** Machine-level readiness: the once-per-machine setup pieces. */
 export async function machineStatus(): Promise<MachineStatus> {
-  let nats: MachineStatus["nats"] = "missing";
   try {
-    nats = (await resolveNatsServer()).source;
+    const server = await findNatsServer();
+    return { nats: server.source, natsServer: { path: server.path, version: server.version }, natsProblem: natsServerProblem(server) };
   } catch {
-    nats = "missing";
+    return { nats: "missing", natsServer: null, natsProblem: null };
   }
-  return { nats };
 }
 
 /** Every connector this machine can launch, read off each connector's own `requires` rather than a list

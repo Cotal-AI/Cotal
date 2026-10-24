@@ -21,8 +21,13 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
+  assertValidChannel,
   BASELINE_LIFECYCLE_ENDPOINT,
+  chatStream,
   EpEnvelopeError,
+  isStreamNotFound,
+  hasDuplicateNames,
+  assertIdToken,
   assertLifecycleToken,
   LANG_PROBLEM_DETAIL_KIND,
   dialerFor,
@@ -51,6 +56,7 @@ import {
   runDriverCaller,
   RUN_LAUNCH_DEADLINE_MS,
   standaloneConnectOpts,
+  oneLine,
   unansweredRail,
   unansweredRequest,
   type EpError,
@@ -63,21 +69,46 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import {
+  CommandFailure,
+  commandFailureReport,
+  failureEnvelope,
+  presentationOf,
+  recordOperationSpace,
+  renderReport,
+  terminalWidth,
+  writeEnvelope,
+  connectOrExit,
+  controlCaller,
+  endpointAuth,
+  resolveControlTarget,
+  resolveSeatControlTarget,
+  type ConnectOpts,
+  type Connection,
+  type ControlAuth,
+  type ControlTarget,
+  type RefusalCode,
+  localStackRoot,
+  spaceStreamsAbsent,
+  spaceStreamsExpected,
+  connectOrThrow,
+  isConnectRefusal,
+} from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
-import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
+import { openRequestKeys, printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
 import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
+import { logLineText } from "./log-line.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, RunAnswerBlocked } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--limit <n>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -107,6 +138,7 @@ interface RunValues {
   /** `ps` and `journal` only: one JSON object per row per line on stdout. */
   json?: boolean;
   page?: boolean;
+  /** `ps --page`: the page's row limit. `journal`: how many of the last journal rows the text view prints. */
   limit?: string;
   cursor?: string;
   plain?: boolean;
@@ -132,7 +164,7 @@ interface Planes {
  *  it drives; a read or an answer rides a one-shot `run-operator` credential for that call. An
  *  open mesh connects bare either way. */
 async function openPlanes(values: RunValues, role: "run-driver" | "run-operator", mint: NonNullable<ConnectOpts["mint"]>): Promise<Planes> {
-  const conn = await connectOrExit(values, role, { mint });
+  const conn = await connectOrThrow(values, role, { mint });
   const nc = await dialerFor(conn.server)({
     servers: conn.server,
     ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }),
@@ -320,7 +352,7 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     process.exit(1);
   }
   const endpoint = values.endpoint ?? "manager";
-  const conn = await connectOrExit(values, "run-admitter", { mint: { runAdmitter: { endpoint, runId } } });
+  const conn = await connectOrThrow(values, "run-admitter", { mint: { runAdmitter: { endpoint, runId } } });
   refuseSingleCredential(conn);
   if (conn.auth === undefined) {
     console.error("run revoke: an open mesh keeps no admission store, so there is nothing to revoke there");
@@ -410,6 +442,7 @@ async function drive(
       handler,
       ...(values.file !== undefined ? { file: values.file } : {}),
       ...(planes.resultBytes !== undefined ? { resultBytes: planes.resultBytes } : {}),
+      onLog: (line: { readonly scope: string; readonly values: readonly unknown[] }) => console.log(`run ${runId}: log ${logLineText(line)}`),
     };
     if (a.mode === "new") console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
     const out = a.mode === "new" ? await startRun(planes.js, planes.jsm, req) : await driveRun(planes.js, planes.jsm, req);
@@ -419,12 +452,17 @@ async function drive(
   }
 }
 
+/** The endpoints a listing's runs are recorded under, each once. */
+const recordedUnder = (rows: readonly RunListRow[]): string[] => [...new Set(rows.map((row) => row.endpoint))].sort();
+
 async function ps(values: RunValues, planes: Planes): Promise<void> {
   // The same rows the manager answers `run-ps` with, read under this call's operator credential:
   // the record's state beside its revocation marker (SPEC 14.8), so `--local` and hosted agree
   // row for row, `--json` included.
   const rows = await runHost.list(planes, values.endpoint !== undefined ? { endpoint: values.endpoint } : {});
-  printRunList(planes.space, rows, values);
+  // An endpoint no run lives under is named, with the endpoints that hold runs.
+  const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await runHost.list(planes, {})) } : undefined;
+  printRunList(planes.space, rows, values, unmatched);
 }
 
 async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
@@ -466,8 +504,11 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
         ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
         now: Date.now(),
       },
-    );
-    console.log(JSON.stringify(result, null, 2));
+    ).catch((e: unknown) => {
+      if (e instanceof RunAnswerBlocked) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", e.message, { target: { space: writer.space, endpoint, run: runId }, native: { code: e.code } });
+      throw e;
+    });
+    runReceipt("answer", reader.space, result, values, runId, { step: stepKey, ...(values.value !== undefined ? { value: parsedValue } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
   } finally {
     await writer.close();
   }
@@ -500,7 +541,7 @@ async function amend(values: RunValues, reader: Planes, runId: string | undefine
         now: Date.now(),
       },
     );
-    console.log(JSON.stringify(result, null, 2));
+    runReceipt("amend", reader.space, result, values, runId, { step: stepKey, ...(values.value !== undefined ? { value: parsedValue } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
   } finally {
     await writer.close();
   }
@@ -548,17 +589,26 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   }
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
-  const report = await migrateRun({
-    endpoint,
-    runId,
-    source,
-    file: values.file,
-    entries: replay.records.flatMap((r) => (r.record.kind === "step" ? [r.record.entry as JournalEntry] : [])),
-    pins: record.spec.value.pins as RunPins,
-    kv: planes.kv,
-    actor: "cotal run migrate",
-    now: () => Date.now(),
-  });
+  let report: MigrateReport;
+  try {
+    report = await migrateRun({
+      endpoint,
+      runId,
+      source,
+      file: values.file,
+      entries: replay.records.flatMap((r) => (r.record.kind === "step" ? [r.record.entry as JournalEntry] : [])),
+      pins: record.spec.value.pins as RunPins,
+      kv: planes.kv,
+      actor: "cotal run migrate",
+      now: () => Date.now(),
+    });
+  } catch (e) {
+    if (!(e instanceof LangErrors)) throw e;
+    // Every problem with its position, cause and fix, as `run validate` lists them.
+    console.error(`run migrate: ${values.file} is not valid cotal-lang (${e.errors.length} problem${e.errors.length === 1 ? "" : "s"}), so it was not checked against the journal`);
+    for (const item of e.errors) console.error(`  ${item.code} ${item.title} (${item.span.file}:${item.span.line}:${item.span.column})\n    ${item.cause}\n    fix: ${item.fix}`);
+    process.exit(1);
+  }
   printMigrateReport(report);
   if (!report.admissible) process.exitCode = 1;
 }
@@ -607,8 +657,8 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
   const detail = `${e.code}: ${e.message}`;
   const rail = unansweredRail(e);
   if (rail === undefined || rail === "ep")
-    return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
-  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
+    return `the manager registered for this space did not answer on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
+  return `the manager registered for this space did not answer on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
 }
 
 /** The manager's refusal codes that say it acted on nothing. */
@@ -617,17 +667,57 @@ const REFUSED_BEFORE_EFFECT: Readonly<Record<string, RefusalCode>> = {
   "bad-request": "USAGE_INVALID", "unimplemented": "UNSUPPORTED", "conflict": "CONFLICT",
 };
 
+/** The local journal read a refused hosted read names. */
+const localJournal = (args: Record<string, unknown> | undefined): string => `cotal run journal ${typeof args?.runId === "string" ? args.runId : "<run-id>"} --local`;
+
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
- *  recorded it. */
-function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined): CommandFailure {
+ *  recorded it. `on` is the caller's explicit manager pin, which a suggested command keeps. */
+export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, on?: string): CommandFailure {
   const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
   const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
-  const code = err?.code === undefined ? undefined : REFUSED_BEFORE_EFFECT[err.code];
-  const remedy = err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
+  // A manager at its launch limit refuses `resource-exhausted` before writing anything, and says
+  // so with `not-executed`.
+  const busy = err?.code === "resource-exhausted" && err.outcome === "not-executed";
+  const code = err?.code === undefined ? undefined : busy ? "LIFECYCLE_BLOCKED" : REFUSED_BEFORE_EFFECT[err.code];
+  // A resume refused as a precondition, such as of a completed or failed run, appended nothing, so
+  // the run's recorded state is what to read next.
+  const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
+  const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run ps lists a run once it has` }
+    : resumeBlocked ? { remedy: `read the run's recorded state with cotal run show ${args.runId}${on ? ` --on ${on}` : ""}` }
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
+  // A reply too large for the broker changed nothing; the local read takes no reply.
+  if (command === "run-status" && err?.code === "resource-exhausted")
+    return new CommandFailure("refused", "UNSUPPORTED", message, { ...options, remedy: `read the run from its project folder with ${localJournal(args)}` });
   if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
+}
+
+/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
+function payloadRefused(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
+  return false;
+}
+
+/** While a hosted start's request may be with the manager, a SIGINT or SIGTERM reports that the run
+ *  may already be recorded and exits as the signal would. The manager does not stop on the caller's
+ *  signal, so the process used to die silently with the run started, and a retry started a second
+ *  one. Returns the release. */
+function reportInterruptedStart(values: RunValues, space: string): () => void {
+  const exit = (signal: "SIGINT" | "SIGTERM"): void => {
+    const failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "interrupted after the start request was sent, so the manager may already have recorded the run", {
+      target: { space }, remedy: "list the recorded runs with cotal run ps before starting it again",
+    });
+    if (values.json) writeEnvelope(failureEnvelope("run", failure));
+    process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const onInterrupt = () => exit("SIGINT");
+  const onTerminate = () => exit("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+  return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
 }
 
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
@@ -638,10 +728,13 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   const { target: t, seat } = await resolveRunControlTarget(values);
   resolved?.(t.space);
   const who = controlCaller(t.auth);
-  if ("refusal" in who) {
-    console.error(who.refusal);
-    process.exit(1);
-  }
+  // A raw --creds file carries no endpoint-caller triple, and this route cannot mint one. Without
+  // --creds the CLI mints the one-shot caller from the space's trust or the signed-in login.
+  if ("refusal" in who)
+    throw new CommandFailure("refused", "UNSUPPORTED", "a hosted run command cannot use a raw --creds file: it carries no endpoint-caller triple (owner, actor, lifecycle uid), and this route cannot mint one; nothing was sent", {
+      target: { space: t.space },
+      remedy: "run it again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
+    });
   const auth: ControlAuth = t.auth;
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
@@ -661,26 +754,62 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
-    const r = await invokeRepairingSplit(nc, t.space, service, command, args, {
-      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
-      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
-    });
+    const interrupt = command === "run-start" ? reportInterruptedStart(values, t.space) : undefined;
+    let r: Awaited<ReturnType<typeof invokeRepairingSplit>>;
+    try {
+      r = await invokeRepairingSplit(nc, t.space, service, command, args, {
+        deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+        ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+      });
+    } catch (e) {
+      if (!payloadRefused(e)) throw e;
+      const source = command === "run-start" && typeof args?.source === "string" ? args.source : undefined;
+      const limit = `this broker's ${nc.info?.max_payload ?? "unreported"}-byte message limit`;
+      throw new CommandFailure("refused", "UNSUPPORTED", source !== undefined
+        ? `the program is ${Buffer.byteLength(source)} bytes, and the start request that carries it exceeds ${limit}; nothing was sent`
+        : `the ${command} request exceeds ${limit}; nothing was sent`, { target: { space: t.space }, ...(source !== undefined ? { remedy: "shorten the program; a hosted start sends it to the manager in one message" } : {}) });
+    } finally {
+      interrupt?.();
+    }
     if (r.reply.ok !== true) {
       const err = r.reply.error;
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
       for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
-      throw managerRefusal(command, t.space, args, err);
+      throw managerRefusal(command, t.space, args, err, values.on);
     }
     return r.reply.data;
   } catch (e) {
+    // A space whose streams were removed has no registry or contract store to read, so name that
+    // instead of the read that failed. `cotal status` says whether its stack still runs.
+    if (!(e instanceof CommandFailure) && spaceStreamsExpected(t.space, t.mode) && await chatStreamGone(nc, t.space))
+      throw spaceStreamsAbsent(t.space, localStackRoot(t.space));
+    // The contract of a manager from release 0.99.3 or earlier takes no journal page, so the request
+    // is refused here, against that contract, before it is sent.
+    if (e instanceof EpEnvelopeError && command === "run-status" && e.code === "bad-request" && /additional properties: "journal"/.test(e.message))
+      throw new CommandFailure("refused", "UNSUPPORTED", "this manager is from release 0.99.3 or earlier and reads no journal page, so this command cannot read the run through it", { target: { space: t.space }, remedy: `upgrade that manager, or read the run from its project folder with ${localJournal(args)}` });
+    // No answer is an unavailable target, not a usage error. Only this machine's records can name a
+    // manager that runs and does not answer, and `cotal status` reads them.
+    if (e instanceof EpEnvelopeError && unansweredRequest(e))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", unansweredManagerRefusal(e), { target: { space: t.space }, native: { code: e.code }, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
     if (e instanceof EpEnvelopeError) {
-      console.error(unansweredRequest(e) ? unansweredManagerRefusal(e) : `${e.code}: ${e.message}`);
+      console.error(`${e.code}: ${e.message}`);
       process.exit(1);
     }
     throw e;
   } finally {
     await nc.drain().catch(() => nc.close());
+  }
+}
+
+/** Whether the chat stream of `space` is gone from the broker `nc` is connected to. Any other
+ *  failure to read it answers no. */
+async function chatStreamGone(nc: NatsConnection, space: string): Promise<boolean> {
+  try {
+    await (await jetstreamManager(nc, { checkAPI: false })).streams.info(chatStream(space));
+    return false;
+  } catch (e) {
+    return isStreamNotFound(e);
   }
 }
 
@@ -710,7 +839,7 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string): Prom
 async function resolveRunControlTarget(values: RunValues): Promise<{ target: ControlTarget; seat: boolean }> {
   const on = values.on;
   const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
-  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
+  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on, { onRefusal: "throw" });
   recordOperationSpace(target.space);
   const resolved = { target, seat: target === seat };
   if (on === undefined) return resolved;
@@ -719,10 +848,13 @@ async function resolveRunControlTarget(values: RunValues): Promise<{ target: Con
   return { ...resolved, target: { ...target, auth: { ...target.auth, managerInstanceId: on } } };
 }
 
-function renderLangProblem(d: EpErrorDetail): string {
+/** A validation problem the manager returned, as `run validate` prints one. Each value can quote the
+ *  program, such as a step name, so its control characters are escaped before the terminal sees them. */
+export function renderLangProblem(d: EpErrorDetail): string {
   const where = d.where as { file?: string; line?: number; column?: number } | undefined;
   const at = where ? `${where.file ?? "<program>"}:${where.line ?? "?"}:${where.column ?? "?"}` : "<program>";
-  return `  ${String(d.code ?? "L????")} ${String(d.title ?? "")} (${at})\n    ${String(d.cause ?? "")}\n    fix: ${String(d.fix ?? "")}`;
+  const text = (value: unknown) => oneLine(String(value ?? ""));
+  return `  ${text(d.code ?? "L????")} ${text(d.title)} (${text(at)})\n    ${text(d.cause)}\n    fix: ${text(d.fix)}`;
 }
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
@@ -781,14 +913,25 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
       return;
     }
     const rows = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
-    printRunList(space, rows, values);
+    const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await ask("run-ps", undefined) as RunListRow[]) } : undefined;
+    printRunList(space, rows, values, unmatched);
     return;
   }
   if (verb === "journal") {
     if (a === undefined) { console.error(USAGE); process.exit(1); }
-    const view = await ask("run-status", { runId: a, ...endpoint }) as RunStatusView;
+    // The journal is read in pages, each one reply, so one larger than the broker's payload limit
+    // stays readable.
+    const rows: RunJournalRow[] = [];
+    let view: RunStatusView;
+    do {
+      view = await ask("run-status", { runId: a, ...endpoint, journal: { offset: rows.length } }) as RunStatusView;
+      if (view.journalTotal === undefined) throw new CommandFailure("failed", "OPERATION_FAILED", "the manager answered the journal read without a page; the journal was not read", { target: { space: space ?? null, run: a } });
+      if (view.journal.length === 0 && rows.length < view.journalTotal) throw new CommandFailure("failed", "OPERATION_FAILED", `the manager returned no journal rows at row ${rows.length} of ${view.journalTotal}; the journal was not read completely`, { target: { space: space ?? null, run: a } });
+      rows.push(...view.journal);
+    } while (rows.length < view.journalTotal);
     if (space === undefined) throw new Error("the native run target was not reported");
-    printRunDetail(space, view, values);
+    const { journalTotal: _total, ...record } = view;
+    printRunDetail(space, { ...record, journal: rows }, values);
     return;
   }
   // answer and amend: the manager records the caller as the answerer (SPEC 14.5), so no `--by`
@@ -806,13 +949,43 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     ...(values.value !== undefined ? { value } : {}),
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
     ...(verb === "amend" ? { amend: true } : {}),
+  }).catch(async (error: unknown) => {
+    throw verb === "answer" ? await withMatchingKeys(error, a, b, values, () => ask("run-status", { runId: a, ...endpoint }) as Promise<RunStatusView>) : error;
   });
-  runReceipt(verb, space, result, values, a);
+  runReceipt(verb, space, result, values, a, { step: b, ...(values.value !== undefined ? { value } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
+}
+
+/** A step key the run has no open request at, answered with the open keys whose step name it matches,
+ *  as `frage` matches `/checkpoint:frage#0`. A run that cannot be read leaves the refusal as it was. */
+export async function withMatchingKeys(error: unknown, runId: string, stepKey: string, values: RunValues, read: () => Promise<RunStatusView>): Promise<unknown> {
+  if (!(error instanceof CommandFailure) || error.code !== "TARGET_NOT_FOUND") return error;
+  let open: string[];
+  try { open = openRequestKeys(await read()); } catch { return error; }
+  const stepName = (key: string) => /:([^:/#]*)#\d+$/.exec(key)?.[1] ?? key;
+  const word = stepName(stepKey);
+  const matches = open.filter((key) => key !== stepKey && (stepName(key) === word || (word !== "" && (stepName(key).includes(word) || word.includes(stepName(key))))));
+  if (!matches.length) return error;
+  // A step name comes from the program, so it is escaped and quoted before the terminal shows it.
+  const quoted = (key: string) => `'${oneLine(key).replaceAll("'", `'\\''`)}'`;
+  const remedy = matches.length === 1
+    ? `the open request ${quoted(matches[0]!)} matches; answer it with cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.on ? ` --on ${values.on}` : ""}`
+    : `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
+  return new CommandFailure(error.outcome, error.code, error.message, { remedy, target: error.target, ...(error.native ? { native: error.native } : {}) });
 }
 
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;
  *  `--local` drives in this process over one connection per invocation. */
 export async function runWorkflow(args: ParsedArgs): Promise<void> {
+  // A mesh the verb cannot resolve or connect to is refused under the refusal's own code, before
+  // any request.
+  try {
+    await workflow(args);
+  } catch (e) {
+    throw isConnectRefusal(e) ? e.failure() : e;
+  }
+}
+
+async function workflow(args: ParsedArgs): Promise<void> {
   const { values, verb, a, b } = workflowArguments(args);
   if (verb === "validate" || verb === "plan" || verb === "simulate") return offlineWorkflow(verb, a!, values);
   if (verb === "turns" || verb === "yield") return seatTurnCommand(verb, a, values);
@@ -850,6 +1023,30 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   }
 }
 
+/** How deep an answer value may nest. Serializing it recurses, and a host runs out of stack a few
+ *  thousand levels down, at a depth that depends on the host, so the bound sits well below that. */
+const ANSWER_VALUE_DEPTH = 1000;
+
+/** `--value` as the answer record carries it, refused before anything is sent when the record
+ *  would differ from what was typed: JSON keeps only the last of two equal names, writes a number
+ *  past the double range as null, and cannot send a value nested past the serializer's stack. */
+function checkAnswerValue(text: string, usage: (message: string) => never): void {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { usage("--value must be valid JSON"); }
+  const refuse = (message: string): never => { throw new CommandFailure("refused", "SCHEMA_INVALID", `${message}; nothing was sent`); };
+  const duplicate = hasDuplicateNames(text);
+  if (duplicate.duplicate) refuse(`--value names "${duplicate.name}" twice in one object, and JSON keeps only the last`);
+  // Iterative, because the value can nest deeper than the stack a recursive walk has.
+  const pending: Array<{ v: unknown; depth: number }> = [{ v: value, depth: 1 }];
+  while (pending.length > 0) {
+    const { v, depth } = pending.pop()!;
+    if (typeof v === "number" && !Number.isFinite(v)) refuse("--value holds a number outside the range JSON carries, which would be recorded as null");
+    if (v === null || typeof v !== "object") continue;
+    if (depth > ANSWER_VALUE_DEPTH) refuse(`--value nests more than ${ANSWER_VALUE_DEPTH} levels deep, deeper than an answer can be sent`);
+    for (const child of Object.values(v)) pending.push({ v: child, depth: depth + 1 });
+  }
+}
+
 /** Public workflow grammar, before catalog preparation or native requests. */
 export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: string; a?: string; b?: string } {
   const values = { ...args.values } as RunValues;
@@ -858,6 +1055,11 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
   const usage = (message: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message); };
   if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
+  // A run id is an id token, so a malformed one is refused here, before any contact, rather than
+  // by whichever plane reads it first.
+  if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
+    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(first)} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; cotal run ps lists them`); }
+  }
   let a: string | undefined = first;
   let b: string | undefined = second;
   if (verb === "start") {
@@ -884,7 +1086,13 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],
   };
   for (const [flag, modes] of Object.entries(scopes)) if (args.values[flag] !== undefined && !modes.includes(verb)) usage(`--${flag} is not taken by this run command`);
-  if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
+  // The limit of every checkpoint, ask and turn that sets none of its own, so a zero expires each at once.
+  if (values.timeout !== undefined && !(isDuration(values.timeout) && parseDuration(values.timeout) > 0))
+    usage(isDuration(values.timeout) ? "--timeout must be longer than zero, or every checkpoint, ask and turn that sets no limit of its own expires at once" : `--timeout ${new DurationError(values.timeout).message}`);
+  if (verb === "journal" && values.limit !== undefined) {
+    if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
+    if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
+  } else if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
     if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
       usage("diagnostic paging requires run --page --on <instance> without --local");
     if (values.limit !== undefined && (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 16))
@@ -894,10 +1102,21 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (values.plain) usage("diagnostic pages produce bounded JSON and take no --plain");
   }
   if ((values["admit-read"] !== undefined || values["admit-publish"] !== undefined) && values.local !== true) usage("admission ceilings belong to the explicit local start");
+  // A ceiling entry is a channel or a channel pattern. One the wire layer would rewrite, such as
+  // `a b`, would admit a channel nobody named.
+  for (const flag of ["admit-read", "admit-publish"] as const) {
+    const entries = (values[flag] ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (entries.length === 1 && entries[0] === "none") continue;
+    for (const entry of entries) {
+      try { assertValidChannel(entry); } catch (error) { usage(`--${flag}: ${oneLine((error as Error).message)}`); }
+    }
+  }
+  // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.
+  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
-  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
-  if (values.value !== undefined) { try { JSON.parse(values.value); } catch { usage("--value must be valid JSON"); } }
+  if (values.value !== undefined) checkAnswerValue(values.value, usage);
+  if (values.artifact !== undefined && !values.artifact.trim()) usage("--artifact names the artifact the answer cites, so it cannot be empty");
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
   if (verb === "yield") {
@@ -913,6 +1132,6 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     try { assertLifecycleToken(values.on, "instanceId"); }
     catch { usage("--on requires the full manager instance id as cotal ps prints it"); }
   }
-  if ((values.json || values.plain) && values.local && !["ps", "journal"].includes(verb)) usage("the local drive does not implement structured or plain receipts; use the hosted form");
+  if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) usage("the local drive does not implement structured or plain receipts; use the hosted form");
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };
 }

@@ -1,4 +1,4 @@
-import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, type EpAttributedReply } from "@cotal-ai/core";
+import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, isConnectRefusal, type RefusalCode } from "@cotal-ai/workspace";
 
 /** Native boundary codes only. A code without a not-executed outcome is not proof of refusal. */
@@ -15,6 +15,12 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
   if (isCommandFailure(error)) return error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target, ...(error.remedy ? { remedy: error.remedy } : {}), ...(error.native ? { native: error.native } : {}), ...(error.changed ? { changed: error.changed } : {}), cause: error }) : error;
   if (isConnectRefusal(error)) return error.failure();
   const native = error instanceof NativeReplyError ? { code: error.response.reply.error?.code, outcome: error.response.reply.error?.outcome, detail: { phase: error.phase, requestId: error.response.reply.id, responder: error.response.responder } } : error instanceof EpEnvelopeError ? { code: error.code, outcome: error.outcome } : undefined;
+  // A contract read no instance answered: nothing serves the endpoint, or nothing reached this caller.
+  if (!mayHaveInvoked && unansweredRequest(error)) {
+    const endpoint = typeof target.endpoint === "string" ? target.endpoint : "the endpoint";
+    const space = typeof target.space === "string" ? ` --space ${shellWord(target.space)}` : "";
+    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read, so nothing is serving it or none could be reached`, { target, native, remedy: `start the service that serves ${endpoint}, then run the command again; cotal service${space} lists this space's services`, cause: error });
+  }
   const code = nativeEndpointRefusal(native?.code);
   if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", { target, native, cause: error });
   if (!mayHaveInvoked || native?.outcome === "executed") return new CommandFailure("failed", "OPERATION_FAILED", mayHaveInvoked ? "the native endpoint reported an executed failure" : "the endpoint contract read did not complete", { target, native, cause: error });

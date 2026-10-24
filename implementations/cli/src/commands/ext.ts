@@ -402,7 +402,7 @@ async function removeUnlocked(pkg: string): Promise<void> {
       // Only real mesh roots participate, but reserve nested provider state directories even when
       // the process has never run so startup cannot create-and-claim them during npm removal.
       if (!existsSync(join(context.root, ".cotal"))) continue;
-      mkdirSync(dirname(pidPath), { recursive: true });
+      mkdirSync(dirname(pidPath), { recursive: true, mode: 0o700 });
       let fd: number;
       try {
         fd = openSync(pidPath, "wx", 0o600);

@@ -1,9 +1,12 @@
 import { statSync } from "node:fs";
+import { connect as netConnect } from "node:net";
 import { join, resolve } from "node:path";
 import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
 import {
   assertPinnedFetchUrl,
   authDir,
+  brokerUrlCredentialProblem,
+  brokerUrlHasUserinfo,
   canonicalRoot,
   checkUserBundle,
   classifyJoinTarget,
@@ -18,9 +21,11 @@ import {
   JoinRefusal,
   preflightCode,
   preflightTarget,
+  readNatsInfoGreeting,
   PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
   setCurrent,
+  spaceNameTooLong,
   userAuthStateDir,
   type Check,
   type DialPolicy,
@@ -60,6 +65,11 @@ const CA_COST =
   ". Note: that directory carries the space's account signing seed, so any machine holding it can mint" +
   " any identity in the space until the signing key is rotated and every credential re-minted. Copy it" +
   " only to machines you would trust with the whole mesh.";
+/** What a static-auth space needs from a machine that should not hold its signing seed. Registering
+ *  the space here needs that seed, so the refusals name this instead of a mode the broker refuses. */
+const SEEDLESS =
+  " To use the space from here without its signing seed, ask its owner for a credential minted with" +
+  " `cotal auth mint` where the space runs, and pass it with `--creds <file> --server <url>`.";
 const good = <T>(value: T): Check<T> => ({ ok: true, value });
 
 /** Is this path a directory? `existsSync` is not the question: a regular FILE named `.cotal` would
@@ -73,18 +83,32 @@ export function isDir(path: string): boolean {
   }
 }
 
+/** A space name that starts with `-` reads as an option, so `--space <name>`, `use <name>` and the
+ *  child processes a stack starts cannot pass it. */
+export function checkSpaceName(space: string): Check<string> {
+  return space.startsWith("-")
+    ? { ok: false, message: `✗ the space name "${space}" starts with "-", so it cannot be passed as a flag value`, code: "USAGE_INVALID", remedy: "choose a name that starts with a letter, digit or underscore" }
+    : good(space);
+}
+
 /**
  * The broker URL, checked before it is probed, printed or persisted.
  *
  * Credentials embedded in the URL are refused for the same reason a manifest refuses them
  * (`validateBroker`): this record is written to disk and echoed back by `add` and `meshes`, so an
- * inline password would be copied into the registry and onto the operator's screen. No message
- * here repeats the input — the commonest malformed broker URL is a half-typed credential one.
+ * inline password would be copied into the registry and onto the operator's screen. They are
+ * checked first, in the words every broker-URL credential refusal uses, so a value that does not
+ * parse as a broker URL is not echoed in part either. No message here repeats the input — the
+ * commonest malformed broker URL is a half-typed credential one.
  *
  * `what` names where the URL came from (`--server`, or the document that carried it), because a
  * refusal that blames a flag the operator never typed sends them looking in the wrong place.
  */
 export function checkServer(raw: string, what: string): Check<string> {
+  if (brokerUrlHasUserinfo(raw)) {
+    const { message, remedy } = brokerUrlCredentialProblem(what);
+    return { ok: false, message: `✗ ${message}`, code: "USAGE_INVALID", remedy };
+  }
   let u: URL;
   try {
     u = new URL(raw);
@@ -93,8 +117,6 @@ export function checkServer(raw: string, what: string): Check<string> {
   }
   if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
     return bad(`✗ ${what} scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`, "USAGE_INVALID");
-  if (u.username || u.password)
-    return bad(`✗ ${what} must not embed credentials - the registry records this URL and prints it back; pass trust material under --root instead`, "USAGE_INVALID");
   if (u.search || u.hash)
     return bad(`✗ ${what} must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`, "USAGE_INVALID");
   // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
@@ -132,7 +154,8 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
   } catch (e) {
     // An address that is not a broker URL is invalid input; one this policy will not dial is a refusal.
     const malformed = e instanceof JoinRefusal && (e.code === "not-a-url" || e.code === "bad-scheme" || e.code === "no-host");
-    return bad(`✗ ${(e as Error).message}`, malformed ? "USAGE_INVALID" : "UNSUPPORTED");
+    const remedy = e instanceof JoinRefusal ? e.remedy : undefined;
+    return { ok: false, message: `✗ ${(e as Error).message}`, code: malformed ? "USAGE_INVALID" : "UNSUPPORTED", ...(remedy ? { remedy } : {}) };
   }
 }
 
@@ -170,20 +193,27 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
   return good(root);
 }
 
+/** The modes `space add --mode` takes. */
+export const SPACE_MODES = ["auth", "open", "user"] as const;
+const isSpaceMode = (value: string): value is (typeof SPACE_MODES)[number] => (SPACE_MODES as readonly string[]).includes(value);
+
 /** The recorded auth mode: what the operator said, or what `--root` proves. A root holding this
  *  space's account record means auth; anything else is an open broker. `--mode user` is permitted
  *  IFF the pinned trust was SUPPLIED (`userTrustSupplied`) — the old blanket refusal reasoned
  *  that IdP pins must be established, never guessed, and supplying them (a bundle exported where
- *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. */
+ *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. Every
+ *  add path asks it first, so a space name too long for the local files that carry it is refused here. */
 export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined, userTrustSupplied = false): Check<MeshEntry["mode"]> {
-  if (flag !== undefined && flag !== "auth" && flag !== "open" && flag !== "user")
+  const tooLong = spaceNameTooLong(space);
+  if (tooLong) return bad(`✗ ${tooLong}; nothing was written`, "USAGE_INVALID");
+  if (flag !== undefined && !isSpaceMode(flag))
     return bad(`✗ --mode must be auth, open or user (got "${flag}")`, "USAGE_INVALID");
   if (flag === "user" && !userTrustSupplied)
     return bad(`✗ --mode user needs its pinned trust SUPPLIED, never guessed - a user-auth space carries IdP pins (issuer, audience, login URL) established where the mesh runs. Pass --user-auth-file <bundle.json> exported there, or --from <https://…/.well-known/cotal-mesh> to fetch, review and confirm them`, "USAGE_INVALID");
   if (flag === "user") return good("user");
   const mode = flag ?? (accounts.includes(space) ? "auth" : "open");
   if (mode === "auth" && !accounts.includes(space))
-    return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open` + CA_COST, "DEPENDENCY_UNAVAILABLE");
+    return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, or point --root at where they already are` + CA_COST + SEEDLESS, "DEPENDENCY_UNAVAILABLE");
   return good(mode);
 }
 
@@ -196,7 +226,7 @@ export function checkTrust(mode: MeshEntry["mode"], root: string, space: string)
   const auth = loadSpaceAuth(authDir(root), space);
   return auth
     ? good(auth)
-    : bad(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs, or register it --mode open` + CA_COST, "DEPENDENCY_UNAVAILABLE");
+    : bad(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs` + CA_COST + SEEDLESS, "DEPENDENCY_UNAVAILABLE");
 }
 
 /** Budget for the credless mode probe. Generous on purpose: a slow answer must not be read as "the
@@ -231,13 +261,22 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
     const others = held.ok ? held.value.filter((s) => s !== space) : [];
     if (others.length)
       return bad(`✗ the broker at ${server} requires auth, and ${authDir(root)} holds the trust for "${others.join('", "')}", not "${space}" - register the space it holds under its own name, or point --root at where "${space}"'s trust is`, "DEPENDENCY_UNAVAILABLE");
-    return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST, "CONFLICT");
+    return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST + SEEDLESS, "CONFLICT");
   }
   if (mode === "user" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as a user-auth mesh - user auth means the broker REFUSES a bare connect and admits only exchanged bearers; check that the bundle's server points at the user-auth broker for "${space}"`, "CONFLICT");
   if (mode === "user" && enforces === "unreachable")
     return bad(`✗ no broker answered at ${server} - a user-auth registration is verified by the broker's own auth-required refusal, so it cannot be recorded while the broker is unreachable`, "TARGET_UNAVAILABLE");
   return good(undefined);
+}
+
+/** {@link checkEnforcement} against what {@link probeEnforcement} finds at `server`. A refusal because
+ *  no broker answered says why, as {@link verifyTarget} does; `what` names the input that gave the
+ *  address. */
+export async function checkEnforcementAt(mode: MeshEntry["mode"], server: string, space: string, root: string, what: string): Promise<Check<void>> {
+  const enforces = await probeEnforcement(server);
+  const check = checkEnforcement(mode, enforces, server, space, root);
+  return !check.ok && enforces === "unreachable" ? (await unreachableAt(server, what)) ?? check : check;
 }
 
 // ---- the user arm: supplied pinned trust ----------------------------------------------------
@@ -352,7 +391,7 @@ export function candidateTarget(space: string, server: string, root: string, mod
 /** The registration-time wording for a failed probe. Deliberately NOT the shared preflight copy:
  *  that speaks to a mesh already in the registry ("stale entry", "re-run `cotal up`"), and here
  *  nothing is recorded yet — the operator is being told what to fix in the command they just ran. */
-export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string): string {
+export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string, pid?: number): string {
   switch (kind) {
     case "unreachable":
       return `✗ no broker answered at ${server} - check the address and that the mesh is up on that machine`;
@@ -361,13 +400,15 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the broker at ${server} rejected the credentials for "${space}" under ${authDir(root)} - re-mint them where the mesh runs, or check that --server points at that mesh`;
     case "open-wants-auth":
     case "registry-open-now-auth":
-      return `✗ the broker at ${server} requires auth, but nothing under ${authDir(root)} covers "${space}" - copy the mesh's account + creds there and re-run with --mode auth` + CA_COST;
+      return `✗ the broker at ${server} requires auth, but nothing under ${authDir(root)} covers "${space}" - copy the mesh's account + creds there and re-run with --mode auth` + CA_COST + SEEDLESS;
     case "stale-auth":
       return `✗ the credentials for "${space}" under ${authDir(root)} have EXPIRED - re-mint them where the mesh runs (the broker itself is up)`;
     case "tls-trust":
       return `✗ the broker at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, then re-run`;
     case "slow-link":
       return `✗ the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - nothing was registered; retry, and if it keeps happening, check that the broker process is not stopped or overloaded`;
+    case "broker-stopped":
+      return `✗ the broker at ${server} is served by process ${pid}, which is stopped, so it accepts the connection and never answers - nothing was registered; resume it with kill -CONT ${pid} and run this again`;
   }
 }
 
@@ -375,7 +416,55 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
  *  settled what the broker is. */
 export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   const r = await preflightTarget(target);
-  return r.ok ? good(undefined) : bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+  if (r.ok) return good(undefined);
+  return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+}
+
+/** Budget for each probe of an address that answered no broker under the scheme it was given. */
+const SCHEME_PROBE_TIMEOUT_MS = 2_000;
+const DEFAULT_PORTS: Readonly<Record<string, number>> = { nats: 4222, tls: 4222, ws: 80, wss: 443 };
+
+/** Why no broker answered at a single `server` address: nothing took a connection at its port, or a
+ *  broker answers there under another scheme, which the remedy names. `undefined` for an address
+ *  this cannot take apart, such as a list, so the general sentence stands. */
+async function unreachableAt(server: string, what = "--server"): Promise<Check<never> | undefined> {
+  if (server.includes(",")) return undefined;
+  let url: URL;
+  try { url = new URL(server.includes("://") ? server : `nats://${server}`); } catch { return undefined; }
+  const scheme = url.protocol.slice(0, -1);
+  const port = url.port ? Number(url.port) : DEFAULT_PORTS[scheme];
+  if (port === undefined || !url.hostname) return undefined;
+  const at = `${url.hostname}:${port}`;
+  const refused = (message: string, remedy: string): Check<never> => ({ ok: false, message: `✗ ${message}`, code: "TARGET_UNAVAILABLE", remedy });
+  const answer = await portAnswer(url.hostname.replace(/^\[|\]$/g, ""), port);
+  if (answer === "unresolved")
+    return refused(`no broker answered at ${server}: the host name ${url.hostname} does not resolve`, `check the host name in ${what}`);
+  if (answer === "silent")
+    return refused(`no broker answered at ${server}: nothing accepted a connection at ${at}`, `check that the mesh is up and listening on port ${port} of ${url.hostname}, or pass --server with the port it listens on`);
+  // A websocket route keeps its path, which a TCP address cannot have.
+  const route = url.pathname === "/" ? "" : url.pathname;
+  const schemes = ["nats", "tls", "ws", "wss"].filter((other) => !route || other.startsWith("ws"));
+  for (const other of schemes) {
+    if (other === scheme) continue;
+    const candidate = `${other}://${at}${other.startsWith("ws") ? route : ""}`;
+    const probe = await probeConnect(candidate, { timeoutMs: SCHEME_PROBE_TIMEOUT_MS });
+    if (!probe.ok && probe.reason !== "auth-required") continue;
+    const plain = (scheme === "tls" || scheme === "wss") && (other === "nats" || other === "ws") ? ", without TLS" : "";
+    return refused(`no broker answered at ${server}, but one answers at ${candidate}${plain}`, `run it again with --server ${candidate}`);
+  }
+  return refused(`no broker answered at ${server}: something accepted the connection at ${at}, but no broker answered there as ${schemes.slice(0, -1).join(", ")} or ${schemes.at(-1)}`, `check that ${what} names the broker's own address and port`);
+}
+
+/** Whether anything accepts a TCP connection at `host:port`: `silent` when the port refuses or does
+ *  not answer in time, `unresolved` when the host name does not resolve. */
+function portAnswer(host: string, port: number): Promise<"accepted" | "silent" | "unresolved"> {
+  return new Promise((done) => {
+    const socket = netConnect({ host, port });
+    const finish = (answer: "accepted" | "silent" | "unresolved") => { socket.destroy(); done(answer); };
+    socket.setTimeout(SCHEME_PROBE_TIMEOUT_MS, () => finish("silent"));
+    socket.once("connect", () => finish("accepted"));
+    socket.once("error", (error: NodeJS.ErrnoException) => finish(error.code === "ENOTFOUND" || error.code === "EAI_AGAIN" ? "unresolved" : "silent"));
+  });
 }
 
 /** Write the record. Returns whether it became the default — same policy as `cotal up`: adopt only

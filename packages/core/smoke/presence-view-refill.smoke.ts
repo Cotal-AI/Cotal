@@ -5,6 +5,9 @@
  * the bucket one entry at a time. Every roster event during that replay is sampled synchronously,
  * which makes the partial-cache window observable without timing sleeps or a synthetic endpoint.
  *
+ * Before any peer starts, an observer that does not register binds onto the empty bucket. Its empty
+ * replay is the whole snapshot, so it completes at once and reads current with nobody present.
+ *
  * Needs nats-server on PATH.
  * Run: pnpm smoke:presence-view-refill
  */
@@ -67,6 +70,31 @@ try {
     throw new Error(`fixture broker never came up on ${servers} - refusing to report on a server that never started`);
   await setupSpaceStreams({ servers, space });
   console.log("  fixture: broker and streams ready");
+
+  const lone = new CotalEndpoint({
+    space,
+    servers,
+    channels: [],
+    consume: false,
+    registerPresence: false,
+    watchPresence: true,
+    heartbeatMs: HEARTBEAT_MS,
+    ttlMs: TTL_MS,
+    card: { name: "lone-observer", kind: "endpoint" },
+  });
+  lone.on("error", () => {});
+  try {
+    await lone.start();
+    const startedAt = Date.now();
+    const emptySnapshot = await lone.waitForPresenceSnapshot(3_000) as unknown;
+    const waitedMs = Date.now() - startedAt;
+    check("0.1 an observer on an empty bucket completes its snapshot at once", emptySnapshot === "snapshot" && waitedMs < 1_000, { emptySnapshot, waitedMs });
+    check("0.2 its view is current with nobody present",
+      (lone.presenceView() as ObservedView).state === "current" && lone.getRoster().length === 0,
+      { view: lone.presenceView(), roster: lone.getRoster().length });
+  } finally {
+    await lone.stop().catch(() => {});
+  }
 
   for (let i = 0; i < PEER_COUNT; i++) {
     const peer = new CotalEndpoint({

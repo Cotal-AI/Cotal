@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   credsClaims,
   credsFingerprint,
+  credsProblem,
   identityFromCreds,
   mintCreds,
   writeSecretFile,
@@ -159,6 +160,20 @@ export async function remintDaemonCreds(
     }
   }
   return results;
+}
+
+/** The re-signable daemon credentials whose stored bytes the NATS client cannot parse. Such a file
+ *  holds no key to re-sign, so neither the manager nor {@link remintDaemonCreds} can renew it in place,
+ *  and `cotal up` mints only a missing one. A value the store cannot read is not reported here. */
+export async function unparsableDaemonCreds(root: string, space: string, store?: SecretStore): Promise<string[]> {
+  const s = store ?? workspaceSecretStore(root);
+  const kinds: string[] = [];
+  for (const { kind, key } of REMINTABLE_DAEMON_CREDS) {
+    let current: string | undefined;
+    try { current = await s.get(key(space)); } catch { continue; }
+    if (current !== undefined && credsProblem(current) !== undefined) kinds.push(kind);
+  }
+  return kinds;
 }
 
 /** The renewal owner's audit record — what `cotal doctor auth` renders so "file re-signed" and

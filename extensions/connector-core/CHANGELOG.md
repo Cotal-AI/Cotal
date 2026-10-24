@@ -1,5 +1,23 @@
 # @cotal-ai/connector-core
 
+## 0.100.2
+
+### Patch Changes
+
+- 678a8c6: The `persona` section of the CLI docs no longer says remote `--on` operations refuse. List, show and create work on one manager's catalog with `--on`, and edit and remove refuse there, as the exact-manager section describes.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+### Patch Changes
+
+- 37f4a75: The `cotal history` docs now say that the text and plain reports show a line break or other control character in a message as its `\uXXXX` escape, and that `--json` carries the text as it was sent.
+- 6471d27: `cotal run show` and `cotal run journal` now say why a step failed. A failed or refused step's journal row carries its recorded `errorMessage` beside `errorCode` in `--json`, and the text view lists each such step with its outcome and message under `Step errors`, escaping control characters. Before, both views printed only `failed (L4000)`, and the reason, such as a hosted run that is not admitted to read a channel, was only in the manager's log. The manager's `run-status` reply schema admits the new field.
+- a80904f: `cotal run validate`, `plan` and `simulate` now say what each validator warning is: its code, title, position, cause and fix, on stderr and in the `--json` envelope's `warnings`, and `validate --json` lists each one under `result.warnings` with the same fields. Before, a warning printed only "The language validator reported a warning at this source position.", so a `fanOut` over a literal list with no `key` validated with no visible reason and then failed its run with L3021.
+
 ## 0.99.3
 
 No changes in this release.

@@ -2,11 +2,14 @@
  *  chunk-handoff timeout. Both halves assert the same contract from opposite ends: a failed attempt
  *  publishes nothing, keeps nothing, and leaves the cut retryable at the SAME destination. A restore
  *  or create interrupted by Ctrl-C inside its claim names its recovery, which works once its
- *  processes are gone, before the claim deadline. */
+ *  processes are gone, before the claim deadline. A create into a missing folder and a restore of a
+ *  missing path refuse TARGET_NOT_FOUND before any lock, and so are a destination inside the store
+ *  and one in a folder this account cannot write. A `--store-dir` that is not the cut's store
+ *  refuses CONFLICT naming both. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -14,7 +17,7 @@ import {
   spaceBackupInventory,
   type SpaceBackupSelection,
 } from "@cotal-ai/core";
-import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, loadSoleSpaceAuth, releaseMaintenanceLock } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { BACKUP_MANIFEST_FORMAT, type BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 
@@ -32,6 +35,8 @@ const BACKUP_STAGES = {
   chunk: /smoke-injected failure at the first snapshot chunk/,
   close: /smoke-injected failure after snapshot close/,
   manifest: /smoke-injected failure before manifest publication/,
+  // A full disk names its cause and directory, what was and was not written, and a retry.
+  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run cotal backup create [^\n]*artifact-nospace again/,
 } as const;
 
 const journalState = (root: string): string | undefined => {
@@ -43,7 +48,7 @@ const journalState = (root: string): string | undefined => {
 interface ClaimedJournal {
   state: string;
   restore?: { attemptId: string };
-  claim?: { attemptId?: string; deadline: string; owners: unknown[] };
+  claim?: { attemptId?: string; deadline: string; owners: unknown[]; coordinator: { startedAt: string } };
 }
 
 const readJournal = (root: string): ClaimedJournal | undefined => {
@@ -121,6 +126,68 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
 
+    // A path that names nothing is refused before any lock, saying whether its folder or the
+    // artifact is missing.
+    const nowhere = join(root, "no-such-folder", "artifact");
+    const createMissing = run("backup", "create", nowhere, "--json");
+    assert.equal(createMissing.status, 2, `a create into a missing folder refuses, exit 2\n${createMissing.stdout}${createMissing.stderr}`);
+    const created = JSON.parse(createMissing.stdout) as { error?: { code?: string; message?: string }; target?: { missing?: string } };
+    assert.equal(created.error?.code, "TARGET_NOT_FOUND", "a create into a missing folder is TARGET_NOT_FOUND");
+    assert.equal(created.target?.missing, "folder", "it says the folder is missing");
+    assert.match(created.error?.message ?? "", /there is no folder \S*no-such-folder to create the backup in/, "it names that folder");
+    for (const [path, missing] of [[nowhere, "folder"], [join(root, "no-such-artifact"), "artifact"]] as const) {
+      const restore = run("backup", "restore", path, "--json");
+      assert.equal(restore.status, 2, `a restore of a missing ${missing} refuses, exit 2\n${restore.stdout}${restore.stderr}`);
+      const restored = JSON.parse(restore.stdout) as { error?: { code?: string }; target?: { directory?: string; missing?: string } };
+      assert.equal(restored.error?.code, "TARGET_NOT_FOUND", `a restore of a missing ${missing} is TARGET_NOT_FOUND`);
+      assert.equal(restored.target?.missing, missing, `it says the ${missing} is missing`);
+      assert.equal(restored.target?.directory, path, "it names the path");
+    }
+    // A file, an empty folder, a folder no create wrote and a folder that holds the preserved store are
+    // refused before any lock, naming the path and what it is.
+    const notArtifacts = join(root, "not-artifacts");
+    mkdirSync(join(notArtifacts, "empty"), { recursive: true });
+    mkdirSync(join(notArtifacts, "notes"));
+    writeFileSync(join(notArtifacts, "notes", "notes.txt"), "x");
+    writeFileSync(join(notArtifacts, "file.txt"), "x");
+    const journalBytes = readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8");
+    for (const [path, status, code, text] of [
+      [join(notArtifacts, "file.txt"), 2, "TARGET_NOT_FOUND", `${realpathSync(join(notArtifacts, "file.txt"))} is not a backup artifact: it is a file; nothing was restored`],
+      [join(notArtifacts, "empty"), 2, "TARGET_NOT_FOUND", `${realpathSync(join(notArtifacts, "empty"))} is not a backup artifact: it is an empty folder; nothing was restored`],
+      [join(notArtifacts, "notes"), 2, "TARGET_NOT_FOUND", `${realpathSync(join(notArtifacts, "notes"))} is not a backup artifact: it holds no manifest.json and no file a backup create writes; nothing was restored`],
+      [".", 1, "USAGE_INVALID", `the restore artifact ${realpathSync(root)} holds the preserved store ${realpathSync(sourcePath)} it would replace; nothing was restored`],
+      [join(sourcePath, "jetstream"), 1, "USAGE_INVALID", `the restore artifact ${realpathSync(join(sourcePath, "jetstream"))} is inside the preserved store ${realpathSync(sourcePath)} it would replace; nothing was restored`],
+    ] as const) {
+      const restore = run("backup", "restore", path, "--json");
+      const envelope = JSON.parse(restore.stdout) as { outcome?: string; error?: { code?: string; message?: string } };
+      assert.ok(restore.status === status && envelope.outcome === "refused" && envelope.error?.code === code && envelope.error.message === text, `a restore of ${path} is refused ${code}, exit ${status}, saying what it is\n${restore.stdout}${restore.stderr}`);
+      const plain = run("up", "--restore", path, "--detach");
+      assert.ok(plain.status === status && plain.stderr.includes(text) && !plain.stderr.includes("Outcome unconfirmed") && !plain.stderr.includes("Usage"), `up --restore ${path} is refused the same way, with no command help\n${plain.stderr}`);
+    }
+    assert.equal(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8"), journalBytes, "those refusals leave the journal as it was");
+    // A destination inside the preserved store, or in a folder this account cannot write, is refused
+    // before any lock with its cause in the message.
+    const inside = run("backup", "create", join(sourcePath, "bk1"), "--json");
+    const insideEnvelope = JSON.parse(inside.stdout) as { error?: { code?: string; message?: string } };
+    assert.ok(inside.status === 1 && insideEnvelope.error?.code === "USAGE_INVALID" && (insideEnvelope.error.message ?? "").includes(`is inside the preserved store ${sourcePath}`), `a destination inside the store is a usage refusal\n${inside.stdout}${inside.stderr}`);
+    const insidePlain = run("backup", "create", join(sourcePath, "bk1"));
+    assert.ok(insidePlain.status === 1 && !insidePlain.stderr.includes("Usage"), `that refusal prints no command help\n${insidePlain.stderr}`);
+    if (process.getuid?.() !== 0) {
+      const locked = join(root, "locked");
+      mkdirSync(locked, { mode: 0o500 });
+      const denied = run("backup", "create", join(locked, "bk"), "--json");
+      const deniedEnvelope = JSON.parse(denied.stdout) as { error?: { code?: string; message?: string; remedy?: string } };
+      assert.ok(denied.status === 2 && deniedEnvelope.error?.code === "PERMISSION_DENIED" && (deniedEnvelope.error.message ?? "").includes(`cannot write ${locked}`) && (deniedEnvelope.error.remedy ?? "").includes(`chmod u+w ${locked}`), `an unwritable folder is refused by name\n${denied.stdout}${denied.stderr}`);
+    }
+    // A --store-dir that is not the cut's store is a conflict naming both stores.
+    const emptyStore = join(root, "empty-store");
+    mkdirSync(emptyStore);
+    const mismatched = run("backup", "create", join(root, "bkw"), "--store-dir", emptyStore, "--json");
+    const mismatchedEnvelope = JSON.parse(mismatched.stdout) as { error?: { code?: string; message?: string } };
+    assert.ok(mismatched.status === 2 && mismatchedEnvelope.error?.code === "CONFLICT" && (mismatchedEnvelope.error.message ?? "").includes(`--store-dir ${emptyStore} is not this cut's preserved store ${sourcePath}`), `a mismatched --store-dir is a conflict naming both stores\n${mismatched.stdout}${mismatched.stderr}`);
+    assert.equal(journalState(root), "ready", "the refused create and restores leave the cut ready");
+    assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
+
     for (const [stage, injected] of Object.entries(BACKUP_STAGES)) {
       const destination = join(root, `artifact-${stage}`);
       const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination], {
@@ -131,6 +198,9 @@ async function backupStageFaultScenario(): Promise<void> {
       });
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
+      // The cleanup completed, so the next step is the same create, not a recovery.
+      assert.match(faulted.stderr, new RegExp(`then run cotal backup create \\S*artifact-${stage} again`), `${stage} fault names the same create as its next step`);
+      if (stage !== "nospace") assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
       assert.equal(existsSync(destination), false, `${stage} fault leaves no unpublished artifact at the destination`);
       assert.deepEqual(attemptResidue(root), [], `${stage} fault leaves no clone, config, or broker residue in the attempts dir`);
@@ -307,6 +377,18 @@ async function interruptedRestoreScenario(): Promise<void> {
     must("preserve cut", run("down", "--preserve-state"));
     must("full backup", run("backup", "create", artifact));
 
+    // A create that meets another operation's maintenance lock names that operation, its process and
+    // since when it holds the lock, waits for it, and names no attempt, because it journaled none.
+    const contender = acquireMaintenanceLock(root, { operation: "backup create" });
+    try {
+      const lost = run("backup", "create", join(root, "contended"), "--json");
+      const envelope = JSON.parse(lost.stdout) as { target?: { attemptId?: unknown; holderPid?: unknown; holderOperation?: unknown }; error?: { code?: string; message?: string; remedy?: string } };
+      assert.equal(lost.status, 2, `a create that meets the lock refuses\n${lost.stdout}${lost.stderr}`);
+      assert.ok(envelope.error?.code === "LIFECYCLE_BLOCKED" && envelope.error.message === `backup create is refused: a backup create, process ${process.pid}, has held this root's maintenance lock since ${contender.owner.startedAt}; nothing was changed`
+        && envelope.error.remedy?.startsWith(`wait for process ${process.pid} to finish, then run cotal backup create ${join(root, "contended")} again`)
+        && envelope.target?.holderPid === process.pid && envelope.target.holderOperation === "backup create" && !("attemptId" in envelope.target), `the losing create names the lock holder\n${lost.stdout}`);
+    } finally { releaseMaintenanceLock(contender); }
+
     // Its own process group, as a terminal runs it, so the SIGINT below is the one Ctrl-C sends.
     const child = spawn(process.execPath, ["--import", tsxImport, cliPath, "backup", "restore", artifact], { cwd: root, env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
@@ -319,11 +401,13 @@ async function interruptedRestoreScenario(): Promise<void> {
       ["backup restore", ["backup", "restore", artifact]],
       ["up", ["up", "--detach", "--open", "--server", server, "--space", space]],
       ["backup recover", ["backup", "recover", attemptId, "--yes"]],
+      ["backup create", ["backup", "create", join(root, "during-restore")]],
     ] as const) {
       const refused = run(...args);
       assert.equal(refused.status, 2, `${label} refuses while the restore process lives\n${refused.stderr}`);
       assert.match(refused.stderr, /LIFECYCLE_BLOCKED/, `${label} is a known refusal`);
-      assert.ok(refused.stderr.includes(`holds this root until ${deadline}, and its restore process ${child.pid} is still running`), `${label} names the restore process and the deadline\n${refused.stderr}`);
+      assert.ok(refused.stderr.includes(`holds this root until ${deadline}, and its restore process ${child.pid} is still running, started at ${held.claim!.coordinator.startedAt}`), `${label} names the restore process, its start and the deadline\n${refused.stderr}`);
+      assert.doesNotMatch(refused.stderr, /roll the pre-commit attempt back/, `${label} does not tell the operator to roll a live restore back`);
       assert.ok(refused.stderr.includes(recover), `${label} names the recovery\n${refused.stderr}`);
     }
 
@@ -336,6 +420,7 @@ async function interruptedRestoreScenario(): Promise<void> {
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
     must("recover the interrupted restore", recovered);
+    assert.ok(/Next\s+cotal up\s+Resume the space from its preserved state\s+cotal backup restore <directory>\s+Try the restore again/.test(recovered.stdout), `the recovery receipt names resume and a retried restore as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
@@ -411,6 +496,7 @@ async function interruptedCreateScenario(): Promise<void> {
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
     must("recover the interrupted create", recovered);
+    assert.ok(/Next\s+cotal backup create <directory>\s+Create a new backup from the preserved cut\s+cotal up\s+Resume the space/.test(recovered.stdout), `the release receipt names a new backup and resume as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
     assert.equal(existsSync(destination), false, "recovery removed the partial artifact");

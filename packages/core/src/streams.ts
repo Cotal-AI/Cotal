@@ -10,7 +10,8 @@ import {
   type StreamConfig,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
-import { connect, credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
 import {
@@ -528,7 +529,7 @@ export async function reconcileSpaceTtls(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<TtlReconciled[]> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including reconnects.
@@ -676,7 +677,7 @@ export async function setupSpaceStreams(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including reconnects.
@@ -732,7 +733,7 @@ export async function clearSpaceHistory(opts: {
   sentinelCreds?: string;
   includeDms?: boolean;
 }): Promise<ClearSpaceHistoryResult> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
@@ -749,7 +750,8 @@ export async function clearSpaceHistory(opts: {
  *  registry config so it stops surfacing as an empty channel. Needs PURGE rights and the
  *  registry key delete: pass a `channel-purger` cred; a bare connection (open mode) has them by default.
  *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing channel
- *  registry bucket/key is a no-op — the purge alone already emptied the channel. */
+ *  registry bucket/key is a no-op — the purge alone already emptied the channel. `removed` says
+ *  whether this call deleted the channel's registry entry. */
 export async function clearChannel(opts: {
   servers: string;
   space: string;
@@ -758,22 +760,26 @@ export async function clearChannel(opts: {
   /** User mode: a `channel-purger`-view bearer + the space's sentinel creds (instead of a creds file). */
   bearer?: string;
   sentinelCreds?: string;
-}): Promise<{ channel: string; purged: number }> {
+}): Promise<{ channel: string; purged: number; removed: boolean }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
       filter: chatSubject(opts.space, "*", "*", opts.channel),
     });
+    let removed = false;
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));
-      await registry.delete(opts.channel);
+      if ((await registry.get(opts.channel))?.operation === "PUT") {
+        await registry.delete(opts.channel);
+        removed = true;
+      }
     } catch {
       /* no channel registry bucket or no config for this channel — purge already emptied it */
     }
-    return { channel: opts.channel, purged };
+    return { channel: opts.channel, purged, removed };
   } finally {
     await nc.drain();
   }
@@ -802,6 +808,33 @@ export interface DeprovisionResourceAccounting {
   acls: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
   /** Durable membership entry accounting; disappeared means a competing purge won the native CAS. */
   members: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
+}
+
+/** Add `part` into `total`. A null `deleted` on either side keeps the sum null, since one
+ *  unattributable removal leaves the whole count unattributable. */
+export function addDeprovisionAccounting(total: DeprovisionResourceAccounting, part: DeprovisionResourceAccounting): void {
+  total.examined += part.examined;
+  total.deleted = total.deleted === null || part.deleted === null ? null : total.deleted + part.deleted;
+  total.absent += part.absent;
+  total.refused += part.refused;
+  total.acknowledged += part.acknowledged;
+  total.disappeared += part.disappeared;
+  total.consumers.examined += part.consumers.examined;
+  total.consumers.deleted = total.consumers.deleted === null || part.consumers.deleted === null ? null : total.consumers.deleted + part.consumers.deleted;
+  total.consumers.absent += part.consumers.absent;
+  total.consumers.refused += part.consumers.refused;
+  total.consumers.acknowledged += part.consumers.acknowledged;
+  total.consumers.disappeared += part.consumers.disappeared;
+  total.acls.examined += part.acls.examined;
+  total.acls.deleted += part.acls.deleted;
+  total.acls.absent += part.acls.absent;
+  total.acls.refused += part.acls.refused;
+  total.acls.disappeared += part.acls.disappeared;
+  total.members.examined += part.members.examined;
+  total.members.deleted += part.members.deleted;
+  total.members.absent += part.members.absent;
+  total.members.refused += part.members.refused;
+  total.members.disappeared += part.members.disappeared;
 }
 
 /** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
@@ -837,7 +870,7 @@ export async function deprovisionAgent(opts: {
   memberChannels?: readonly string[];
   creds?: string;
 }): Promise<DeprovisionResourceAccounting> {
-  const nc = await connect({
+  const nc = await dialerFor(opts.servers)({
     servers: opts.servers,
     ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     // This is a detached, fire-and-forget teardown — it must FAIL FAST, never hang, so the caller's

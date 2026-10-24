@@ -50,7 +50,8 @@ revision. A `checkpoint` is a durable pause raced against a durable timer:
 
 - resolved: `{ status: "resolved", value?, by?, at, artifact? }`
 - expired with `onExpiry: "proceed"`, or after an `"escalate"` hop expires too: `{ status: "expired", at }`
-- expired with the default `onExpiry: "fail"`: throws L4007
+- expired with the default `onExpiry: "fail"`: throws L4007, which says whether the deadline came
+  from the checkpoint's own `timeout` or from the run's default
 
 ```js
 const gate = await checkpoint("ship-gate", "Ship 1.4.0 to npm?", { timeout: "4h", onExpiry: "proceed" })
@@ -80,7 +81,10 @@ rule covers user functions declared `async`.
 `parallel` and `race` take branches unevaluated, as a record of thunks. The record keys are the
 branch keys and survive reordering; array branches are keyed by index, which shifts when you
 insert one (warning L3023). `fanOut(items, fn, { name, key? })` runs `fn(item, index)` per item;
-the branch key is `key(item)`, else the item's string `id`, else the fan-out is refused (L3021).
+the branch key is `key(item)`, else the item's string `id`, else the run refuses the fan-out when
+it reaches it (L3021). `cotal run validate` warns with the same code only for a list written in the
+`fanOut` call. A list held in a variable can change before the call, so only the run judges it:
+give its items an `id` or pass `key`, as below.
 
 ```js
 async function review(pr) {

@@ -24,7 +24,7 @@
     {
       "name": "leading global flags are not read",
       "file": "implementations/cli/src/command.ts",
-      "find": "    else if (!takeGlobalFlag(word)) break;\n",
+      "find": "    else if (takeGlobalFlag(word)) leadingGlobals.add(word);\n    else break;\n",
       "replace": "    else break;\n",
       "expectRed": "--no-input before the command word is accepted",
       "cell": "--no-input before the command word is accepted",

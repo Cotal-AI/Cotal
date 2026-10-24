@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+  assertLifecycleToken,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
-  assertLifecycleToken,
   GOAL_BEARING_COMMANDS,
   goalFollowRefusal,
   epProbeInstanceInterest,
@@ -38,7 +38,7 @@ import {
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { CommandFailure, controlCaller, loadSpaceAuth, oneLine, renderWorkspaceError, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
-import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
+import { DEV_OWNER, EP_UNANSWERED, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint, stderrLine } from "../ui.js";
 import { cliVersion } from "./version.js";
 import { nativeEndpointRefusal } from "./endpoint-errors.js";
@@ -86,6 +86,8 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean; self?: 
   transcriptReceive: { command: "transcript-receive" },
   chatSessionOpen: { command: "chat-session-open" },
   chatSessionRetire: { command: "chat-session-retire" },
+  runPs: { command: "run-ps" },
+  runStatus: { command: "run-status" },
 };
 
 /** Operator reach for one targeted control call: `owner` rides the caller's own-domain verb rows
@@ -271,6 +273,15 @@ export function managerFailure(reply: ManagerReply, operation: string, target: u
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", `the manager did not confirm the outcome of ${what}; it was not submitted again${reason}`, { target, native, remedy: "inspect the recorded manager, request and target before retrying" });
 }
 
+/** A describe that drew no answer means the command after it was never sent, so it is refused, as
+ *  `chat` and the run verbs refuse it, and not an unknown outcome. Undefined for any other failure. */
+export function unansweredDescribeRefusal(reply: ManagerReply, operation: string, target: unknown): CommandFailure | undefined {
+  if (!reply.details?.some((detail) => detail.kind === EP_UNANSWERED && detail.command === "describe")) return undefined;
+  const agent = (target as { agent?: unknown } | null)?.agent;
+  const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", `the manager registered for this space did not answer, so ${what} was not sent: ${oneLine(reply.error ?? "no reply")}`, { target, native: { code: reply.code }, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
+}
+
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
  *  (`ps`, `models`, `stop`, `attach`, `spawn --detach`), with `instanceId` set to what the operator
  *  typed, if anything. Its presence is what lets the renderer offer `--on` as a remedy: a command
@@ -291,40 +302,39 @@ export interface ManagerPin {
 /** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
  *  ps/stop/attach/input/describe/models so they cannot drift. For stop and attach it is the seat-locality
  *  escape hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily
- *  the one that wins the class queue. */
-export const onFlag = { name: "on", type: "string", value: "<instance>", description: "ask only this manager instance, by the id `ps` prints, in a space with several managers" } as const satisfies FlagSpec;
+ *  the one that wins the class queue. On a user-auth mesh it also takes a manager's name or host
+ *  ({@link managerPin}). */
+export const onFlag = { name: "on", type: "string", value: "<instance>", description: "ask only this manager, by the instance id `ps` prints or, on a user-auth mesh, by its name or host" } as const satisfies FlagSpec;
 
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
  *  it is falsy, so every `if (on)` branch would treat it as absent and drop the pin (a `stop` would
  *  fall through to seat locality, an open-mesh `ps` to the scatter), while the mint and core's
  *  route builder treat it as PRESENT and refuse it as an invalid token. Two answers for one input;
- *  a dropped pin is a silent fallback, so neither branch gets to see it. A non-empty value is also
- *  shape-checked here now, against core's own lifecycle-token grammar: the mint's bare grammar
- *  error named neither the identifier `--on` wants nor where to read it, which cost operators
- *  spawn attempts on a format mismatch (#423). */
+ *  a dropped pin is a silent fallback, so neither branch gets to see it. A roster principal id
+ *  (`local.…`) is refused here too, naming the identifier `--on` wants (#423). Any other value is an
+ *  instance id, name or host, which {@link managerPin} resolves to an instance id before use. */
 export function onInstance(on: string | undefined, verb: string): string | undefined {
   if (on === undefined) return undefined;
   if (on === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`);
-  try {
-    assertLifecycleToken(on, "instanceId");
-  } catch (e) {
-    const principalClause = on.startsWith("local.") ? `; "${on}" is a principal id` : "";
-    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance\` field of \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${principalClause}: \`${verb} --on <instance>\``);
-  }
+    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it), or on a user-auth mesh a manager's name or host: \`${verb} --on <instance>\`. An empty value is refused, not dropped`);
+  if (on.startsWith("local."))
+    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it): \`${verb} --on <instance>\``);
   return on;
 }
 
-/** {@link onInstance} for a command that reports no structured output: the refusal is printed and
- *  ends the process with exit 1. */
-export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
+/** {@link onInstance} for an `--on` that takes only an instance id: an endpoint's instance, or a
+ *  step that runs before the mesh can be read. The value is shape-checked against core's
+ *  lifecycle-token grammar, so a malformed id is refused naming the identifier `--on` wants. */
+export function onInstanceId(on: string | undefined, verb: string): string | undefined {
+  const value = onInstance(on, verb);
+  if (value === undefined) return undefined;
   try {
-    return onInstance(on, verb);
+    assertLifecycleToken(value, "instanceId");
   } catch (e) {
-    stderrLine("✗ ", (e as Error).message, c.red);
-    process.exit(1);
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did): \`${verb} --on <instance>\``);
   }
+  return value;
 }
 
 /** Render an ep-rail failure for the operator. Three outcomes, told apart by core's markers and never
@@ -448,7 +458,8 @@ export interface ScatterInstanceReply {
   /** Set on unreachable slots only: a slot that ANSWERED needs no liveness verdict. */
   liveness?: ScatterInstanceLiveness;
 }
-export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean };
+/** A failed scatter's `noLiveManager` says the registry was read and lists no live manager. */
+export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean; noLiveManager?: true };
 
 /** Open one short-lived control connection under whichever of the three auth shapes this command
  *  holds (static creds / user bearer + sentinel / bare open mesh) and hand it to `fn`. Extracted so
@@ -689,7 +700,7 @@ async function askManagerScatterEp(
     });
   } catch (e) {
     const { error, code, unanswered } = epRailFailure(e);
-    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}) };
+    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}), ...(noLiveInstances(e) ? { noLiveManager: true as const } : {}) };
   }
 
   // ---- the LOCAL pinned re-mint, decided by {@link scatterProbeMaterial} rather than inline.
@@ -773,11 +784,17 @@ export async function scatterManager(
  *  the read to decide. `purpose` completes "no manager is running for this space to …". */
 export async function refuseWithoutLiveManager(space: string, server: string, auth: ControlAuth, target: unknown, purpose: string): Promise<void> {
   try {
-    await withControlConnection(server, auth, async (nc) => freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT));
+    await liveManagerIds(space, server, auth);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
   }
+}
+
+/** The manager instances the space's registry lists as live, frozen as a scatter freezes them. An
+ *  empty registry throws the registry's own refusal. */
+export async function liveManagerIds(space: string, server: string, auth: ControlAuth): Promise<string[]> {
+  return withControlConnection(server, auth, async (nc) => (await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT)).map((f) => f.instanceId));
 }
 
 /** The stable code a refused manager READ reports, by the endpoint's catalog code. A read has no

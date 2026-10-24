@@ -1,11 +1,13 @@
 /**
  * Recipient choice for one chat opening, shared by the Ink and `--plain` front ends. Pure apart from
- * the one `channelInfo` read that discloses an unregistered channel before it is used (spec line 295).
+ * the one `channelInfo` read that discloses an unregistered channel before it is used (spec line 295)
+ * and the session's resolution of a typed DM name, which refuses one that reaches no one.
  * It never widens anything: a choice only names a destination; the broker still decides.
  */
-import { assertValidChannel, assertValidRole, isConcreteChannel, oneLine } from "@cotal-ai/core";
+import { assertValidRole, isConcreteChannel, oneLine } from "@cotal-ai/core";
 import type { AdmittedChatSession, ConnectionReport, RosterView } from "./session.js";
 import { personLabel, recipientLabel, sharedNames, type Person, type Recipient } from "./view.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
 
 /** Bound on listed choices; the rest stay reachable by typing an explicit name. Provisional. */
 export const MAX_CHOICES = 50;
@@ -51,12 +53,8 @@ export function parseRecipient(text: string): { ok: true; recipient: Recipient }
   const t = text.trim();
   if (t.startsWith("#")) {
     const ch = t.slice(1);
-    try {
-      assertValidChannel(ch);
-    } catch (e) {
-      return { ok: false, error: oneLine((e as Error).message) };
-    }
-    if (!isConcreteChannel(ch)) return { ok: false, error: "a send needs a concrete channel (no * or >)" };
+    const problem = concreteChannelProblem(ch);
+    if (problem) return { ok: false, error: oneLine(problem) };
     return { ok: true, recipient: { kind: "channel", channel: ch } };
   }
   if (t.startsWith("@")) {
@@ -94,6 +92,21 @@ export async function discloseChoice(session: AdmittedChatSession, r: Recipient)
   if (!info.value.registered) parts.push(`Unregistered channel #${oneLine(r.channel)}: sends follow the space's native policy`);
   if (!info.value.postable) parts.push(`your grant does not allow posting to #${oneLine(r.channel)}`);
   return parts.length ? parts.join("; ") : undefined;
+}
+
+/**
+ * Why a chosen DM recipient reaches no one, resolved as a send to it would be, or undefined when it
+ * does. Other recipients need no lookup.
+ */
+export async function refusedDm(session: AdmittedChatSession, r: Recipient): Promise<string | undefined> {
+  if (r.kind !== "dm") return undefined;
+  let resolved;
+  try {
+    resolved = await session.resolveDm(r.to);
+  } catch (e) {
+    return `could not check ${oneLine(r.to)}: ${oneLine((e as Error).message)}`;
+  }
+  return resolved.outcome === "ok" ? undefined : oneLine(resolved.message);
 }
 
 export { recipientLabel };

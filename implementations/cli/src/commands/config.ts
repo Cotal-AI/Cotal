@@ -1,14 +1,21 @@
-import { isAbsolute } from "node:path";
-import type { FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
+import { dirname, isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
+import { agentFilePath, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import {
+  COLOR_VALUES,
   CommandFailure,
   PREFERENCE_KEYS,
+  isCommandFailure,
   describeLayer,
   extensionProvides,
+  findMesh,
+  findPreparedSpace,
   getCurrent,
   jsonFlag,
   knownHarnesses,
   loadExtensionsManifest,
+  loadMeshes,
+  loadPreparedSpaces,
   plainFlag,
   preferenceInfo,
   preferenceSpaceProblem,
@@ -27,7 +34,9 @@ import {
   type Report,
   type ResolvedPreference,
 } from "@cotal-ai/workspace";
-import { personaNameProblem } from "../lib/persona-files.js";
+import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { personaCatalog, personaNameProblem } from "../lib/persona-files.js";
+import { launchSpace } from "../lib/spawn-defaults.js";
 
 export const configFlags = [
   { name: "user", type: "boolean", description: "read or write your own defaults, with no space's values" },
@@ -37,13 +46,30 @@ export const configFlags = [
   plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
-const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
+export const configSubcommands = [
+  { name: "get", flagNames: ["user", "space", "json", "plain"], summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
+  { name: "set", flagNames: ["user", "space", "json", "plain"], summary: "save a value for you, or for one space with --space", usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+  { name: "unset", flagNames: ["user", "space", "json", "plain"], summary: "remove a saved value", usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+] as const satisfies readonly Subcommand[];
+
+/** Complete the subcommand, the key, and a value from the closed sets a write checks: color's and the
+ *  known harnesses. The dispatcher completes `--space`. */
+export function configComplete(argv: string[]): CompletionResult {
+  const words = completingFlagValue(argv, configFlags) ? [] : positionalsForCompletion(argv, configFlags);
+  if (words.length === 1) return { items: configSubcommands.map((sub) => ({ value: sub.name, description: sub.summary })), directive: "nofiles" };
+  if (words.length === 2 && configSubcommands.some((sub) => sub.name === words[0])) return { items: PREFERENCE_KEYS.map((key) => ({ value: key, description: preferenceInfo(key).about })), directive: "nofiles" };
+  if (words.length === 3 && words[0] === "set") return { items: (words[1] === "color" ? [...COLOR_VALUES] : words[1] === "harness" ? harnessNames() : []).map((value) => ({ value })), directive: "nofiles" };
+  return { items: [], directive: "nofiles" };
+}
+
+const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, { remedy: "run `cotal help config` for its keys and forms" });
 
 /** The scope a run reads through or writes to: the user's defaults, or one space's values. */
 interface Scope {
   readonly space: string | null;
-  /** How the space was chosen: `--space`, or the selected space (`cotal use`) for a read. */
-  readonly from: "flag" | "selected" | null;
+  /** How the space was chosen: `--space`, the selected space (`cotal use`), or with nothing selected
+   *  the space a launch here uses: this folder's, or the only running one. */
+  readonly from: "flag" | "selected" | "folder" | "running" | null;
 }
 
 interface Setting extends ResolvedPreference {
@@ -75,7 +101,8 @@ interface PreferenceWrite {
   readonly key: PreferenceKey;
   readonly previous: string | null;
   readonly value: string | null;
-  /** The key as a command in this scope now resolves it, from this shell. */
+  /** The key as a command here now resolves it, from this shell: through `--space`, else the space a
+   *  launch here uses, whichever scope was written. */
   readonly effective: Setting;
 }
 
@@ -97,6 +124,7 @@ export async function config(args: ParsedArgs): Promise<void> {
 
   if (sub === undefined) {
     if (rest.length) throw usage("usage: cotal config [--user | --space <name>]");
+    if (v.space !== undefined) assertKnownSpace(v.space, prefs, true);
     const scope = readScope(v);
     const result: PreferencesResult = { kind: "preferences", file: preferencesPath(), revision: prefs.revision, scope, settings: PREFERENCE_KEYS.map((key) => setting(key, scope, prefs)) };
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues(result.settings) }, (value) => preferencesView(value, Boolean(v.verbose)));
@@ -105,6 +133,7 @@ export async function config(args: ParsedArgs): Promise<void> {
   if (sub === "get") {
     if (rest.length !== 1) throw usage("usage: cotal config get <key> [--user | --space <name>]");
     const key = keyOf(rest[0]!);
+    if (v.space !== undefined) assertKnownSpace(v.space, prefs, true);
     const scope = readScope(v);
     const result: PreferenceResult = { kind: "preference", file: preferencesPath(), revision: prefs.revision, scope, setting: setting(key, scope, prefs) };
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues([result.setting]) }, preferenceView);
@@ -119,23 +148,47 @@ export async function config(args: ParsedArgs): Promise<void> {
     // A blank persona is left to the key's own check, which names it empty.
     if (key === "persona" && value?.trim()) checkPersona(value);
     const scope: Scope = v.space !== undefined ? { space: v.space, from: "flag" } : { space: null, from: null };
+    // A value saved for a space that is neither registered nor prepared would never apply, so a typo
+    // is refused with the spaces there are, once the write's own checks pass. Unset also takes a space
+    // that still holds a saved value, so a value left for a gone space can go.
+    if (scope.space !== null && preferenceInfo(key).perSpace && (sub === "unset" || !preferenceValueProblem(key, value!))) assertKnownSpace(scope.space, prefs, sub === "unset");
     const previous = (scope.space === null ? prefs.defaults[key] : prefs.spaces[scope.space]?.[key]) ?? null;
-    const { changed, revision } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
-    // What a command here uses next: through the written space, or the selected one for a default.
-    const effective = setting(key, readScope(v), readPreferences());
+    const { changed, revision, replacedMode } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
+    // The write replaces the file with a private one, so a mode someone set on it, such as read-only, is named as gone.
+    const modeChanged: OutputWarning[] = replacedMode === undefined ? [] : [{ code: "PREFERENCES_MODE_CHANGED", target: { path: preferencesPath() }, message: `${preferencesPath()} was mode ${replacedMode.toString(8).padStart(4, "0")}, and this write replaced it with a new file at mode 0600; a file's mode does not stop config set or unset` }];
+    // What a command here uses next, whichever scope was written: through `--space`, else the space a
+    // launch here uses, as `spawn` resolves it. `--user` chooses where the value is saved, not that.
+    const here = readScope({ ...v, user: undefined });
+    const effective = setting(key, here, readPreferences());
     const result: PreferenceWrite = { kind: "preference-write", file: preferencesPath(), revision, scope, key, previous, value: value ?? null, effective };
-    writeResult(presentation, { command: "config", target: target(scope), result, warnings: shadowedWrite(result), noOp: !changed }, writeView);
+    const missing = key === "persona" && value?.trim() ? missingPersona(value, here) : undefined;
+    writeResult(presentation, { command: "config", target: target(scope), result, warnings: [...modeChanged, ...shadowedWrite(result), ...(missing ? [missing] : [])], noOp: !changed }, writeView);
     return;
   }
   throw usage(`cotal config has no subcommand "${sub}" - run \`cotal help config\``);
 }
 
-/** A read looks through `--space`, or the selected space when neither scope flag is given. */
+/** Refuse a `--space` this machine does not know, naming the spaces it does. A registered or prepared
+ *  space is known. With `saved`, for a read or an unset, so is a space that still holds a saved value,
+ *  so a value left for a removed space can be read and removed. */
+function assertKnownSpace(space: string, prefs: Preferences, saved: boolean): void {
+  const holdsValue = (name: string) => Object.keys(prefs.spaces[name] ?? {}).length > 0;
+  if (findMesh(space) || findPreparedSpace(space) || (saved && holdsValue(space))) return;
+  const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space), ...(saved ? Object.keys(prefs.spaces).filter(holdsValue) : [])])].sort();
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is ${saved ? "registered, prepared or holding a saved value here" : "registered or prepared here"}${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
+    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
+  });
+}
+
+/** A read looks through `--space`, or when neither scope flag is given, the space a launch here uses:
+ *  the selected one, else the one `spawn` resolves from this folder. */
 function readScope(v: FlagValues<typeof configFlags>): Scope {
   if (v.space !== undefined) return { space: v.space, from: "flag" };
   if (v.user) return { space: null, from: null };
   const selected = getCurrent();
-  return selected ? { space: selected, from: "selected" } : { space: null, from: null };
+  if (selected) return { space: selected, from: "selected" };
+  const here = launchSpace(process.cwd());
+  return here ? { space: here.space, from: here.source === "registry" ? "running" : "folder" } : { space: null, from: null };
 }
 
 const target = (scope: Scope) => (scope.space === null ? null : { space: scope.space });
@@ -157,9 +210,13 @@ export function checkHarness(value: string): void {
 }
 
 function harnessProblem(value: string): string | undefined {
-  const installed = loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name));
-  const known = knownHarnesses(installed);
+  const known = harnessNames();
   return known.includes(value) ? undefined : `no harness ${JSON.stringify(value)}; known harnesses: ${known.join(", ")}`;
+}
+
+/** The harnesses this workstation knows: the official connectors and the installed ones. */
+function harnessNames(): string[] {
+  return knownHarnesses(loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name)));
 }
 
 /** A persona default is a catalog name or a persona file path, the two forms a launch resolves (a path
@@ -170,12 +227,27 @@ function checkPersona(value: string): void {
   if (problem) throw usage(problem);
 }
 
+const isPersonaPath = (value: string): boolean => isAbsolute(value) || /[\\/]/.test(value) || value.endsWith(".md");
+
 function personaProblem(value: string): string | undefined {
-  const path = isAbsolute(value) || /[\\/]/.test(value) || value.endsWith(".md");
-  const problem = !path
+  const problem = !isPersonaPath(value)
     ? personaNameProblem(value)
     : /[\u0000-\u001f\u007f]/u.test(value) || value !== value.trim() ? "a persona file path cannot hold control characters or surrounding spaces" : undefined;
   return problem && `invalid persona ${JSON.stringify(value)}: ${problem}`;
+}
+
+/** A persona the catalog of the space a command here uses does not hold, as a warning. The value is
+ *  still saved, since the file may be created later. A space this machine cannot resolve has no
+ *  catalog here to check. */
+function missingPersona(value: string, scope: Scope): OutputWarning | undefined {
+  if (scope.space === null) return undefined;
+  let catalog;
+  try { catalog = personaCatalog({ space: scope.space }); }
+  catch (error) { if (isCommandFailure(error)) return undefined; throw error; }
+  const path = agentFilePath(catalog.root, value);
+  if (existsSync(path)) return undefined;
+  const missing = isPersonaPath(value) ? `no persona file ${path}` : `no persona "${value}" in space ${catalog.space}'s catalog ${dirname(path)}`;
+  return { code: "PERSONA_NOT_FOUND", target: { space: catalog.space, path }, message: `${missing}; the preference was saved, and a launch there needs that file` };
 }
 
 /** A variable that wins with a value `config set` refuses still wins, as it always has. It is named
@@ -197,8 +269,9 @@ function shadowedWrite(w: PreferenceWrite): OutputWarning[] {
   return [{ code: "PREFERENCE_SHADOWED", target: target(w.scope), message: `${describeLayer(winner)} (${winner.value}) outranks this value in this shell` }];
 }
 
+const SCOPE_FROM: Partial<Record<NonNullable<Scope["from"]>, string>> = { selected: " (selected)", folder: " (this folder's)", running: " (the only running space)" };
 const scopeText = (scope: Scope): string =>
-  scope.space === null ? "your defaults" : `space ${scope.space}${scope.from === "selected" ? " (selected)" : ""}`;
+  scope.space === null ? "your defaults" : `space ${scope.space}${scope.from ? SCOPE_FROM[scope.from] ?? "" : ""}`;
 
 const layerText = (layer: PreferenceLayer): string => `${describeLayer(layer)}: ${layer.value}`;
 

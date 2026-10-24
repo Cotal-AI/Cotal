@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { createConnection } from "node:net";
+import { createConnection, isIP } from "node:net";
 import {
   connect,
   credsAuthenticator,
@@ -222,6 +222,9 @@ export const MULTI_FILTER_READ_CONCURRENCY = 4;
  *  minutes is what the nats.js ordered consumers it replaces carried, and it keeps a reader alive
  *  across the gap between pulls on a slow link. */
 const HISTORY_READER_INACTIVE_MS = 5 * 60_000;
+
+/** The longest delay `setTimeout` honors, 2^31-1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
 
 /** One read's hold on a history-reader name (see {@link CotalEndpoint}'s `acquireHistoryReader`). */
 type HistoryReader = {
@@ -712,10 +715,10 @@ export class CotalEndpoint extends EventEmitter {
    *  self-heals on recovery instead of leaving the channel silently live-only. Surfaced to the connector
    *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
   private readonly pendingBootJoins = new Set<string>();
-  /** Chat-join subjects currently being broker-confirmed. An out-of-ACL subscribe among these trips an
-   *  EXPECTED async permission violation that joinChannel turns into a clean throw, so watchStatus
-   *  suppresses it rather than surfacing a spurious connection error. */
-  private readonly confirmingChatSubs = new Set<string>();
+  /** The refusals a channel's live subscription callback received. nats.js hands a subscription
+   *  refusal to the refused subscription's callback and then dispatches that same instance on the
+   *  connection status, so the callback owns it (see {@link subscribeChat}) and watchStatus skips it. */
+  private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
   /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
    *  running membership scans (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
@@ -1326,9 +1329,12 @@ export class CotalEndpoint extends EventEmitter {
         ? credsExp * 1000
         : undefined;
     if (expiryMs === undefined || this.stopped) return;
-    this.authExpiryReconnectTimer = setTimeout(() => {
-      if (this.nc === nc) this.disableLibraryReconnect(nc);
-    }, Math.max(0, expiryMs - Date.now() - 500));
+    // Node fires a delay above 2^31-1 ms (about 24.8 days) after 1 ms, which would disable reconnect
+    // at once. A later expiry waits in steps of that bound, and the fence is armed again from there.
+    const delay = Math.max(0, expiryMs - Date.now() - 500);
+    this.authExpiryReconnectTimer = delay > MAX_TIMER_MS
+      ? setTimeout(() => { if (this.nc === nc) this.armAuthExpiryReconnectFence(nc); }, MAX_TIMER_MS)
+      : setTimeout(() => { if (this.nc === nc) this.disableLibraryReconnect(nc); }, delay);
     this.authExpiryReconnectTimer.unref?.();
   }
 
@@ -1789,7 +1795,6 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.chatSubs.clear();
     this.chatSubDenied.clear();
-    this.confirmingChatSubs.clear();
     this.ownWatchDeletePrefixes.clear();
     this.roster.clear();
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
@@ -2949,9 +2954,9 @@ export class CotalEndpoint extends EventEmitter {
     return { state: "stale", fresh: false, staleSince };
   }
 
-  /** Wait until the current presence watch has consumed its initial KV snapshot. An empty bucket
-   * emits no watch entry, so the timeout keeps a genuinely empty mesh bounded and is reported
-   * distinctly from snapshot completion. */
+  /** Wait until the current presence watch has consumed its initial KV snapshot. An observer that
+   * does not register completes on an empty bucket at once. A registering one completes when its
+   * own record arrives, and the timeout bounds that wait. */
   async waitForPresenceSnapshot(timeoutMs = 1_000): Promise<"snapshot" | "timeout"> {
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -2970,7 +2975,11 @@ export class CotalEndpoint extends EventEmitter {
     await this.publishPresence();
   }
 
-  async setStatus(status: PresenceStatus): Promise<void> {
+  /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
+   *  the new activity beside the old status. */
+  async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
+    if (activity !== undefined) this.activity = activity;
     if (status !== this.status) this.statusSince = Date.now();
     this.status = status;
     await this.publishPresence();
@@ -3057,8 +3066,9 @@ export class CotalEndpoint extends EventEmitter {
 
   /** A channel's effective replay policy read straight from the registry bucket, for a caller that
    *  reads it right after start, before any watch cache has caught up, or that watches nothing. A
-   *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy. */
-  async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null }> {
+   *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy.
+   *  `registered` says whether the channel has its own registry entry. */
+  async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null; registered: boolean }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.space, { create: false }));
     let cfg: ChannelConfig | undefined;
@@ -3072,7 +3082,7 @@ export class CotalEndpoint extends EventEmitter {
       // `open` binds lazily, so a space with no registry bucket surfaces on the first read.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
     }
-    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null };
+    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null, registered: cfg !== undefined };
   }
 
   /** Effective delivery class for a channel (per-channel override ?? space default ?? "durable"),
@@ -3117,12 +3127,11 @@ export class CotalEndpoint extends EventEmitter {
       // The confirm boundary (flush) failed — the connection drained/closed mid-join, so we have NO
       // confirmation the subscribe was accepted. Fail closed: undo the half-open join rather than
       // returning as if it were confirmed (a reconnect re-confirms from this.channels, which we never
-      // pushed to). unsubscribeChat clears chatSubs + confirmingChatSubs.
+      // pushed to). unsubscribeChat clears chatSubs.
       this.unsubscribeChat(channel);
       this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     if (this.chatSubDenied.has(channel)) {
       this.unsubscribeChat(channel);
       this.joinSeq.delete(channel);
@@ -3193,9 +3202,10 @@ export class CotalEndpoint extends EventEmitter {
    * message on the channel is discarded. `maxAgeMs` is the stream's age limit. Each is `null` when
    * the stream sets none. `senders` counts each sender's retained messages per channel, so a sender
    * at the cap marks a channel whose retained history has lost that sender's older messages while
-   * other senders' messages from the same time remain.
+   * other senders' messages from the same time remain. `stream` is false when the chat stream does
+   * not exist, which holds nothing. `lastSeq` is the stream's newest sequence, 0 when it has none.
    */
-  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[] }> {
+  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[]; stream: boolean; lastSeq: number }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const mgr = await jetstreamManager(this.nc);
     let info;
@@ -3204,7 +3214,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch (e) {
       // As in listChannels: an absent CHAT stream holds nothing yet; any other failure stays loud.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
-      return { perSender: null, maxAgeMs: null, senders: [] };
+      return { perSender: null, maxAgeMs: null, senders: [], stream: false, lastSeq: 0 };
     }
     const senders: { channel: string; sender: string; messages: number }[] = [];
     for (const [subject, messages] of Object.entries(info.state.subjects ?? {})) {
@@ -3217,6 +3227,8 @@ export class CotalEndpoint extends EventEmitter {
       perSender: typeof cap === "number" && cap > 0 ? cap : null,
       maxAgeMs: typeof age === "number" && age > 0 ? Math.round(age / 1_000_000) : null,
       senders: senders.sort((a, b) => a.channel.localeCompare(b.channel) || a.sender.localeCompare(b.sender)),
+      stream: true,
+      lastSeq: info.state.last_seq,
     };
   }
 
@@ -4261,6 +4273,7 @@ export class CotalEndpoint extends EventEmitter {
    * failing call — so without this an over-tight ACL silently drops the agent's
    * traffic and it just looks "absent". A denied request is the exception: nats.js also
    * rejects that request with the denial, so its caller owns it (see {@link trackRequestDenials}).
+   * So is a refused channel subscription, whose callback owns it (see {@link subscribeChat}).
    * We annotate permission denials explicitly so a denial is never mistaken for absence
    * (which already has a benign cause: MCP reconnect).
    */
@@ -4290,11 +4303,7 @@ export class CotalEndpoint extends EventEmitter {
           continue;
         }
         if (s.type !== "error") continue;
-        // Suppress the EXPECTED permission violation from a manager-free join we're confirming: an
-        // out-of-ACL `nc.subscribe` is refused async on its chat subject, which joinChannel catches
-        // and turns into a clean throw — it is not a connection error to surface.
-        if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
-          continue;
+        if (s.error instanceof PermissionViolationError && this.chatSubRefusals.has(s.error)) continue;
         if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
         // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
         // history reads, whose refusal can arrive after that delete timed out.
@@ -4599,8 +4608,8 @@ export class CotalEndpoint extends EventEmitter {
     return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
   }
 
-  /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
-   *  effort, a crash just lets the bucket TTL expire it).
+  /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (a
+   *  crash just lets the bucket TTL expire it).
    *
    *  THE REVISION IS WHAT MAKES THIS A RELEASE RATHER THAN A DELETE. An unconditional delete removes
    *  whatever row is there, and by shutdown time the row is not necessarily still ours: the exit
@@ -4609,6 +4618,10 @@ export class CotalEndpoint extends EventEmitter {
    *  no holder at all. Passing the revision this endpoint last owned makes the delete a compare-and-
    *  swap (`previousSeq` becomes JetStream's `ExpectedLastSubjectSequence`), so a row that has moved
    *  on is left alone.
+   *
+   *  A RELEASE THAT DID NOT COMMIT REJECTS. The broker's CAS refusal and any broker failure reach the
+   *  caller, because only the caller knows whether that matters: a shutdown that must finish anyway
+   *  catches it, and a close that reports whether a successor can start learns the outcome here.
    *
    *  THE ARGUMENT IS REQUIRED, AND EXPLICITLY NULLABLE RATHER THAN OPTIONAL. `undefined` means "this
    *  process no longer holds a revision it can argue for", which is the takeover paths' honest
@@ -4620,12 +4633,7 @@ export class CotalEndpoint extends EventEmitter {
    *  and the next acquire was refused. A caller must now say which it means. */
   async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
     if (revision === undefined) return;
-    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }
-    catch {
-      // Intentionally best-effort for EVERY failure: the lease TTL is the crash-safe release authority,
-      // and clean shutdown must continue even when the broker is already gone or draining. A refused
-      // CAS lands here too, which is the correct outcome, someone else owns the row.
-    }
+    await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision });
   }
 
   /** Read a shard's delivery lease (the daemon-availability signal), or `undefined` if none is live.
@@ -4826,8 +4834,8 @@ export class CotalEndpoint extends EventEmitter {
     try {
       await (await this.managerLeaseRegistry()).delete(MANAGER_RENEWAL_LEASE_KEY, { previousSeq: held });
     } catch {
-      // Best-effort, like releaseManagerLease: a moved revision means it is not ours, and a broker
-      // failure is recovered by the bucket TTL. Shutdown must not claim deletion.
+      // Best-effort: a moved revision means it is not ours, and a broker failure is recovered by the
+      // bucket TTL. Shutdown must not claim deletion.
     }
   }
 
@@ -4877,17 +4885,13 @@ export class CotalEndpoint extends EventEmitter {
     return { info: JSON.parse(new TextDecoder().decode(e.value)) as ManagerLeaseInfo, revision: e.revision, created: e.created.getTime() };
   }
   /** Release THIS instance's key on clean shutdown so a same-id restart re-acquires immediately. CAS-guarded
-   *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, the conditional delete
-   *  no-ops. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
+   *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, and the conditional
+   *  delete is refused and rejects, like any broker failure; a shutdown that must finish anyway catches
+   *  it. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
   async releaseManagerLease(instanceId: string, revision?: number): Promise<void> {
-    try {
-      const kv = await this.managerLeaseRegistry();
-      if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
-      else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
-    } catch {
-      // Intentionally best-effort for EVERY failure: a revision mismatch means the lease is no longer
-      // ours, while a broker failure is recovered by the bucket TTL. Shutdown must not claim deletion.
-    }
+    const kv = await this.managerLeaseRegistry();
+    if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
+    else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
   }
   /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
    *  presence/existence check for the CLI's `spawn -f` reuse and `waitLeaseGone`, which only need "is any
@@ -6287,7 +6291,6 @@ export class CotalEndpoint extends EventEmitter {
       const armed = this.firstConnect ? await this.armJoin(this.channels) : undefined;
       for (const ch of this.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      for (const ch of this.channels) this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", ch));
       if (armed) await this.backfillArmed(armed, this.backfillFloor);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
@@ -6454,7 +6457,6 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.nc || this.chatSubs.has(channel)) return;
     this.chatSubDenied.delete(channel);
     const subject = chatSubject(this.space, "*", "*", channel);
-    this.confirmingChatSubs.add(subject);
     const sub = this.nc.subscribe(subject, {
       callback: (err, m) => {
         if (err) {
@@ -6462,12 +6464,11 @@ export class CotalEndpoint extends EventEmitter {
           // leak (the broker refused it). Drop the channel from local joined state even if it was
           // already treated as joined — a LATE refusal beyond the confirm window: conformance #13
           // "drop on late refusal". (During the join's own confirm the channel isn't pushed yet, so
-          // this fires nothing then; joinChannel reads `chatSubDenied` and throws cleanly.)
+          // this fires nothing then; joinChannel reads `chatSubDenied` and throws cleanly.) Either way
+          // the refusal is reported from here, by that throw or the leave below, so watchStatus skips it.
+          if (err instanceof PermissionViolationError) this.chatSubRefusals.add(err);
           this.chatSubDenied.add(channel);
           this.chatSubs.delete(channel);
-          // NOTE: do NOT remove `subject` from confirmingChatSubs here — that set gates watchStatus's
-          // suppression of this expected violation, and is cleared by joinChannel after confirm (or by
-          // unsubscribeChat). Removing it in the callback races the watcher and leaks a spurious error.
           const i = this.channels.indexOf(channel);
           if (i >= 0) {
             this.channels.splice(i, 1);
@@ -6481,7 +6482,7 @@ export class CotalEndpoint extends EventEmitter {
             if (gen !== undefined) void this.closeRefusedMembership(channel, gen);
             this.emit(
               "error",
-              new Error(`left channel "${channel}": its live subscription was refused by the broker`),
+              new Error(`left channel "${channel}": its live subscription was refused by the broker`, { cause: err }),
             );
           }
           return;
@@ -6510,7 +6511,6 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Close a channel's core subscription (manager-free leave). */
   private unsubscribeChat(channel: string): void {
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     const sub = this.chatSubs.get(channel);
     if (sub) {
       try {
@@ -6577,6 +6577,13 @@ export class CotalEndpoint extends EventEmitter {
   async chatFrontier(): Promise<number> {
     const jsm = await this.manager();
     return (await jsm.streams.info(chatStream(this.space))).state.last_seq;
+  }
+
+  /** The bytes this connection's account holds in JetStream file storage, as `$JS.API.INFO`
+   *  reports them. A broker's `max_file_store` cap counts every account it serves, so this is a
+   *  lower bound on what that cap measures. */
+  async storedBytes(): Promise<number> {
+    return (await (await this.manager()).getAccountInfo()).storage;
   }
 
   /** Phase 1 of a join — arm each channel's tail-drop watermark at the current frontier. MUST run
@@ -6999,8 +7006,17 @@ export class CotalEndpoint extends EventEmitter {
       return undefined;
     }
     this.presenceWatchIter = iter;
+    // A bucket with no keys replays nothing, so no entry carries the end-of-replay marker. For an
+    // observer that does not register, that empty replay is the whole snapshot: nobody is present.
+    // A registering observer is populated by its own record instead (see onPresenceBucketEmpty).
+    const empty = info.num_pending === 0 && !this.doRegister;
+    if (empty) {
+      this.presenceSnapshotPopulated = true;
+      hydrated();
+      this.markPresenceBucketEmpty();
+    }
     void (async () => {
-      let ready = false;
+      let ready = empty;
       for await (const e of iter) {
         // A rebind bound a newer watch: this one's remaining entries belong to a retired epoch.
         // Stop consuming them (the rebind stops the iterator too; this ends the loop first).
@@ -7836,13 +7852,31 @@ export function defaultProbeTimeoutMs(servers: string): number {
  *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
  *  transport options: the URL scheme already decides TLS there, and the w3c transport refuses a
  *  `tls` block outright ("'tls' is not configurable"), so it is stripped here — at the one point
- *  that knows which transport is dialing — rather than at every caller composing auth options. */
+ *  that knows which transport is dialing — rather than at every caller composing auth options.
+ *  A TCP dial that requires TLS to one IP address names that address as the host its certificate
+ *  must cover (see {@link withDialedTlsHost}). */
 export function dialerFor(servers: string): typeof connect {
-  if (!wsServers(servers)) return connect;
+  if (!wsServers(servers)) return ((opts?: Parameters<typeof connect>[0]) => connect(withDialedTlsHost(servers, opts))) as typeof connect;
   return ((opts: Parameters<typeof connect>[0]) => {
     const { tls: _tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
     return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
   }) as typeof connect;
+}
+
+/** `opts` for a dial to `servers`, with the IP address it names as the host a TLS certificate must
+ *  cover when the dial requires TLS: a `tls` block, or a `tls://` address. The TCP transport upgrades
+ *  to TLS with no server name for an IP, and Node then checks the certificate against "localhost":
+ *  a certificate for the dialed address alone is refused, and one naming localhost passes for any
+ *  address. A dial that does not require TLS keeps its options, because a `tls` block refuses a
+ *  plaintext broker, and so does a list of several servers, whose one host the options cannot name. */
+function withDialedTlsHost(servers: string, opts: Parameters<typeof connect>[0]): Parameters<typeof connect>[0] {
+  const urls = servers.split(",").map((url) => url.trim()).filter(Boolean);
+  const tls = opts?.tls;
+  if (urls.length !== 1 || tls === null || tls === undefined && !/^tls:\/\//i.test(urls[0]!)) return opts;
+  let host: string;
+  try { ({ host } = hostPort(urls[0]!)); } catch { return opts; }
+  // Node checks an upgraded socket's certificate against `host` when no server name is set.
+  return isIP(host) ? { ...opts, tls: { host, ...tls } as NonNullable<typeof tls> } : opts;
 }
 
 /** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the

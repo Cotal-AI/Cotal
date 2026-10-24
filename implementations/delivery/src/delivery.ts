@@ -281,7 +281,7 @@ async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, spac
     return { initial, source: () => mintCreds(auth, identity, "delivery") };
   }
   throw new Error(
-    `delivery: no scoped creds at ${where}. Launch via \`cotal setup\`/\`cotal go\` (the setup helper mints + writes it), or pass --creds <file>; for a standalone dev run use --dev-mint.`,
+    `delivery: no scoped creds at ${where}. Start the space with \`cotal up\`, which mints and writes them, or pass --creds <file>; for a standalone dev run use --dev-mint.`,
   );
 }
 
@@ -768,8 +768,8 @@ async function runStartedDelivery(
     unrecordPid?.();
     closePromise = (async () => {
       try { await ep.quiescePlane3(); } catch { /* stop still releases the connection */ }
-      // `releaseDeliveryLease` swallows a delete that did not commit, so the row the broker holds
-      // afterwards is the verdict: while one is there, a successor is refused.
+      // A release that did not commit rejects. Otherwise the row the broker holds afterwards is the
+      // verdict: while one is there, a successor is refused.
       const release = async () => {
         const own = await ep.readDeliveryLeaseEntry(shard);
         if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
@@ -780,7 +780,7 @@ async function runStartedDelivery(
         // nats.js never answers a request written to a socket that dropped, nor one buffered while it
         // was down (each dial discards the buffer), even once the same connection reconnects. Such a
         // timeout says nothing about the broker, so one attempt on the reconnected transport decides.
-        // A lost read rejects the attempt, and a lost delete leaves this instance's row.
+        // A lost read or delete rejects the attempt.
         // A transport still down is waited for as long as a serving daemon waits for its broker, so
         // the window counts from the drop, and a reconnect past it earns no repeat even when it lands
         // before the lost request times out.
@@ -795,10 +795,7 @@ async function runStartedDelivery(
           });
           return transportDownSince === undefined && transportGeneration !== generation && transportLateGeneration <= generation;
         };
-        left = await release().then(
-          async (row) => row !== undefined && ep.ownsDeliveryLease(row.info) && await reconnected() ? release() : row,
-          async (e) => { if (!await reconnected()) throw e; return release(); },
-        );
+        left = await release().catch(async (e) => { if (!await reconnected()) throw e; return release(); });
       } catch (e) {
         throw new Error(`delivery: the lease release for shard ${shard} could not be confirmed (${(e as Error).message}); the bucket TTL expires a row left behind`, { cause: e });
       } finally {
@@ -1023,8 +1020,8 @@ async function runStartedDelivery(
       // RELEASE AGAINST THE BROKER'S REVISION, NOT THE ONE THIS PROCESS HAPPENS TO HOLD.
       //
       // The release is a compare-and-swap, so a token one step behind frees NOTHING, and it fails
-      // SILENTLY: `releaseDeliveryLease` swallows every error by design, because at shutdown the
-      // broker may already be gone. A daemon can therefore stop cleanly, believe it released, and
+      // SILENTLY: this shutdown catches every release error, because at shutdown the broker may
+      // already be gone. A daemon can therefore stop cleanly, believe it released, and
       // leave its row claiming the shard for the rest of the 30s bucket TTL - after which the next
       // `cotal up` is refused with "a live lease already exists" and the shard is unservable by
       // anyone. That is this issue's outage reached without any starvation or broker fault at all.

@@ -5,7 +5,6 @@ import {
   divergentCwdAnchor,
   isWorkspaceTargetError,
   jsonFlag,
-  loadMeshes,
   oneLine,
   renderReport,
   terminalWidth,
@@ -29,11 +28,13 @@ import {
 import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { c, presenceFacts } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, resolveControlTarget, onInstance, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
+import { c, presenceFacts, stderrLine } from "../ui.js";
+import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
+import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
-import { stackManagerAbsent } from "../lib/stack-journal.js";
+import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
+import { connectorHarnesses } from "../lib/status.js";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -76,8 +77,6 @@ export const inputFlags = [
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, attachFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
-  if (flag?.name === "creds") return { items: [], directive: "default" };
   if (flag?.name === "name") return { items: [], directive: "nofiles" };
   if (argv.length <= 1)
     return { items: attachFlags.map((f) => ({ value: `--${f.name}`, description: f.description })), directive: "nofiles" };
@@ -138,7 +137,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
   recordOperationSpace(t.space);
   const reply = await askManager(t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, selection: v.self ? "verified-self" : "named", ...(name ? { agent: name } : {}) };
-  if (!reply.ok) throw managerFailure(reply, "agent stop", target);
+  if (!reply.ok) throw unansweredDescribeRefusal(reply, "agent stop", target) ?? managerFailure(reply, "agent stop", target);
   const data = reply.data as { name?: unknown; stopped?: unknown; graceful?: unknown } | undefined;
   if (!data || typeof data.name !== "string" || typeof data.stopped !== "boolean" || typeof data.graceful !== "boolean")
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the stop receipt could not be read; the request was not repeated", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });
@@ -266,6 +265,8 @@ function fmtUptime(ms: number): string {
 export type SeatLocation =
   | { kind: "pin"; instanceId: string }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
+  /** The registry lists no live manager, so no instance can host the seat or be asked for it. */
+  | { kind: "no-manager"; space: string; native: { code?: string; detail: string } }
   | { kind: "absent"; checked: number }
   /** #1638 item 3: the search could not settle. At least one registered instance did not answer
    *  FOR ITSELF, so the seat may be sitting on it; absence is not what was established. */
@@ -285,6 +286,7 @@ export async function locateSeat(
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
+  if (!scatter.ok && scatter.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: scatter.code, detail: scatter.error } };
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
   return locateSeatIn(scatter.instances, name);
 }
@@ -316,12 +318,17 @@ export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: s
 /** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
  *  instance to address, or exits with an error that says WHICH case the miss was. */
 async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Promise<string | undefined> {
-  const on = onInstanceOrExit(v.on, verb);
+  const on = await managerPin(v, verb);
   if (on !== undefined) return on;
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
-  console.error(c.red(`✗ ${seatMissRefusal(String(v.name), verb, loc)}`));
+  // Refused before anything is sent, as `ps` refuses, rather than after a describe no manager can answer.
+  if (loc.kind === "no-manager") {
+    recordOperationSpace(loc.space);
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to reach agent "${oneLine(String(v.name))}"`, { target: { space: loc.space, managerInstanceId: null, agent: String(v.name) }, native: loc.native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  }
+  stderrLine("✗ ", `${seatMissRefusal(String(v.name), verb, loc)}`, c.red);
   process.exit(1);
 }
 
@@ -562,20 +569,24 @@ export interface PsResult {
 }
 
 /** `rowsOf` is each answered instance's rows as the census received them, so a row that names no
- *  instance of its own is still listed under the manager that returned it. */
-function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map()): Report {
+ *  instance of its own is still listed under the manager that returned it. `noApplication` is
+ *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
+ *  the one `status` gives. */
+function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
     : result.kind === "slots" ? slotBlocks(rows as SlotRow[])
     : seatBlocks(rows as AgentRow[], wide);
   // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
+  // Its instance id is still shown, with or without agents, because it is what `--on` takes.
   if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) return { sections: [
     { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
+    ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId]] }] })),
     { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
       { command: "cotal attach <name>", description: "Return to an agent's terminal" },
       { command: "cotal stop <name>", description: "Stop one agent" },
-    ] : [{ command: "cotal spawn", description: "Launch your default agent" }] }] },
+    ] : [noApplication ? { command: "cotal setup", description: "Set up an agent application" } : { command: "cotal spawn", description: "Launch your default agent" }] }] },
   ] };
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
   // shorter and this is precisely where it becomes the one way to address a manager. Silent and
@@ -596,6 +607,12 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
   };
 }
 
+/** Whether no connector is installed here, as `status` reports "Agent applications: not set up".
+ *  An inventory that cannot be read says nothing, so the Next stays the launch. */
+function noApplicationHere(): boolean {
+  try { return connectorHarnesses().length === 0; } catch { return false; }
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   // #651 presentations: --wide is a human layout and --json the document that already carries every
@@ -610,8 +627,8 @@ export async function ps(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts", { remedy: "pass one of them" });
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
-  const census = await readSeats(v, command, onInstance(v.on, "cotal ps"));
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf);
+  const census = await readSeats(v, command, await managerPin(v, "cotal ps"));
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere());
   writeResult(
     presentation,
     {
@@ -630,7 +647,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
 export async function agentStatus(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0]!;
   const values = args.values as FlagValues<typeof psFlags>;
-  const census = await readSeats(values, "ps", onInstance(values.on, "cotal status"));
+  const census = await readSeats(values, "ps", await managerPin(values, "cotal status"));
   const rows = census.items.map((value): AgentRow => {
     if (!value || typeof value !== "object") throw new CommandFailure("failed", "OPERATION_FAILED", "a manager returned an invalid agent record", { target: census.target });
     const row = value as Partial<AgentRow>;
@@ -640,7 +657,10 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
   });
   const matches = rows.filter((row) => row.name === name || row.id === name);
   if (matches.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "more than one manager reports this agent; select a manager with --on", { target: { ...census.target, name, candidates: matches.map((row) => ({ name: row.name, id: row.id, instanceId: row.instanceId ?? null })) } });
-  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name } });
+  // `manager` and an answering manager's instance id name the manager itself, which runs no row of
+  // its own, so the refusal says where its state is read.
+  const managerItself = name === "manager" || census.managers.some((manager) => manager.state === "answered" && manager.instanceId === name);
+  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: `${name} is this space's manager, which is answering, not an agent it runs; cotal status shows the manager's state, and cotal endpoint describe manager reads its commands` } : {}) });
   const item = matches[0] ?? null;
   const managerInstanceId = item ? [...census.rowsOf].find(([, rows]) => rows.includes(item))?.[0] ?? census.target.managerInstanceId ?? item.instanceId ?? null : null;
   let managerHint = "";
@@ -744,9 +764,19 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   const target = { space: t.space, scope: "all-managers" };
   const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
   // An empty manager registry on this root's own controller stack, whose manager does not run, is
-  // a known boundary with a remedy; the registry's own failure stays the cause.
-  if (!scatter.ok && scatter.code === "failed-precondition" && t.root !== undefined && stackManagerAbsent(t.root, t.space))
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  // a known boundary with a remedy; the registry's own failure stays the cause. So is a registry
+  // that still lists that manager after its process died: no manager answered the read. While an
+  // `up` is still starting that manager, the answer is to wait for it, not to start another.
+  if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
+    const native = { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) };
+    if (stackManagerStarting(t.root, t.space))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: "run cotal ps again once cotal up reports the manager started" });
+    if (stackManagerAbsent(t.root, t.space))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  }
+  const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
+  if (!scatter.ok && silentPid !== undefined)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare cotal up starts the manager again` });
   if (!scatter.ok) throw readFailure(scatter, target);
   // Stable ordering: reachable instances first, then by instance id.
   const instances = [...scatter.instances].sort(
@@ -1550,7 +1580,7 @@ export async function attachSeat(
 }
 
 async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ name: string; on: string; expectedTarget: NonNullable<ManagerPin["expectedTarget"]> } | undefined> {
-  const census = await readSeats(values, "ps", onInstance(values.on, "cotal attach"));
+  const census = await readSeats(values, "ps", await managerPin(values, "cotal attach"));
   const choices = census.items.map((value) => {
     const row = value as Partial<AgentRow> | null;
     if (!row || typeof row.name !== "string" || typeof row.id !== "string" || typeof row.lifecycleUid !== "string")
@@ -1624,7 +1654,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, { instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, agent: v.name };
-  if (!reply.ok) throw managerFailure(reply, "terminal input", target);
+  if (!reply.ok) throw unansweredDescribeRefusal(reply, "terminal input", target) ?? managerFailure(reply, "terminal input", target);
   const data = reply.data as { name?: unknown; bytes?: unknown } | undefined;
   if (!data || typeof data.name !== "string" || typeof data.bytes !== "number" || !Number.isSafeInteger(data.bytes) || data.bytes < 0)
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the terminal-input receipt was unreadable; the text was not sent again", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });

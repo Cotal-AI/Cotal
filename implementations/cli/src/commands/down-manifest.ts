@@ -31,7 +31,7 @@ import {
   type EpCaller,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, getSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { c } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";
 import { findLedgerByHash, findLedgerByRun, hashManifestSource, ownedCredPath, writeLedger, type MeshLedger } from "../lib/manifest/ledger.js";
@@ -53,7 +53,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     ledgerPath = found.path;
     ledger = found.ledger; // loadLedger already validated the WHOLE ledger as untrusted input
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
 
@@ -75,7 +75,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     runDir = realDirNoSymlink(root, ".cotal", "run", ledger.runId);
     specPath = join(runParent ?? join(root, ".cotal", "run"), `${ledger.runId}.json`);
   } catch (e) {
-    console.error(c.red(`✗ refusing teardown - unsafe owned resource: ${(e as Error).message}`));
+    stderrLine("✗ ", `refusing teardown - unsafe owned resource: ${(e as Error).message}`, c.red);
     process.exit(1);
   }
 

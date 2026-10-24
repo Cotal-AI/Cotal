@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { FlagSpec, OutputMode } from "@cotal-ai/core";
+import { terminalWidth, wrapWords } from "./text-wrap.js";
 
 /**
  * The structured output contract every command surface shares: one version 1 envelope per finite
@@ -120,12 +121,15 @@ export class CommandFailure extends Error {
   readonly native?: NativeCause;
   readonly target: unknown;
   readonly changed?: readonly unknown[];
+  /** The message and remedy are the whole fix, as for a missing `--yes`, so a usage refusal prints
+   *  them without the command's help. */
+  readonly selfContained?: true;
 
   constructor(
     outcome: Exclude<Outcome, "ok" | "no-op">,
     code: ErrorCode,
     message: string,
-    opts: { remedy?: string; native?: NativeCause; target?: unknown; changed?: readonly unknown[]; cause?: unknown } = {},
+    opts: { remedy?: string; native?: NativeCause; target?: unknown; changed?: readonly unknown[]; cause?: unknown; selfContained?: true } = {},
   ) {
     super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
     const problem = outcomeCodeProblem(outcome, code);
@@ -137,6 +141,7 @@ export class CommandFailure extends Error {
     this.native = opts.native;
     this.target = opts.target ?? null;
     this.changed = opts.changed;
+    this.selfContained = opts.selfContained;
   }
 
   /** The error detail an envelope carries. */
@@ -150,18 +155,29 @@ export class CommandFailure extends Error {
   }
 }
 
+/** A usage refusal for a missing `--yes` outside an interactive terminal. Its remedy names the
+ *  confirmed or previewed command, so it prints without the command's help. */
+export class ConfirmationRequired extends CommandFailure {
+  constructor(message: string, opts: { remedy: string; target?: unknown }) {
+    super("refused", "USAGE_INVALID", message, { ...opts, selfContained: true });
+  }
+}
+
 export function isCommandFailure(e: unknown): e is CommandFailure {
   return typeof e === "object" && e !== null && (e as { [FAILURE_BRAND]?: unknown })[FAILURE_BRAND] === true;
 }
 
-/** The space one command run resolved, as {@link recordOperationSpace} set it. */
-export interface OperationScope { space?: string }
+/** The space one command run resolved, as {@link recordOperationSpace} set it, the note
+ *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
+ *  {@link recordOperationWarning} recorded. */
+export interface OperationScope { space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[] }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
 
-/** Run one command inside `scope`, so the space it records there is readable after it throws. */
-export function runOperation<T>(scope: OperationScope, body: () => Promise<T>): Promise<T> {
+/** Run `body` inside `scope`: one command, so the space it records there is readable after it
+ *  throws, or the rendering of that command's failure, which then reads what the run recorded. */
+export function runOperation<T>(scope: OperationScope, body: () => T): T {
   return operationScope.run(scope, body);
 }
 
@@ -173,6 +189,36 @@ export function recordOperationSpace(space: string): void {
   if (scope) scope.space = space;
 }
 
+/** Record how this command's operation chose `space`, for its `Mesh:` heading to show under the
+ *  name. Outside {@link runOperation} it does nothing. */
+export function recordOperationSpaceNote(space: string, text: string): void {
+  const scope = operationScope.getStore();
+  if (scope) scope.spaceNote = { space, text };
+}
+
+/** The note this run recorded for `space`, if any. */
+export function operationSpaceNote(space: string): string | undefined {
+  const note = operationScope.getStore()?.spaceNote;
+  return note?.space === space ? note.text : undefined;
+}
+
+/** Record a warning about what this command's operation resolved. It is printed on stderr at once,
+ *  before the command acts on it, and every envelope of the run carries it. A warning already
+ *  recorded in this run is not repeated. Outside {@link runOperation} it does nothing. */
+export function recordOperationWarning(warning: OutputWarning): void {
+  const scope = operationScope.getStore();
+  if (!scope || scope.warnings?.some((w) => w.code === warning.code && w.message === warning.message)) return;
+  (scope.warnings ??= []).push(warning);
+  // Wrapped to the terminal like the report it precedes, each continuation line under the text.
+  const lines = wrapWords(warning.message, terminalWidth(process.stderr) - 2);
+  process.stderr.write(`${lines.map((line, i) => `${i === 0 ? "!" : " "} ${line}`).join("\n")}\n`);
+}
+
+/** The warnings this command run recorded so far, none outside {@link runOperation}. */
+export function operationWarnings(): readonly OutputWarning[] {
+  return operationScope.getStore()?.warnings ?? [];
+}
+
 /** `failure` with the operation's recorded space added to its target, so its report begins with
  *  `Mesh: <space>` and its envelope carries `target.space`. A target that already has a `space`
  *  field, or is not an object, is kept as it is. */
@@ -180,13 +226,13 @@ export function inOperationSpace(failure: CommandFailure, space: string | undefi
   const target = failure.target;
   if (space === undefined || target !== null && (typeof target !== "object" || Array.isArray(target) || Object.hasOwn(target, "space"))) return failure;
   const fields = target === null ? {} : target as Record<string, unknown>;
-  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields }, cause: failure.cause });
+  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields }, cause: failure.cause, selfContained: failure.selfContained });
   placed.stack = failure.stack;
   return placed;
 }
 
-/** The envelope for a command that did not succeed. */
-export function failureEnvelope(command: string, failure: CommandFailure): Envelope<null> {
+/** The envelope for a command that did not succeed, with the warnings its run recorded. */
+export function failureEnvelope(command: string, failure: CommandFailure, warnings: readonly OutputWarning[] = operationWarnings()): Envelope<null> {
   return {
     schemaVersion: 1,
     command,
@@ -194,7 +240,7 @@ export function failureEnvelope(command: string, failure: CommandFailure): Envel
     outcome: failure.outcome,
     completeness: "not-checked",
     result: null,
-    warnings: [],
+    warnings: [...warnings],
     error: failure.detail(),
     ...(failure.changed === undefined ? {} : { changed: failure.changed }),
   };

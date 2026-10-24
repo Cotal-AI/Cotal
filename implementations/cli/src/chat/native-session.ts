@@ -80,12 +80,13 @@ const refusedUsage = (message: string) => ({ outcome: "refused" as const, code: 
 /**
  * Refuse a channel outside the session's read or post grant before any effect, so the broker's
  * refusal and its subject never reach the caller. A session opened on no channel holds no grant,
- * and the refusal says how to open one that does. The broker remains the enforcement point.
+ * and the refusal names `reopen`'s command, which opens one that does. The broker remains the
+ * enforcement point.
  */
-export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post"): Refused | undefined {
+export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", reopen: (channel: string) => string): Refused | undefined {
   if (channelInAllow([...grant], channel)) return undefined;
   const message = grant.length === 0
-    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run cotal chat ${channel} to open a session on it`
+    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run ${reopen(channel)} to open a session on it`
     : `#${channel} is outside this session's ${use} grant`;
   return { outcome: "refused", code: "PERMISSION_DENIED", message };
 }
@@ -105,6 +106,7 @@ export function resolveDmTarget(
   rosterState: PresenceView["state"],
   engine: ParticipantEngine,
   selfPrincipal: string,
+  selfName?: string,
 ): { readonly id: string; readonly name: string } | Refused {
   if (typeof to !== "string" || parsePrincipalKey(to)) {
     const principal = typeof to === "string" ? to : to.principal;
@@ -123,10 +125,19 @@ export function resolveDmTarget(
   const named = new Map<string, { id: string; name: string }>();
   if (peer) named.set(peer.card.id, { id: peer.card.id, name: peer.card.name });
   for (const sender of engine.sendersNamed(to)) if (!named.has(sender.id)) named.set(sender.id, sender);
-  if (named.size > 1)
-    return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${[...named.keys()].join(", ")}); use the full principal` };
+  if (named.size > 1) {
+    const ids = [...named.keys()];
+    // Each one-shot `cotal send` signs with its own principal and exits once it has sent, so a
+    // reply by its name can reach none of them.
+    const present = new Set(roster.filter((p) => p.status !== "offline").map((p) => p.card.id));
+    if (rosterState === "current" && !ids.some((id) => present.has(id)))
+      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot cotal send commands, which exit once they have sent; answer one message with /reply, or over --stdio with to set to its from.id and replyTo to its id` };
+    return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${ids.join(", ")}); use the full principal` };
+  }
   const only = [...named.values()][0];
   if (only) return only;
+  if (selfName !== undefined && to.trim().toLowerCase() === selfName.trim().toLowerCase())
+    return refusedUsage(`"${to}" is this session's own name; a direct message needs another participant`);
   if (rosterState !== "current") return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: `cannot verify "${to}": the roster is ${rosterState}` };
   return { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${to}" in this space` };
 }
@@ -137,20 +148,39 @@ export interface NativeSessionInputs {
   readonly identity: SessionIdentity;
   /** The admission adapter's own retirement call. This module only invokes it. */
   readonly retire: () => Promise<CloseReport>;
+  /** The command that opens a session on a channel with the flags this one was started with. */
+  readonly reopen: (channel: string) => string;
 }
 
 export class NativeChatSession implements AdmittedChatSession {
   private readonly engine: ParticipantEngine;
   private readonly listeners = new Set<(e: SessionEvent) => void>();
+  /** What the session emitted before its first subscriber, such as the presence the endpoint's start
+   *  reports, this session's own row included. The first subscriber gets it, so nothing is lost. */
+  private early: SessionEvent[] | undefined = [];
   private state: ConnectionState = "connected";
   private attention: "open" | "dnd" | "focus" = "open";
   private closed: Promise<CloseReport> | undefined;
   /** Why the session ended itself, when it could not continue. */
   private lost: string | undefined;
   private readonly onMessage = (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta);
-  private readonly onConnection = (s: { connected: boolean }) => this.setState(s.connected ? "connected" : "disconnected");
-  private readonly onPresence = (ev: { type: "join" | "update" | "offline"; presence: Presence }) =>
-    this.emit({ type: "presence", row: rowOf(ev.presence), change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
+  /** The endpoint drops its connection during a reconnect this session asked for. That outage was
+   *  reported when the reconnect started, so the state stays reconnecting until it is back. */
+  private readonly onConnection = (s: { connected: boolean }) => {
+    if (s.connected) this.setState("connected");
+    else if (this.state !== "reconnecting") this.setState("disconnected");
+  };
+  /** The last row each roster member's presence event carried, as JSON. */
+  private readonly rows = new Map<string, string>();
+  /** A presence update the row cannot show, such as a change of attention or a channel mode, leaves the
+   *  row as it was, so it is not reported as an update. */
+  private readonly onPresence = (ev: { type: "join" | "update" | "offline"; presence: Presence }) => {
+    const row = rowOf(ev.presence), shown = JSON.stringify(row);
+    if (ev.type === "update" && this.rows.get(row.id) === shown) return;
+    if (ev.type === "offline") this.rows.delete(row.id);
+    else this.rows.set(row.id, shown);
+    this.emit({ type: "presence", row, change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
+  };
   private readonly onError = () => { /* surfaced through call results; never thrown at the UI */ };
   /** A reconnect that finds this session's own DM durable gone cannot succeed by retrying: the
    *  session was retired while the broker was away, as a stack restart retires the sessions its old
@@ -177,6 +207,11 @@ export class NativeChatSession implements AdmittedChatSession {
 
   subscribe(listener: (event: SessionEvent) => void): () => void {
     this.listeners.add(listener);
+    const early = this.early ?? [];
+    this.early = undefined;
+    for (const e of early) {
+      try { listener(e); } catch { /* a listener fault never breaks delivery */ }
+    }
     return () => this.listeners.delete(listener);
   }
 
@@ -202,7 +237,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post");
+    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.reopen);
     if (outside) return outside;
     let registered: boolean;
     try {
@@ -215,9 +250,15 @@ export class NativeChatSession implements AdmittedChatSession {
     }
   }
 
+  async resolveDm(to: DmTarget): Promise<Result<{ readonly id: string; readonly name: string }>> {
+    const ep = this.inputs.endpoint;
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal, this.inputs.identity.label);
+    return "outcome" in recipient ? recipient : { outcome: "ok", value: recipient };
+  }
+
   async dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal);
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal, this.inputs.identity.label);
     if ("outcome" in recipient) return recipient;
     const recipientStatusAtSend: PresenceStatus | "unrostered" = ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {
@@ -248,10 +289,7 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   setStatus(status: "idle" | "working" | "waiting", activity?: string): Promise<Result<void>> {
-    return this.call(async () => {
-      if (activity !== undefined) await this.inputs.endpoint.setActivity(activity);
-      await this.inputs.endpoint.setStatus(status);
-    });
+    return this.call(() => this.inputs.endpoint.setStatus(status, activity));
   }
 
   setAttention(mode: "open" | "dnd" | "focus"): Promise<Result<void>> {
@@ -264,7 +302,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async setChannelMode(channel: string, mode: "quiet" | "muted" | "normal"): Promise<Result<void>> {
     if (!isConcreteChannel(channel)) return refusedUsage("a channel mode needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read");
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.reopen);
     if (outside) return outside;
     // Local first, as for attention; the presence mirror is advisory (endpoint.ts:2874-2877).
     this.engine.setChannelMode(channel, mode);
@@ -272,7 +310,7 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read");
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.reopen);
     if (outside) return outside;
     return this.call(() => this.inputs.endpoint.joinChannel(channel));
   }
@@ -335,7 +373,10 @@ export class NativeChatSession implements AdmittedChatSession {
     // daemon formats (`readHistory: ... - not permitted` / `... - refused`); other failures are
     // `failed` (a read has no effect to be unknown about).
     try {
-      const page = await this.inputs.endpoint.readHistory(channel, { limit });
+      // An open mesh runs no delivery daemon, so an open session reads the channel itself under its
+      // own lifecycle, as `cotal history` does.
+      const ep = this.inputs.endpoint;
+      const page = this.inputs.identity.mode === "open" ? await ep.channelHistoryPage(channel, { limit }) : await ep.readHistory(channel, { limit });
       return {
         outcome: "ok",
         value: {
@@ -407,6 +448,10 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   private emit(e: SessionEvent): void {
+    if (this.early) {
+      this.early.push(e);
+      return;
+    }
     for (const l of this.listeners) {
       try { l(e); } catch { /* a listener fault never breaks delivery */ }
     }

@@ -1,5 +1,7 @@
 # Telemetry
 
+> **Reference** · **For:** everyone who runs the `cotal` CLI
+
 The `cotal` CLI sends anonymous usage data so we can see which commands people use, which fail,
 and on which platforms. It is on by default, it works with no mesh, no Cloud and no sign-in, and
 you can turn it off in one command. This page is the contract: the intake accepts the bodies below
@@ -22,7 +24,10 @@ cotal telemetry regular    # the default; `on` is an alias
 
 The environment outranks the file: `DO_NOT_TRACK=1` or `COTAL_TELEMETRY_DISABLED=1` forces `off`,
 and `COTAL_TELEMETRY=off|minimal|regular` names a level. Any other `COTAL_TELEMETRY` value refuses
-with `USAGE_INVALID`. `cotal telemetry` names the source of the level in force.
+with `USAGE_INVALID`. `cotal telemetry` names the source of the level in force. While the
+environment forces `off`, `cotal telemetry <level>` saves nothing and creates no file: it is a
+`no-op` with an `ENVIRONMENT_OPT_OUT` warning. Otherwise `cotal telemetry <level>` is a `no-op` only
+when the file already holds that level, so the run that creates the file reports `ok`.
 
 The settings live in the OS user's own Cotal directory, `~/.cotal/telemetry.json`
 (`%LOCALAPPDATA%\Cotal\telemetry.json` on Windows), mode `0600`: the level, a random install id
@@ -50,7 +55,10 @@ One `command` event is posted as the CLI process exits, whatever the exit path. 
 first command of each UTC day also posts an `install` event first. Each is one `POST` of JSON,
 `content-type: application/json`, to `https://cotal.ai/v1/telemetry`, with a 1.5 second timeout, no
 retry, and every failure ignored: telemetry never changes a command's output, exit code or timing
-beyond that timeout. `COTAL_TELEMETRY_URL` points a self-hosted intake.
+beyond that timeout. `COTAL_TELEMETRY_URL` points a self-hosted intake. It must be an `http` or
+`https` URL, because a send to anything else fails and that failure is ignored too. Any other value
+refuses with `USAGE_INVALID` before the command runs whenever the level in force sends events, and
+`cotal telemetry` refuses it at every level, since it reports that URL.
 
 The first interactive run at `regular` prints one notice to stderr and records it; a run whose
 stderr is not a terminal (CI logs) sends but prints nothing, so a later terminal run still shows it.

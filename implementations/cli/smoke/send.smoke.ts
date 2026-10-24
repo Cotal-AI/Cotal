@@ -12,14 +12,20 @@
  * consumer, and a channel send reads that channel's policy with a Direct Get, so the consumer count
  * on both buckets is the same before and after the sends. The old watch, and the policy read's scan,
  * left one consumer per send on the bucket they read for five minutes. `cotal channel` on the same
- * operator credential reads the registry with a Direct Get and leaves no consumer either.
+ * operator credential reads the registry with a Direct Get and leaves no consumer either. An operator
+ * credential passed with `--creds` reads the same way. An agent credential, which holds no Direct
+ * Get row, watches instead, and one that may not read presence is refused.
+ * operator credential reads the registry with a Direct Get and leaves no consumer either. A post to
+ * an unregistered channel reads that channel's retained count once with STREAM.INFO, which opens no
+ * consumer.
  *
  * Run: pnpm smoke:send
  */
 import { execFile, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -49,7 +55,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 50;
+const EXPECTED = 75;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -217,6 +223,29 @@ try {
   const consumersAfter = await watchConsumers();
   const listed = await run(["channel"]);
   const consumersAfterList = await watchConsumers();
+  // A --creds credential reads once when its own grant holds the Direct Get rows, as the operator
+  // credential does. An agent credential from `cotal auth mint` holds none, so it watches instead.
+  const operatorRead = join(tmp, "operator-read.creds");
+  writeFileSync(operatorRead, await mintCreds(auth, newIdentity(), "operator"), { mode: 0o600 });
+  const agentRead = join(tmp, "agent-read.creds");
+  writeFileSync(agentRead, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), allowPublish: ["general"] }), { mode: 0o600 });
+  const noRead = join(tmp, "no-read.creds");
+  writeFileSync(noRead, await mintCreds(auth, newIdentity(), "probe"), { mode: 0o600 });
+  const operatorReadText = `creds-operator-${randomUUID().slice(0, 6)}`;
+  const agentReadText = `creds-agent-${randomUUID().slice(0, 6)}`;
+  const operatorSend = await run(["send", "-c", "general", operatorReadText, "--space", space, "--server", servers, "--creds", operatorRead]);
+  await wait(700);
+  const consumersAfterOperator = await watchConsumers();
+  const agentSend = await run(["send", "-c", "general", agentReadText, "--space", space, "--server", servers, "--creds", agentRead]);
+  const noReadSend = await run(["send", "-c", "general", "never stored", "--space", space, "--server", servers, "--creds", noRead, "--json"]);
+  await wait(700);
+  const consumersAfterAgent = await watchConsumers();
+  // A channel with no registry entry: a first post says it starts the channel, a later one says the
+  // channel already has messages, and both name the registered channels.
+  const fresh = `fresh-${randomUUID().slice(0, 6)}`;
+  const firstFresh = await run(["send", "-c", fresh, "one"]);
+  const laterFresh = await run(["send", "-c", fresh, "two", "--json"]);
+  const consumersAfterFresh = await watchConsumers();
   await inspector.close();
 
   check(
@@ -236,9 +265,51 @@ try {
     { before: consumersAfter, after: consumersAfterList },
   );
 
+  check(
+    "an operator credential passed with --creds reads once and leaves no consumer",
+    operatorSend.code === 0 && got.some((m) => m.route === "#general" && m.text === operatorReadText) &&
+      consumersAfterOperator.presence === consumersAfterList.presence && consumersAfterOperator.channels === consumersAfterList.channels,
+    { operatorSend, before: consumersAfterList, after: consumersAfterOperator },
+  );
+  check(
+    "an agent credential passed with --creds, which holds no Direct Get row, watches presence and its channel send is stored",
+    agentSend.code === 0 && got.some((m) => m.route === "#general" && m.text === agentReadText) && consumersAfterAgent.presence > consumersAfterOperator.presence,
+    { agentSend, before: consumersAfterOperator, after: consumersAfterAgent },
+  );
+  check(
+    "a credential passed with --creds that may not read presence refuses PERMISSION_DENIED, exit 2, before anything is sent",
+    noReadSend.code === 2 && noReadSend.stdout.includes('"code":"PERMISSION_DENIED"') && !got.some((m) => m.text === "never stored"),
+    noReadSend,
+  );
+  check(
+    "a first post to an unregistered channel says it starts the channel and names the registered ones",
+    firstFresh.code === 0 && firstFresh.stderr.includes(`#${fresh} has no channel metadata and no earlier message, so this message starts it`) && firstFresh.stderr.includes("Registered channels: #general."),
+    firstFresh,
+  );
+  const laterWarning = laterFresh.code === 0 ? (JSON.parse(laterFresh.stdout) as { warnings: { code: string; message: string; target: { earlierMessages?: unknown; registered?: unknown } }[] }).warnings.find((w) => w.code === "CHANNEL_UNREGISTERED") : undefined;
+  check(
+    "a later post to it says the channel already has messages, and its JSON warning carries both facts",
+    laterWarning !== undefined && laterWarning.message.includes(`#${fresh} already has messages`) && laterWarning.target.earlierMessages === true && JSON.stringify(laterWarning.target.registered) === JSON.stringify(["general"]),
+    laterFresh,
+  );
+  check(
+    "reading an unregistered channel's earlier messages leaves no consumer on the presence or channel-registry stream",
+    consumersAfterFresh.presence === consumersAfterAgent.presence && consumersAfterFresh.channels === consumersAfterAgent.channels,
+    { before: consumersAfterAgent, after: consumersAfterFresh },
+  );
+
   check("`cotal send -t` outside a seat exits 0", dm.code === 0, dm.stderr);
   check("`cotal send -c` outside a seat exits 0", msg.code === 0, msg.stderr);
   check("`cotal send -r` outside a seat exits 0", ask.code === 0, ask.stderr);
+  // A role send is stored whether or not anyone holds the role, so a mistyped role used to pass with
+  // no word. bob holds reviewer here.
+  const [typo, unheld] = await Promise.all([["reviewr", "--json"], ["planner"]].map((rest) => run(["send", "-r", ...rest, "x"])));
+  check("a role send no present participant holds is stored with ROLE_NOT_HELD naming the closest held role; a held role gets none",
+    typo!.code === 0 && typo!.stdout.includes('"code":"ROLE_NOT_HELD"') && typo!.stdout.includes('"nearest":"reviewer"') && typo!.stdout.includes("Did you mean reviewer?")
+      && !ask.stderr.includes("No present participant holds role"), { typo, ask: ask.stderr });
+  check("a role with no close held role lists the roles present instead",
+    unheld!.code === 0 && unheld!.stderr.includes("No present participant holds role planner; the message waits on that role's queue until one takes it.")
+      && /Present participants hold [^.]*reviewer/.test(unheld!.stderr) && !unheld!.stderr.includes("Did you mean"), unheld);
   check(
     "the `send -t` receipt to a live recipient reports a stored sequence and unconfirmed delivery, never delivered",
     /Stored sequence:\s+\d+/.test(dm.stdout) && /Delivery:\s+not confirmed/.test(dm.stdout) && !dm.stdout.includes("delivered"),
@@ -335,10 +406,103 @@ try {
   await wait(400);
   check("a creds file other accounts can read is still used, with a warning that names chmod 600",
     shared.code === 0 && got.some((m) => m.route === "DM" && m.text === sharedText) && (process.platform === "win32" || shared.stderr.includes(`creds file ${sharedCreds} is not private to you (mode 0644); chmod 600 ${sharedCreds}`)), shared.stderr);
+  // Another account that can write the file's folder can swap it, so it is refused as auth mint refuses to write there.
+  if (process.platform !== "win32") {
+    const loose = join(tmp, "loose"), looseCreds = join(loose, "a.creds");
+    mkdirSync(loose);
+    chmodSync(loose, 0o777);
+    writeFileSync(looseCreds, readFileSync(explicitCreds), { mode: 0o600 });
+    const looseText = `loose-${randomUUID().slice(0, 6)}`;
+    const refused = await run(["send", "-t", "bob", looseText, "--space", space, "--server", servers, "--creds", looseCreds]);
+    await wait(400);
+    check("a creds file in a folder every account can write is refused PERMISSION_DENIED, exit 2, naming the folder and its chmod, and nothing is sent",
+      refused.code === 2 && refused.stderr.includes("PERMISSION_DENIED") && refused.stderr.includes(`creds file ${looseCreds} cannot be used: its path is not protected against other local writers: ${loose} is writable by every local account`)
+        && refused.stderr.includes(`chmod o-w ${loose}`) && !got.some((m) => m.text === looseText), refused.stderr);
+    chmodSync(loose, 0o700);
+    const fixedText = `fixed-${randomUUID().slice(0, 6)}`;
+    const fixed = await run(["send", "-t", "bob", fixedText, "--space", space, "--server", servers, "--creds", looseCreds]);
+    await wait(400);
+    check("  once the folder is private the same file is used", fixed.code === 0 && got.some((m) => m.route === "DM" && m.text === fixedText), fixed.stderr);
+  }
 
   const missing = await run(["send", "-t", "nobody-here", "x"]);
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);
   check("`cotal send -t` to an absent agent says TARGET_NOT_FOUND and no matching participant", missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes("no matching participant"), missing.stderr);
+
+  // Two participants sharing a name used to be listed by id alone, with nothing saying which is which.
+  // Names match without regard to case, so "twin" and "Twin" are one name and each label shows its own.
+  const twinProvisioner = provisioner;
+  const twins = await Promise.all([{ name: "twin", kind: "agent" as const }, { name: "Twin", kind: "endpoint" as const, meta: { sessionKind: "chat" } }].map(async (card) => {
+    const identity = newIdentity();
+    const lifecycleUid = mintLifecycleUid();
+    const creds = await provisionAgent(twinProvisioner, auth, identity, { lifecycleUid, subscribe: [], allowSubscribe: [] });
+    const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid, card: { id: identity.id, ...card }, channels: [], heartbeatMs: 500, ttlMs: 10_000 });
+    ep.on("error", () => {});
+    await ep.start();
+    return ep;
+  }));
+  await wait(500);
+  const twin = await run(["send", "-t", "TWIN", "x", "--json"]);
+  const twinRemedy = (() => { try { return (JSON.parse(twin.stdout) as { error?: { remedy?: string } }).error?.remedy ?? ""; } catch { return ""; } })();
+  check("a name two participants share in any case refuses with each full identity labelled by its display name, kind and start time",
+    twin.code === 2 && twin.stdout.includes('"code":"TARGET_AMBIGUOUS"') && twinRemedy.includes(`${twins[0]!.card.id} ("twin", agent, started `) && twinRemedy.includes(`${twins[1]!.card.id} ("Twin", chat session, started `), twin);
+  for (const ep of twins) await ep.stop();
+
+  // A lone `-` used to be published as the text "-": stdin is read only when asked for. An empty
+  // quoted body used to be told to choose one body, with a remedy for another destination.
+  const dash = await run(["send", "-c", "general", "-", "--json"]);
+  check("`cotal send -c general -` is refused, names --stdin and --file -, and suggests the same channel",
+    dash.code === 1 && dash.stdout.includes('"code":"USAGE_INVALID"') && dash.stdout.includes('a lone \\"-\\" is not read as stdin; send stdin with --stdin or --file -') && dash.stdout.includes("run cotal send -c general --stdin"), dash);
+  const empty = await run(["send", "-c", "general", "", "--json"]);
+  check("an empty quoted body says the message is empty and suggests the same channel",
+    empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run cotal send -c general \\"<message>\\"'), empty);
+  // An empty recipient used to be told to choose one body, with a `-t` remedy whatever flag was given.
+  const blanks = await Promise.all([["-t", ""], ["--to=", null], ["-r", ""], ["-c", "#"]].map(([option, value]) => run(["send", option!, ...(value === null ? [] : [value!]), "x", "--json"])));
+  check("an empty --to, --role or --channel value is refused for that flag, with a remedy that keeps it",
+    blanks.every((r) => r.code === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && !r.stdout.includes("exactly one body"))
+      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('run cotal send -t <agent> \\"<message>\\"')
+      && blanks[1]!.stdout.includes('"message":"--to/-t is empty;')
+      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('run cotal send -r <role> \\"<message>\\"')
+      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('run cotal send -c <channel> \\"<message>\\"'), blanks);
+  // A channel or role name the subject rules refuse gets their reason; only a wildcard gets the wildcard one.
+  const unsafe = await run(["send", "-c", "kanäle", "x", "--json"]);
+  check("`cotal send -c` with a name that is not NATS-safe is USAGE_INVALID, exit 1, naming the segment",
+    unsafe.code === 1 && unsafe.stdout.includes('"code":"USAGE_INVALID"') && unsafe.stdout.includes('segment \\"kanäle\\" must be a NATS-safe token'), unsafe);
+  const spaced = await run(["send", "-c", "gen eral", "x", "--json"]);
+  check("`cotal send -c` with a space in the name names the segment, not wildcards",
+    spaced.code === 1 && spaced.stdout.includes('segment \\"gen eral\\" must be a NATS-safe token') && !spaced.stdout.includes("wildcards") && !spaced.stdout.includes("'*', or '>'"), spaced);
+  // A flag combination the parser can judge used to be a boundary refusal, exit 2.
+  const mentionDm = await run(["send", "-t", "bob", "--mention", "carol", "x", "--json"]);
+  check("`cotal send -t` with --mention is USAGE_INVALID, exit 1, naming the channel-only rule",
+    mentionDm.code === 1 && mentionDm.stdout.includes('"code":"USAGE_INVALID"') && mentionDm.stdout.includes("native mention hints belong to channel publications") && mentionDm.stdout.includes("drop --mention, or send to a channel with -c <channel>"), mentionDm);
+  const badRole = await run(["send", "-r", "bad role!", "x", "--json"]);
+  check("`cotal send -r` with a role that is not one NATS-safe token is USAGE_INVALID, exit 1, with the role rule",
+    badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);
+  // A name no participant can carry used to wait out the presence lookup; a legal display name still gets it.
+  const [backslash, long, legal] = await Promise.all([["a\\b"], ["n".repeat(129)], ["Bad Name!"]].map(([to]) => run(["send", "-t", to!, "x", "--json"])));
+  check("`cotal send -t` with a name the endpoint refuses is USAGE_INVALID with the name rule; a legal display name is looked up",
+    backslash.code === 1 && backslash.stdout.includes('"code":"USAGE_INVALID"') && backslash.stdout.includes('is reserved (a Windows path separator)')
+      && long.code === 1 && long.stdout.includes("exceeds the 128-character limit")
+      && legal.code === 2 && legal.stdout.includes('"code":"TARGET_NOT_FOUND"'), { backslash, long, legal });
+  const wildcard = await run(["send", "-c", "team.*", "x", "--json"]);
+  check("`cotal send -c` with a wildcard says to name one concrete channel", wildcard.code === 1 && wildcard.stdout.includes("name one concrete channel, without wildcards"), wildcard);
+  const starred = await run(["send", "-c", "gen*", "x", "--json"]);
+  check("`cotal send -c` with * inside a segment gets the wildcard sentence, not a rule that lists '*' and '>'",
+    starred.code === 1 && starred.stdout.includes("name one concrete channel, without wildcards") && !starred.stdout.includes("'*', or '>'"), starred);
+
+  // A directory used to get a bare line and the usage block, and text that is not UTF-8 did not name its file.
+  const absentFile = join(storeDir, "absent.txt");
+  const dirFile = join(storeDir, "a-dir");
+  mkdirSync(dirFile);
+  const notUtf8 = join(storeDir, "not-utf8.txt");
+  writeFileSync(notUtf8, Buffer.from([0x6f, 0x6b, 0xff, 0xfe]));
+  const [noFile, dirBody, badBody] = await Promise.all([absentFile, dirFile, notUtf8].map((file) => run(["send", "-c", "general", "--file", file])));
+  // Each block begins with the mesh and ends with a Next that keeps the destination, as a refusal after connecting does.
+  check("a missing, directory or non-UTF-8 --file is each refused in one classified block naming the path and the mesh, with a Next and without the usage block",
+    noFile.code === 2 && /Code: +TARGET_NOT_FOUND/.test(noFile.stderr) && noFile.stderr.includes(`"${absentFile}" does not exist`) && noFile.stderr.includes('check the path, or run cotal send -c general "<message>"')
+      && dirBody.code === 1 && /Code: +USAGE_INVALID/.test(dirBody.stderr) && dirBody.stderr.includes(`"${dirFile}" is a directory; --file reads one file`) && dirBody.stderr.includes('give --file one file in it, or run cotal send -c general "<message>"')
+      && badBody.code === 1 && /Code: +USAGE_INVALID/.test(badBody.stderr) && badBody.stderr.includes(`"${notUtf8}" is not valid UTF-8`) && badBody.stderr.includes('save it as UTF-8 text, or run cotal send -c general "<message>"')
+      && [noFile, dirBody, badBody].every((r) => r.stderr.startsWith(`Mesh: ${space}\n`) && r.stderr.includes("Request refused") && /\nNext\n/.test(r.stderr) && !r.stderr.includes("Usage")), { noFile, dirBody, badBody });
 
   // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.
   const bigFile = join(storeDir, "big.txt");
@@ -346,6 +510,37 @@ try {
   const big = await run(["send", "-c", "general", "--file", bigFile, "--json"]);
   check("an oversized `cotal send -c` is refused UNSUPPORTED, exit 2, naming the limit and that nothing was sent",
     big.code === 2 && big.stdout.includes('"code":"UNSUPPORTED"') && big.stdout.includes("1048576-byte message limit; nothing was sent"), big);
+  // A body used to be read whole before the limit was checked, so a 3 GiB file failed to read and a
+  // stream such as /dev/zero grew until the kernel killed it. A sparse file costs no disk.
+  const hugeFile = join(storeDir, "huge.txt");
+  writeFileSync(hugeFile, "");
+  truncateSync(hugeFile, 3 * 2 ** 30);
+  const huge = await run(["send", "-c", "general", "--file", hugeFile, "--json"]);
+  check("a 3 GiB `--file` is refused UNSUPPORTED, exit 2, with its size, without reading it whole",
+    huge.code === 2 && huge.stdout.includes('"code":"UNSUPPORTED"') && huge.stdout.includes(`the message is ${3 * 2 ** 30} bytes`) && huge.stdout.includes("1048576-byte message limit; nothing was sent"), huge);
+  // A piped stdin is nonblocking, so a read that found the pipe empty before its writer was done
+  // used to fail as unreadable. A pipe has no size, so an endless one names the limit alone.
+  const piped = (args: string[], feed: (stdin: Writable) => void) =>
+    new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+      const child = execFile(process.execPath, ["--import", tsx, cli, ...args], { cwd: operatorShell, env: isolatedEnv },
+        (err, stdout, stderr) => resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr }));
+      child.stdin!.on("error", () => {});
+      feed(child.stdin!);
+    });
+  const late = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
+    stdin.write("first half, ");
+    setTimeout(() => stdin.end("second half after a pause"), 5_000);
+  });
+  check("`cotal send --stdin` waits for a writer that pauses, then stores the message",
+    late.code === 0 && late.stdout.includes('"outcome":"ok"') && late.stdout.includes('"bodySource":"stdin"'), late);
+  const endless = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
+    const chunk = "z".repeat(64 * 1024);
+    const more = () => { while (!stdin.destroyed && stdin.write(chunk)); };
+    stdin.on("drain", more);
+    more();
+  });
+  check("an endless piped `--stdin` is refused UNSUPPORTED, exit 2, naming the limit",
+    endless.code === 2 && endless.stdout.includes('"code":"UNSUPPORTED"') && endless.stdout.includes("the message is longer than this broker's 1048576-byte message limit; nothing was sent"), endless);
 
   // The admin credential for the `deliver pending` reads below is minted before bob stops, so no
   // setup sits inside the retained-card window that the by-name read depends on.
@@ -482,11 +677,10 @@ try {
     { carolId: carolIdMatch?.[1], pendingBobStdout: pendingBob.stdout },
   );
 
-  // Expiry: a fresh core observer reads the presence bucket through its own watch snapshot. An
-  // empty bucket replays nothing, so `waitForPresenceSnapshot` reports "timeout" there and a
-  // roster with no dave would prove nothing. A live witness agent keeps one card in the bucket, so
-  // a completed snapshot is a real read of the bucket, and dave's absence from it is the broker
-  // having expired his card. Nothing here writes, refreshes or forges dave's card.
+  // Expiry: a fresh core observer reads the presence bucket through its own watch snapshot. A live
+  // witness agent keeps one card in the bucket, so the snapshot is a read that found records, and
+  // dave's absence from it is the broker having expired his card. Nothing here writes, refreshes or
+  // forges dave's card.
   const witnessIdentity = newIdentity();
   const witnessUid = mintLifecycleUid();
   const witnessCreds = await provisionAgent(provisioner, auth, witnessIdentity, {

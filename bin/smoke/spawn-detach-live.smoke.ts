@@ -12,6 +12,8 @@
  *  G. a persona the manager cannot find is refused (exit 2) with the manager's reason, and nothing launches.
  *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
  *  F. `--foreground --creds` fails loud (subprocess).
+ *  H. a spawn in this terminal refuses a missing persona or connector with its code and Next, before
+ *     it prints that it is starting the application (subprocess).
  *
  * COTAL_HOME is sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  * Run: pnpm smoke:spawn-detach:live   (build first — bin/cotal.ts subprocess checks run dist)
@@ -362,6 +364,16 @@ try {
   ok("tombstone exits non-zero", tomb.status === 1, tomb.status);
   ok("tombstone names spawn --detach", /spawn --detach/.test(tomb.stderr), tomb.stderr.slice(0, 200));
 
+  // H — a spawn in this terminal checks its persona and connector before it says it is starting the
+  // application, and refuses each with the full block: code, Next and exit 2.
+  const direct = (...words: string[]) => spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "spawn", ...words, "--space", SPACE], { encoding: "utf8", env: subEnv });
+  const noPersona = direct("ghostly");
+  ok("a bare spawn of a missing persona refuses TARGET_NOT_FOUND, exit 2, before the Direct application banner",
+    noPersona.status === 2 && /no persona "ghostly" in /.test(noPersona.stderr) && /Code:\s+TARGET_NOT_FOUND/.test(noPersona.stderr) && /^Next$/m.test(noPersona.stderr) && !/Direct application/.test(noPersona.stderr), noPersona.stderr.slice(0, 600));
+  const noConnector = direct("poet", "--harness", "nosuch");
+  ok("a bare spawn whose harness has no connector refuses DEPENDENCY_UNAVAILABLE, exit 2, naming cotal ext add, before the banner",
+    noConnector.status === 2 && /no connector "nosuch" is installed/.test(noConnector.stderr) && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(noConnector.stderr) && /cotal ext add <npm-package>/.test(noConnector.stderr) && !/Direct application/.test(noConnector.stderr), noConnector.stderr.slice(0, 600));
+
   // F — direct foreground (`--foreground`) with --creds fails loud. A foreground spawn REQUIRES its connector materialized
   // pre-dispatch (spawnRequiredExtensions), so first `ext add` THIS WORKTREE's claude connector
   // into the sandbox prefix (the real local-path install + core peer-link path) — never the
@@ -375,7 +387,14 @@ try {
     env: subEnv,
   });
   ok("foreground --creds exits non-zero", fg.status === 1, fg.status);
-  ok("foreground --creds is refused as a manager credential", /direct --foreground execution takes no .*manager credential/.test(fg.stderr), fg.stderr.slice(0, 200));
+  ok("foreground --creds is refused as a manager credential", /a spawn in this terminal takes no .*manager credential/.test(fg.stderr), fg.stderr.slice(0, 200));
+  // A bare spawn is the spawn in this terminal: without -d or --on no manager is asked, so the same
+  // manager credential is refused the same way, not as a managed attachment without terminals.
+  const bare = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "spawn", "poet", "--creds", "/tmp/x.creds"], {
+    encoding: "utf8",
+    env: subEnv,
+  });
+  ok("a bare spawn runs in this terminal, so --creds without -d is refused as a manager credential", bare.status === 1 && /a spawn in this terminal takes no .*manager credential/.test(bare.stderr) && !/managed attachment|attaching to a manager/.test(bare.stderr), bare.stderr.slice(0, 300));
 
   console.log(`\nspawn-detach live e2e: ${pass} checks passed`);
 } finally {

@@ -1,5 +1,5 @@
 import { MANAGED_HANDOFF_FILE_ENV, takeManagedHandoffFile } from "@cotal-ai/core";
-import { c } from "./ui.js";
+import { c, stderrLine } from "./ui.js";
 
 let held: string | undefined;
 
@@ -26,7 +26,7 @@ export function takeManagedHandoffCustody(env: Record<string, string | undefined
   }
   if (paths.size > 1) refusal = `${MANAGED_HANDOFF_FILE_ENV} names ${paths.size} different files under different letter cases`;
   if (refusal === undefined) return;
-  console.error(c.red(`✗ ${refusal}`));
+  stderrLine("✗ ", `${refusal}`, c.red);
   process.exit(1);
 }
 

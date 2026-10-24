@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 628,
+    "total": 649,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 524
+    "non-render/control": 545
   },
   "renderers": [
     {
@@ -16,7 +16,7 @@
     {
       "name": "statusBadge",
       "path": "implementations/cli/src/ui.ts",
-      "anchor": "export function statusBadge(status: PresenceStatus): string {",
+      "anchor": "export function statusBadge(status: PresenceStatus, marks = true): string {",
       "rationale": "Shared CLI textual status renderer; its working branch names unknown progress."
     }
   ],
@@ -524,7 +524,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -535,7 +535,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -553,7 +553,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -564,7 +564,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -575,7 +575,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -586,7 +586,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -597,7 +597,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -622,7 +622,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -633,7 +633,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -714,9 +714,16 @@
       "rationale": "Persona editor failure: the editor process's exit status; process state, not agent presence."
     },
     {
+      "path": "implementations/cli/src/lib/persona-files.ts",
+      "kind": "derived-output",
+      "anchor": "`the editor ${JSON.stringify(editor)} ${result.status === 127 ? \"was not found\" : \"could not be run\"} - not saved`",
+      "class": "non-render/control",
+      "rationale": "Persona editor failure: the editor's exit status in a not-saved message; process state, not agent presence."
+    },
+    {
       "path": "implementations/cli/src/commands/up.ts",
       "kind": "derived-output",
-      "anchor": "`restore attempt ${maintenance.restore.attemptId} active listener ownership is ${status}; refusing ordinary startup`",
+      "anchor": "`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1586,23 +1593,23 @@
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "derived-output",
-      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activity}`",
+      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status, !ascii)}${presenceDetail(ev.presence)}${activity}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "renderer-call",
-      "anchor": "statusBadge(ev.presence.status)",
+      "anchor": "statusBadge(ev.presence.status, !ascii)",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1613,7 +1620,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1624,7 +1631,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1635,7 +1642,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1646,7 +1653,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -2989,6 +2996,13 @@
       "rationale": "Chat view recipient disclosure notice: \"waiting\" is the notice's color tone, not a peer's presence."
     },
     {
+      "path": "implementations/cli/src/chat/chat-view.tsx",
+      "kind": "status-token",
+      "anchor": "dNotice(latest.current, \"waiting\", ending.text)), Math.ma",
+      "class": "non-render/control",
+      "rationale": "Chat view session-ending notice: \"waiting\" is the color tone; the text is about this session's own expiry, not a peer's presence."
+    },
+    {
       "path": "implementations/cli/src/chat/controller.ts",
       "kind": "derived-output",
       "anchor": "session.setStatus(command.status, command.activity)",
@@ -3114,6 +3128,13 @@
       "anchor": "tate = addNotice(state, \"waiting\", \"not connected: only /",
       "class": "non-render/control",
       "rationale": "Plain chat offline-command notice: \"waiting\" is the color tone; the text is about this session's connection, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/plain.ts",
+      "kind": "status-token",
+      "anchor": "tate = addNotice(state, \"waiting\", ending.text); flush();",
+      "class": "non-render/control",
+      "rationale": "Plain chat session-ending notice: \"waiting\" is the color tone; the text is about this session's own expiry, not a peer's presence."
     },
     {
       "path": "implementations/cli/src/chat/session.ts",
@@ -3641,6 +3662,48 @@
       "rationale": "Down control flow: verifies the bare-down service plan for the registered space; no rendering."
     },
     {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`${values.space === undefined ? `the selected space \"${space}\" is` : `--space ${space} names`} a controller stack rooted at ${root}, and \\`cotal down\\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the controller stack root that a bare down from here does not stop; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`run \\`${again}\\` from ${root}`",
+      "class": "non-render/control",
+      "rationale": "Down refusal remedy: names the command to run again from the stack's root; not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the broker for \"${mesh.space}\" runs on the store ${mesh.storeDir}, not ${resolvePath(storeOverride)}; nothing was stopped`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: the registered broker's store differs from --store-dir; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`omit --store-dir, or pass --store-dir ${mesh.storeDir}`",
+      "class": "non-render/control",
+      "rationale": "Down refusal remedy: names the registration's recorded store; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "readStoreIdentity(storeDir)",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: reads the store's identity to compare it with the recorded cut; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`  source: ${storeDir}`",
+      "class": "non-render/control",
+      "rationale": "Preserve report line: prints the preserved source store path; a registration record, not presence."
+    },
+    {
       "path": "implementations/cli/src/commands/endpoint-deregister.ts",
       "kind": "status-token",
       "anchor": "t: \"not checked\", tone: \"waiting\" }], [\"Governance and re",
@@ -3741,13 +3804,6 @@
     {
       "path": "implementations/cli/src/commands/reset.ts",
       "kind": "derived-output",
-      "anchor": "liveMeshProcesses(root, space)",
-      "class": "non-render/control",
-      "rationale": "Reset preview plumbing: lists local mesh processes under the registration record's root; no presence is rendered."
-    },
-    {
-      "path": "implementations/cli/src/commands/reset.ts",
-      "kind": "derived-output",
       "anchor": "listLedgerFiles(root, { requireReadable: true })",
       "class": "non-render/control",
       "rationale": "Reset preview plumbing: lists additive deployment ledgers under the registration record's root; no presence is rendered."
@@ -3795,11 +3851,32 @@
       "rationale": "Reset preview report: \"waiting\" is the color tone for the unproved-scope caveat, not presence."
     },
     {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "liveMeshProcesses(root, space, true)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: lists local mesh processes under the registration record's root; no presence is rendered."
+    },
+    {
       "path": "implementations/cli/src/commands/send.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Comparison that chooses whether the send result carries the RECIPIENT_OFFLINE warning; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/send.ts",
+      "kind": "derived-output",
+      "anchor": "`post to a channel this identity may post to: ${list(post)}`",
+      "class": "non-render/control",
+      "rationale": "Send refusal remedy: lists the channels this identity may post to; ACL data, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/send.ts",
+      "kind": "derived-output",
+      "anchor": "list(post)",
+      "class": "non-render/control",
+      "rationale": "Send refusal remedy: formats the identity's post ACL; not presence."
     },
     {
       "path": "implementations/cli/src/commands/service-actions.ts",
@@ -3942,6 +4019,48 @@
       "rationale": "Stack up failure shaping: checks the JetStream error's HTTP status before copying it into the cause; no agent presence is rendered."
     },
     {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`stop space ${holder.space} with cotal down from ${holder.root}`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal remedy: names the local space that holds the address and its root; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`stop the broker of space ${holder.space}`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal remedy: names the remote space that holds the address; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`something already answers at the stack's broker address ${server}${holder ? `, where space ${holder.space} is registered` : \"\"}, without this stack's broker instance; it was not adopted or stopped`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal text: something else answers at the stack's broker address; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`, where space ${holder.space} is registered`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal text: names the space registered at the address that already answers; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or ${stopHolder} and run cotal up again`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`${stopHolder}, then run bare cotal up from ${root}; this stack keeps its recorded address`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
+    },
+    {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
       "anchor": " . before starting it\", \"waiting\")]);\n  const auth = f.au",
@@ -3993,7 +4112,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  const blocks: Sec",
+      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (r.folder.ro",
       "class": "non-render/control",
       "rationale": "Status selected-space live details row: \"waiting\" is the color tone for an unavailable snapshot, not presence."
     },
@@ -4208,6 +4327,13 @@
       "rationale": "Help context line: \"waiting\" is the color tone for unreadable local defaults, not any peer's presence."
     },
     {
+      "path": "implementations/cli/src/help.ts",
+      "kind": "derived-output",
+      "anchor": "`cotal up --root ${prepared.root}`",
+      "class": "non-render/control",
+      "rationale": "Help context line: the start command for the prepared space's root; a registration record, not presence."
+    },
+    {
       "path": "implementations/cli/src/lib/controller-preserve.ts",
       "kind": "status-token",
       "anchor": "\"idle\"",
@@ -4248,13 +4374,6 @@
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Live-name lookup: filters offline peers out of the roster to collect taken names; the token is a filter predicate."
-    },
-    {
-      "path": "implementations/cli/src/lib/persona-files.ts",
-      "kind": "derived-output",
-      "anchor": "commitPersona(path, source, edited)",
-      "class": "non-render/control",
-      "rationale": "Persona edit control flow: commits the edited persona file; no rendering."
     },
     {
       "path": "implementations/cli/src/lib/space-schema-report.ts",
@@ -4564,6 +4683,34 @@
       "anchor": "`conversation identity discovery answered HTTP ${response.status}; no identity was requested`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/conversation-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`its discovery document answered HTTP ${response.status}`",
+      "class": "non-render/control",
+      "rationale": "Conversation identity discovery failure: the discovery document's HTTP status; not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Use report line: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/manager-choice.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/seed/reconcile.ts",
+      "kind": "derived-output",
+      "anchor": "`the seed child exited with status ${r.status}`",
+      "class": "non-render/control",
+      "rationale": "Connector seed failure: the seed child's exit status; process state, not agent presence."
     }
   ]
 }

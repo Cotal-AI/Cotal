@@ -27,15 +27,17 @@ export class CheckpointNotOpen extends Error {
   }
 }
 
-/** No accepted answer at this address that an amendment could be filed beside. */
+/** No accepted answer at this address that an amendment could be filed beside, or (`unrecorded`)
+ *  one the pause accepted that the run's journal does not record yet. */
 export class CheckpointNotAmendable extends Error {
   constructor(
     readonly runId: string,
     readonly stepKey: string,
-    readonly why: "unknown" | "open" | "not-a-checkpoint" | "unanswered",
+    readonly why: "unknown" | "open" | "unrecorded" | "not-a-checkpoint" | "unanswered",
   ) {
-    super(
-      `run ${runId} has no accepted answer to amend at ${stepKey}: ${
+    super(why === "unrecorded"
+      ? `run ${runId} accepted an answer at ${stepKey} and has not recorded it yet; amend it once the step lists that answer`
+      : `run ${runId} has no accepted answer to amend at ${stepKey}: ${
         {
           unknown: "no step is recorded under that key",
           open: "that step is still open, so answer it instead",

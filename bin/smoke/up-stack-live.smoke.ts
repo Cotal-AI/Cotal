@@ -6,7 +6,9 @@
  *  1. `up --detach` (auth default) brings up ALL THREE: nats-server, delivery daemon, manager —
  *     pid files written, processes alive, the delivery-aware marker bound to the manager pid.
  *  2. a real `cotal ps` is ANSWERED by the detached manager (control plane reachable, creds minted
- *     from this folder's auth — the exact "spawn --detach works right after up" promise).
+ *     from this folder's auth — the exact "spawn --detach works right after up" promise), and with
+ *     no agents it lists that manager's instance id, which `ps --on` takes. With no connector
+ *     installed, an unpinned `spawn -d` is refused and names the `cotal ext add` to run.
  *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
  *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
@@ -17,7 +19,9 @@
  *     and the process exits within a bounded time.
  *
  * Sandboxes COTAL_HOME + a temp project root; tears down via `cotal down` + own-pid SIGTERM only —
- * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH.
+ * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH. On a host
+ * other stacks share, set COTAL_SMOKE_SHARED_HOST=1: the default-port cells then skip rather than
+ * start an open broker on a free :4222.
  * Run: pnpm smoke:up-stack:live
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
@@ -127,19 +131,27 @@ try {
 
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
-  // broker, leave it alone; otherwise start a sandbox occupant and tear it down below.
-  if (!(await portOpenAt(4222))) {
-    const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
-    ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
-    startedOccupant = true;
+  // broker, leave it alone; otherwise start a sandbox occupant and tear it down below. The default
+  // address is fixed, so that occupant is an open broker on :4222 that any client on the host can
+  // join while it runs. COTAL_SMOKE_SHARED_HOST=1 says other stacks share this host, so a free :4222
+  // skips these cells instead.
+  const defaultFree = !(await portOpenAt(4222));
+  if (defaultFree && process.env.COTAL_SMOKE_SHARED_HOST === "1") {
+    console.log("  - skipped: the default-port collision cells, because COTAL_SMOKE_SHARED_HOST=1 and :4222 is free, so they would start an open broker there");
+  } else {
+    if (defaultFree) {
+      const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
+      ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
+      startedOccupant = true;
+    }
+    const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
+    ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
+    const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
+    ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
+    ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
+    cliIn(autoRoot, "down");
+    if (startedOccupant) cliIn(occupantRoot, "down");
   }
-  const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
-  ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
-  const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
-  ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
-  ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
-  cliIn(autoRoot, "down");
-  if (startedOccupant) cliIn(occupantRoot, "down");
 
   // The warning needs a real invocation id, 32 hex characters, and the unit's MainPID equal to the
   // up process. up runs systemctl as its own direct child, so the fake's $PPID is that pid.
@@ -150,7 +162,7 @@ try {
   const warned = cliInEnv(warningRoot, {
     INVOCATION_ID: invocationId,
     PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-  }, "up", "--detach", "--open", "--space", "warning");
+  }, "up", "--detach", "--open", "--space", "warning", "--server", `nats://127.0.0.1:${await freePort()}`);
   const warnedOutput = plain(warned.stdout + warned.stderr);
   ok("up --detach keeps starting under the false-green unit shape", warned.status === 0, warnedOutput);
   ok("up --detach warns about the exact systemd unit", warnedOutput.includes("cotal-warning.service is Type=oneshot with RemainAfterExit=yes"), warnedOutput);
@@ -166,6 +178,10 @@ try {
     up.stdout,
   );
   ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
+  const upText = plain(up.stdout);
+  ok("the receipt begins with the mesh it started", upText.startsWith("Mesh: main\n\n"), up.stdout);
+  ok("it says up started the default space because this folder names none", upText.includes('This folder names no space, so up started the default space "main"'), up.stdout);
+  ok("it ends with a Next that launches an agent and stops the stack", /\nNext\n\s+cotal spawn --space main\s+Launch your default agent\n\s+cotal down\s+Stop the stack\s*$/.test(upText), up.stdout);
   for (const [file, label] of [["nats.pid", "nats-server"], [recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
     const pid = pidOf(file);
     pids.push(pid);
@@ -188,6 +204,20 @@ try {
     if (!answered) await sleep(2000);
   }
   ok("cotal ps is answered by the detached manager", answered, last);
+  // With no agents, `ps` still lists the manager that answered by the instance id `--on` takes.
+  const listed = /^Manager\n\s+instance:\s+([a-z0-9]{26,32})$/m.exec(plain(last.stdout))?.[1];
+  const census = (() => { try { return (JSON.parse(cli("ps", "--json").stdout) as { result?: { managers?: { instanceId: string }[] } }).result?.managers; } catch { return undefined; } })();
+  const pinned = listed ? cli("ps", "--on", listed) : undefined;
+  ok("with no agents, ps lists the answering manager's instance id, and ps --on takes it",
+    listed !== undefined && census?.length === 1 && census[0]?.instanceId === listed && pinned?.status === 0 && plain(pinned.stdout).includes(`instance: ${listed}`), { stdout: last.stdout, census, pinned: pinned?.stdout ?? pinned?.stderr });
+  // No connector is installed, so the manager leaves the class queue and the broker answers an
+  // unpinned launch with no responders: a refusal that says why and what to add, never an unknown.
+  const unserved = cli("spawn", "-d");
+  const unservedOut = plain(unserved.stdout + unserved.stderr);
+  ok("an unpinned spawn -d with no agent application refuses TARGET_UNAVAILABLE, exit 2, naming the cotal ext add",
+    unserved.status === 2 && /no manager of yours takes unpinned launches: none has an agent application installed/.test(unservedOut)
+      && /Code:\s+TARGET_UNAVAILABLE/.test(unservedOut) && /Native outcome:\s+not-executed/.test(unservedOut) && /`cotal ext add [^`]+`, then restart that manager/.test(unservedOut),
+    { status: unserved.status, out: unservedOut });
 
   // 2b) #837: a delivery launch that LOSES the single-flight lease is not a healthy control plane.
   //     Drop the pidfile - the operator-visible shape of a lost record - while the real daemon keeps
@@ -277,6 +307,7 @@ try {
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
+  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith("Mesh: main\n\n✓ stopped") && /\nNext\n\s+cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
   let dead = false;
 
   for (let i = 0; i < 24 && !dead; i++) {
@@ -297,6 +328,7 @@ try {
     open.stdout,
   );
   ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
+  ok("a folder that now names its space gets no default-space note", !/names no space/.test(open.stdout), open.stdout);
   const openDown = cli("down");
   ok("open down exits 0", openDown.status === 0, openDown.stdout + openDown.stderr);
 
@@ -329,6 +361,13 @@ try {
   const maintenanceFiles = ["journal.json", "resume.json", "prepare-intent.json", "commit-intent.json"].filter((name) => existsSync(join(root, ".cotal", "maintenance", "v1", name)));
   ok("that refusal stopped nothing: delivery and the broker still run, and no maintenance journal or intent was written",
     alive(boDeliveryPid) && await portOpen() && maintenanceFiles.length === 0, { boDeliveryPid, maintenanceFiles });
+  const spawnStarted = Date.now();
+  const noManagerSpawn = cli("spawn", "-d");
+  const noManagerSpawnOut = plain(noManagerSpawn.stdout + noManagerSpawn.stderr);
+  ok("a broker-only spawn -d refuses TARGET_UNAVAILABLE, exit 2, before sending and naming bare cotal up",
+    noManagerSpawn.status === 2 && /no manager is running for this space to launch an agent/.test(noManagerSpawnOut) && /Code:\s+TARGET_UNAVAILABLE/.test(noManagerSpawnOut)
+      && /start the stack's manager with bare cotal up/.test(noManagerSpawnOut) && Date.now() - spawnStarted < 9_000,
+    { status: noManagerSpawn.status, ms: Date.now() - spawnStarted, out: noManagerSpawnOut });
   const brokerOnlyDown = cli("down");
   ok("broker-only down exits 0", brokerOnlyDown.status === 0, brokerOnlyDown.stdout + brokerOnlyDown.stderr);
   let boDead = false;
@@ -470,15 +509,16 @@ try {
     // The shape under test: a pinned manager whose spare capability is NOT proven.
     rmSync(rgRecord(MANAGER_SPARE_CAPABILITY), { force: true });
     rgUp.kill("SIGINT");
-    // The refusal path must return quickly; give the would-be teardown a moment to betray itself.
+    // The stop prints its refusal only after its own round trip to the manager, which a loaded host
+    // slows, so the output is polled up to a deadline. Then the would-be teardown gets a moment to
+    // betray itself before the gate is checked.
+    const refusal = () => /refusing bare manager stop/.test(plain(rgOutText)) && /cotal down --with-agents/.test(plain(rgOutText));
+    for (let i = 0; i < 120 && !refusal(); i++) await sleep(500);
+    ok("the refusal names the bare-stop rule and the reap route", refusal(), rgOutText);
     await sleep(3000);
     ok("the refusal gate leaves the manager and broker running",
       alive(rgManagerPid) && (await portOpenAt(rgPort)) && rgUp !== undefined && alive(rgUp.pid ?? 0),
       { manager: rgManagerPid, managerAlive: alive(rgManagerPid), upAlive: rgUp ? alive(rgUp.pid ?? 0) : false });
-    ok("the refusal names the bare-stop rule and the reap route",
-      /refusing bare manager stop/.test(plain(rgOutText)) &&
-      /cotal down --with-agents/.test(plain(rgOutText)),
-      rgOutText);
     ok("no spared report is printed on the refusal path", !/left \d+ managed agent/.test(plain(rgOutText)), rgOutText);
     // The operator's route ends the run: down --with-agents, then up exits via the broker-exit path.
     cliInEnv(rgRoot, rgEnv, "down", "--with-agents");

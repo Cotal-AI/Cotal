@@ -3,7 +3,7 @@ import { spaceFlag, serverFlag } from "./flags.js";
 import { CommandFailure, jsonFlag, plainFlag } from "./output.js";
 import { presentationOf } from "./present.js";
 
-export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance" } as const satisfies FlagSpec;
+export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance", completion: "files" } as const satisfies FlagSpec;
 export const credentialMintFlags = [
   { name: "profile", type: "string", value: "<agent|observer|admin>", description: "existing credential profile (default agent); never an internal host profile" },
   privateOutputFlag,
@@ -13,18 +13,42 @@ export const credentialMintFlags = [
   { name: "allow-publish", type: "string", value: "<a,b>", description: "agent: channel post ACL; empty means no entries" },
   { name: "role", type: "string", value: "<role>", description: "agent: scope its role task queue" },
   { name: "provision", type: "boolean", description: "agent: also pre-create this new lifecycle's bind-only inbox and delivery footprint" },
-  { name: "expires-in", type: "string", value: "<seconds>", description: "positive integer credential lifetime; never with --expires-at" },
-  { name: "expires-at", type: "string", value: "<unix-seconds>", description: "absolute credential expiry; never with --expires-in" },
-  { name: "identity", type: "string", value: "<private-creds>", description: "reuse this file's native nkey; the actual resulting lifecycle is reported" },
+  { name: "expires-in", type: "string", value: "<seconds>", description: "positive integer credential lifetime (fixed profiles default to 86400, 24 hours); never with --expires-at or --no-expiry" },
+  { name: "expires-at", type: "string", value: "<unix-seconds>", description: "absolute credential expiry; never with --expires-in or --no-expiry" },
+  { name: "no-expiry", type: "boolean", description: "fixed profiles: issue a credential with no expiry claim and record that choice beside its file" },
+  { name: "identity", type: "string", value: "<private-creds>", description: "reuse this file's native nkey; the actual resulting lifecycle is reported", completion: "files" },
+  { name: "replace", type: "boolean", description: "replace the label's standing credential when it has expired or has no expiry; never with --out" },
   spaceFlag, serverFlag, jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
 /** A local operator action, not a wire command or a grant. Implementations communicate via registry. */
 export interface CredentialAction extends Extension {
   readonly kind: "credential-action";
-  readonly name: "mint";
+  readonly name: "mint" | "revoke-credential";
   validate(args: ParsedArgs): void;
   run(args: ParsedArgs): Promise<void>;
+}
+
+/** The last Unix second a JavaScript date holds (8.64e15 ms). A later expiry has no date that a
+ *  receipt or a status read can show. */
+const LAST_EXPIRY_SECONDS = 8_640_000_000_000;
+
+/** Refuse an expiry later than {@link LAST_EXPIRY_SECONDS}, before anything is written. */
+function assertExpiryInRange(values: ParsedArgs["values"]): void {
+  const expiresAt = values["expires-at"] !== undefined ? Number(values["expires-at"])
+    : values["expires-in"] !== undefined ? Math.floor(Date.now() / 1000) + Number(values["expires-in"]) : undefined;
+  if (expiresAt !== undefined && expiresAt > LAST_EXPIRY_SECONDS) throw new CommandFailure("refused", "USAGE_INVALID", `the credential would expire after ${new Date(LAST_EXPIRY_SECONDS * 1000).toISOString()}, the last date Cotal can represent; nothing was written`, { remedy: "give a shorter --expires-in or an earlier --expires-at, in seconds" });
+}
+
+/** `auth revoke-credential <public-key | creds-file>`: one user key or one private creds file, and
+ *  only the confirmation, space and output flags. */
+export function validateCredentialRevokeArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  const [subject, ...extra] = args.positionals;
+  if (!subject || extra.length || Object.keys(args.values).some((key) => !["space", "yes", "json", "plain", "no-color", "no-input"].includes(key)))
+    throw new CommandFailure("refused", "USAGE_INVALID", "use auth revoke-credential <public-key | creds-file> [--space <space>] [--yes]");
+  if (subject.length > 4096 || /[\u0000-\u001f\u007f]/u.test(subject))
+    throw new CommandFailure("refused", "USAGE_INVALID", "the credential must be a user public key or a creds file path with no terminal controls");
 }
 
 export function validateCredentialMintArguments(args: ParsedArgs): void {
@@ -44,6 +68,7 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
     catch { throw new CommandFailure("refused", "USAGE_INVALID", "endpoint caller minting needs one native endpoint class and valid explicit channel patterns"); }
     if (typeof values.out !== "string" || !values.out.trim() || values.out.length > 4096 || /[\u0000-\u001f\u007f]/u.test(values.out)) throw new CommandFailure("refused", "USAGE_INVALID", "endpoint caller minting needs --out with a bounded private file path");
     if (values["expires-in"] !== undefined && (typeof values["expires-in"] !== "string" || !/^[0-9]+$/.test(values["expires-in"]) || !Number.isSafeInteger(Number(values["expires-in"])) || Number(values["expires-in"]) < 1)) throw new CommandFailure("refused", "USAGE_INVALID", "endpoint caller expiry needs a positive integer of native seconds");
+    assertExpiryInRange(values);
     return;
   }
   if (values.channels !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--channels belongs to auth mint --endpoint; it was not ignored for a fixed profile");
@@ -51,9 +76,12 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   if (!["agent", "observer", "admin"].includes(String(profile))) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint supports agent, observer or admin; internal service profiles are not exposed");
   if (profile !== "agent" && ["allow-subscribe", "allow-publish", "role", "provision"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
+  if (values["no-expiry"] !== undefined && (values["expires-in"] !== undefined || values["expires-at"] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at", { remedy: "pass one of --expires-in, --expires-at or --no-expiry" });
   for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < (key === "expires-in" ? 1 : 0))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
+  assertExpiryInRange(values);
   // A past or present expiry writes a credential the broker already refuses, under a label that is
   // then taken.
   if (values["expires-at"] !== undefined && Number(values["expires-at"]) <= Math.floor(Date.now() / 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-at is not in the future, so the credential would already be expired; nothing was written", { remedy: "give a later Unix time in seconds, or a lifetime with --expires-in <seconds>" });
+  if (values.replace !== undefined && values.out !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--replace replaces the label's standing credential, so it takes no --out; an --out file is re-minted with its matching --identity", { remedy: "drop --out to replace the standing credential, or pass the --out file's own --identity" });
   for (const key of ["identity", "out"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !values[key].trim() || /[\u0000-\u001f\u007f]/u.test(values[key]))) throw new CommandFailure("refused", "USAGE_INVALID", "credential paths must be nonempty and contain no terminal controls");
 }

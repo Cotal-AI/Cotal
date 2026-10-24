@@ -184,6 +184,8 @@ export interface AdmittedChatSession {
 
   send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult>;
   dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult>;
+  /** Resolve a DM target as {@link dm} does, sending nothing, so a front end refuses it when it is chosen. */
+  resolveDm(to: DmTarget): Promise<Result<{ readonly id: string; readonly name: string }>>;
   anycast(role: string, text: string): Promise<PublishResult>;
 
   setStatus(status: Exclude<PresenceStatus, "offline">, activity?: string): Promise<Result<void>>;

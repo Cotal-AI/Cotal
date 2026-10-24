@@ -1,14 +1,15 @@
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { assertSingleSpaceBroker, authDir, brokerAddressForDisplay, canonicalRoot, CommandFailure, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, writeResult, type Report } from "@cotal-ai/workspace";
+import { assertSingleSpaceBroker, authDir, brokerAddressForDisplay, canonicalRoot, CommandFailure, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, STORE_CONTENTS, writeResult, type Report } from "@cotal-ai/workspace";
 import { liveMeshProcesses, safeStoreCleanupPath } from "./clean.js";
-import { assertResetEligible, resetStoreApply, selectResetTarget } from "./reset-store-apply.js";
+import { assertResetEligible, resetStoreApply, resetStorePath, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
+import { verdictSection } from "../lib/verdict.js";
 
 export const resetFlags = [jsonFlag, plainFlag,
   { name: "dry-run", type: "boolean", description: "inspect local store, maintenance and process records without deleting anything" },
@@ -62,7 +63,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
   let bootAttempts: ReturnType<typeof listFreshTeamAttempts>, bootSummaries: ReturnType<typeof listFreshTeamSummaries>;
   let otherBrokerRegistrations: Array<{ space: string; root: string; origin: string }>;
   try {
-    store = safeStoreCleanupPath(root, mesh.storeDir);
+    store = resetStorePath(root, mesh.storeDir, { space, root }, `cotal reset store ${space} --dry-run`);
     maintenance = readMaintenanceJournal(root);
     possibleProcesses = liveMeshProcesses(root, space, true);
     serviceOwners = serviceInstances(space).map(instanceProjection).map((row) => ({ instanceId: row.instanceId, process: row.observedProcess, supervisor: row.supervisorRecord.mechanism }));
@@ -89,6 +90,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
     try { await assertResetEligible(mesh, "reset store"); }
     catch (error) { if (!(error instanceof CommandFailure)) throw error; refusal = error; }
   }
+  const runsAtDown = runsAtLastDown(root);
   const applyVerdict = refusal ? { offered: false, code: refusal.code, reason: refusal.message, remedy: refusal.remedy ?? null } : { offered: true };
   const result = { kind: "reset-local-impact-preview", operation: kind, space, root,
     recordedStorePath: mesh.storeDir ?? resolve(root, ".cotal", "nats"), storePathSource: mesh.source === "stopped-stack" ? "stack-journal" : mesh.storeDir ? "registration" : "legacy-default",
@@ -103,15 +105,14 @@ export async function reset(args: ParsedArgs): Promise<void> {
     unreadableBootRecords: [...bootAttempts.refused, ...bootSummaries.refused].map(({ path }) => path),
     brokerSharing: "exact local registration matches only; aliases and live tenants not checked", brokerProbe,
     identityInventory: "not-applicable", exactIdentityPaths: "not-applicable",
+    storeContents: { removed: store.identity ? STORE_CONTENTS : [], listed: runsAtDown?.read === true, runsAtLastDown: runsAtDown ?? null },
     applyVerdict, dryRun: true, effectAttempted: false, persisted: false };
   // A preview that read what it could succeeds. It is partial in what it proves, which the
   // verdict's apply rechecks under the maintenance lock.
   writeResult(presentationOf(args.values), { command: "reset", target: { space, root }, result, completeness: "partial" }, (data): Report => ({ sections: [
-    { title: "Verdict", blocks: refusal
-      ? [{ kind: "lines", lines: [{ text: `reset store ${space} would refuse (${refusal.code}): ${refusal.message}`, tone: "failed" }, ...(refusal.remedy ? [`Next: ${refusal.remedy}`] : [])] }]
-      : [{ kind: "lines", lines: [{ text: `reset store ${space} is offered. The apply runs every check again under the root's maintenance lock.`, tone: "ok" }] },
-        { kind: "commands", items: [{ command: `cotal reset store ${space} --yes`, description: "Remove only this stopped store" }] }] },
+    verdictSection(`reset store ${space}`, refusal, { command: `cotal reset store ${space} --yes`, description: "Remove only this stopped store", recheck: "The apply runs every check again under the root's maintenance lock." }),
     { title: "Reset local impact", blocks: [{ kind: "fields", rows: [["Scope", data.operation], ["Space", data.space], ["Recorded root", data.root], ["Store candidate", data.recordedStorePath], ["Inspected path", data.inspectedStorePath], ["Store state", data.storeState], ["Identity", data.identityImpact], ["Maintenance", data.maintenance], ["Broker probe", data.brokerProbe], ["Recorded processes that may run", data.possibleProcesses.length ? data.possibleProcesses.join(", ") : "none found in legacy pidfiles"], ["Service instance records", String(data.serviceOwners.length)], ["Supervisor receipts", String(data.serviceCensus.supervisors.length)], ["Retained native attempts", String(data.serviceCensus.nativeAttempts.length)], ["Additive ledgers", String(data.additiveLedgers.length)], ["Unreadable additive ledgers", String(data.unreadableAdditiveLedgers.length)], ["Retained additive deployments", String(data.retainedAdditiveAttempts.length)], ["Unreadable additive attempts", String(data.unreadableAdditiveAttempts.length)], ["Unsettled fresh attempts", String(data.unsettledBootAttempts.length)], ["Unreadable fresh records", String(data.unreadableBootRecords.length)], ["Other exact-address registrations", String(data.otherBrokerRegistrations.length)], ["Identity inventory", data.identityInventory], ["Exact identity paths", data.exactIdentityPaths]] }, { kind: "lines", lines: [{ text: "The local reads are not a maintenance lock, exclusive custody or broker stop proof. A negative credless probe may miss TLS-first listeners. Provider-owned secrets, full deletion paths and broker exclusivity remain unproved. No process was stopped and no file or registration was removed.", tone: "waiting" }] }] },
+    ...storeContentsSection(data.storeContents.removed, runsAtDown, data.root),
     { title: "Additive ownership at root", blocks: [
       data.additiveLedgers.length ? { kind: "table", columns: [{ key: "deploymentId", label: "Deployment ID" }, { key: "space", label: "Space" }, { key: "agents", label: "Agents" }, { key: "channels", label: "Channels" }], rows: data.additiveLedgers.slice(0, 100).map((row) => ({ ...row, agents: String(row.agents), channels: String(row.channels) })) } : { kind: "lines", lines: ["No readable additive ledger was found under this root."] },
       ...(data.unreadableAdditiveLedgers.length ? [{ kind: "lines" as const, lines: ["Unreadable ledger paths:", ...data.unreadableAdditiveLedgers.slice(0, 100)] }] : []),

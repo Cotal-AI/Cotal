@@ -1,8 +1,9 @@
 import * as p from "../lib/prompts.js";
-import { findMesh, inputDisabledByFlag, type MeshEntry } from "@cotal-ai/workspace";
+import { findMesh, findPreparedSpace, inputDisabledByFlag, type MeshEntry } from "@cotal-ai/workspace";
 import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";
 import { readFileSync } from "node:fs";
+import { listSpaces } from "@cotal-ai/core";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -10,6 +11,7 @@ import {
   checkMode,
   checkRoot,
   checkServer,
+  checkSpaceName,
   checkTrust,
   checkUserBundle,
   isDir,
@@ -56,10 +58,13 @@ export interface WizardIO {
   cancel(message: string): void;
   log: { info(m: string): void; warn(m: string): void; error(m: string): void };
   spinner(): { start(m: string): void; stop(m: string): void };
-  text(opts: { message: string; placeholder?: string; validate?: (v: string | undefined) => string | undefined }): Promise<string>;
+  text(opts: { message: string; placeholder?: string; defaultValue?: string; validate?: (v: string | undefined) => string | undefined }): Promise<string>;
   select<T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }): Promise<T>;
   confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean>;
 }
+
+/** What a cancel says. Nothing is written before the last confirmation, so a cancel changed nothing. */
+const CANCELLED = "Cancelled. Nothing was registered.";
 
 /** The real terminal, via clack. Cancellation (Ctrl-C / Esc) exits here rather than returning a
  *  sentinel the wizard body would have to thread through every branch. */
@@ -74,13 +79,13 @@ export function clackIO(): WizardIO {
       const s = p.spinner();
       return { start: (m) => s.start(m), stop: (m) => s.stop(m) };
     },
-    text: async (opts) => abortIfCancel(await p.text(opts as never)),
+    text: async (opts) => abortIfCancel(await p.text(opts as never), CANCELLED),
     select: async <T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }) =>
-      abortIfCancel(await p.select<T>(opts as never)) as T,
+      abortIfCancel(await p.select<T>(opts as never), CANCELLED) as T,
     // `initialValue` is a per-call decision, not a house style: an ordinary "register this?"
     // may default yes, but a consent to an unencrypted transport must not be given by pressing
     // Enter. Callers that omit it keep the old default.
-    confirm: async (opts) => abortIfCancel(await p.confirm({ initialValue: true, ...opts })),
+    confirm: async (opts) => abortIfCancel(await p.confirm({ initialValue: true, ...opts }), CANCELLED),
   };
 }
 
@@ -141,7 +146,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
           validate: (v) => {
             if (!v) return "Required - this is the address the mesh's broker listens on.";
             const r = checkServer(v, "--server");
-            if (!r.ok) return r.message.replace(/^✗ (--server )?/, "");
+            if (!r.ok) return [r.message.replace(/^✗ (--server )?/, ""), r.remedy].filter(Boolean).join("; ");
             // The same safety gate the flag form applies, asked here so a refused address is
             // caught at the prompt instead of after the operator has answered three more
             // questions. Both front ends must agree; that is what this module exists for.
@@ -284,6 +289,8 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
       const parsed = checkUserBundle(rawBundle);
       if (!parsed.ok) { io.log.error(parsed.message); return cancelled(io, "Nothing was registered."); }
       const b = parsed.value;
+      const named = checkSpaceName(b.space);
+      if (!named.ok) { io.log.error(named.message); return cancelled(io, "Nothing was registered."); }
       const userTls = b.tlsRequired || tlsIntent(server as string, false);
       const userDial = checkDialPolicy(server as string, { tlsRequired: userTls, allowUnencryptedOverlay: ackedFor === server });
       if (!userDial.ok) { io.log.error(userDial.message); return cancelled(io, "Nothing was registered."); }
@@ -316,13 +323,23 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   // Gating it on "did we just ask?" let `cotal meshes add <already-registered>` overwrite silently —
   // something the flag form refuses outright.
   let space = seed.space;
+  // An open broker lists the spaces it serves, so they are offered rather than typed blind.
+  let served: string[] = [];
+  if (!space && enforces === "open") {
+    try {
+      served = (await listSpaces({ servers: server as string })).map((info) => info.space).filter((name) => !accounts.includes(name));
+    } catch {
+      io.log.warn(`${server} answered, but the spaces it serves could not be read`);
+    }
+  }
   for (;;) {
     while (!space) {
-      if (accounts.length > 0) {
+      if (accounts.length > 0 || served.length > 0) {
         const picked = await io.select<string | null>({
             message: "Which space on that broker?",
             options: [
               ...accounts.map((s) => ({ value: s as string | null, label: s, hint: "credentials for this space are already here" })),
+              ...served.map((s) => ({ value: s as string | null, label: s, hint: "that broker serves it" })),
               { value: null, label: "Another name…" }, // null, not a sentinel string: no space name can collide with it
             ],
           });
@@ -332,17 +349,25 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
         space = await io.text({
             message: "Space name on that broker",
             placeholder: "the name the mesh was started with",
-            validate: (v) => (v ? undefined : "Required - it must match the space name where the mesh runs."),
+            validate: (v) => {
+              if (!v) return "Required - it must match the space name where the mesh runs.";
+              const named = checkSpaceName(v);
+              return named.ok ? undefined : `${named.message.replace(/^✗ /, "")}; ${named.remedy}`;
+            },
           });
       }
     }
     const clash = findMesh(space);
-    if (!clash || replace) break;
+    // A prepared space, or one this machine started or a catalog lists, is not replaced, as
+    // `space add` refuses it, so only another name is offered.
+    const owner = findPreparedSpace(space) ? "a space prepared on this machine" : clash && clash.origin !== "manual" ? clash.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started" : undefined;
+    if (!owner && (!clash || replace)) break;
+    // Another name comes first, so pressing Enter never replaces a record.
     const next = await io.select({
-        message: `"${space}" is already registered here (${clash.server}).`,
+        message: owner ? `"${space}" is ${owner}, so it is not replaced.` : `"${space}" is already registered here (${clash!.server}).`,
         options: [
-          { value: "replace", label: "Replace that record", hint: clash.root },
           { value: "rename", label: "Use a different name" },
+          ...(owner ? [] : [{ value: "replace", label: "Replace that record", hint: clash!.root }]),
           { value: "cancel", label: "Cancel" },
         ],
       });
@@ -410,7 +435,9 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     ].join("\n"),
     brand("About to record"),
   );
-  const go = await io.confirm({ message: "Register this mesh?" });
+  // Replacing a record is the one write here that loses something, so Enter must not do it: it takes
+  // a typed yes, and Enter keeps No.
+  const go = await io.confirm({ message: replace ? `Replace the record for "${space}"?` : "Register this mesh?", ...(replace ? { initialValue: false } : {}) });
   if (!go) return cancelled(io, "Nothing was registered.");
 
   // The guided consent is PERSISTED, exactly as the flag form persists it. Asking the operator and
@@ -452,6 +479,8 @@ async function askRoot(io: WizardIO, cwd: string, defaultTo: string | undefined)
     const typed = await io.text({
         message: "Local folder for this mesh's credentials and personas",
         placeholder: defaultTo ?? "the folder holding its .cotal/auth",
+        // Pressing Enter takes the default, and the answer line then shows that folder.
+        ...(defaultTo ? { defaultValue: defaultTo } : {}),
         validate: (v) => {
           const candidate = v || defaultTo;
           if (!candidate) return "Required - the folder that holds this mesh's .cotal/auth and .cotal/agents.";
@@ -464,7 +493,7 @@ async function askRoot(io: WizardIO, cwd: string, defaultTo: string | undefined)
   }
 }
 
-function cancelled(io: WizardIO, message = "Cancelled."): false {
+function cancelled(io: WizardIO, message = CANCELLED): false {
   io.cancel(message);
   return false;
 }

@@ -15,6 +15,7 @@ import {
   type SpaceBackupSelection,
 } from "./backup-config.js";
 import { withDeadline } from "./deadline.js";
+import { wfjStreamName } from "./endpoint-binding.js";
 import {
   dlvDurableConfig,
   dmDurableConfig,
@@ -395,19 +396,20 @@ export function isRestoredConsumer(space: string, stream: string, info: Consumer
   return true;
 }
 
-/** Validate the complete consumer inventory for all eight streams and extract conservative checkpoints. */
+/** Validate the complete consumer inventory for every stream an artifact holds, by default every
+ *  backed-up stream, and extract conservative checkpoints. */
 export function validatePersistentConsumerInventory(
   space: string,
   consumersByStream: Readonly<Record<string, readonly ConsumerInfo[]>>,
   statesByStream: Readonly<Record<string, BackupStreamState>>,
+  expectedStreams: readonly string[] = spaceBackupInventory(space).full,
 ): PersistentConsumerCheckpoint[] {
-  const expectedStreams = spaceBackupInventory(space).full;
   const supplied = Object.keys(consumersByStream).sort();
   if (JSON.stringify(supplied) !== JSON.stringify([...expectedStreams].sort()))
-    throw new Error("consumer inventory must contain exactly the eight backed-up streams");
+    throw new Error("consumer inventory must contain exactly the backed-up streams");
   const suppliedStates = Object.keys(statesByStream).sort();
   if (JSON.stringify(suppliedStates) !== JSON.stringify([...expectedStreams].sort()))
-    throw new Error("stream state inventory must contain exactly the eight backed-up streams");
+    throw new Error("stream state inventory must contain exactly the backed-up streams");
 
   const checkpoints: PersistentConsumerCheckpoint[] = [];
   for (const stream of expectedStreams) {
@@ -543,7 +545,8 @@ export type RestorePermissionScope =
   | { operation: "initiate"; stream: string }
   | { operation: "upload"; stream: string; deliverSubject: string }
   | { operation: "validate"; stream: string }
-  | { operation: "checkpoint"; checkpoint: PersistentConsumerCheckpoint };
+  | { operation: "checkpoint"; checkpoint: PersistentConsumerCheckpoint }
+  | { operation: "journal" };
 
 /** Exact snapshot permission set. It has no stream read/admin verbs beyond one snapshot API; chunk
  * ACK authority is created dynamically for the exact reply received, never granted as a wildcard. */
@@ -606,6 +609,12 @@ export function restoreProfilePermissions(
       },
       sub: { allow: [inbox] },
     };
+  }
+  // A restore over a newer cut reads the step journals of the store it set aside, from a private
+  // clone, and of the store it restored, to name the runs it rolled back. Read-only, on WFJ alone.
+  if (scope.operation === "journal") {
+    const stream = assertBackupStream(space, wfjStreamName(space));
+    return { pub: { allow: [`$JS.API.STREAM.INFO.${stream}`, `$JS.API.STREAM.MSG.GET.${stream}`] }, sub: { allow: [inbox] } };
   }
   if (scope.operation !== "initiate" && scope.operation !== "upload" && scope.operation !== "validate")
     throw new Error(`unsupported restore operation ${(scope as { operation?: unknown }).operation}`);

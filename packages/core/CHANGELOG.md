@@ -1,5 +1,54 @@
 # @cotal-ai/core
 
+## 0.100.2
+
+### Patch Changes
+
+- 8d81c12: `cotal persona create --on <manager>` on a static space no longer records the CLI's one-call caller as the persona's owner, which no later call could match, so the receipt's own `persona show --on` Next was refused. On a static space the manager now records an owner only for one of its own seats, and any other caller defines an operator-owned file, as a local `persona create` writes it. A peer joined with its own credentials is such a caller too. When the manager writes the file into this root's catalog, the receipt's `Local files` line names it instead of saying `unchanged`, and JSON `localFilesChanged` is true. For a one-call caller the Next offers `cotal p show <name>`, and a `persona show --on` that is answered not-found names that command when this root holds the file.
+
+## 0.100.1
+
+### Patch Changes
+
+- 8bb8900: Concurrent `cotal channel set` writes on different fields of one channel no longer drop one of them. A channel registry write now lands on the revision it read, and a write that loses the race to another writer reads the entry again and merges again, so each confirmed field stays saved. A write that keeps losing refuses with `CONFLICT` and saves nothing, where before each writer printed `Channel saved` even when another writer overwrote its field. `channel defaults` and the runtime's channel writes use the same path.
+- 546b661: A `resolveService` or `describeEndpoint` call whose signal aborts while the describe waits for its
+  reply now rejects with the signal's reason, as an abort before the describe or between store reads
+  already did. It used to reject with an `unavailable` envelope error, the code a real transport
+  failure carries, so a caller could not tell a cancellation from an outage. A signal that aborts
+  with a `TimeoutError` still reports the unanswered describe deadline.
+- b1d2cb5: A resumed endpoint registration now clears only the repair cursor its own freeze saved. Before, once its
+  reopen committed it deleted whatever cursor was stored, so a second registration of the same instance
+  that had frozen the reopened gate in between lost its cursor, refused with "the repair cursor ... lost
+  its CAS", and left the gate frozen for reconciliation.
+
+## 0.100.0
+
+### Patch Changes
+
+- a78af23: `cotal channel remove` no longer says a channel was removed when it had no saved entry, such as a mistyped name or one already removed. That run is now a `no-op`: the receipt reads `Nothing removed` with `Metadata: no saved entry`, and `result.removed` is `false`. With `--purge`, the channel's retained messages are still purged and the receipt says so. `deleteChannels` now returns the channels it removed, and `clearChannel` says whether it removed the channel's entry.
+- f5424e1: `--creds` reads and checks its file before dialing. A missing, empty or malformed file (CRLF line
+  endings, a truncated JWT, no seed block) and a directory are refused naming the file and the cause,
+  instead of reporting a serving broker as unreachable or dumping the command's help. A file other
+  accounts can read is still used, with a warning that names `chmod 600`.
+- 0e729b5: A broker that accepts the connection and never answers, as a stopped or overloaded one does, is no longer reported as not running, and `status` no longer hangs on it. `ps`, `who`, `send` and `history` refused such a broker with "no mesh running at <url>; ... recorded at <root> but not running". They now say it "accepted the connection but is not answering", keep the registry entry, and name checking that the broker is not stopped or overloaded. `cotal meshes add` and a raw `--server` connect use the same wording. `status` printed its report and then never exited, because its manager service probe dialed the broker without first reading its greeting and the client library left that socket open. `status` and `status --components` now read the greeting first, report the manager service as unchecked or refused, and exit.
+- 0934f70: A channel subscription that the broker refuses after the join was confirmed, for example after a
+  permission reload, now reaches the endpoint's `error` event once, as `left channel "<channel>"`, with
+  the broker's permission violation as its `cause`. It was also reported a second time as a generic
+  `NATS permission denied` error, so an embedder could not count or alert on it once.
+- 8360fbf: With the space's manager stopped, `cotal run` and its hosted verbs and `cotal models` refuse at once, as `cotal ps` does: `TARGET_UNAVAILABLE` (exit 2) with the Mesh header, the registry's own answer as the native detail, and bare `cotal up` as the next step. They used to wait about 10 seconds for a manager answer that could not come and then print a refusal about the `ep.v1` rail with no code or next step. An unpinned operator call reads the service registry first and refuses only when it lists no live manager; an unreadable registry, a pinned call and a user's manager view go to the manager as before. Core marks the registry's empty answer with a new `ai.cotal.ep.no-live-instances` detail, so a caller can tell it from an unreadable registry.
+- f0aebea: Create a missing persona catalog `.cotal/agents` with mode 0700 from every writer. Under a
+  group-writable umask, `space create`, `up` and `setup` made it 0775 while seeding the default
+  persona, so until the first `persona create` tightened it, a group member could replace
+  `default.md`. The setup log's `.cotal` is created 0700 the same way. An existing directory keeps
+  its mode.
+- 047b289: A persona file with CRLF line endings or a UTF-8 BOM now reads like the same file with LF endings, so `persona create --file`, `persona list`, `persona show`, `persona edit` and launches accept it. `persona create --file` now names the file it read when it refuses a definition, not the catalog path it would have written.
+- b24190d: Observers and chat sessions no longer hang silently after a broker outage the client could not ride out. `watch --plain` and `console --plain` now resume when the broker comes back, as `history --follow` already did: the endpoint re-subscribes their feed on every reconnect, where before it subscribed once and stayed silent while reporting itself connected. A `chat --stdio` or `--plain` session whose inbox is gone from the broker after the outage, as when `cotal up` restarted the space and retired it, no longer reports reconnecting forever. It ends by itself with that reason, its `--stdio` end record and `close` carry it, and it exits 5. An endpoint stopped from its own warning listener also exits promptly instead of waiting out the reconnect backoff.
+- 6471d27: `cotal run show` and `cotal run journal` now say why a step failed. A failed or refused step's journal row carries its recorded `errorMessage` beside `errorCode` in `--json`, and the text view lists each such step with its outcome and message under `Step errors`, escaping control characters. Before, both views printed only `failed (L4000)`, and the reason, such as a hosted run that is not admitted to read a channel, was only in the manager's log. The manager's `run-status` reply schema admits the new field.
+- b079d7d: `cotal send --creds` with a credential that may not read the space's roster now refuses with `PERMISSION_DENIED` as soon as the broker denies the read. It used to wait about five seconds and report an unknown `timeout`. A batched Direct Get in core now ends on the broker's permission denial for its request.
+- 9234229: `cotal who` on a mesh where nobody is present now answers at once that nobody is there, and exits 0.
+  It used to wait 3 seconds and report the roster as partial. A presence observer that does not
+  register now completes its snapshot on an empty bucket, so its view is current.
+
 ## 0.99.3
 
 ### Patch Changes

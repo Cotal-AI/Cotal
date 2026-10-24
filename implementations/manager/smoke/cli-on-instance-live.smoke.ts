@@ -60,7 +60,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -314,7 +314,7 @@ try {
   // typed `spawn -f ... --on <id>` was pinned to nothing and never told. Manifest deploys are now
   // `team deploy`, which has no `--on` at all.
   for (const [what, argv, refusal] of [
-    ["a foreground spawn", ["spawn", "no-such-persona", "--foreground", "--on", IID1, "--space", space], /direct --foreground execution takes no structured receipt, manager credential or manager pin/],
+    ["a foreground spawn", ["spawn", "no-such-persona", "--foreground", "--on", IID1, "--space", space], /a spawn in this terminal takes no structured receipt, manager credential or manager pin/],
     ["a manifest deploy", ["team", "deploy", "no-such-manifest.yaml", "--on", IID1, "--space", space], /Unknown option '--on'/],
   ] as const) {
     const r = await cotal([...argv], root1);
@@ -412,9 +412,41 @@ try {
       { status: r.status, tail: out.slice(-300) });
   }
 
+  // A persona created on m2 lands in root2's catalog, the root the space is registered at, so the
+  // receipt names the file it wrote. Each static call mints its own caller, so the manager records
+  // no owner and the file is operator-owned: the receipt's Next reads it locally, a later
+  // show --on names that command, and the --on listing's Next offers the local show.
+  console.log("\n7. a persona created on the exact manager names the file it wrote and a Next that works");
+  const createdJson = await cotal(["persona", "create", "remote-rev", "--prompt", "review", "--subscribe", "", "--on", IID2, "--space", space, "--json"], root2);
+  mustHaveRun(createdJson, "`persona create --on --json`");
+  let created: { outcome?: string; result?: { localFilesChanged?: boolean; perCallCaller?: boolean } } | undefined;
+  try { created = JSON.parse(createdJson.stdout); } catch { created = undefined; }
+  const remoteRev = join(root2, ".cotal", "agents", "remote-rev.md");
+  check("persona create --on writes this root's catalog file with no owner, and its JSON says local files changed",
+    createdJson.status === 0 && created?.outcome === "ok" && created.result?.localFilesChanged === true && created.result.perCallCaller === true && existsSync(remoteRev) && !/^owner:/m.test(readFileSync(remoteRev, "utf8")),
+    { status: createdJson.status, stdout: createdJson.stdout.slice(-600) });
+  const createdText = await cotal(["persona", "create", "remote-rev2", "--prompt", "review", "--subscribe", "", "--on", IID2, "--space", space], root2);
+  mustHaveRun(createdText, "`persona create --on`");
+  const receipt = strip(createdText.out);
+  check("the receipt names the file the manager wrote and offers the local show, not a show --on that would refuse",
+    createdText.status === 0 && /Local files:\s+\S*remote-rev2\.md, written by the manager in this root's catalog/.test(receipt) &&
+      /cotal p show remote-rev2\s/.test(receipt) && !receipt.includes("cotal p show remote-rev2 --on") && receipt.includes(`cotal spawn remote-rev2 --on ${IID2}`),
+    { status: createdText.status, out: receipt.slice(-900) });
+  const shownRemote = await cotal(["persona", "show", "remote-rev", "--on", IID2, "--space", space], root2);
+  mustHaveRun(shownRemote, "`persona show --on` by a later caller");
+  check("a later show --on is refused not-found and names the local show for the file in this root",
+    shownRemote.status === 2 && /TARGET_NOT_FOUND/.test(strip(shownRemote.out)) && strip(shownRemote.out).includes("read it here with cotal p show remote-rev"),
+    { status: shownRemote.status, out: strip(shownRemote.out).slice(-600) });
+  const remoteListed = await cotal(["persona", "--on", IID2, "--space", space], root2);
+  mustHaveRun(remoteListed, "`persona --on`");
+  const remoteListing = strip(remoteListed.out);
+  check("the --on listing's Next offers the local show, not a show --on that would refuse",
+    remoteListed.status === 0 && /cotal p show <name>\s/.test(remoteListing) && !remoteListing.includes("cotal p show <name> --on"),
+    { status: remoteListed.status, out: remoteListing.slice(-600) });
+
   // One compiled manager build serves a different ps output contract. Copying the compiled build
   // into the disposable root keeps this variant isolated from the normal manager and CLI imports.
-  console.log("\n7. a mixed-contract class census is incomplete, not a successful seat list");
+  console.log("\n8. a mixed-contract class census is incomplete, not a successful seat list");
   const variant = join(dir, "variant");
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   cpSync(join(repoRoot, "implementations/manager/dist"), variant, { recursive: true });
@@ -482,7 +514,7 @@ try {
 
   // A catalog the connector could not read leaves the read partial. One the install has no way to
   // list is a connector without a catalog: complete, exit 0, with the reason shown.
-  console.log("\n8. models: an unreadable catalog is partial, one the install cannot list is not");
+  console.log("\n9. models: an unreadable catalog is partial, one the install cannot list is not");
   const catalogStub = (name: string, listModels: NonNullable<Connector["listModels"]>): Connector =>
     ({ kind: "connector", name, requires: ["node"], buildLaunch: connector.buildLaunch, listModels });
   registry.register(catalogStub("models-listed", () => ({ source: "fixture catalog", models: [{ id: "fixture-model" }] })));
@@ -530,7 +562,7 @@ try {
 
   // A manager on installed extensions lists every connector its manifest names, so one whose package
   // cannot be loaded still has a row. That row is an unread catalog, not a connector without one.
-  console.log("\n9. models: an installed connector the manager cannot load leaves the read partial");
+  console.log("\n10. models: an installed connector the manager cannot load leaves the read partial");
   await m1.stop({ withAgents: true });
   await mixedManager.stop({ withAgents: true });
   process.env.XDG_CONFIG_HOME = join(home, "xdg");

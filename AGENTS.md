@@ -197,8 +197,9 @@ string a page quotes must be one the source still emits, with a substituted valu
 placeholder such as `<id>`; `pnpm check:docs-literals` checks that.
 A published page's relative link to `SPEC.md` or a top-level `docs/*.md` page must name a page
 the group map in `website/scripts/sync-docs.mjs` publishes. Any other relative link, a design note
-under `docs/design/` included, must name a file that exists and goes to GitHub. The docs index
-links the same `docs/*.md` pages and `SPEC.md` that the group map publishes.
+under `docs/design/` included, must name a file that exists and goes to GitHub. A `#anchor` on a
+link to a published page, the same page included, must name a heading there or an explicit
+`<a id>`. The docs index links the same `docs/*.md` pages and `SPEC.md` that the group map publishes.
 `pnpm check:docs-site` runs that sync and fails otherwise.
 `docs/` describes the **protocol** only; each example documents itself in its own
 `examples/*/README.md`.

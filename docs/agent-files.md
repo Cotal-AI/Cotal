@@ -23,7 +23,8 @@ You are a builder on a shared mesh of peer agents…   ← the body is the perso
 ```
 
 The file may use LF or CRLF line endings and may start with a UTF-8 byte order mark, so a
-catalog checked out on Windows reads the same.
+catalog checked out on Windows reads the same. It must be UTF-8: a file saved as UTF-16, as Windows
+PowerShell 5.1 writes by default, is refused by name with the step to save it as UTF-8.
 
 **Frontmatter is identity** (an A2A-style `AgentCard`,
 [SPEC §6](../SPEC.md#6-presence-and-discovery)); **the body is the persona**, appended to
@@ -59,7 +60,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `agent` | string | The connector/harness this persona pins (`claude`, `jcode`, and so on). Precedence: explicit `--agent` > this field > `COTAL_DEFAULT_AGENT` > the saved [`harness` preference](config.md#preferences) > the product default, the same shape as `model`/`variant`, so the env var stays a *default* and cannot beat a deliberate per-persona pin. A value naming an unregistered connector fails the spawn loudly (no silent fallback). |
 | `launchOptions` | map | Opaque per-connector launch options forwarded **raw** to the harness (Claude flags, OpenCode agent config; Hermes and pi have no option surface and fail loud). A CLI `--opt key=value` overrides a key set here. A role with a `modelPolicy` entry launches without launch options ([Model policy](config.md#model-policy)). See [run a mesh](run-a-mesh.md#spawning-agents). |
 | `capabilities` | string[] | Control-plane capabilities minted into the cred. `spawn` grants the privileged control subject (spawn / named stop / persona definition), default-deny when absent, enforced by the broker, not a handler. `run` grants the manager's workflow-run commands (start, resume, answer, status, list) plus the spawn set a program's own spawns need, and injects the `cotal_run` tool. On a per-user-auth mesh, `role:<r>` additionally lets the agent delegate role `r` when spawning ([identity & auth](identity-and-auth.md)); `admin` is never a persona capability. |
-| `owner` | string | **Policy, not content**: set once by `definePersona` (owner = creator); only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
+| `owner` | string | **Policy, not content**: set once by `definePersona` to the creator when it is a signed-in user or one of the manager's own seats. On a static space any other creator, such as the CLI, leaves the file operator-owned. Only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
 | *(any other key)* | string | Kept verbatim in `meta` so a connector can read its own launcher hints without core knowing them. Saving a definition whose `meta` names a key this table models, or the renamed `channels` or `publish`, is refused before anything is written. The connector-owned keys are the exception: `connector`, `model`, `variant`, and `host` (the machine the session runs on) are overlaid from the live session, so a file cannot declare a harness or a host it is not on. |
 
 The three channel verbs on one card, with the common recipes:

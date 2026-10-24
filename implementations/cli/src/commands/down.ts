@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
@@ -7,6 +7,8 @@ import {
   isCommandFailure,
   localRecordName,
   presentationOf,
+  renderReport,
+  terminalWidth,
   abortMaintenanceCut,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
@@ -22,6 +24,7 @@ import {
   canonicalRoot,
   brokerAddressForDisplay,
   findMesh,
+  findPreparedSpace,
   getCurrent,
   localMeshesForRoot,
   preparedSpaceAt,
@@ -54,6 +57,7 @@ import {
   seatCheckpointDir,
   type SeatCheckpoint,
   type JsonValue,
+  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -76,8 +80,8 @@ import {
   type Presence,
 } from "@cotal-ai/core";
 import { localProcessSurface } from "../ext-loader.js";
-import { c } from "../ui.js";
-import { cotalRoot } from "../lib/paths.js";
+import { c, stderrLine } from "../ui.js";
+import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
@@ -87,7 +91,7 @@ import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTe
 import { service, serviceComplete, validateServiceArguments } from "./service-registry.js";
 import { stopNamedServiceSet } from "./service-set-stop.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
-import { assertBareDownServicesVerified, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
+import { assertBareDownServicesVerified, assertNoServicesForPreserve, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
@@ -95,8 +99,10 @@ import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
-import { controllerStackRecorded, nothingRunning, stackDown, validateStackDownArguments } from "./stack-down.js";
-import { recordedProcessLine } from "../lib/stack-journal.js";
+import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
+import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
+import { restoreNextStep } from "../lib/restore.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
@@ -141,10 +147,15 @@ export function validateDownArguments(args: ParsedArgs): void {
     for (const name of args.positionals) validateServiceArguments({ ...args, positionals: ["stop", name] });
     return;
   }
+  // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
+  const linked = linkedCotalRefusal("down");
+  if (linked) throw linked;
   if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
+  if (goneRootDown(args.values)) return validateGoneRootDownArguments(args.values);
   if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(cotalRoot(), args.values);
   refuseStackElsewhere(args.values);
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
+  if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && stoppedLegacyStack())) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview or a stack that is already stopped; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
@@ -152,20 +163,21 @@ export function validateDownArguments(args: ParsedArgs): void {
 
 /** A bare `down` stops only the stack of the folder it runs in. When this folder's root holds no
  *  stack and the space named by `--space`, or else the selected one, is a controller stack rooted at
- *  another folder, refuse with that space and its root, so the remedy is a `down` that stops it. */
+ *  another folder, refuse with that space and its root, so the remedy is a `down` that stops it. A
+ *  folder with its own `.cotal` keeps the selected space from applying; a `--space` it holds no
+ *  registration for still names that root. */
 function refuseStackElsewhere(values: ParsedArgs["values"]): void {
   if (values.file !== undefined || values.run !== undefined) return;
   const here = canonicalRoot(cotalRoot());
   let space: string | undefined, root: string | undefined;
   try {
-    if (localMeshesForRoot(here).length || existsSync(join(here, ".cotal")) && here !== canonicalRoot(homedir())) return;
+    const local = localMeshesForRoot(here);
+    if (typeof values.space === "string" ? local.some((mesh) => mesh.space === values.space) : local.length || existsSync(join(here, ".cotal")) && here !== canonicalRoot(homedir())) return;
     space = typeof values.space === "string" ? values.space : getCurrent();
-    const mesh = space === undefined ? undefined : findMesh(space);
-    if (!mesh || mesh.origin !== "up" || canonicalRoot(mesh.root) === here || !controllerStackRecorded(mesh.root)) return;
-    root = mesh.root;
+    root = space === undefined ? undefined : stackRootElsewhere(space, here);
   } catch { return; }
-  const again = ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a controller stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${again}\` from ${root}` });
+  if (root === undefined) return;
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a controller stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${sameDown(values)}\` from ${root}` });
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */
@@ -176,7 +188,8 @@ function previewWholeStack(args: ParsedArgs): void {
   const root = canonicalRoot(cotalRoot());
   const selectedSpace = args.values.space as string | undefined;
   const target = { root, ...(selectedSpace ? { space: selectedSpace } : {}) };
-  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated project root for a whole-stack preview", { target, remedy: MACHINE_HOME_STOP });
+  // A stack an earlier release started in the machine home is read like any other; only its stop differs.
+  const home = root === canonicalRoot(homedir());
   let mesh: NonNullable<ReturnType<typeof findMesh>>;
   let maintenance: ReturnType<typeof readMaintenanceJournal>;
   let components: Array<{ name: string; label: string; pidfile: string; recorded: boolean; liveness: "alive" | "dead" | "unknown"; pid: number | null; note: string | null }>;
@@ -186,7 +199,7 @@ function previewWholeStack(args: ParsedArgs): void {
   let otherBrokerRegistrations: Array<{ space: string; root: string; origin: string }>;
   // A root with no control directory, or with no stack registered at it, holds no stack. That is a
   // plain miss, not records that could not be read.
-  const noStack = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "there is no stack at this folder's root, so there is nothing to preview", { target, remedy: "run `cotal down --dry-run` from the folder where `cotal up` started the stack" });
+  const noStack = () => noStackHere(target, "preview");
   try {
     try { lstatSync(join(root, ".cotal")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") throw noStack(); throw error; }
@@ -216,6 +229,7 @@ function previewWholeStack(args: ParsedArgs): void {
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure("refused", "CONFLICT", "the local stack, process or service records, or maintenance state could not be inspected consistently; no stop target was inferred", { target });
   }
+  const homeRuns = home && components.some((row) => row.liveness !== "dead");
   const byBootId = new Map(bootSummaries.valid.map((summary) => [summary.deploymentId, summary]));
   const unsettledBootAttempts = bootAttempts.valid.filter((attempt) => !freshTeamAttemptSettled(attempt, byBootId.get(attempt.deploymentId)));
   const result = { kind: "whole-stack-local-preview", space: mesh.space, root, recordedBroker: brokerAddressForDisplay(mesh.server) ?? null,
@@ -242,6 +256,9 @@ function previewWholeStack(args: ParsedArgs): void {
     ...(data.serviceStops.length ? bareDownServicesView(data.space, data.serviceStops).sections : [{ title: "Services bare down stops first", blocks: [{ kind: "lines" as const, lines: ["No saved service instance in this space, so bare down stops no service first."] }] }]),
     { title: "Recorded native supervisors", blocks: [data.supervisors.length ? { kind: "table", columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "mechanism", label: "Mechanism" }, { key: "unit", label: "Recorded unit" }], rows: data.supervisors.slice(0, 100).map((row) => ({ definition: row.definition, instance: row.instanceId, mechanism: row.mechanism, unit: row.unit })) } : { kind: "lines", lines: ["No supervisor receipts in this space's workstation store."] }, { kind: "lines", lines: [...(data.supervisors.length > 100 ? ["Additional supervisor receipts are in JSON."] : []), "A receipt is not a live unit observation or authority to stop it. No native service status request was made."] }] },
     { title: "Retained native attempts", blocks: [data.nativeAttempts.length ? { kind: "table", columns: [{ key: "kind", label: "Action" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "step", label: "Step" }, { key: "position", label: "Position" }], rows: data.nativeAttempts.slice(0, 100).map((row) => ({ kind: row.kind, definition: row.definition, instance: row.instanceId, step: row.step, position: row.position })) } : { kind: "lines", lines: ["No retained install, uninstall or unit-action attempts in this space's workstation store."] }, { kind: "lines", lines: [...(data.nativeAttempts.length > 100 ? ["Additional attempts and their full IDs are in JSON."] : []), "A submitted or unknown step may already have changed native state. This preview neither reconciles nor retries it."] }] },
+    ...(!home ? [] : homeRuns
+      ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal down --preserve-state", description: "Stop the machine-home stack and keep its state for the next cotal up" }] }] }]
+      : [{ title: "Next", blocks: [{ kind: "lines" as const, lines: ["No process of the machine-home stack is running, so there is nothing to stop."] }] }]),
   ] }));
 }
 
@@ -275,10 +292,20 @@ function stoppedLegacyStack(): { root: string; space?: string; started: boolean 
   return { root, ...(space === undefined ? {} : { space }), started };
 }
 
+/** The refusal for a folder with no stack. Its next step is the folder that holds one, or, when this
+ *  machine has started or registered no stack at all, starting one, as `cotal status` says. A
+ *  registry this cannot read may hold one. */
+function noStackHere(target: { root: string; space?: string }, action: "stop" | "preview"): CommandFailure {
+  let elsewhere: boolean;
+  try { elsewhere = loadMeshes().some((mesh) => mesh.origin !== "manual" && mesh.origin !== "catalog"); } catch { elsewhere = true; }
+  if (!elsewhere) return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to ${action}`, { target, remedy: "run `cotal up` in a project" });
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, so there is nothing to ${action}`, { target, remedy: `run \`cotal down${action === "preview" ? " --dry-run" : ""}\` from the folder where \`cotal up\` started the stack` });
+}
+
 /** Why bare down found no stack of its own at this root, with the one step that moves it on. */
 function noOwnedStack(root: string): CommandFailure {
   const target = { root };
-  const absent = new CommandFailure("refused", "TARGET_NOT_FOUND", "there is no stack at this folder's root, so there is nothing to stop", { target, remedy: "run `cotal down` from the folder where `cotal up` started the stack" });
+  const absent = noStackHere(target, "stop");
   const unclassified = new CommandFailure("refused", "CONFLICT", "the local root has no unique owned stack registration and real control directory; no whole-stack stop target was inferred", { target, remedy: "run `cotal status` here to see what this folder records" });
   if (!existsSync(join(root, ".cotal"))) return absent;
   if (!realDirNoSymlink(root, ".cotal")) return unclassified;
@@ -301,7 +328,11 @@ function noOwnedStack(root: string): CommandFailure {
 function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
   const root = canonicalRoot(cotalRoot());
   const target = { root };
-  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
+  if (root === canonicalRoot(homedir())) {
+    // `up` starts no stack in the home, so one that records none has nothing to stop.
+    if (!existsSync(join(root, ".cotal")) || !localMeshesForRoot(root).length && !pidRecordsUnder(root)) throw noOwnedStack(root);
+    throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
+  }
   let mesh: NonNullable<ReturnType<typeof findMesh>>;
   try {
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
@@ -366,6 +397,21 @@ function refuseUncontainedRecords(components: readonly LocalProcess[], context: 
   });
 }
 
+/** Bare down stops only the stack recorded at this folder's root. A `--space` whose stack is
+ *  recorded in another folder gets one refusal from the preview and the stop, naming that folder. */
+function refuseSpaceElsewhere(root: string, space: string, dryRun: boolean): void {
+  let at: string | undefined;
+  try { at = findMesh(space)?.root ?? findPreparedSpace(space)?.root; } catch { return; }
+  if (at === undefined || at === root || existsSync(at) && canonicalRoot(at) === canonicalRoot(root)) return;
+  let controller = false;
+  try { controller = readStackJournal(at)?.journal.space === space; } catch { /* named with the legacy stop */ }
+  const stop = dryRun ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and cotal down stops only the stack recorded where it runs`, {
+    target: { root, space, spaceRoot: at },
+    remedy: `run ${stop} in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
+  });
+}
+
 /** `cotal down`. It owns stdout's errors for its whole run, so a reader that goes away, as with
  *  `| head -1`, no longer ends it between a member's stop request and that stop's confirmation. The
  *  stop runs to its end, and the exit status is the stop's own. */
@@ -381,6 +427,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   validateDownArguments(args);
   if (args.positionals.length > 1) return stopNamedServiceSet(args);
   if (args.positionals.length) return service(namedStopArguments(args), "down");
+  // A stack whose folder is gone stops from this machine's records, wherever down runs.
+  const gone = goneRootDown(args.values);
+  if (gone) return goneRootStackDown(gone.space, gone.root, args.values);
   // A root whose stack the service controller owns stops only through its recorded members.
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
@@ -393,7 +442,10 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && values["dry-run"] !== true && started);
     }
   }
-  if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) return previewWholeStack(args);
+  if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) {
+    if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, true);
+    return previewWholeStack(args);
+  }
   if (values["preserve-state"] && values["with-agents"])
     throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state cannot be combined with --with-agents");
   if (values["with-agents"] && (values.file || values.run || values.space))
@@ -414,6 +466,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
+  if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, false);
   if (values.space)
     throw new CommandFailure("refused", "USAGE_INVALID", "a bare stop takes no --space: `cotal down` stops the stack recorded at this folder's root", {
       target: { root: cotalRoot(), space: values.space },
@@ -429,6 +482,8 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let folderContext: LocalProcessContext | undefined;
   const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
   refuseUncontainedRecords(selected, folderCtx());
+  // The stop's lines follow the space they stop, as every other report of down begins.
+  console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
   // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
   // this folder's root. Its services stop first, through the service controller.
   await stopBareDownServices(guarded.space, guarded.services, { style: "rich", withAgents: values["with-agents"] === true });
@@ -438,7 +493,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   for (const component of selected) {
     any = processRecorded(component, folderCtx()) || any;
     if (component.stopLast && !allStopped) {
-      console.error(c.red(`✗ not stopping ${component.label} because an earlier component did not stop`));
+      stderrLine("✗ ", `not stopping ${component.label} because an earlier component did not stop`, c.red);
       continue;
     }
     try {
@@ -448,11 +503,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       else await stopLocalProcess(component, context);
     } catch (e) {
       allStopped = false;
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
     }
   }
   if (!allStopped) {
-    console.error(c.red("✗ not cleanly stopped - keeping artifacts and the registry entry"));
+    stderrLine("✗ ", "not cleanly stopped - keeping artifacts and the registry entry", c.red);
     process.exitCode = 1;
     return;
   }
@@ -494,15 +549,10 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", terminalWidth(process.stdout))}`);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-// The pid parser + liveness probe are the SHARED pid-attribution contract (`lib/pid.ts`), the same
-// one `auth-proc` uses - so `cotal down`'s stop of the auth-service (a callout SIGNER) attributes a
-// torn pidfile exactly as the direct helper does, instead of the old unbounded parser + two-state
-// probe that mapped a kernel-unsignalable value to "dead" and orphaned the process under a clean
-// stop. `isAlive` = the probe says the process EXISTS; every caller below feeds it a parsed pid.
-export const isAlive = (pid: number): boolean => probeLiveness(pid) === "alive";
 
 /** Registered brokers for this root that answer and have no nats pidfile. Never a kill list. */
 async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{ space: string; server: string }>> {
@@ -517,10 +567,7 @@ async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{
 }
 
 export function processAlive(component: LocalProcess, context: LocalProcessContext): boolean {
-  const raw = readPidfile(localProcessPath(component.pidFile, context));
-  if (raw === undefined) return false;
-  const pid = parsePid(raw);
-  return pid !== undefined && isAlive(pid);
+  return pidfileState(localProcessPath(component.pidFile, context)).liveness === "alive";
 }
 
 /** Whether a component MIGHT still be running. It fails CLOSED on uncertainty. A component with NO
@@ -532,11 +579,7 @@ export function processAlive(component: LocalProcess, context: LocalProcessConte
  *  stopping" but WRONG for those questions: it would count a live auth signer behind a torn pidfile
  *  as stopped. Only an ESRCH-confirmed death (or no record) clears a component. */
 export function mayBeRunning(component: LocalProcess, context: LocalProcessContext): boolean {
-  const raw = readPidfile(localProcessPath(component.pidFile, context));
-  if (!raw) return false; // no record, or an empty pre-protocol husk: no process behind it
-  const pid = parsePid(raw);
-  if (pid === undefined) return true; // unattributable content: cannot prove it gone → may be running
-  return probeLiveness(pid) !== "dead"; // alive OR unknown → may be running; only ESRCH clears it
+  return pidfileState(localProcessPath(component.pidFile, context)).liveness !== "dead";
 }
 
 /** The principal keys of every retained agent in a preservation inventory — the dot-form ids that
@@ -597,6 +640,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
     const all = localProcessSurface();
     const context: LocalProcessContext = { root, space: mesh.space };
     const existing = readMaintenanceJournal(root);
+    // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
+    if (existing && "restore" in existing && existing.state === "active")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, restoreLeftOut(existing)) });
     if (existing && existing.state !== "cut-intent" && existing.state !== "cut-committed" && existing.state !== "ready")
       throw new Error(`cannot preserve while maintenance state is ${existing.state}`);
     if (existing && (existing.space !== mesh.space || existing.mode !== mesh.mode ||
@@ -607,6 +653,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       console.log(c.dim(`state for "${mesh.space}" is already preserved and offline`));
       return;
     }
+    // A saved service depends on the broker, so the cut does not stop the broker under one. Plain
+    // down stops them first; a preserve leaves that to the operator and stops nothing.
+    assertNoServicesForPreserve(mesh.space);
 
     let attemptId: string;
     let resume;
@@ -1122,16 +1171,11 @@ export function pidfileTargets(space: string, root: string): Array<[file: string
  *  `cotal down` refuses them as possibly fronting a live process. */
 export type PidfileState = { pid?: number; liveness: "alive" | "dead" | "unknown"; note?: string };
 
-/** Shared hardened pid probe: positive integers only, and EPERM means the process exists. */
+/** The one classifier of a pidfile, read through the shared `readPidfile`: positive integers only,
+ *  and EPERM means the process exists. `processAlive` and `mayBeRunning` are its two directions. */
 export function pidfileState(path: string): PidfileState {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8").trim();
-  } catch (e) {
-    // A process removes its own record on exit, so the file can be gone by the time it is read.
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { liveness: "dead", note: "no pidfile" };
-    throw e;
-  }
+  const raw = readPidfile(path);
+  if (raw === undefined) return { liveness: "dead", note: "no pidfile" };
   if (raw.startsWith("removing:")) return { liveness: "unknown", note: "extension removal in progress" };
   const pid = parsePid(raw);
   if (!pid) return { liveness: raw ? "unknown" : "dead", note: "bad pidfile" };

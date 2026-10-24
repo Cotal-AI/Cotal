@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { listSpaces, token } from "@cotal-ai/core";
@@ -7,20 +7,32 @@ import {
   authDir,
   canonicalRoot,
   checkDiscoveryDocument,
+  cotalDirLink,
+  stackJournalPath,
+  rootPathProblem,
   clearCurrent,
   discoveryDocumentUrl,
   findMesh,
   findPreparedSpace,
   getCurrent,
   homeCotalDir,
+  isCommandFailure,
+  isMeshRegistryError,
   loadMeshes,
   pinnedFetch,
+  preparedRecordSpace,
   preparedSpaceAt,
   protectedLocalDirectory,
+  readPreferences,
   recordMesh,
   recordPreparedSpace,
   removeMesh,
   removePreparedSpace,
+  removeSpacePreferences,
+  SPACE_NAME_MAX,
+  spaceNameTooLong,
+  stackHomeRemedy,
+  stackRunsUnderOtherHome,
   writeResult,
   type Cell,
   type Check,
@@ -32,14 +44,18 @@ import {
   type UserBundle,
 } from "@cotal-ai/workspace";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
+import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions } from "../lib/stack-journal.js";
 import {
   candidateTarget,
   checkDialPolicy,
   checkEnforcement,
+  checkEnforcementAt,
   checkMode,
   checkRoot,
   checkServer,
+  checkSpaceName,
   checkTrust,
   checkUserBundle,
   probeEnforcement,
@@ -54,6 +70,7 @@ import { canPrompt, clackIO } from "./meshes-wizard.js";
 import { detail, type SpaceDetail } from "./space.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { readStackJournal } from "../lib/stack-journal.js";
+import { serviceDefinitionStore } from "../lib/service-definitions.js";
 
 /** The flags only `space add` takes. */
 export const ADD_FLAGS = ["file", "from", "server", "root", "mode", "tls", "allow-unencrypted-overlay", "force", "yes"] as const;
@@ -102,11 +119,21 @@ interface SpaceForgotten {
   readonly space: string;
   /** The broker it was registered at, or null for a prepared space, which has none. */
   readonly server: string | null;
-  readonly root: string;
+  /** Its root, or null for a prepared space whose record could not be read, which names none. */
+  readonly root: string | null;
   /** How it came to be here: a registration's origin, or `prepared` for a space `space create` made. */
   readonly origin: MeshEntry["origin"] | "prepared" | null;
+  /** The stopped controller stack definitions this machine saved for the space at its root, removed
+   *  so that another folder can start a stack under the same name. */
+  readonly releasedDefinitions: readonly string[];
+  /** The services still saved under its name, such as ones `cotal service add` saved, which a later
+   *  space of the same name inherits. Stack definitions a STACK_DEFINITIONS_KEPT warning names are
+   *  not repeated. */
+  readonly keptServices: readonly string[];
   /** Whether it was the selected space, so no space is selected now. */
   readonly selectionCleared: boolean;
+  /** The per-space preferences saved under its name that the forget removed, by key. */
+  readonly removedPreferences: Readonly<Partial<Record<string, string>>>;
 }
 
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
@@ -115,24 +142,32 @@ const usage = (message: string, remedy?: string): CommandFailure => new CommandF
 function take<T>(check: Check<T>, target: unknown): T {
   if (check.ok) return check.value;
   if (!check.code) throw new Error(`internal error: a registration rule refused without a code: ${check.message}`);
-  throw new CommandFailure("refused", check.code, check.message.replace(/^✗ /, ""), { target });
+  throw new CommandFailure("refused", check.code, check.message.replace(/^✗ /, ""), { target, ...(check.remedy === undefined ? {} : { remedy: check.remedy }) });
 }
 
 const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: string): CommandFailure =>
   new CommandFailure("refused", code, message, { target, ...(remedy ? { remedy } : {}) });
 
-/** Only a registration added by hand can be replaced; one this machine started or a catalog lists
- *  is forgotten or stopped first. */
-function replaceable(name: string, force: boolean, target: unknown): boolean {
+/** The registration a name already has when a new one added by hand may replace it. A prepared
+ *  space, or a registration this machine started or a catalog lists, is never replaced that way, with
+ *  or without `--force`: it is forgotten or stopped first. `space add` and `meshes add` share this. */
+export function handAddedRegistration(name: string, force: boolean, target: unknown): MeshEntry | undefined {
   if (findPreparedSpace(name))
     throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `start it with \`cotal up\` in its root, or forget it with \`cotal space forget ${name}\``);
   const existing = findMesh(name);
-  if (!existing) return false;
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
-  if (existing.origin !== "manual") {
+  if (existing && existing.origin !== "manual") {
     const owner = existing.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started";
     throw refuse("CONFLICT", force ? `"${name}" is ${owner}, so --force does not replace it` : `"${name}" is already registered at ${existing.server}; it is ${owner}`, target, `see it with \`cotal space show ${name}\``);
   }
+  return existing;
+}
+
+/** Only a registration added by hand can be replaced; one this machine started or a catalog lists
+ *  is forgotten or stopped first. */
+function replaceable(name: string, force: boolean, target: unknown): boolean {
+  const existing = handAddedRegistration(name, force, target);
+  if (!existing) return false;
   if (!force) throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
   return true;
 }
@@ -157,6 +192,7 @@ async function review(prompt: boolean, skip: boolean, rows: readonly (readonly [
 export async function spaceAdd(rest: readonly string[], v: AddValues, presentation: Presentation): Promise<void> {
   if (rest.length > 1) throw usage("usage: cotal space add [<name>] --server <url> | --file <bundle.json> | --from <https url>");
   const name = rest[0];
+  if (name !== undefined) take(checkSpaceName(name), { space: name });
   if (v.file !== undefined && v.from !== undefined) throw usage("pass --file or --from, not both: they are two sources for the same pinned trust");
   const bundled = v.file !== undefined || v.from !== undefined;
   if (bundled && v.mode !== undefined && v.mode !== "user") throw usage(`--file and --from add a user-auth space, so they do not take --mode ${v.mode}`);
@@ -193,7 +229,11 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const verified = v.force !== true;
   if (verified) {
     take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);
-    take(await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired)), target);
+    const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired));
+    // A broker that does not answer may be down right now, which is what --force is for. The
+    // diagnosis's own next step comes first.
+    if (!reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
+    take(reached, target);
     if (mode === "open") await servedOrThrow(server, name, target);
   }
   const warnings: OutputWarning[] = [];
@@ -208,7 +248,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
     ["checked", verified ? `the broker answers and enforces this mode${mode === "open" ? ", and serves this space" : ""}` : "nothing: --force adds it unchecked"],
   ];
   if (!(await review(prompt, v.yes === true, rows, `Add ${name}`, true))) return undefined;
-  const entry: MeshEntry = { space: name, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ts: new Date().toISOString() };
+  const entry: MeshEntry = { space: name, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ...(verified ? {} : { unchecked: true }), ts: new Date().toISOString() };
   recordMesh(entry);
   return { result: { kind: "space-added", space: detail(entry, getCurrent() ?? null, verified ? "reachable" : "not-checked"), verified, replaced }, warnings };
 }
@@ -259,6 +299,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   const space = name ?? bundle.space;
   const spaceTarget = { space };
   if (name !== undefined && bundle.space !== name) throw refuse("CONFLICT", `the bundle is for "${bundle.space}", not "${name}": a bundle adds the space it was exported for`, spaceTarget);
+  take(checkSpaceName(space), spaceTarget);
   const server = take(v.server === undefined ? checkServer(bundle.server, "the bundle's server") : checkServer(v.server, "--server"), spaceTarget);
   const tlsRequired = bundle.tlsRequired || tlsIntent(server, v.tls === true);
   const dial = take(checkDialPolicy(server, { tlsRequired, allowUnencryptedOverlay: v["allow-unencrypted-overlay"] === true }), spaceTarget);
@@ -266,7 +307,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   take(checkMode(space, root, [], "user", true), spaceTarget);
   const replaced = replaceable(space, v.force === true, spaceTarget);
   take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)), spaceTarget);
-  take(checkEnforcement("user", await probeEnforcement(server), server, space, root), spaceTarget);
+  take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"), spaceTarget);
   const rows: [string, string][] = [
     ["space", space],
     ["broker", `${server}${tlsRequired ? " (TLS required)" : ""}`],
@@ -349,14 +390,22 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
  * default persona there as setup does, so a bare `cotal spawn` in the space has one to launch. It
  * starts nothing, and the selection is left as it is. The root is `--root`, else this folder.
  */
-export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, presentation: Presentation): Promise<void> {
-  if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>]");
+export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
+  if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
   const name = rest[0]!;
   const root = resolve(rootFlag ?? process.cwd());
   if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");
-  checkLocalSpace(name, root, "--root", false);
+  if (adopt) {
+    // Its own rules come first, so a folder moved on this machine is told to move back, not to forget.
+    let found: ReturnType<typeof journalRecordedElsewhere>;
+    try { found = journalRecordedElsewhere(root); } catch { found = undefined; }
+    const blocked = found && adoptionRefusal(root, found);
+    if (blocked) throw refuse("CONFLICT", `${blocked.message}; it was not adopted and nothing was written`, { space: name, root: canonicalRoot(root), recordedRoot: found!.recordedRoot }, blocked.remedy);
+  }
+  checkLocalSpace(name, root, "--root", false, adopt);
+  const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
   const prepared = recordLocalSpace(name, root);
-  const written = [{ what: "prepared space", path: prepared.file }];
+  const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), { what: "prepared space", path: prepared.file }];
   const persona = seedDefaultPersona(root);
   if (persona) written.push(persona);
   const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: prepared.preparedAt, current: getCurrent() === name, written };
@@ -371,12 +420,23 @@ export type LocalSpaceState = "created" | "prepared" | "started";
  * The checks `space create` runs before it prepares `name` at `root`; it writes nothing. `flag`
  * names the input that chose the root. With `again`, a space already prepared or started at this
  * same root is reported as its state instead of refused, so `cotal setup` run again with the same
- * answers changes nothing.
+ * answers changes nothing. With `adopting`, a stack journal another folder recorded here counts as
+ * this root's own, as `space create --adopt` is about to make it.
  */
-export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean): LocalSpaceState {
+export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean, adopting = false): LocalSpaceState {
   const target = { space: name };
+  // `cotal up` starts a space only under a name that is one native routing token, short enough for
+  // the file names that carry it.
+  const tooLong = spaceNameTooLong(name);
+  if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, target, `choose a name of at most ${SPACE_NAME_MAX} characters`);
+  if (token(name) !== name)
+    throw refuse("USAGE_INVALID", `a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, target, "choose a name of only letters, digits, underscores and hyphens");
+  take(checkSpaceName(name), target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
+  // Such a space could be prepared but never started: its first `up` would refuse to record the root.
+  const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
+  if (pathProblem) throw refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, `rename the folder without those characters, or create the space in another folder with ${flag} <dir>`);
   const here = (other: string): boolean => canonicalRoot(other) === canonicalRoot(root);
   const registered = findMesh(name);
   if (registered) {
@@ -386,7 +446,26 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const prepared = findPreparedSpace(name);
   if (prepared) {
     if (again && here(prepared.root)) return "prepared";
-    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}`, target, `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
+    const gone = !existsSync(prepared.root);
+    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, target, gone
+      ? `forget it with \`cotal space forget ${name}\`, then run this create again`
+      : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
+  }
+  // A stack this home cannot see runs here under another Cotal home; a space prepared over it could
+  // not start, and the root's status would stop naming that home.
+  let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
+  // A journal that is not JSON or has an unsupported shape is named with its way out. The trust it
+  // leaves would otherwise read as a space that already holds this root.
+  try { journal = readStackJournal(root)?.journal; } catch (error) { if (error instanceof CommandFailure && error.code === "SCHEMA_INVALID") throw error; journal = undefined; }
+  if (journal && stackRunsUnderOtherHome(root, journal))
+    throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} runs under another Cotal home; ${homeCotalDir()} holds no record of its members`, target, stackHomeRemedy());
+  // A stack journal another folder recorded, as a copy or a moved folder keeps it, is taken over only
+  // with --adopt, so nothing rewrites it unasked. A linked .cotal is named below.
+  let elsewhere: ReturnType<typeof journalRecordedElsewhere>;
+  try { elsewhere = journalRecordedElsewhere(root); } catch { elsewhere = undefined; }
+  if (elsewhere && !adopting && cotalDirLink(root) === undefined) {
+    const blocked = adoptionRefusal(root, elsewhere);
+    throw refuse("CONFLICT", `${root} holds the stack journal of "${elsewhere.journal.space}" that ${elsewhere.recordedRoot} recorded, as a copy or a moved folder keeps it${blocked ? `, and ${blocked.message}` : ""}; nothing was written`, target, blocked?.remedy ?? `adopt it with cotal space create ${elsewhere.journal.space} --adopt --root ${shellWord(canonicalRoot(root))}`);
   }
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.
@@ -394,7 +473,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   if (held.length > 0) {
     // This root's stack journal: its space, undefined when there is none, null when it cannot be read.
     let journaled: string | null | undefined = null;
-    try { journaled = readStackJournal(root)?.journal.space; } catch { journaled = null; }
+    try { journaled = readStackJournal(root)?.journal.space; } catch { journaled = adopting && elsewhere ? elsewhere.journal.space : null; }
     // A controller stack whose registration is gone, after a refused first start or a forget, keeps
     // its trust and stack journal for this same space here. Preparing it again restores what its
     // next start needs; any other space's trust still refuses.
@@ -403,10 +482,18 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
     // `cotal up` from this root starts it again on its own launcher. Only that one space can run here.
     // A root with a controller stack journal is not offered that, because its start needs a prepared
     // or locally started registration.
+    // Records copied or moved here keep naming the folder they came from as their space's root.
+    const origin = held.length === 1 ? findPreparedSpace(held[0]!)?.root ?? findMesh(held[0]!)?.root : undefined;
+    if (origin !== undefined && !here(origin)) {
+      const link = cotalDirLink(root);
+      throw refuse("CONFLICT", link !== undefined ? `${join(root, ".cotal")} is a link to ${link}, which holds the records of "${held[0]}" at ${origin}` : `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
+    }
     const stopped = held.length === 1 && journaled === undefined && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
+    // The next step names the space already here, so whoever meant it can start, select or forget it.
+    const which = held.length === 1 ? held[0]! : "<space>";
     throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`
-      : `create the space in another folder, or pass ${flag} <dir>`);
+      : `create "${name}" in another folder with ${flag} <dir>; for "${held.join('", "')}", which ${held.length === 1 ? "uses" : "use"} this folder, start it with \`cotal up\` from ${root}, select it with \`cotal use ${which}\`, or forget it with \`cotal space forget ${which}\``);
   }
   return "created";
 }
@@ -415,11 +502,29 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
  *  Returns the record it wrote and when. */
 export function recordLocalSpace(name: string, root: string): { file: string; preparedAt: string } {
   protectedLocalDirectory(root, "the project root");
-  mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
-  protectedLocalDirectory(join(root, ".cotal"), "the project's .cotal directory");
+  const target = { space: name, root };
+  const dir = join(root, ".cotal");
+  // Making `.cotal` is the first write, so a root this account cannot write is refused with nothing written.
+  let made: string | undefined;
+  try { made = mkdirSync(dir, { recursive: true, mode: 0o700 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
+      throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
+    if (!unwritable(error)) throw error;
+    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, "create the space in a folder you own, or pass --root <dir>");
+  }
+  protectedLocalDirectory(dir, "the project's .cotal directory");
   const preparedAt = new Date().toISOString();
-  return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt };
+  try { return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt }; }
+  catch (error) {
+    if (!unwritable(error)) throw error;
+    // The empty `.cotal` this call made goes too, so the refusal leaves the root as it was.
+    if (made !== undefined) rmdirSync(dir);
+    throw refuse("PERMISSION_DENIED", `this account cannot write this machine's Cotal home ${homeCotalDir()}, so the space could not be recorded; nothing was written`, target, "make that folder writable by you, or set COTAL_HOME to a folder you own");
+  }
 }
+
+const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");
 
 function isDir(path: string): boolean {
   try {
@@ -442,52 +547,98 @@ function createdView(r: SpaceCreated): Report {
 /**
  * `cotal space forget <name>` removes a registration this machine keeps. It stops nothing and
  * deletes nothing on a broker, and the root's files stay. A space this machine is running is
- * stopped with `cotal down`, which also drops its record, and a discovered space follows its
- * catalog. A stack member whose process is gone without its stop receipt does not block, and the
+ * stopped with `cotal down` first. A legacy root's down drops its record, while a stack `cotal up`
+ * started stays a prepared space at its root, so a second forget removes it. A discovered space
+ * follows its catalog. A stack member whose process is gone without its stop receipt does not block, and the
  * result warns about each one. Forgetting the selected space clears the selection. A prepared space
- * is forgotten the same way, and the `.cotal/` folder `space create` made stays.
+ * is forgotten the same way, and the `.cotal/` folder `space create` made stays. The stopped stack
+ * definitions saved for the space at its root are removed with it, so the name can start elsewhere;
+ * any that cannot be removed are kept and the result warns about them. Other services saved under
+ * the name stay for a later space of that name, and the result names them.
  */
 export async function spaceForget(rest: readonly string[], presentation: Presentation): Promise<void> {
   if (rest.length !== 1) throw usage("usage: cotal space forget <name>");
   const name = rest[0]!;
   const target = { space: name };
+  // Read before any effect: a preferences file that cannot be read refuses the forget as it is.
+  const preferencesRevision = readPreferences().revision;
   const m = findMesh(name);
   if (!m) {
-    const p = findPreparedSpace(name);
+    let p: ReturnType<typeof findPreparedSpace>;
+    try {
+      p = findPreparedSpace(name);
+    } catch (e) {
+      // Its own record cannot be read, so it names no root to release definitions at: remove the file.
+      if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
+      removePreparedSpace(name);
+      return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
+    }
     if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, target, "see the registered spaces with `cotal space`");
+    const release = releaseStackDefinitions(p.root, name), keptServices = savedServicesLeft(name, release.kept);
     removePreparedSpace(name);
-    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared" });
+    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared", releasedDefinitions: release.released, keptServices }, preferencesRevision, keptWarnings(name, release.kept));
   }
   if (m.origin === "catalog")
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
   let unsettled: string[] = [];
   if (m.origin !== "manual") {
-    let running: string | undefined;
+    let running: string | undefined, stack = false;
     try {
       running = liveMeshOwner(m.root, m.space);
       unsettled = unsettledStackMembers(m.root, m.space);
+      stack = running !== undefined && readStackJournal(m.root)?.journal.space === name;
     } catch (e) {
       throw refuse("LIFECYCLE_BLOCKED", `could not tell whether "${name}" is running from ${m.root}: ${(e as Error).message}`, target, "check it with `cotal status`");
     }
-    if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
+    // A stack's down keeps the space prepared at its root, so it is forgotten by a second forget.
+    if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, stack
+      ? `stop it with \`cotal down\` in ${m.root}, which keeps it as a prepared space there, then run \`cotal space forget ${name}\` again`
+      : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
   }
+  const release = releaseStackDefinitions(m.root, name), keptServices = savedServicesLeft(name, release.kept);
   removeMesh(name);
   const warnings = unsettled.map((member) => ({ code: "STACK_MEMBER_UNSETTLED", target, message: `the stack member ${member} is gone but was never stopped cleanly: its record has no stop receipt` }));
-  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null }, warnings);
+  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released, keptServices }, preferencesRevision, [...warnings, ...keptWarnings(name, release.kept)]);
 }
 
-function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared">, warnings: OutputWarning[] = []): void {
+/** The saved services a forget leaves under `name`. When the stack definitions could not be read,
+ *  their warning already says so and nothing more is read. */
+function savedServicesLeft(name: string, kept: ReturnType<typeof releaseStackDefinitions>["kept"]): string[] {
+  if (kept && !kept.names.length) return [];
+  return serviceDefinitionStore(name).list().map((row) => row.name).filter((row) => !kept?.names.includes(row));
+}
+
+function keptWarnings(name: string, kept: ReturnType<typeof releaseStackDefinitions>["kept"]): OutputWarning[] {
+  return kept ? [{ code: "STACK_DEFINITIONS_KEPT", target: { space: name, definitions: kept.names }, message: `${kept.names.length ? `the stack definitions ${kept.names.join(", ")} were` : "its saved stack definitions were"} kept, so another folder cannot start "${name}" until they are removed: ${kept.why}` }] : [];
+}
+
+/** The space's per-space preferences go with it, so a later space of the same name starts without
+ *  them. The registration is already gone when their removal fails, which leaves the run partial. */
+function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared" | "removedPreferences">, preferencesRevision: number, warnings: OutputWarning[] = []): void {
   const selectionCleared = getCurrent() === r.space;
   if (selectionCleared) clearCurrent();
-  const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared };
-  writeResult(presentation, { command: "space", target: { space: r.space }, result, warnings }, forgottenView);
+  let removedPreferences: Partial<Record<string, string>> = {};
+  let partial: { message: string; remedy: string } | undefined;
+  try {
+    removedPreferences = removeSpacePreferences(r.space, preferencesRevision).removed;
+  } catch (e) {
+    // A refusal that names its own fix, such as a preferences folder to protect, comes first.
+    const first = isCommandFailure(e) && e.remedy ? `${e.remedy}; then ` : "";
+    partial = { message: `forgot ${r.space}, but its per-space preferences were not removed: ${(e as Error).message}`, remedy: `${first}see them with \`cotal config --space ${r.space}\` and remove each with \`cotal config unset <key> --space ${r.space}\`` };
+  }
+  const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared, removedPreferences };
+  writeResult(presentation, { command: "space", target: { space: r.space }, result, warnings, ...(partial ? { completeness: "partial" as const, partial } : {}) }, forgottenView);
 }
 
 function forgottenView(r: SpaceForgotten): Report {
   const lines: Cell[] = [
     { text: `forgot ${r.space}`, tone: "ok", mark: "✓" },
-    { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
+    { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${r.root === null ? "its record could not be read, so it named no folder" : existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
   ];
+  const removed = Object.entries(r.removedPreferences).filter(([, value]) => value !== undefined);
+  if (removed.length) lines.push({ text: `  removed its per-space preferences: ${removed.map(([key, value]) => `${key}=${value}`).join(", ")} - \`cotal config set <key> <value> --space ${r.space}\` sets one again`, tone: "hint" });
+  if (r.releasedDefinitions.length) lines.push({ text: `  removed its stopped stack definitions (${r.releasedDefinitions.join(", ")}), so another folder can start ${r.space}`, tone: "hint" });
+  if (r.keptServices.length) lines.push({ text: `  kept its saved services (${r.keptServices.join(", ")}): a later space named ${r.space} inherits them, and \`cotal service remove <name> --space ${r.space} --yes\` in that space forgets one`, tone: "hint" });
   if (r.selectionCleared) lines.push({ text: "no space is selected now - select one with `cotal use <name>`", tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }

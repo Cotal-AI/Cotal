@@ -1,0 +1,2 @@
+# cotal feedback's outcomes against loopback stand-ins for an intake, with no broker.
+smoke:feedback-command

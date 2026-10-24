@@ -25,6 +25,7 @@ import {
   encodeAccount,
   encodeUser,
   fmtCreds,
+  type Account,
 } from "@nats-io/jwt";
 import { createOperator, createAccount, fromPublic, fromSeed } from "@nats-io/nkeys";
 import type { BrokerTransport } from "./broker-tls.js";
@@ -490,6 +491,27 @@ export async function rotateDataAccountSigningKey(auth: SpaceAuth): Promise<Spac
       signingPub,
     },
   };
+}
+
+/** The user public keys a data-account JWT revokes, each with the Unix second it was revoked at. The
+ *  broker refuses a user JWT for that key issued at or before that second. */
+export function accountRevocations(accountJwt: string): Record<string, number> {
+  return { ...decode<Account>(accountJwt).nats.revocations };
+}
+
+/** Re-issue the data-account JWT with the user key `userPub` revoked at `at` (Unix seconds), keeping
+ *  every other claim. A key already revoked keeps its first time and the auth is returned unchanged.
+ *  The broker applies it when it next loads its configuration. */
+export async function revokeAccountUser(auth: SpaceAuth, userPub: string, at: number): Promise<SpaceAuth> {
+  if (!auth.operator.seed)
+    throw new Error("revokeAccountUser: the broker operator seed is required - a stripped broker cannot re-sign the space account");
+  if (!isUserNkey(userPub)) throw new Error("revokeAccountUser: not a user public key");
+  const claims = decode<Account>(auth.account.jwt);
+  const revocations = claims.nats.revocations ?? {};
+  if (revocations[userPub] !== undefined) return auth;
+  const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
+  const jwt = await encodeAccount(claims.name, auth.account.pub, { ...claims.nats, revocations: { ...revocations, [userPub]: at } }, { signer: okp });
+  return { ...auth, account: { ...auth.account, jwt } };
 }
 
 /** Rotate the SYSTEM account and re-issue the operator JWT so persisted system-account users (currently
@@ -2005,6 +2027,7 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`;
+  const RECORDS = `KV_${recordsBucket(space)}`;
   // The deletion path and the exact per-stream grants use one target list. Reject any caller-
   // supplied transfer name that is not this space's transfer bucket before minting the grant.
   for (const name of transferStreams)
@@ -2030,6 +2053,9 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
         // only `membership-rw` writes the feed.
         `$JS.API.CONSUMER.CREATE.${MSHIP}.>`,
         `$JS.API.CONSUMER.INFO.${MSHIP}.>`,
+        // Space deletion names the workflow runs it removes by their status records: a non-fencing
+        // direct get confined to run status keys (§13.9), on a stream this grant may already delete.
+        `$JS.API.DIRECT.GET.${RECORDS}.$KV.${recordsBucket(space)}.run.*.*.status`,
         "$JS.FC.>", // ordered-consumer flow control
         // Stop the managed agents over the v0.4 ep rails only (ps + any-mode despawn) — the admin
         // instrument set. The manager `ctl` rail is deleted.

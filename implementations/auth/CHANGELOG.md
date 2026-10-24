@@ -1,5 +1,85 @@
 # @cotal-ai/auth
 
+## 0.100.2
+
+### Patch Changes
+
+- 6b27db6: An actor grant receipt now names the earlier grant as none, the same fields or replaced, and says when its lifecycle was retired. A re-grant with the same fields is titled `Actor grant stored unchanged`; JSON carries `previous` and `previousLifecycleRetired`. Before, every grant read "Actor grant stored", so a repeat could not be told from a change.
+- c771bd9: `cotal auth handle inspect` on a NATS credential file now says it is a credential file and not a capability handle, which is a signed JSON grant, and that a credential file is passed with `--creds`. It said "local record input is not valid UTF-8 JSON", which was wrong for a UTF-8 file and did not say what a handle is. Neither message echoes the file.
+- c91e708: `cotal auth retire` with a malformed lifecycle UID now names the format, 26 to 32 lowercase letters and digits, and points to `cotal ps --wide`, which shows each seat's UID.
+- f6d6e2a: `cotal service-endpoint name <endpoint>` now prints the host's answer. Before, the client's result parser did not accept name-read results, so every run failed with "service host result: unsupported operation result", for a bound name and an unbound one alike.
+- Updated dependencies [8d81c12]
+- Updated dependencies [bb4145f]
+  - @cotal-ai/core@0.100.2
+  - @cotal-ai/workspace@0.100.2
+  - @cotal-ai/lang@0.100.2
+
+## 0.100.1
+
+### Patch Changes
+
+- ced5b4e: `cotal auth retire` said only that this CLI "has no supported retirement instrument", with a Next
+  that named no command, while help described it as a working route. Help now says it is not available
+  here, and the refusal says that one minted credential cannot be revoked on its own and names the
+  lever that works: rotating the space identity with `cotal reset space <space>` (or `cotal clean all
+  --force`), which stops every credential the space issued.
+- 7082ed8: `cotal service-endpoint approve --caller-ceiling <capabilities>` now works. Each named capability becomes a ceiling entry, pinned to the proposed instance, for every proposed command that declares it. Before, the names were sent as bare strings and the host refused every approval that carried a ceiling with "endpoint caller policy: expected an object". A capability no proposed command declares, or one a targeted command declares, is refused before anything is sent.
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [86b2cd5]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/lang@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
+## 0.100.0
+
+### Patch Changes
+
+- bd797cd: The auth ledger, obligation and manager goal-index scans now run one shared consumer lifecycle: the pre-clean, forced create, bind check, drain and final delete. A manager goal-index scan whose consumer create fails now fails closed as `unavailable` and names its stream and filter, as the other two scans do. It used to surface the raw JetStream error.
+- Updated dependencies [7e62dcf]
+- Updated dependencies [0aa2ca7]
+- Updated dependencies [a78af23]
+- Updated dependencies [9eed6bc]
+- Updated dependencies [f5424e1]
+- Updated dependencies [3ec07a5]
+- Updated dependencies [a4e37f4]
+- Updated dependencies [72c4595]
+- Updated dependencies [869d26f]
+- Updated dependencies [2c21df1]
+- Updated dependencies [ba5a685]
+- Updated dependencies [c8550cc]
+- Updated dependencies [ac5a105]
+- Updated dependencies [d235fb0]
+- Updated dependencies [0e729b5]
+- Updated dependencies [28f3ca0]
+- Updated dependencies [73cd25b]
+- Updated dependencies [9f69a20]
+- Updated dependencies [0934f70]
+- Updated dependencies [cdceff6]
+- Updated dependencies [773e6d3]
+- Updated dependencies [42d9ea1]
+- Updated dependencies [8360fbf]
+- Updated dependencies [f0aebea]
+- Updated dependencies [047b289]
+- Updated dependencies [152e236]
+- Updated dependencies [afb587c]
+- Updated dependencies [ca4ce70]
+- Updated dependencies [b9ddce8]
+- Updated dependencies [b24190d]
+- Updated dependencies [6471d27]
+- Updated dependencies [af26abf]
+- Updated dependencies [b079d7d]
+- Updated dependencies [85213b4]
+- Updated dependencies [4f58a3c]
+- Updated dependencies [0caaa99]
+- Updated dependencies [d29311b]
+- Updated dependencies [28a9e11]
+- Updated dependencies [9234229]
+  - @cotal-ai/workspace@0.100.0
+  - @cotal-ai/core@0.100.0
+  - @cotal-ai/lang@0.100.0
+
 ## 0.99.3
 
 ### Patch Changes

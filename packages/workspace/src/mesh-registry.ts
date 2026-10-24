@@ -1,8 +1,11 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
-import { spaceSegment } from "./auth-paths.js";
+import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot } from "./auth-paths.js";
+import { homeCotalDir } from "./cotal-home.js";
+import { prepareCotalHomeForWrite } from "./protected-records.js";
+
+export { homeCotalDir, userCotalDir } from "./cotal-home.js";
 
 /**
  * The registry of meshes this machine can reach, so a `cotal spawn` from *any* directory can find
@@ -121,6 +124,10 @@ export interface MeshEntry {
    *  rather than reading agreement out of an address. Absent means no such acceptance was given,
    *  which is every record written before the flag existed. */
   unencryptedOverlay?: boolean;
+  /** Present and true when `space add --force` wrote the record without checking the broker, so its
+   *  `mode` is what the operator gave, not what the broker was seen to enforce. Absent means it was
+   *  checked, or the record predates this field. */
+  unchecked?: boolean;
   /** ISO timestamp of when the record was written. */
   ts: string;
 }
@@ -190,31 +197,17 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
     ...(o.sentinelCredsPath ? { sentinelCredsPath: o.sentinelCredsPath } : {}) };
 }
 
-/** The cotal machine-home dir, overridable via `COTAL_HOME`.
- *
- *  WHAT THE OVERRIDE ENFORCES (and only this): the mesh registry (`meshes/`), the current-mesh
- *  pointer, the onboard marker, prepared spaces (`prepared/`) and service records (`services/`)
- *  resolve under this directory. POSIX default `~/.cotal`; Windows `%LOCALAPPDATA%\Cotal`.
- *
- *  WHAT IT DOES NOT ENFORCE: project-root state. `cotal up`, broker launch policy
- *  (`.cotal/broker-policy.json`), the NATS store, manager/delivery pidfiles, and auth material all
- *  resolve via {@link findCotalRoot} (walk up from cwd for a `.cotal/`). Setting only `COTAL_HOME`
- *  does not redirect those paths. A test or probe that sets `COTAL_HOME` and runs a real
- *  `cotal up` from a tree whose walked root is the operator home can still write live operator
- *  config. Sandbox the project root too (temp dir with its own `.cotal/`, and run the CLI with
- *  `cwd` there) — or you have sandboxed the registry label, not the launch surface. */
-export function homeCotalDir(): string {
-  if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
-  return userCotalDir();
-}
-
-/** The OS user's own Cotal directory, which `COTAL_HOME` never redirects: POSIX `~/.cotal`, Windows
- *  `%LOCALAPPDATA%\Cotal`. Telemetry keeps its settings here, so every workspace one person runs
- *  under their own account shares one install id. */
-export function userCotalDir(): string {
-  if (process.platform === "win32" && process.env.LOCALAPPDATA)
-    return join(process.env.LOCALAPPDATA, "Cotal");
-  return join(homedir(), ".cotal");
+/** Why `COTAL_HOME` can hold no record, or undefined when it is unset, a directory, or not created
+ *  yet. A file, or a path under one, can never be read or written as the machine-home dir. */
+export function cotalHomeProblem(): string | undefined {
+  const home = process.env.COTAL_HOME;
+  if (!home) return undefined;
+  try {
+    if (statSync(home).isDirectory()) return undefined;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOTDIR") return undefined;
+  }
+  return `COTAL_HOME ${home} is not a directory, so it can hold no Cotal records`;
 }
 
 /** The variables {@link homeCotalDir} falls back to on `platform` when `COTAL_HOME` is unset:
@@ -301,6 +294,7 @@ export function recordMeshes(entries: Iterable<MeshEntry>): void {
     // The filenames in here ARE the space names, so a world-traversable dir would leak them to other
     // local users even though the file contents are private. Keep the dir readable only by us
     // (0700 POSIX / hardened ACL win32).
+    prepareCotalHomeForWrite();
     mkSecretDir(meshesDir());
     const file = meshFile(m.space);
     // Per-process temp name so two concurrent `up`s for the same space can't stomp each other's
@@ -361,6 +355,15 @@ export function pruneMesh(space: string, reason: PruneReason = "gone"): boolean 
  *  for a root that no longer exists on disk. */
 export function canonicalRoot(p: string): string {
   try { return realpathSync.native(p); } catch { return resolve(p); }
+}
+
+/** When this folder holds the records of `space`, started in `recordedRoot`, and was moved away from
+ *  there: the sentence that says so and the way back. Only a folder whose stack journal names that
+ *  root was moved from it. */
+export function movedProject(space: string, recordedRoot: string): { message: string; remedy: string; target: { root: string; recordedRoot: string } } | undefined {
+  const here = findCotalRoot();
+  if (canonicalRoot(here) === canonicalRoot(recordedRoot) || stackJournalRoot(here) !== recordedRoot) return undefined;
+  return { message: `mesh "${space}" was started in ${recordedRoot}, and this folder ${here} holds its records, so this folder was moved from there`, remedy: movedRootRemedy(recordedRoot), target: { root: here, recordedRoot } };
 }
 
 /** Every registry entry recorded for THIS project root, matched {@link canonicalRoot}-wise so a
@@ -444,10 +447,17 @@ export class MeshRegistryError extends Error {
   /** Brand for cross-package-safe detection, as {@link isMeshRegistryError} reads it. */
   readonly brand = MESH_REGISTRY_ERROR;
   readonly file: string;
-  constructor(file: string, message: string, options?: { cause?: unknown }) {
+  /** A one-line account for a refusal, repeating no stored value, when calling the file an unreadable
+ *  registry record would not fit. */
+  readonly summary?: string;
+  /** The step that clears it, when it is not the restore or remove a damaged record takes. */
+  readonly remedy?: string;
+  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string }) {
     super(message, options);
     this.name = "MeshRegistryError";
     this.file = file;
+    this.summary = options?.summary;
+    this.remedy = options?.remedy;
   }
 }
 
@@ -582,7 +592,7 @@ export function readCurrent(): string | undefined {
 }
 
 export function setCurrent(space: string): void {
-  mkSecretDir(homeCotalDir());
+  prepareCotalHomeForWrite();
   writeSecretFile(currentFile(), space);
 }
 

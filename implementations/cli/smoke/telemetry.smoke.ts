@@ -173,6 +173,18 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   const result = status.envelope?.result as Body | undefined;
   check("cotal telemetry under DO_NOT_TRACK reports off by that variable with no install id, and sends nothing", status.status === 0 && status.sent.length === 0 && result?.level === "off" && result?.source === "DO_NOT_TRACK" && result?.installId === null && result?.url === url, { ...shown(status), result });
 
+  // Under an environment opt-out the file is neither read nor created, so a level saves nothing.
+  for (const extra of [{ DO_NOT_TRACK: "1" }, { COTAL_TELEMETRY_DISABLED: "1" }, { COTAL_TELEMETRY: "off" }]) {
+    const [name] = Object.keys(extra);
+    const r = await s.run(["telemetry", "minimal", "--json"], extra);
+    await settled();
+    const warning = (r.envelope?.warnings as Body[] | undefined)?.[0];
+    check(`cotal telemetry minimal under ${name} saves nothing and creates no file: a no-op with ENVIRONMENT_OPT_OUT`,
+      r.status === 0 && r.sent.length === 0 && r.envelope?.outcome === "no-op" && warning?.code === "ENVIRONMENT_OPT_OUT" && /minimal was not saved/.test(String(warning?.message)) && !existsSync(s.settingsPath), shown(r));
+  }
+  const text = await s.run(["telemetry", "regular"], { DO_NOT_TRACK: "1" });
+  check("…and the text report says on stderr that the level was not saved", text.status === 0 && /DO_NOT_TRACK keeps telemetry off and the settings file untouched, so regular was not saved/.test(text.stderr) && !existsSync(s.settingsPath), shown(text));
+
   const off = await s.run(["telemetry", "off"]);
   await settled();
   const after = await s.run(["version"]);
@@ -181,12 +193,28 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("after cotal telemetry off, a command sends nothing", after.status === 0 && after.sent.length === 0, shown(after));
   const again = await s.run(["telemetry", "off", "--json"]);
   check("setting the level the file already holds is a no-op", again.status === 0 && again.envelope?.outcome === "no-op", shown(again));
+  const held = readFileSync(s.settingsPath, "utf8");
+  const forced = await s.run(["telemetry", "regular", "--json"], { DO_NOT_TRACK: "1" });
+  check("under DO_NOT_TRACK an existing settings file is left as it was", forced.status === 0 && forced.envelope?.outcome === "no-op" && readFileSync(s.settingsPath, "utf8") === held, shown(forced));
   const on = await s.run(["telemetry", "on", "--json"]);
   const onResult = on.envelope?.result as Body | undefined;
   check("cotal telemetry on is regular, and reports the file as the source with the install id", on.status === 0 && onResult?.level === "regular" && onResult?.source === "file" && onResult?.installId === s.settings().installId, { ...shown(on), onResult });
   const status2 = await s.run(["telemetry"]);
   await settled();
   check("the bare report prints the level, its source and the URL, and sends nothing", status2.status === 0 && status2.sent.length === 0 && /regular/.test(status2.stdout) && /settings file/.test(status2.stdout) && status2.stdout.includes(url), shown(status2));
+}
+
+// ---- the run that creates the settings file changed it, even at the default level ----
+for (const { level, extra, name } of [
+  { level: "regular", extra: {}, name: "cotal telemetry regular" },
+  { level: "on", extra: {}, name: "cotal telemetry on" },
+  { level: "regular", extra: { COTAL_TELEMETRY: "minimal" }, name: "cotal telemetry regular under COTAL_TELEMETRY=minimal" },
+]) {
+  const s = sandbox();
+  const first = await s.run(["telemetry", level, "--json"], extra);
+  check(`${name} with no settings file creates it at regular and reports ok, not no-op`, first.status === 0 && first.envelope?.outcome === "ok" && existsSync(s.settingsPath) && s.settings().level === "regular", shown(first));
+  const again = await s.run(["telemetry", level, "--json"], extra);
+  check(`…and ${name} again is a no-op`, again.status === 0 && again.envelope?.outcome === "no-op", shown(again));
 }
 
 // ---- refusals: a bad COTAL_TELEMETRY and a malformed settings file ----
@@ -197,11 +225,25 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("COTAL_TELEMETRY=bogus refuses USAGE_INVALID before the command runs, sending nothing", bogus.status === 1 && bogus.sent.length === 0 && bogus.envelope?.outcome === "refused" && (bogus.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && /COTAL_TELEMETRY must be off, minimal or regular/.test(bogus.stderr), shown(bogus));
   const bogusTelemetry = await s.run(["telemetry"], { COTAL_TELEMETRY: "bogus" });
   check("…and cotal telemetry itself refuses it the same way", bogusTelemetry.status === 1 && /COTAL_TELEMETRY must be off, minimal or regular/.test(bogusTelemetry.stderr), shown(bogusTelemetry));
+  for (const intakeUrl of ["not-a-url", "ftp://127.0.0.1/v1/telemetry"]) {
+    const badUrl = await s.run(["version", "--json"], { COTAL_TELEMETRY_URL: intakeUrl });
+    check(`COTAL_TELEMETRY_URL=${intakeUrl} refuses USAGE_INVALID before the command runs`, badUrl.status === 1 && badUrl.envelope?.outcome === "refused" && (badUrl.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && /COTAL_TELEMETRY_URL must be an http or https URL/.test(JSON.stringify(badUrl.envelope)), shown(badUrl));
+  }
+  const badUrlOff = await s.run(["telemetry"], { COTAL_TELEMETRY_URL: "not-a-url", DO_NOT_TRACK: "1" });
+  check("…cotal telemetry refuses it even while the environment keeps telemetry off", badUrlOff.status === 1 && /COTAL_TELEMETRY_URL must be an http or https URL/.test(badUrlOff.stderr), shown(badUrlOff));
+  const unusedUrl = await s.run(["version"], { COTAL_TELEMETRY_URL: "not-a-url", DO_NOT_TRACK: "1" });
+  check("…and another command runs, since nothing is sent to it", unusedUrl.status === 0, shown(unusedUrl));
   mkdirSync(join(s.home, ".cotal"), { recursive: true });
   writeFileSync(s.settingsPath, '{"v":1,"level":"loud"}');
   const malformed = await s.run(["version"]);
   await settled();
   check("a malformed telemetry.json refuses SCHEMA_INVALID, sends nothing, and is left as it was", malformed.status === 1 && malformed.sent.length === 0 && /telemetry settings file .* is invalid/.test(malformed.stderr) && readFileSync(s.settingsPath, "utf8") === '{"v":1,"level":"loud"}', shown(malformed));
+  // An environment opt-out reads no settings file, so the malformed one stops nothing there.
+  for (const extra of [{ DO_NOT_TRACK: "1" }, { COTAL_TELEMETRY: "off" }]) {
+    const optedOut = await s.run(["version"], extra);
+    await settled();
+    check(`under ${Object.keys(extra)[0]} a malformed telemetry.json stops nothing, and is left as it was`, optedOut.status === 0 && optedOut.sent.length === 0 && readFileSync(s.settingsPath, "utf8") === '{"v":1,"level":"loud"}', shown(optedOut));
+  }
 }
 
 // ---- an intake that never answers, and one that is not there ----

@@ -60,6 +60,18 @@ export function servicePresetFlags(preset: ServicePreset): FlagSpec[] {
   return flags;
 }
 
+/** The first string in an array option longer than its declared `items.maxLength`, counted in
+ *  characters as the adapter's schema counts them. Its own error names only the field. */
+function overLongItem(value: unknown, schema: Record<string, unknown>): { index: number; length: number; max: number } | undefined {
+  const items = schema.type === "array" ? schema.items as { type?: unknown; maxLength?: unknown } | undefined : undefined;
+  if (!Array.isArray(value) || items?.type !== "string" || typeof items.maxLength !== "number") return undefined;
+  for (const [index, item] of value.entries()) {
+    const length = typeof item === "string" ? [...item].length : 0;
+    if (length > items.maxLength) return { index, length, max: items.maxLength };
+  }
+  return undefined;
+}
+
 export function servicePresetDefinition(preset: ServicePreset, space: string, values: ParsedArgs["values"]): ServiceDefinitionInput {
   const { properties, required } = optionProperties(preset), options: Record<string, unknown> = {};
   servicePresetFlags(preset);
@@ -79,6 +91,8 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, va
     else {
       try { options[name] = JSON.parse(value); }
       catch { throw new CommandFailure("refused", "USAGE_INVALID", `--${name} is not valid JSON for its declared ${String(schema.type)} type; numeric values use JSON number syntax and bodies are not echoed`); }
+      const over = overLongItem(options[name], schema);
+      if (over) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} argument ${over.index + 1} has ${over.length} characters, and each holds at most ${over.max}; the value was not printed`);
     }
   }
   resolveServiceAdapter(preset.adapter, options);

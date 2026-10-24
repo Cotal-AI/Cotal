@@ -1,6 +1,7 @@
-import { readdirSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { loadAgentFile, personaDir, type AgentDef } from "@cotal-ai/core";
+import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
+import { CommandFailure } from "@cotal-ai/workspace";
 
 /**
  * The persona catalog: the local `.cotal/agents/*.md` files an operator manages with
@@ -33,6 +34,43 @@ export interface PersonaEntry {
   def?: AgentDef;
   /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
   error?: string;
+  /** Why the file cannot be read when it was saved as UTF-16: the one parse reason that quotes nothing
+   *  from the file, so a list that keeps `error` private can still name it. */
+  encoding?: string;
+  /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
+  notRegular?: true;
+  /** The file a persona that is a symbolic link names. `persona show`, `edit` and `remove` refuse
+   *  a link, so a listing warns about it. */
+  link?: string;
+}
+
+/** The refusal for a catalog folder `dir` that exists but is no folder, such as a file or a link that
+ *  loops, which holds no personas. Undefined for a folder, or when nothing is there. */
+export function catalogFolderProblem(dir: string): CommandFailure | undefined {
+  let what: string;
+  try {
+    if (statSync(dir).isDirectory()) return undefined;
+    const own = lstatSync(dir);
+    what = own.isSymbolicLink() ? "a link to something that is not a folder" : own.isFile() ? "a file, not a folder" : "not a folder";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ELOOP") return undefined;
+    what = "a link that loops back on itself";
+  }
+  return new CommandFailure("refused", "CONFLICT", `${dir} is ${what}, so it holds no personas`, {
+    remedy: `move ${dir} out of the way; cotal persona create <name> then makes the folder`,
+  });
+}
+
+/** The file `path` links to when it is a symbolic link: its resolved path, or the link's own text
+ *  when that does not resolve. Undefined for anything else. */
+export function linkTarget(path: string): string | undefined {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return undefined;
+  } catch {
+    return undefined;
+  }
+  try { return realpathSync(path); } catch { /* a dangling link or a loop */ }
+  try { return readlinkSync(path); } catch { return undefined; }
 }
 
 /** List the persona files, each parsed (a malformed file becomes an entry with `error`, not a
@@ -59,17 +97,30 @@ export function readPersonas(root: string): PersonaEntry[] {
   return files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
+    const link = linkTarget(path);
     try {
-      return { name, path, def: loadAgentFile(path) };
+      // A FIFO or a device would block the read, so only a regular file is opened. A link is
+      // followed, as the read follows it.
+      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
+      return { name, path, def: loadAgentFile(path), ...(link !== undefined ? { link } : {}) };
     } catch (e) {
-      return { name, path, error: (e as Error).message };
+      let encoding: string | undefined;
+      try { encoding = utf16Problem(readFileSync(path, "utf8")); } catch { /* unreadable: `error` says so */ }
+      return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
     }
   });
 }
 
-/** Just the persona names — the completion source for `cotal spawn` and `personas show/rm`. */
+/** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas
+ *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
+ *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
-  return listPersonas(root).map((p) => p.name);
+  try {
+    return readPersonas(root).map((p) => p.name);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    throw new Error(`cannot read the persona catalog ${personaDir(root)}: ${code === "EACCES" || code === "EPERM" ? "permission denied" : code ?? (e as Error).message}`);
+  }
 }
 
 /** Collect a deduped, sorted set of values declared across every persona file, via `pick`.

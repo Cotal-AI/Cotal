@@ -122,7 +122,9 @@ export {
 export {
   RecordingHandler,
   dryRun,
+  dryRunOutcome,
   renderReport,
+  type DryRunFailure,
   type DryRunOptions,
   type DryRunReport,
   type PlannedAgent,

@@ -33,6 +33,9 @@ export interface FlagSpec {
   readonly value?: string;
   /** One-line help text. */
   readonly description?: string;
+  /** For a command with no completer of its own: `files` completes this string flag's value from the
+   *  shell's file names. Without it the value offers no candidates. */
+  readonly completion?: "files";
 }
 
 /** What a command's `run` receives: the declared flags parsed strictly (an undeclared flag is
@@ -149,8 +152,9 @@ export interface Command extends Extension {
    *  completed, possibly empty), returns the candidates for that position. Runs on every <TAB>
    *  via the hidden `__complete` dispatcher, so it MUST be import-light and side-effect-free —
    *  no network, no spawns. Omit it to offer no argument completion for this command.
-   *  Flag-name candidates are generated from {@link Command.flags} by the dispatcher; this hook
-   *  only supplies positional/value candidates. */
+   *  Flag-name candidates are generated from {@link Command.flags} by the dispatcher, which also
+   *  completes every `--space` and `--creds` value; this hook supplies the other positional and value
+   *  candidates. */
   complete?(argv: string[]): CompletionResult | Promise<CompletionResult>;
 }
 
@@ -168,8 +172,31 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
       ...(f.multiple ? { multiple: true } : {}),
     };
   }
+  // A value such as `-1` reads as an option to `parseArgs`, which refuses it as ambiguous. No option
+  // name starts with a digit, so a dash and a digit after a string option is that option's value.
+  // `origin` keeps each word's raw index for `positionalIndices`.
+  const args: string[] = [];
+  const origin: number[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i]!;
+    if (word === "--") {
+      for (let j = i; j < argv.length; j++) { args.push(argv[j]!); origin.push(j); }
+      break;
+    }
+    const long = /^--([^=]+)$/.exec(word)?.[1];
+    const short = /^-([^-])$/.exec(word)?.[1];
+    const name = long ?? (short === undefined ? undefined : Object.keys(options).find((key) => options[key]!.short === short));
+    const next = argv[i + 1];
+    if (name !== undefined && options[name]?.type === "string" && next !== undefined && /^-\d/.test(next)) {
+      args.push(long !== undefined ? `${word}=${next}` : `${word}${next}`);
+      origin.push(i++);
+      continue;
+    }
+    args.push(word);
+    origin.push(i);
+  }
   const { values, positionals, tokens } = parseArgs({
-    args: [...argv],
+    args,
     options,
     allowPositionals: cmd.positionals !== undefined,
     strict: true,
@@ -188,7 +215,7 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
     }
     seen.add(t.name);
   }
-  return { values: values as ParsedArgs["values"], positionals, raw: argv, positionalIndices: tokens.filter((token) => token.kind === "positional").map((token) => token.index) };
+  return { values: values as ParsedArgs["values"], positionals, raw: argv, positionalIndices: tokens.filter((token) => token.kind === "positional").map((token) => origin[token.index]!) };
 }
 
 /** The command `word` names on a surface, by exact name or alias. A prefix never matches. */

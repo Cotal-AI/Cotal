@@ -271,8 +271,11 @@ export class MeshView extends EventEmitter {
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
     clearTimeout(this.membershipTimer);
-    await this.membershipWatch?.stop().catch(() => undefined);
+    // The endpoint's stop deletes the watch's consumer over a live connection, and it is what settles
+    // the watch's own stop once the connection is closed for good, so it must not wait behind it.
+    const membership = this.membershipWatch?.stop().catch(() => undefined);
     await this.ep.stop();
+    await membership;
   }
 
   /** Read the broker-authoritative membership feed and follow it. A membership fault is never

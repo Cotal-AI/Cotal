@@ -4,7 +4,10 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, getCurrent, preparedSpaceAt, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, getCurrent, loadMeshes, loadPreparedSpaces, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { shellWord } from "./lib/endpoint-errors.js";
+import { unknownSubcommandMessage } from "./lib/nearest-word.js";
+import { workingFolderRemoved } from "./lib/paths.js";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -157,32 +160,40 @@ export function printEntry(commands: readonly Command[]): void {
   // The `up` that starts a prepared space: no other command works on it until it runs.
   let start: string | undefined;
   let unreadable = false;
-  try {
+  // Setup is the first step only on a machine with no space at all.
+  let anySpace = false;
+  // From a removed folder every command that uses a space refuses, so no space is shown.
+  const removed = workingFolderRemoved();
+  if (!removed) try {
     const selected = getCurrent();
     const root = findCotalRoot(process.cwd());
-    // With nothing selected, commands run here target the space prepared in this folder.
-    const here = selected ? undefined : preparedSpaceAt(root);
-    space = selected ?? here?.space;
+    // With nothing selected, commands run here target the space registered or prepared in this folder.
+    space = selected ?? folderSpace(process.cwd());
     if (space) {
-      const mesh = selected ? readMesh(space) : undefined;
-      const prepared = here ?? (mesh === undefined ? findPreparedSpace(space) : undefined);
+      const mesh = readMesh(space);
+      const prepared = mesh === undefined ? findPreparedSpace(space) : undefined;
+      const here = prepared !== undefined && canonicalRoot(prepared.root) === canonicalRoot(root);
       const preferences = cachedPreferences();
       const harness = resolvePreference("harness", { space, preferences }).value;
       context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
-      if (prepared) start = canonicalRoot(prepared.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${prepared.root}`;
-    }
+      if (prepared) start = here ? "cotal up" : `cotal up --root ${shellWord(prepared.root)}`;
+    } else anySpace = loadMeshes().length > 0 || loadPreparedSpaces().length > 0;
   } catch {
     unreadable = true;
   }
   const sections: Section[] = [];
-  if (unreadable) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "The local space or defaults could not be read. Status reports the affected records.", tone: "waiting" }] }] });
+  if (removed) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.", tone: "waiting" }] }] });
+  else if (unreadable) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "The local space or defaults could not be read. Status reports the affected records.", tone: "waiting" }] }] });
   else if (context) sections.push({ blocks: [{ kind: "lines", lines: [{ text: context, tone: "hint" }] }] });
-  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: "Set up a local space, or connect to a self-hosted one.", tone: "hint" }] }] });
+  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Set up a local space, or connect to a self-hosted one.", tone: "hint" }] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
     start ? ["up", start, "Start this space"] : ["spawn", "cotal spawn", "Open your default agent"],
     ["setup", "cotal setup", "Review setup and defaults"],
     ["use", "cotal use", "Choose another space"],
+  ] : anySpace ? [
+    ["use", "cotal use <name>", "Choose the space commands use"],
+    ["space", "cotal space", "List the spaces on this machine"],
   ] : [["setup", "cotal setup", "Choose your application and prepare a space"]]));
   sections.push(actions("Everyday", [
     ["ps", "cotal ps", "List agents"],
@@ -245,7 +256,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     if (!sub || sub.hidden) {
       // The parser's usage error for the same word: the reason, then the help of the path that exists.
       const at = [cmd.name, ...path].join(" ");
-      for (const line of hang("✗ ", `cotal ${at} has no subcommand "${word}" - run \`cotal help ${at}\``, terminalWidth(process.stderr))) console.error(c.red(line));
+      for (const line of hang("✗ ", unknownSubcommandMessage(at, surface, word), terminalWidth(process.stderr))) console.error(c.red(line));
       printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, (line) => console.error(line), terminalWidth(process.stderr));
       process.exit(1);
     }

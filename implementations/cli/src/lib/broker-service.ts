@@ -9,14 +9,14 @@ import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import {
   CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, decodeLocalJson,
-  findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath,
-  parsePid, probeLiveness, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
+  findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath, oneLine,
+  parsePid, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
   controllerAttemptBroker, cutController, maintenanceAdmitsStackWork, serviceAdapterAttempt,
-  serviceMetadataDigest, type LocalProcess, type ProcessIdentityRecord, type ServiceAdapterContext,
+  serviceMetadataDigest, verifyIdentityPin, type LocalProcess, type ProcessIdentityRecord, type ServiceAdapterContext,
   type ServiceAdapterKernelStopPlan, type ServicePreset,
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
-import { observeServiceProcess, serviceInstances } from "./service-instances.js";
+import { observeServiceProcess, serviceInstances, serviceInstanceStore } from "./service-instances.js";
 import { maintenanceStackView } from "./stack-journal.js";
 
 export const brokerPreset: ServicePreset = {
@@ -35,7 +35,7 @@ const refuse = (code: "CONFLICT" | "LIFECYCLE_BLOCKED" | "UNSUPPORTED" | "TARGET
 
 const LISTENER_PROBE_TIMEOUT_MS = 5000;
 const portsDirectory = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-ports-${context.launchRequestId}`);
-const launchReceipt = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-launch-${context.launchRequestId}.json`);
+const launchReceipt = (context: Pick<ServiceAdapterContext, "stateDirectory" | "launchRequestId">) => join(context.stateDirectory, `.broker-launch-${context.launchRequestId}.json`);
 
 function physical(path: string): string {
   try { return realpathSync.native(path); }
@@ -78,8 +78,9 @@ function restoreAdmits(root: string, space: string, server: string): boolean {
 
 /** The address rules the broker service applies before any launch: one nats:// or tls:// URL
  *  without credentials, path, query or fragment, one concrete TCP port and one concrete IP literal.
- *  `cotal up` runs them before it writes anything, so an address the service would refuse never
- *  becomes a stack's recorded address. The host is returned URL-shaped. */
+ *  `cotal up` runs them before it writes anything, and `service add` before it saves a broker
+ *  definition, so an address the service would refuse never becomes a stack's recorded address or a
+ *  saved definition's. The host is returned URL-shaped. */
 export function brokerListenAddress(server: string): { protocol: string; host: string; port: number } {
   let url: URL;
   try { url = new URL(server); } catch { return refuse("UNSUPPORTED", "the broker address must be one nats:// or tls:// URL"); }
@@ -98,6 +99,16 @@ export function brokerListenAddress(server: string): { protocol: string; host: s
   return { protocol: url.protocol, host: new URL(`nats://${family === 6 ? `[${host}]` : host}:${port}`).hostname, port };
 }
 
+/** Why `server` cannot be a broker definition's address, as {@link brokerListenAddress} refuses it,
+ *  led by the value; undefined when it can. A value that may carry a credential is not printed. */
+export function brokerServerProblem(server: string): string | undefined {
+  try { brokerListenAddress(server); return undefined; }
+  catch (error) {
+    if (!(error instanceof CommandFailure)) throw error;
+    return `${server.includes("@") ? "(not printed, as it may hold a credential)" : JSON.stringify(server)}: ${error.message}`;
+  }
+}
+
 /** The declared root, space, broker address, configuration and binary, checked against the local
  *  registrations. Registry absence never proves that a broker is exclusive, so every known
  *  sharing, maintenance and legacy-custody record refuses instead of being reconciled here. */
@@ -111,6 +122,8 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
   if (!controlStat?.isDirectory() || controlStat.isSymbolicLink()) refuse("TARGET_UNAVAILABLE", "the broker root has no physical .cotal control directory; prepare it first", { root });
   const inside = relative(control, config);
   if (!inside || inside.startsWith(`..${sep}`) || inside === ".." || isAbsolute(inside)) refuse("CONFLICT", "the broker configuration is not inside the selected root's .cotal directory; another root's configuration was not used", { root, config });
+  const problem = brokerServerProblem(server);
+  if (problem) refuse("UNSUPPORTED", `the definition's server option ${problem}`, undefined, `remove it with cotal service remove ${oneLine(context.definition)} --space ${oneLine(context.space)} --yes, then add it again with the one address its configuration serves, such as --server nats://127.0.0.1:<port>`);
   const { protocol, host, port } = brokerListenAddress(server);
   let policy;
   try { policy = readBrokerPolicy(root); }
@@ -131,13 +144,12 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
   return { root, space: context.space, server, host, port, scheme, config, binary };
 }
 
-/** Bind the declared client listener once and release it. nats-server exits on a bind failure with
- *  only a line in its log, so a held address is refused here, before launch, with the OS bind error.
- *  The address can still be taken between this check and the broker's own bind; that broker then
- *  exits before readiness and its log keeps the cause. */
-async function assertListenerFree(target: BrokerTarget): Promise<void> {
+/** Bind a broker address's listener once and release it: the OS error when that fails, "timeout"
+ *  when the bind does not finish, or undefined when the address is free. */
+export async function listenerBindError(server: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
+  const target = brokerListenAddress(server);
   // The target host is URL-shaped: an IPv6 literal keeps its brackets there.
-  const host = target.host.startsWith("[") ? target.host.slice(1, -1) : target.host, address = `${target.host}:${target.port}`;
+  const host = target.host.startsWith("[") ? target.host.slice(1, -1) : target.host;
   const probe = createServer();
   let timer: NodeJS.Timeout | undefined;
   const error = await new Promise<NodeJS.ErrnoException | "timeout" | undefined>((resolve) => {
@@ -148,10 +160,20 @@ async function assertListenerFree(target: BrokerTarget): Promise<void> {
   // Closed on every path, bound or not, so a refusal leaves no handle that keeps the command alive.
   clearTimeout(timer);
   await new Promise<void>((resolve) => probe.close(() => resolve()));
+  return error;
+}
+
+/** Bind the declared client listener once and release it. nats-server exits on a bind failure with
+ *  only a line in its log, so a held address is refused here, before launch, with the OS bind error.
+ *  The address can still be taken between this check and the broker's own bind; that broker then
+ *  exits before readiness and its log keeps the cause. */
+async function assertListenerFree(target: BrokerTarget): Promise<void> {
+  const address = `${target.host}:${target.port}`;
+  const error = await listenerBindError(target.server);
   if (!error) return;
   if (error === "timeout") return refuse("TARGET_UNAVAILABLE", `the broker address ${address} could not be checked: binding it did not finish within ${LISTENER_PROBE_TIMEOUT_MS / 1000}s; no broker was launched`, { server: target.server, address });
   const reason = error.code === "EADDRINUSE" ? "address already in use" : error.code === "EACCES" ? "permission denied" : error.code === "EADDRNOTAVAIL" ? "address not available on this host" : error.code ?? "unknown error";
-  refuse(error.code === "EADDRINUSE" ? "CONFLICT" : "TARGET_UNAVAILABLE", `the broker cannot listen on ${address}: bind failed (${reason}); no broker was launched`, { server: target.server, address, bindError: error.code ?? null }, error.code === "EADDRINUSE" ? `stop the process listening on ${address}, then run the command again; the stack keeps its recorded broker address` : undefined);
+  refuse(error.code === "EADDRINUSE" ? "CONFLICT" : "TARGET_UNAVAILABLE", `the broker cannot listen on ${address}: bind failed (${reason}); no broker was launched`, { server: target.server, address, bindError: error.code ?? null }, error.code === "EADDRINUSE" ? `stop the process listening on ${address}, then run the command again` : undefined);
 }
 
 function configDigest(path: string): string {
@@ -166,19 +188,24 @@ function refuseLegacyBroker(target: BrokerTarget): void {
   if (raw !== undefined) refuse("LIFECYCLE_BLOCKED", "a legacy nats.pid record exists under this root; the broker service neither adopts nor clears it", { root: target.root, remedy: "inspect and stop the legacy broker with its original route before using the broker service" });
 }
 
-/** Every non-broker legacy record that might still front a process depends on this broker. A record
- *  whose PID is a live service instance of this space is that controller child's own native record,
- *  not a legacy daemon; the service-instance check below names it by its definition. */
-function liveLegacyDependants(target: BrokerTarget): string[] {
+/** Every non-broker legacy record that might still front a process depends on this broker, each as
+ *  `<name> at <path>` with its pid. A record whose PID is a live service instance of this space is
+ *  that controller child's own native record, not a legacy daemon; the service-instance check below
+ *  names it by its definition. A record whose process is gone, or whose pid now runs another start
+ *  than its identity pin records, fronts nothing. */
+function liveLegacyDependants(target: BrokerTarget): { line: string; check: string }[] {
   const owned = new Set(serviceInstances(target.space).flatMap((row) => row.record.value.process && observeServiceProcess(row.record.value) === "running" ? [row.record.value.process.pid] : []));
-  const live: string[] = [];
+  const live: { line: string; check: string }[] = [];
   for (const component of localProcessSurface()) {
     if (component.name === "nats") continue;
-    const raw = readPidfile(localProcessPath(component.pidFile, { root: target.root, space: target.space }));
+    const path = localProcessPath(component.pidFile, { root: target.root, space: target.space });
+    const raw = readPidfile(path);
     if (!raw) continue;
     const pid = parsePid(raw);
     if (pid !== undefined && owned.has(pid)) continue;
-    if (pid === undefined || probeLiveness(pid) !== "dead") live.push(component.name);
+    if (pid !== undefined && ["gone", "mismatch"].includes(verifyIdentityPin(path).kind)) continue;
+    const at = relative(target.root, path);
+    live.push({ line: `${component.name} at ${at}, ${pid === undefined ? "unattributable record" : `pid ${pid}`}`, check: pid === undefined ? at : `pid ${pid} at ${at}` });
   }
   return live;
 }
@@ -253,6 +280,20 @@ function brokerScope(context: ServiceAdapterContext & { process: ProcessIdentity
   return { kind: "nats-broker", root: target.root, space: target.space, server: target.server, configSha256: receipt.configSha256 };
 }
 
+/** Whether a broker instance is the exact launch its receipt records at this root and address. A
+ *  stack whose registration is missing is stopped through its journal only while this holds. */
+export function brokerLaunchAt(space: string, instanceId: string, launchRequestId: string, root: string, server: string): boolean {
+  const stateDirectory = serviceInstanceStore(space).directory();
+  if (!stateDirectory) return false;
+  const bytes = readLocalRecordSource(launchReceipt({ stateDirectory, launchRequestId }), 4096, true);
+  if (!bytes) return false;
+  let receipt: Record<string, unknown> | null;
+  try { receipt = decodeLocalJson(bytes) as Record<string, unknown> | null; } catch { return false; }
+  let physicalRoot: string;
+  try { physicalRoot = realpathSync.native(root); } catch { return false; }
+  return receipt !== null && typeof receipt === "object" && receipt.instanceId === instanceId && receipt.launchRequestId === launchRequestId && receipt.root === physicalRoot && receipt.server === server;
+}
+
 export const brokerService: LocalProcess = {
   kind: "local-process", name: "nats-broker", label: "broker service", controllerOnly: true,
   pidFile: "broker-service.{space}.pid",
@@ -297,7 +338,7 @@ export const brokerService: LocalProcess = {
     const binding = brokerScope(context, target);
     refuseLegacyBroker(target);
     const legacy = liveLegacyDependants(target);
-    if (legacy.length) refuse("LIFECYCLE_BLOCKED", `legacy local daemons on this root (${legacy.join(", ")}) may still depend on the broker; it was not stopped under them`, { space: context.space, dependants: legacy });
+    if (legacy.length) refuse("LIFECYCLE_BLOCKED", `legacy local daemons on this root (${legacy.map((row) => row.line).join("; ")}) may still depend on the broker; it was not stopped under them`, { space: context.space, dependants: legacy.map((row) => row.line) }, `check ${legacy.map((row) => row.check).join(", ")}; stop each process where it was started, or remove a record whose process is gone, then stop the broker again`);
     const others = serviceInstances(context.space).filter((row) => row.name !== context.instanceId)
       .filter((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
     const names = [...new Set(others.map((row) => row.record.value.definition))];

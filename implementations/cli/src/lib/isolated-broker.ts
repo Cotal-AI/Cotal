@@ -351,14 +351,14 @@ export async function startIsolatedBroker(options: {
   mode: MaintenanceAuthMode;
   auth?: SpaceAuth;
   deadline: Date;
-  label: "backup" | "restore" | "quarantine";
+  label: "backup" | "restore" | "quarantine" | "previous";
   initialScope: IsolatedMaintenanceScope;
   /** Attempt id prefixing the run files, tying them to the journaled maintenance attempt. */
   attemptId?: string;
 }): Promise<IsolatedBroker> {
   const port = await freePort();
   const server = `nats://${LOOPBACK}:${port}`;
-  const { bin } = await resolveNatsServer();
+  const { path: bin } = await resolveNatsServer();
   const attempts = ensurePrivateAttemptsDir(options.root);
   const runDir = attempts.path;
   // Every mode gets the same single-principal, exact-subject permission matrix. Open mode differs

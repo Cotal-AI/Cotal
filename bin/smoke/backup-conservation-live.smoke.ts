@@ -145,7 +145,7 @@ interface Sampler {
 }
 
 /** A read-only view of the live space through the exact credential `backup create` inspects with:
- *  STREAM.INFO + CONSUMER.LIST over the eight backed-up streams and nothing else — no body read, no
+ *  STREAM.INFO + CONSUMER.LIST over the backed-up streams and nothing else — no body read, no
  *  mutation verb, no consumer of its own to perturb what it measures. */
 async function openSampler(mesh: Mesh, auth: SpaceAuth): Promise<Sampler> {
   const creds = await mintCreds(auth, newIdentity(), "backup", {
@@ -406,7 +406,10 @@ async function conservationScenario(): Promise<void> {
       [...spaceBackupInventory(mesh.space).full].sort(),
       "the artifact covers every backed-up stream",
     );
-    for (const record of manifest.streams) {
+    // The workflow stores are left out of this check: the cut itself writes to the records store, so
+    // that store moves between the pre-cut sample and the artifact.
+    const workflow = new Set(spaceBackupInventory(mesh.space).backedUp.filter((entry) => entry.class === "workflow").map((entry) => entry.name));
+    for (const record of manifest.streams.filter((entry) => !workflow.has(entry.stream))) {
       const live = preCut.streams[record.stream];
       assert.ok(live, `${record.stream} was sampled before the cut`);
       assert.equal(record.state.messages, live.messages, `${record.stream} conserved its message count`);

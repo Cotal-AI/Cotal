@@ -61,6 +61,9 @@ summary with a run ID; `cotal team show <id>` reads that summary, not a live ros
 additive ownership ledger. The existing stop route for a fresh stack is bare `cotal down`
 from this folder. That route does not use the whole-set impact controller, so the summary does
 not authorize a stop or prove that the route reviewed whole-set impact.
+That `cotal down` also drops the space's registration, so `cotal space` stops listing it. A
+command that targets the space then refuses and names `cotal up` in this folder, which starts the
+stopped stack again at the address it last ran on and registers it again.
 
 The manifest introduces no access model of its own; the three verbs are the same ones
 Cotal uses everywhere: `subscribe` (auto-listen at boot, and implicitly may read),
@@ -89,7 +92,8 @@ continuing. A full receipt must match both sequences. Partial effects remain
 without rollback; unknown effects are not replayed. Runtime requests must match
 that manager. Windows boot apply refuses, because protected service records cannot
 be read there. `spawn -f` no longer deploys a manifest.
-User-auth agent apply, existing cards, defaults and reapply refuse;
+User-auth agent apply, existing cards and defaults refuse, and reapplying an identical settled
+deployment changes nothing;
 `team remove` applies only to returned static agent-only teams and requires native
 retired slot/head plus cleanup evidence for every original UID. Mixed/channel,
 open/user-auth and legacy removal effects still refuse. Boot previews show the manager PID record even when its process is

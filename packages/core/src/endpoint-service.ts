@@ -485,9 +485,12 @@ export async function registerServiceInstance(
       },
     });
     if (finished.completed) {
+      // The reopen has committed, so a later registration may already have frozen the gate and
+      // saved its own cursor. Clear only the cursor this freeze saved.
       try {
         const stored = await args.barrier.progress?.load();
-        if (stored) await args.barrier.progress?.clear(stored.revision);
+        if (stored && stored.cursor.opId === args.barrier.operationId && stored.cursor.freezeToken === token)
+          await args.barrier.progress?.clear(stored.revision);
       } catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
       return { registrationRevision: finished.registrationRevision, processEpoch: finished.processEpoch };
     }
@@ -1314,8 +1317,10 @@ export async function freezeExpectedSet(jsm: JetStreamManager, space: string, en
     if (status.observedSpecRevision < spec.revision) continue; // staleProjection: liveness predates the CURRENT registration
     frozen.push({ instanceId, registrationRevision: spec.revision, epoch: status.epoch });
   }
+  // An empty registry is never an empty scatter success (SPEC 13.5). The detail reaches operators, so
+  // it says what is missing and leaves the rule here.
   if (frozen.length === 0)
-    throw new EpEnvelopeError("failed-precondition", `service "${endpoint}" has no live registered instances; an empty registry is never an empty scatter success (SPEC 13.5)`, [{ kind: EP_NO_LIVE_INSTANCES, endpoint } satisfies EpNoLiveInstancesDetail]);
+    throw new EpEnvelopeError("failed-precondition", `service "${endpoint}" has no live registered instances`, [{ kind: EP_NO_LIVE_INSTANCES, endpoint } satisfies EpNoLiveInstancesDetail]);
   return frozen;
 }
 

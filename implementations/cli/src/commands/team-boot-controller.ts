@@ -20,6 +20,8 @@ import { startControllerStack, stackMembersView, stackUpForegroundNotice } from 
 import { assertUserStackTransport, preflightUserStack, userLoginRequired, userLoginState } from "./stack-user-auth.js";
 import { controllerStackNative, holdForegroundStack, prepareFreshTeamBoot, prepareResumeTeamBoot, recheckFreshTeamBoot, type FreshTeamBootPlan } from "./up.js";
 import { recheckStackResume, stackResumeEligibility, type StackResumeBinding } from "../lib/stack-resume.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { authModeText } from "../lib/team-text.js";
 
 export interface ControllerTeamBootRequest {
   file: string;
@@ -74,7 +76,7 @@ function summaryEvidence(journal: StackJournal): { controlPlaneReturned: boolean
 function bootView(data: ControllerTeamBootResult, journal: StackJournal): Report {
   const members = stackMembersView({ ...journal, members: data.members }, "Controller stack members");
   return { sections: [
-    { title: "Fresh team boot started", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Deployment", data.deploymentId], ["Root", data.root], ["Broker", data.server], ["Manifest", data.manifestPath], ["Auth mode", data.mode], ["Runtime request", data.runtime], ["Launch spec", data.launchSpec ? `${data.launchSpec.path} (sha256 ${data.launchSpec.sha256.slice(0, 12)}…)` : "not written"], ["Launch summary", data.summaryRecorded ? "recorded" : "not recorded"], ["Lifetime", data.foreground ? "this terminal" : "background"], ["Agent readiness", "not checked"]] }, { kind: "lines", lines: ["The stack's own manager member was started with this exact pinned launch spec. Manager readiness proves the manager, not that each requested agent joined. The launch summary is not stop authority; stop the stack with cotal down."] }] },
+    { title: "Fresh team boot started", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Deployment", data.deploymentId], ["Root", data.root], ["Broker", data.server], ["Manifest", data.manifestPath], ["Auth mode", authModeText(data.mode)], ["Runtime request", data.runtime], ["Launch spec", data.launchSpec ? `${data.launchSpec.path} (sha256 ${data.launchSpec.sha256.slice(0, 12)}…)` : "not written"], ["Launch summary", data.summaryRecorded ? "recorded" : "not recorded"], ["Lifetime", data.foreground ? "this terminal" : "background"], ["Agent readiness", "not checked"]] }, { kind: "lines", lines: ["The stack's own manager member was started with this exact pinned launch spec. Manager readiness proves the manager, not that each requested agent joined. The launch summary is not stop authority; stop the stack with cotal down."] }] },
     ...members.sections,
     { title: "Requested topology", blocks: [data.requestedAgents.length ? { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "application", label: "Application" }, { key: "role", label: "Role" }], rows: data.requestedAgents.slice(0, 100).map((agent) => ({ ...agent, role: agent.role ?? "none" })) } : { kind: "lines", lines: ["No agents requested."] }, { kind: "lines", lines: data.declaredChannels.length ? data.declaredChannels.slice(0, 100).map((name) => `declared #${name}`) : ["No channels declared."] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId}`, description: "Read this local launch summary" }, { command: `cotal ps --space ${data.space}`, description: "List the agents the manager reports" }, { command: `cotal down --space ${data.space} --dry-run`, description: "Preview the guarded whole-stack stop" }] }] },
@@ -91,6 +93,10 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   let plan: FreshTeamBootPlan;
   if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport });
   else {
+    // A stack whose last operation started it is up. Say so before the resume checks name the stop
+    // it lacks, and offer the route that adds a manifest to a running stack.
+    if (recorded.space === request.space && recorded.operation.kind === "up" && recorded.operation.phase === "completed")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no cotal down has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `add this manifest's channels and agents to the running stack with cotal team deploy ${shellWord(request.file)}, or stop it with cotal down before a team boot` });
     binding = stackResumeEligibility(recorded.root, request.space, { server: recorded.server, mode: recorded.mode });
     plan = await prepareResumeTeamBoot(request.file, { space: request.space, transport: request.transport, recorded: { server: binding.server, mode: binding.mode, ...(binding.broker.host ? { host: binding.broker.host } : {}) } });
   }
@@ -176,7 +182,9 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     throw isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh controller team boot did not confirm its outcome; its retained intent and any started members were kept", { target: { space: plan.space, root: plan.root } });
   } finally { releaseMaintenanceLock(lock); }
   if (request.foreground && request.presentation !== "json") stackUpForegroundNotice(request.presentation, result.space);
-  writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, completeness: "partial", partial: { message: "Agent joins are not checked by this receipt." }, warnings: plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })) }, (data) => bootView(data, journal));
+  // With no agents requested, no join is left unchecked and the receipt is complete.
+  const joins = result.requestedAgents.length > 0;
+  writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, ...(joins ? { completeness: "partial" as const, partial: { message: "Agent joins are not checked by this receipt." } } : {}), warnings: plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })) }, (data) => bootView(data, journal));
   if (request.foreground) await holdForegroundStack(plan.root);
 }
 

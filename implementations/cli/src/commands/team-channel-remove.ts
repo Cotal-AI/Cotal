@@ -1,12 +1,14 @@
 import * as prompts from "../lib/prompts.js";
 import { contractDigest, mintCreds, newIdentity, type ChannelConfig, type ChannelDefaults } from "@cotal-ai/core";
-import { brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { listAdditiveTeamAttempts, removedAdditiveDeploymentIds, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { CARD_TERMINAL_PHASES, openChannelCardRegistry, readChannelMemberImpact, writeChannelRemovalAttempt, writeChannelRemovalReceipt, writeChannelRemovalStep, type CardObservation, type CardReceipt, type ChannelRemovalAttempt, type ChannelRemovalStep, type RemovedChannel } from "../lib/team-channel-removal.js";
 import { classifyCard, removedCard, type CardSettlement } from "../lib/team-removal-reconcile.js";
 import { listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
+import { authModeText } from "../lib/team-text.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { TeamValues } from "./team.js";
 
@@ -22,6 +24,16 @@ function fallback(config: ChannelConfig | null, defaults: ChannelDefaults | null
     replayWindow: { card: config?.replayWindow ?? null, after: defaults?.replayWindow ?? null },
     describedContextRemoved: config?.description !== undefined || config?.instructions !== undefined,
   };
+}
+
+/** The way forward when the registration does not match the deployment. With none, as after the
+ *  stack's `cotal down`, starting that stopped stack registers it again. */
+function registrationRemedy(selected: ReturnType<typeof findMesh>, root: string, space: string, deploymentId: string): string {
+  let stopped = false;
+  try { stopped = readStackJournal(root)?.journal.space === space; } catch { stopped = false; }
+  return selected === undefined && stopped
+    ? `no registration names ${space}, as after cotal down; start the stack again with cotal up in ${root}, which registers it, then run cotal team remove ${deploymentId} again`
+    : `compare the registration with cotal space show ${space} and the deployment with cotal team show ${deploymentId}`;
 }
 
 /** The card phase of a team removal: only the registry cards a returned deployment created, each by
@@ -47,7 +59,7 @@ export async function prepareCardRemoval(input: { root: string; space: string; d
   if (shared.length) throw new CommandFailure("refused", "CONFLICT", "another retained deployment record also names one or more of these channels; no card was deleted", { target: { ...target, sharedChannels: shared } });
 
   const selected = findMesh(space);
-  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment", { target });
+  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment", { target, remedy: registrationRemedy(selected, root, space, deploymentId) });
   const conn = await connectOrThrow({ space }, "deployer", { readOnly: true });
   if (!conn.root || canonicalRoot(conn.root) !== root || conn.server !== original.server || conn.mode !== original.authMode || conn.tls !== original.tlsRequired) throw new CommandFailure("refused", "CONFLICT", "the scoped connection differs from the original root, broker, auth mode or transport; no card was deleted", { target });
   if (conn.mode === "auth" && !conn.auth) throw new CommandFailure("refused", "PERMISSION_DENIED", "the registered static mesh has no signer for a scoped channel writer; no other credential was substituted", { target });
@@ -91,7 +103,7 @@ export async function prepareCardRemoval(input: { root: string; space: string; d
     const members = await readChannelMemberImpact(conn.server, space, conn.tls, readAuth, names);
     const preview = impactOf(original, receipt, cards, defaults, members);
     const changed = cards.filter((row) => row.state === "changed");
-    if (changed.length) throw new CommandFailure("refused", "CONFLICT", "one or more cards changed after this deployment created them; changed metadata is not owned and no card was deleted", { target: { ...target, changedChannels: changed.map((row) => row.name) } });
+    if (changed.length) throw new CommandFailure("refused", "CONFLICT", `${changed.length === 1 ? "the card" : "the cards"} ${changed.map((row) => `#${row.name}`).join(", ")} changed after this deployment created ${changed.length === 1 ? "it" : "them"}; changed metadata is not owned and no card was deleted`, { target: { ...target, changedChannels: changed.map((row) => row.name) } });
     return { preview, close, closeUnconfirmed: () => closeUnconfirmed, async execute(): Promise<CardRemovalRun> {
       let intent: ChannelRemovalAttempt | undefined, intentAttempted = false, returned = false, failure: CommandFailure | undefined;
       const outcomes: CardOutcome[] = [];
@@ -160,7 +172,7 @@ export async function prepareCardReconcile(input: { root: string; space: string;
   const { root, space, deploymentId, original, receipt, intent } = input, target = { root, space, deploymentId };
   if (intent.channels.length !== receipt.createdChannels.length || intent.channels.some((row, ordinal) => row.name !== receipt.createdChannels[ordinal]!.name || row.createdRevision !== receipt.createdChannels[ordinal]!.revision)) throw new CommandFailure("refused", "CONFLICT", "the removal intent does not name the original returned cards; nothing was reconciled", { target });
   const selected = findMesh(space);
-  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.server !== intent.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment and its removal intent", { target });
+  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.server !== intent.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment and its removal intent", { target, remedy: registrationRemedy(selected, root, space, deploymentId) });
   const conn = await connectOrThrow({ space }, "deployer", { readOnly: true });
   if (!conn.root || canonicalRoot(conn.root) !== root || conn.server !== original.server || conn.mode !== original.authMode || conn.tls !== original.tlsRequired) throw new CommandFailure("refused", "CONFLICT", "the scoped connection differs from the original root, broker, auth mode or transport; nothing was reconciled", { target });
   let auth: { creds?: string; bearer?: string; sentinelCreds?: string } = { creds: conn.creds };
@@ -259,8 +271,8 @@ async function reconcileChannelTeam(input: { root: string; space: string; deploy
   try {
     const preview = { kind: "channel-team-removal-reconcile-preview" as const, deploymentId, cards: phase.settlements, recordable: phase.settlements.filter((row) => row.state === "record").length, unattempted: phase.settlements.filter((row) => row.state === "unattempted").length, unknown: phase.settlements.filter((row) => row.state === "unknown").length, effectAttempted: false as const, continuationOffered: false as const };
     if (values["dry-run"] || !values.yes && (!canPrompt() || values.json)) {
-      if (!values["dry-run"]) throw new CommandFailure("refused", "USAGE_INVALID", "scripted reconciliation needs --yes after reviewing which observations it records", { target });
-      writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "Card revisions were read from the intent's registry stream. Nothing was recorded, deleted or retried." } }, reconcileView);
+      if (!values["dry-run"]) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
+      writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...reconcileView(data).sections, { blocks: [{ kind: "lines", lines: ["Card revisions were read from the intent's registry stream. Nothing was recorded, deleted or retried."] }] }] }));
       return;
     }
     if (!values.yes) {
@@ -314,9 +326,9 @@ export async function removeChannelTeam(deploymentId: string, values: TeamValues
   let run: CardRemovalRun | undefined, lockFailure: CommandFailure | undefined;
   try {
     const preview = phase.preview;
-    if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "Current card revisions were compared with the returned create revisions. The membership feed is display-only. Nothing was deleted." } }, previewView); return; }
+    if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...previewView(data).sections, { blocks: [{ kind: "lines", lines: ["Current card revisions were compared with the returned create revisions. The membership feed is display-only. Nothing was deleted."] }] }] })); return; }
     if (!values.yes) {
-      if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted card removal needs --yes after reviewing its policy fallback and impact", { target });
+      if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted card removal needs --yes after reviewing its policy fallback and impact", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
       const answer = await prompts.confirm({ message: `Remove ${receipt.createdChannels.length} recorded channel card(s) from ${oneLine(space)}? The space defaults then apply (delivery ${preview.defaults.deliveryClass}). History, grants and readers are not changed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "channel-team-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Channel cards kept", blocks: [{ kind: "lines", lines: ["No removal intent or card delete was submitted."] }] }] })); return; }
     }
@@ -328,7 +340,7 @@ export async function removeChannelTeam(deploymentId: string, values: TeamValues
   if (!run!.intentAttempted && run!.failure) throw run!.failure;
   const done = run!, failure = done.failure ?? lockFailure;
   writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "channel-team-removal", deploymentId, server: brokerAddressForDisplay(original.server) ?? "not displayable", authMode: original.authMode, returnedReceipt: done.returned, channels: done.outcomes, impact: phase.preview, retainedIntent: done.intentAttempted, historyPurged: false, grantsChanged: false, readersStopped: false, readerExclusivity: "not-established", completeCleanup: false, retryAuthorized: false }, warnings: phase.closeUnconfirmed() ? [{ code: "WRITER_CLOSE_UNCONFIRMED", target, message: "Closing the scoped registry writer was not confirmed; recorded outcomes stand." }] : [], ...(failure ? { failure } : {}) }, (data): Report => ({ sections: [{ title: data.returnedReceipt ? "Channel cards removed" : "Channel card removal incomplete", blocks: [
-    { kind: "fields", rows: [["Deployment", deploymentId], ["Auth mode", data.authMode], ["Removed or already absent", `${data.channels.filter((row) => row.outcome === "deleted" || row.outcome === "absent").length} of ${receipt.createdChannels.length}`], ["Full removal receipt", data.returnedReceipt ? "recorded" : "not confirmed"], ["Retained history", "kept"], ["Grants and readers", "unchanged"]] },
+    { kind: "fields", rows: [["Deployment", deploymentId], ["Auth mode", authModeText(data.authMode)], ["Removed or already absent", `${data.channels.filter((row) => row.outcome === "deleted" || row.outcome === "absent").length} of ${receipt.createdChannels.length}`], ["Full removal receipt", data.returnedReceipt ? "recorded" : "not confirmed"], ["Retained history", "kept"], ["Grants and readers", "unchanged"]] },
     { kind: "table", columns: [{ key: "channel", label: "Channel" }, { key: "created", label: "Create revision" }, { key: "outcome", label: "Outcome" }], rows: cardOutcomeRows(receipt, data.channels) },
     { kind: "lines", lines: [CARD_SCOPE_NOTE] },
   ] }] }));
@@ -359,6 +371,6 @@ export function cardImpactBlocks(data: CardImpact): Report["sections"][number]["
 
 function previewView(data: CardImpact): Report {
   return { sections: [
-    { title: "Channel card removal impact", blocks: [{ kind: "fields", rows: [["Deployment", data.deploymentId], ["Space", data.space], ["Broker", data.server], ["Auth mode", data.authMode]] }, ...cardImpactBlocks(data)] },
+    { title: "Channel card removal impact", blocks: [{ kind: "fields", rows: [["Deployment", data.deploymentId], ["Space", data.space], ["Broker", data.server], ["Auth mode", authModeText(data.authMode)]] }, ...cardImpactBlocks(data)] },
   ] };
 }

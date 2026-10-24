@@ -1,5 +1,6 @@
 import { peerLabel, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type PresenceCondition } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Cell, type Column, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { managerLabel } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { activityAge, c, presenceFacts } from "../ui.js";
@@ -19,6 +20,7 @@ export interface WhoRow {
   readonly id: string;
   readonly role: string | null;
   readonly kind: string;
+  readonly sessionKind: string | null;
   readonly status: Presence["status"];
   readonly condition: PresenceCondition | null;
   readonly activity: string | null;
@@ -48,6 +50,8 @@ const metaText = (p: Presence, key: string): string | null => {
   return typeof value === "string" && value ? value : null;
 };
 const isManager = (p: Presence): boolean => p.card.kind === "endpoint" && p.card.role === "manager" && p.status !== "offline";
+/** A chat session is an endpoint a person drives, so it is listed with the agents and is not infrastructure. */
+const isChatSession = (p: Presence): boolean => metaText(p, "sessionKind") === "chat";
 
 /** What one manager census says about each seat, matched on the seat's incarnation. A seat a manager
  *  listed is managed. Only a census where every registered instance answered can say a seat is not:
@@ -120,7 +124,14 @@ export async function who(args: ParsedArgs): Promise<void> {
   // manager on the roster none can be running one, so nothing is asked.
   let managers: WhoResult["managers"] = "none-present";
   let runs = (_p: Presence): boolean | null => false;
-  if (roster.some(isManager)) {
+  if (roster.some(isManager) && v.creds !== undefined) {
+    // A credential passed with --creds carries no endpoint-caller triple, and this command cannot
+    // mint one for it, so the managers are not asked. That is how far this identity reaches, as for
+    // one the managers refuse, and not a part left unread.
+    managers = "denied";
+    runs = () => null;
+    labels.push({ code: "MANAGERS_DENIED", target, message: "a credential passed with --creds carries no caller the managers accept from this command, so every seat shows managed as unknown" });
+  } else if (roster.some(isManager)) {
     try {
       const judged = judgeSeats(await readSeats(v, "ps", undefined));
       managers = judged.managers;
@@ -143,7 +154,7 @@ export async function who(args: ParsedArgs): Promise<void> {
 
   const counts = new Map<string, number>();
   for (const p of roster) counts.set(p.card.name.toLowerCase(), (counts.get(p.card.name.toLowerCase()) ?? 0) + 1);
-  const listed = roster.filter((p) => v.all || p.card.kind !== "endpoint");
+  const listed = roster.filter((p) => v.all || p.card.kind !== "endpoint" || isChatSession(p));
   const items = listed
     .filter((p) => !v.waiting || p.status === "waiting" || p.condition !== undefined)
     .map((p): WhoRow => ({
@@ -151,6 +162,7 @@ export async function who(args: ParsedArgs): Promise<void> {
       id: p.card.id,
       role: p.card.role ?? null,
       kind: p.card.kind ?? "endpoint",
+      sessionKind: metaText(p, "sessionKind"),
       status: p.status,
       condition: p.condition ?? null,
       activity: p.activity ?? null,
@@ -188,7 +200,7 @@ function whoView(r: WhoResult, space: string, all: boolean, duplicate: (name: st
   const byId = new Map(roster.map((p) => [p.card.id, p]));
   const columns: Column[] = [
     { key: "name", label: "Agent" },
-    ...(all ? [{ key: "kind", label: "Kind" }] : []),
+    ...(all || r.items.some((row) => row.sessionKind === "chat") ? [{ key: "kind", label: "Kind" }] : []),
     { key: "status", label: "State" },
     { key: "attention", label: "Attention" },
     { key: "harness", label: "Application" },
@@ -200,10 +212,11 @@ function whoView(r: WhoResult, space: string, all: boolean, duplicate: (name: st
   const rows = r.items.map((row): Record<string, Cell> => {
     const p = byId.get(row.id);
     const facts = p ? presenceFacts(p, now) : { condition: "", ages: "" };
-    const label = peerLabel({ name: row.name, ...(row.role ? { role: row.role } : {}) });
+    // A live manager shows by its name, or by `<host>/<runtime>` when it was started without one.
+    const label = p && isManager(p) ? `manager ${peerLabel({ name: managerLabel(p) })}` : peerLabel({ name: row.name, ...(row.role ? { role: row.role } : {}) });
     return {
       name: duplicate(row.name) ? `${label} [${row.id}]` : label,
-      kind: row.kind,
+      kind: row.sessionKind === "chat" ? "chat session" : row.kind,
       status: { text: `${row.status === "working" ? "working · progress unknown" : row.status}${facts.condition}`, tone: STATUS_TONE[row.status], mark: STATUS_MARK[row.status] },
       attention: row.attention ?? "-",
       harness: row.harness ?? "-",

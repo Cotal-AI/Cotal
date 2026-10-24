@@ -1,5 +1,76 @@
 # @cotal-ai/delivery
 
+## 0.100.2
+
+### Patch Changes
+
+- Updated dependencies [8d81c12]
+- Updated dependencies [bb4145f]
+  - @cotal-ai/core@0.100.2
+  - @cotal-ai/workspace@0.100.2
+
+## 0.100.1
+
+### Patch Changes
+
+- 624396e: `cotal feedback-intake` now reads `--max-bytes` and `--rate-limit` with the shared positive-integer flag parser instead of its own copy. A value past the safe integer range, such as `1e300` or `9007199254740993`, used to be accepted, so the body cap or the per-tester rate limit could never trip. It is now refused before the intake dials the broker, and every refusal of these two flags names the rejected value.
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
+## 0.100.0
+
+### Patch Changes
+
+- cd60efb: `status` no longer suggests the deprecated `cotal deliver` when the delivery responder is not bound;
+  it names `cotal up`. The delivery daemon's missing-credential error named `cotal go`, which does not
+  exist, and now says that `cotal up` mints and writes the credential.
+- 3f4c6ae: `join --creds` or `--token` and `feedback-intake --creds` with no `--server` now dial the broker the
+  space is registered at, keeping its TLS requirement, and refuse an unregistered space before any
+  dial. Before, they sent the credential to the default address.
+- Updated dependencies [7e62dcf]
+- Updated dependencies [0aa2ca7]
+- Updated dependencies [a78af23]
+- Updated dependencies [9eed6bc]
+- Updated dependencies [f5424e1]
+- Updated dependencies [3ec07a5]
+- Updated dependencies [a4e37f4]
+- Updated dependencies [72c4595]
+- Updated dependencies [869d26f]
+- Updated dependencies [2c21df1]
+- Updated dependencies [ba5a685]
+- Updated dependencies [c8550cc]
+- Updated dependencies [ac5a105]
+- Updated dependencies [d235fb0]
+- Updated dependencies [0e729b5]
+- Updated dependencies [28f3ca0]
+- Updated dependencies [73cd25b]
+- Updated dependencies [0934f70]
+- Updated dependencies [cdceff6]
+- Updated dependencies [773e6d3]
+- Updated dependencies [42d9ea1]
+- Updated dependencies [8360fbf]
+- Updated dependencies [f0aebea]
+- Updated dependencies [047b289]
+- Updated dependencies [152e236]
+- Updated dependencies [afb587c]
+- Updated dependencies [ca4ce70]
+- Updated dependencies [b9ddce8]
+- Updated dependencies [b24190d]
+- Updated dependencies [6471d27]
+- Updated dependencies [af26abf]
+- Updated dependencies [b079d7d]
+- Updated dependencies [85213b4]
+- Updated dependencies [4f58a3c]
+- Updated dependencies [0caaa99]
+- Updated dependencies [d29311b]
+- Updated dependencies [28a9e11]
+- Updated dependencies [9234229]
+  - @cotal-ai/workspace@0.100.0
+  - @cotal-ai/core@0.100.0
+
 ## 0.99.3
 
 ### Patch Changes

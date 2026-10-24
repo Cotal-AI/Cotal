@@ -1,7 +1,8 @@
 import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, loadMeshes, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section } from "@cotal-ai/workspace";
+import { jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
-import { askManager, onFlag, onInstance, readFailure, refuseWithoutLiveManager, resolveControlTarget } from "../lib/control.js";
+import { askManager, onFlag, readFailure, refuseWithoutLiveManager, resolveControlTarget } from "../lib/control.js";
+import { managerPin } from "../lib/manager-choice.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 export const modelsFlags = [
@@ -15,9 +16,7 @@ export const modelsFlags = [
 
 export function modelsComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, modelsFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "harness") return { items: extensionNames("connector").map((name) => ({ value: name })), directive: "nofiles" };
-  if (flag?.name === "creds") return { items: [], directive: "default" };
   return { items: [], directive: "nofiles" };
 }
 
@@ -36,7 +35,7 @@ export interface ModelsResult {
 export async function models(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof modelsFlags>;
   const presentation = presentationOf(v);
-  const on = onInstance(v.on, "cotal models");
+  const on = await managerPin(v, "cotal models");
   const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   const target = { space: t.space, harness: v.harness ?? null, requestedInstanceId: on ?? null };
   if (on === undefined && t.auth.bearer === undefined) await refuseWithoutLiveManager(t.space, t.server, t.auth, target, "list its model catalogs");

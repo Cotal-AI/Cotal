@@ -21,7 +21,7 @@
 import { spawnSync } from "node:child_process";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync } from "node:fs";
 import { createPrivateRecord, writePrivateRecord } from "@cotal-ai/core";
 import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 
@@ -83,6 +83,103 @@ export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   } catch (e) {
     return livenessFromErrno((e as NodeJS.ErrnoException).code);
   }
+}
+
+/** Whether `pid` is stopped by a signal such as SIGSTOP, read from its `/proc` state. Only Linux
+ *  can answer here; elsewhere this is `false`, and callers keep their unanswered-broker path. */
+export function processStopped(pid: number): boolean {
+  if (process.platform !== "linux") return false;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) === "T";
+  } catch { return false; }
+}
+
+/** The listening sockets a loopback `server` dials, as the `socket:[inode]` links a holder's
+ *  descriptors show, or `undefined` for a host that is not loopback. An `http:` address without a
+ *  port is on 80, and any other on 4222. Linux reads `/proc/net/tcp{,6}`. */
+function loopbackListenSockets(server: string): Set<string> | undefined {
+  let host: string, port: number;
+  try {
+    const url = new URL(server.includes("://") ? server : `nats://${server}`);
+    host = url.hostname.replace(/^\[|\]$/g, "");
+    port = url.port ? Number(url.port) : url.protocol === "http:" ? 80 : 4222;
+  } catch { return undefined; }
+  if (!(host === "localhost" || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host))) return undefined;
+  const sockets = new Set<string>();
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text: string;
+    try { text = readFileSync(table, "utf8"); } catch { continue; }
+    for (const line of text.split("\n").slice(1)) {
+      const field = line.trim().split(/\s+/);
+      // `0A` is TCP_LISTEN; the local address ends in the port in hex.
+      if (field[3] === "0A" && parseInt(field[1]?.split(":").pop() ?? "", 16) === port && field[9]) sockets.add(`socket:[${field[9]}]`);
+    }
+  }
+  return sockets;
+}
+
+/** Whether `pid` has a descriptor on one of `sockets`. A process this account cannot read has none. */
+function holdsSocket(pid: number, sockets: ReadonlySet<string>): boolean {
+  let fds: string[];
+  try { fds = readdirSync(`/proc/${pid}/fd`); } catch { return false; }
+  for (const fd of fds) {
+    try { if (sockets.has(readlinkSync(`/proc/${pid}/fd/${fd}`))) return true; } catch { /* the descriptor closed */ }
+  }
+  return false;
+}
+
+/** The stopped process of this account that holds the listening socket a loopback `server` dials,
+ *  or `undefined`. A stopped broker still takes connections, because the kernel completes them, and
+ *  never greets, so a dial waits out its whole budget. Linux reads `/proc/net/tcp{,6}` and the
+ *  stopped processes' descriptors; elsewhere this is `undefined`. */
+export function stoppedLoopbackListener(server: string): number | undefined {
+  if (process.platform !== "linux") return undefined;
+  const sockets = loopbackListenSockets(server);
+  if (!sockets?.size) return undefined;
+  for (const entry of readdirSync("/proc")) {
+    const pid = parsePid(entry);
+    if (pid !== undefined && processStopped(pid) && holdsSocket(pid, sockets)) return pid;
+  }
+  return undefined;
+}
+
+/** Every process of this account that listens where a loopback `server` dials, so a report can name
+ *  what holds an address. Linux only; elsewhere, and for a host that is not loopback, none. */
+export function loopbackListeners(server: string): number[] {
+  if (process.platform !== "linux") return [];
+  const sockets = loopbackListenSockets(server);
+  if (!sockets?.size) return [];
+  return readdirSync("/proc").flatMap((entry) => {
+    const pid = parsePid(entry);
+    return pid !== undefined && holdsSocket(pid, sockets) ? [pid] : [];
+  });
+}
+
+/** The state, ppid and pgrp fields of `/proc/<pid>/stat`, which follow the parenthesised name, or
+ *  `undefined` when the process is gone. */
+function statFields(pid: number): string[] | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ", 3);
+  } catch { return undefined; }
+}
+
+/** The process group `pid` belongs to, or `undefined` when it is gone or this is not Linux. */
+export function processGroupOf(pid: number): number | undefined {
+  if (process.platform !== "linux") return undefined;
+  return parsePid(statFields(pid)?.[2] ?? "");
+}
+
+/** The live processes in process group `pgid`. A zombie has exited and holds nothing, so it is not
+ *  one. Linux only; elsewhere none. */
+export function processGroupMembers(pgid: number): number[] {
+  if (process.platform !== "linux") return [];
+  return readdirSync("/proc").flatMap((entry) => {
+    const pid = parsePid(entry);
+    const fields = pid === undefined ? undefined : statFields(pid);
+    return fields && fields[0] !== "Z" && fields[0] !== "X" && parsePid(fields[2] ?? "") === pgid ? [pid!] : [];
+  });
 }
 
 // ---- the manager's own record ------------------------------------------------------------------
@@ -440,16 +537,14 @@ function parsePinLines(raw: string): ProcessIdentityRecord[] | undefined {
  *  or an old pidfile that had no pin. The line reads as legacy, never as a torn pairing. */
 const NO_START_TOKEN = "-";
 
-/** The pin line of the pid the pidfile names right now. A pidfile with no pin at all is a legacy
- *  record, so its line carries {@link NO_START_TOKEN} and the bridge keeps it legacy. A pin that is
- *  unreadable or has no line for that pid has nothing to carry. */
+/** The pin line of the pid the pidfile names right now. The pidfile is read through
+ *  {@link readPidfile}, so only a missing pidfile is a first start and any other read error throws. A
+ *  pidfile with no pin at all is a legacy record, so its line carries {@link NO_START_TOKEN} and the
+ *  bridge keeps it legacy. A pin that is unreadable or has no line for that pid has nothing to carry. */
 function currentPinLine(pidfilePath: string): ProcessIdentityRecord | undefined {
-  let current: number | undefined;
-  try {
-    current = parsePid(readFileSync(pidfilePath, "utf8"));
-  } catch {
-    return undefined; // no pidfile: a first start, there is no old line to carry
-  }
+  const raw = readPidfile(pidfilePath);
+  if (raw === undefined) return undefined; // no pidfile: a first start, there is no old line to carry
+  const current = parsePid(raw);
   if (current === undefined) return undefined;
   let rawPin: string;
   try {
@@ -526,7 +621,9 @@ function sleepSync(ms: number): void {
  *  line. After `publish-pin`, the NEW complete record. No state is torn and none drops to the unpinned
  *  legacy shape. A legacy old record (a pidfile with no pin) is carried as a {@link NO_START_TOKEN}
  *  line, so it stays legacy until the commit. An old pin that is torn or has no line for the old pid
- *  has nothing to carry, so until the commit it refuses as a torn pairing, as it already did.
+ *  has nothing to carry, so until the commit it refuses as a torn pairing, as it already did. A
+ *  pidfile that exists but cannot be read is not a first start: the publish throws before its first
+ *  rename, leaving the record as it was.
  *
  *  When `identityRecord` cannot establish a token (ps-less host, or a pid whose start could not be
  *  read - same rule as {@link writeIdentityPin}), the new line carries {@link NO_START_TOKEN} and
@@ -595,6 +692,7 @@ export function writePidPair(
 
 /** What {@link verifyIdentityPin} found for one pidfile. */
 export type PinVerdict =
+  | { kind: "no-pid" }        // the pidfile is absent, empty or holds no pid: there is nothing to verify
   | { kind: "legacy" }        // no sibling: a pre-identity record. Windows launches write a sibling (#1437)
   | { kind: "match"; record: ProcessIdentityRecord } // pinned, and the live process carries the recorded start
   | { kind: "gone" }          // pinned, and the pid is ESRCH-dead: the recorded process is gone
@@ -606,6 +704,7 @@ export type PinVerdict =
 /**
  * THE open-verify step every teardown runs BEFORE signalling (#969). Read the pidfile's bare pid,
  * then the sibling pin, and adjudicate the pairing:
+ *   - no-pid              -> no pid is recorded, so there is no process to verify or signal
  *   - legacy              -> the caller warns and signals for upgrade compatibility
  *   - match               -> safe to signal; the process behind the pid is the recorded one
  *   - gone                -> ESRCH-proven dead; the caller may clear the record
@@ -616,14 +715,9 @@ export type PinVerdict =
  * from it here so the pairing check cannot drift from however the caller read the pid.
  */
 export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartTokenReader = defaultStartToken): PinVerdict {
-  let rawPid: string;
-  try {
-    rawPid = readFileSync(pidfilePath, "utf8");
-  } catch {
-    return { kind: "legacy" }; // no pidfile at all: nothing is pinned; callers treat as absent
-  }
-  const pidRead = parsePid(rawPid);
-  if (pidRead === undefined) return { kind: "legacy" }; // husk/unattributable: existing callers own it
+  const rawPid = readPidfile(pidfilePath);
+  const pidRead = rawPid === undefined ? undefined : parsePid(rawPid);
+  if (pidRead === undefined) return { kind: "no-pid" };
   let rawPin: string;
   try {
     rawPin = readFileSync(identityPinPath(pidfilePath), "utf8");

@@ -1,7 +1,10 @@
-import stringWidth from "string-width";
 import { c } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
-import { CommandFailure, exitCode, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
+
+// Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
+export { displayWidth, terminalWidth, wrapWords };
 
 /**
  * The terminal presentation every command surface shares: one view model of a finished report,
@@ -89,12 +92,6 @@ const tones: Record<Tone, (s: string) => string> = {
   title: c.bold,
 };
 
-/** The columns `text` occupies on a terminal: grapheme clusters, wide East Asian and emoji
- *  characters as two, combining marks and zero-width characters as none, ANSI sequences as none. */
-export function displayWidth(text: string): number {
-  return stringWidth(text);
-}
-
 /** Punctuation as plain writes it, wherever it appears, so a plain report is ASCII apart from
  *  other characters of the content itself, such as the letters of a name. */
 const PLAIN_PUNCTUATION: Readonly<Record<string, string>> = { "·": "-", "…": "...", "→": "->", "↳": "->", "—": "-", "–": "-" };
@@ -131,25 +128,6 @@ function draw(cell: Cell, style: Style): { shown: string; width: number } {
   if (typeof cell === "string" || style === "plain") return { shown: text, width: displayWidth(text) };
   const marked = cell.mark && marks(style) ? `${oneLine(cell.mark)} ${text}` : text;
   return { shown: cell.tone ? tones[cell.tone](marked) : marked, width: displayWidth(marked) };
-}
-
-/** `text` in lines of at most `width` display columns, broken at spaces, or only between the given
- *  words. A word wider than `width` keeps a line of its own, so an identity, path or command is never
- *  split. Below 20 columns, and when the output is not a terminal, nothing is wrapped. */
-export function wrapWords(text: string | readonly string[], width: number): string[] {
-  const words = typeof text === "string" ? text.split(" ") : text;
-  if (!(width >= 20) || displayWidth(words.join(" ")) <= width) return [words.join(" ")];
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const next = line ? `${line} ${word}` : word;
-    if (line && displayWidth(next) > width) {
-      lines.push(line);
-      line = word;
-    } else line = next;
-  }
-  lines.push(line);
-  return lines;
 }
 
 /** A cell drawn in lines that fit `width` columns, each line toned on its own. A continuation line
@@ -198,6 +176,7 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
 }
 
 /** Each value starts after its padded label; a value too long for the line continues under itself.
+ *  A value with a word too wide for the room beside its label starts on the line under the label.
  *  Below 48 columns each label takes a line of its own, with its value on the lines under it. */
 function renderFields(fields: Fields, style: Style, indent: string, width: number): string[] {
   if (width < 48) {
@@ -210,6 +189,8 @@ function renderFields(fields: Fields, style: Style, indent: string, width: numbe
   const start = indent.length + pad + 1;
   return fields.rows.flatMap(([name, value]) => {
     const [first, ...rest] = drawWrapped(value, style, width - start);
+    if ([first!, ...rest].some((line) => displayWidth(line) > width - start))
+      return [indent + draw({ text: `${name}:`, tone: "label" }, style).shown, ...drawWrapped(value, style, width - indent.length - 2).map((line) => indent + "  " + line)];
     return [`${indent}${drawPadded({ text: `${name}:`, tone: "label" }, style, pad)} ${first}`, ...rest.map((line) => " ".repeat(start) + line)];
   });
 }
@@ -236,7 +217,9 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
 /** A report as lines of text, fitted to `width` columns (unbounded when output is not a terminal):
  *  tables fit or become records, and long values and lines wrap at spaces. */
 export function renderReport(report: Report, style: Style, width = Number.POSITIVE_INFINITY): string {
+  const note = report.space ? operationSpaceNote(report.space) : undefined;
   const out: string[] = report.space ? drawWrapped({ text: `Mesh: ${report.space}`, tone: "selected" }, style, width) : [];
+  if (note) out.push(...drawWrapped({ text: note, tone: "hint" }, style, width - 2).map((line) => `  ${line}`));
   for (const section of report.sections) {
     if (out.length) out.push("");
     const indent = section.title === undefined ? "" : "  ";
@@ -249,11 +232,6 @@ export function renderReport(report: Report, style: Style, width = Number.POSITI
     }
   }
   return out.join("\n");
-}
-
-/** The columns a stream can show: its terminal's width, or unbounded when it is not a terminal. */
-export function terminalWidth(stream: { readonly isTTY?: boolean; readonly columns?: number }): number {
-  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;
 }
 
 /** The presentation `--json` and `--plain` ask for. Both at once is a usage error. */
@@ -288,6 +266,9 @@ export function writeResult<R>(
   const outcome = out.failure?.outcome ?? (out.partial ? "partial" : out.noOp ? "no-op" : "ok");
   const code = out.failure?.code ?? (out.partial ? "OPERATION_PARTIAL" : undefined);
   const error = out.failure?.detail() ?? (out.partial ? { code: "OPERATION_PARTIAL" as const, message: out.partial.message, ...(out.partial.remedy === undefined ? {} : { remedy: out.partial.remedy }) } : undefined);
+  // A warning the run already recorded was printed then, and its envelope carries it once.
+  const recorded = operationWarnings();
+  const warnings = (out.warnings ?? []).filter((w) => !recorded.some((r) => r.code === w.code && r.message === w.message));
   if (presentation === "json") {
     writeEnvelope({
       schemaVersion: 1,
@@ -296,7 +277,7 @@ export function writeResult<R>(
       outcome,
       completeness: out.completeness ?? "complete",
       result: out.result,
-      warnings: out.warnings ?? [],
+      warnings: [...recorded, ...warnings],
       ...(error ? { error } : {}),
       ...(out.failure?.changed === undefined ? {} : { changed: out.failure.changed }),
     });
@@ -306,7 +287,8 @@ export function writeResult<R>(
     console.log(renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, presentation, terminalWidth(process.stdout)));
     const errWidth = terminalWidth(process.stderr);
     const say = (cell: Styled, hang: number) => { for (const line of drawWrapped(cell, presentation, errWidth, hang)) console.error(line); };
-    for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
+    // The run's own warnings were printed on stderr when they were recorded.
+    for (const warning of warnings) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
     if (error) {
       say({ text: `${marks(presentation) ? "✗" : "!"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
       if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2);
@@ -345,18 +327,20 @@ export function commandFailureReport(failure: CommandFailure): Report {
     ...(typeof native?.unconfirmed === "string" ? [{ state: "unconfirmed", name: native.unconfirmed }] : []),
     ...names(native?.remaining).filter((name) => name !== native?.refused && name !== native?.unconfirmed).map((name) => ({ state: "remaining or unresolved", name })),
   ];
-  // The live managers a refused selection could not choose between, one row each.
-  const text = (value: unknown): string => typeof value === "string" && value ? value : "-";
+  // The live managers a refused selection could not choose between, one row each. Only a manager
+  // started by a cotal before 0.100.0 puts no host in its presence.
+  const text = (value: unknown, absent = "-"): string => typeof value === "string" && value ? value : absent;
   const managers = (Array.isArray(native?.managers) ? native.managers : []).flatMap((item) => {
     const row = object(item);
-    return typeof row?.instanceId === "string" ? [{ instanceId: row.instanceId, host: text(row.host), activity: text(row.activity), since: text(row.since) }] : [];
+    return typeof row?.instanceId === "string" ? [{ name: text(row.name), instanceId: row.instanceId, host: text(row.host, "not reported (started by an older cotal)"), activity: text(row.activity), since: text(row.since) }] : [];
   });
   return { ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}), sections: [
     { title: failure.outcome === "unknown" ? "Outcome unconfirmed" : failure.outcome === "partial" ? "Partly completed" : failure.outcome === "refused" ? "Request refused" : "Request failed", blocks: [{ kind: "lines", lines: [{ text: failure.message, tone: failure.outcome === "unknown" || failure.outcome === "partial" ? "waiting" : "failed" }] }, { kind: "fields", rows: fields }] },
     ...(purges.length ? [{ title: "Acknowledged history changes", blocks: [{ kind: "table" as const, columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: purges }] }] : []),
     ...(nativeRows.length ? [{ title: "Native target details", blocks: [{ kind: "table" as const, columns: [{ key: "state", label: "State" }, { key: "name", label: "Target" }], rows: nativeRows.slice(0, 100) }, ...(nativeRows.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${nativeRows.length} targets; --json retains every row.`] }] : [])] }] : []),
-    ...(failure.changed?.length && !purges.length && !nativeRows.length ? [{ title: "Confirmed changes", blocks: [{ kind: "lines" as const, lines: [`${failure.changed.length} change receipt(s) retained. Choose structured output before the operation to retain their data; do not repeat a mutation merely to view its receipt.`] }] }] : []),
-    ...(managers.length ? [{ title: "Live managers", blocks: [{ kind: "table" as const, columns: [{ key: "instanceId", label: "Instance" }, { key: "host", label: "Host" }, { key: "activity", label: "Activity" }, { key: "since", label: "Running since" }], rows: managers }] }] : []),
+    // Receipts that are plain strings, such as file paths, are listed; structured ones need structured output.
+    ...(failure.changed?.length && !purges.length && !nativeRows.length ? [{ title: "Confirmed changes", blocks: [{ kind: "lines" as const, lines: names(failure.changed).length === failure.changed.length ? [...names(failure.changed)] : [`${failure.changed.length} change receipt(s) retained. Choose structured output before the operation to retain their data; do not repeat a mutation merely to view its receipt.`] }] }] : []),
+    ...(managers.length ? [{ title: "Live managers", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Manager" }, { key: "instanceId", label: "Instance" }, { key: "host", label: "Host" }, { key: "activity", label: "Activity" }, { key: "since", label: "Running since" }], rows: managers }] }] : []),
     ...(failure.remedy ? [{ title: "Next", blocks: [{ kind: "lines" as const, lines: [failure.remedy] }] }] : []),
   ] };
 }

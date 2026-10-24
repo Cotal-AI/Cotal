@@ -42,6 +42,7 @@ const shown = (r: ReturnType<typeof setup>) => ({ status: r.status, stdout: r.st
 const unknown = setup("nosuch");
 check("an unknown harness is a usage refusal, exit 1", unknown.status === 1 && unknown.envelope?.error?.code === "USAGE_INVALID", shown(unknown));
 check("it names the harness and the official connectors", /no harness "nosuch"/.test(unknown.envelope?.error?.message ?? "") && /claude/.test(unknown.envelope?.error?.message ?? ""), unknown.envelope?.error);
+check("and its remedy says to pass one of them or add a connector", /^pass one of them with --harness/.test(unknown.envelope?.error?.remedy ?? ""), unknown.envelope?.error);
 
 const official = setup("claude");
 check("rig: no connector is installed in the sandbox", official.status === 2 && official.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && /no connector is installed/.test(official.envelope.error.message ?? ""), shown(official));

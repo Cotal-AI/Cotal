@@ -7,7 +7,7 @@ import { oneLine } from "@cotal-ai/core";
 import { shownTime } from "../lib/shown-time.js";
 import type { AdmittedChatSession, ChannelInfo, ConnectionReport, HistoryPage, PublishResult, Result, RosterView, SessionMessage } from "./session.js";
 import {
-  applyEnded, applyPublishResult, applySlashResult, heardFrom, personLabel, replyToLatest, sharedNames, type ChatState, type Person, type Recipient, type SlashCommand,
+  addNotice, applyEnded, applyPublishResult, applySlashResult, heardFrom, personLabel, replyToLatest, sharedNames, slashHelp, type ChatState, type Person, type Recipient, type SlashCommand,
 } from "./view.js";
 
 export async function publish(session: AdmittedChatSession, to: Recipient, text: string): Promise<PublishResult> {
@@ -95,7 +95,8 @@ async function runSlashUnguarded(session: AdmittedChatSession, state: ChatState,
     case "join":
       return fold(await session.join(command.channel), (v) => [v.joined ? `joined #${oneLine(command.channel)}${v.backfilled ? ` (${v.backfilled} earlier messages)` : ""}${v.durable ? "" : " (live only)"}` : `not joined: ${oneLine(v.reason ?? "no reason given")}`]);
     case "leave":
-      return fold(await session.leave(command.channel), (v) => [v.left ? `left #${oneLine(command.channel)}` : `still on #${oneLine(command.channel)}`]);
+      // `left: false` means the session had not joined the channel.
+      return fold(await session.leave(command.channel), (v) => [v.left ? `left #${oneLine(command.channel)}` : `not on #${oneLine(command.channel)}, so there is nothing to leave`]);
     case "info":
       return fold(await session.channelInfo(command.channel), infoLines);
     case "history": {
@@ -113,6 +114,9 @@ async function runSlashUnguarded(session: AdmittedChatSession, state: ChatState,
     case "reply":
       // Local: it picks the recipient and talks to no one.
       return done(replyToLatest(state));
+    case "help":
+      // Local, like /reply.
+      return done(addNotice(state, "hint", slashHelp));
     case "quit":
       // The view turns /quit into a `leave` intent; this branch serves a caller that routes the
       // parsed command directly. Either way the session is closed once and the summary shown.

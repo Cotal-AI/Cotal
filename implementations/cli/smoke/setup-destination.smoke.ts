@@ -4,7 +4,8 @@
  * with a PATH that holds `codex` and `tmux` (stand-ins) and not `claude` or `cmux`. A stand-in npm
  * registry serves the tmux and herdr runtimes packed from this checkout.
  *
- * Scripted: every input is a flag, a missing one is refused before anything is written, Cloud is
+ * Scripted: every input is a flag, a missing one is refused before anything is written with the
+ * scripted form of the destination, a bad space name or harness gets a remedy, Cloud is
  * refused with the route a Cloud space takes today, and a refusal leaves the sandbox as it was. A local space is prepared
  * the way `space create` prepares it, its default persona lands in the project's `.cotal/agents`,
  * and the application becomes the space's `harness` preference, and yours when you have none. A
@@ -238,6 +239,10 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const missing = await json(["setup", "--destination", "local"]);
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
     refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && /--destination local --harness <connector> --project <dir> --space <name>/.test(missing.env?.error?.remedy ?? ""), shown(missing));
+  const missingHosted = await json(["setup", "--destination", "self-hosted", "--harness", "codex", "--space", "ok1"]);
+  check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
+    refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")
+      && (missingHosted.env?.error?.remedy ?? "").startsWith("cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>]"), shown(missingHosted));
   const yes = await run(["setup", "--yes"]);
   check("setup --yes alone is refused the same way, exit 1, with the scripted form and no command help",
     yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr) && /--destination local --harness <connector>/.test(yes.stderr) && !/^Usage$/m.test(yes.stderr), shown(yes));
@@ -249,11 +254,13 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const mars = await json(FULL("m1", dirs.mars).map((a) => (a === "local" ? "mars" : a)));
   check("an unknown destination is USAGE_INVALID", refused(mars, 1, "USAGE_INVALID") && /local or self-hosted/.test(mars.env?.error?.message ?? ""), shown(mars));
   const harness = await json(FULL("h1", dirs.harness, "nope"));
-  check("an unknown harness is USAGE_INVALID, naming the installed ones", refused(harness, 1, "USAGE_INVALID") && /no harness "nope"; known harnesses: .*codex/.test(harness.env?.error?.message ?? ""), shown(harness));
+  check("an unknown harness is USAGE_INVALID, naming the installed ones and cotal ext add",
+    refused(harness, 1, "USAGE_INVALID") && /no harness "nope"; known harnesses: .*codex/.test(harness.env?.error?.message ?? "") && /`cotal ext add <npm-package>`/.test(harness.env?.error?.remedy ?? ""), shown(harness));
   const absent = await json(FULL("a1", join(home, "absent")));
   check("a script's project folder must exist: USAGE_INVALID", refused(absent, 1, "USAGE_INVALID") && /is not a directory/.test(absent.env?.error?.message ?? "") && !existsSync(join(home, "absent")), shown(absent));
   const name = await json(FULL("bad name", dirs.name));
-  check("a space name that is not a token is USAGE_INVALID", refused(name, 1, "USAGE_INVALID"), shown(name));
+  check("a space name that is not a token is USAGE_INVALID, with the name respelled as the remedy",
+    refused(name, 1, "USAGE_INVALID") && name.env?.error?.remedy === "pass --space bad_name, or another name of letters, digits, - and _", shown(name));
   const homeProject = await json(FULL("h2", home));
   check("the home folder is no project: CONFLICT naming --project", refused(homeProject, 2, "CONFLICT") && /--project <dir>/.test(homeProject.env?.error?.remedy ?? ""), shown(homeProject));
   const fileLocal = await json([...FULL("f1", dirs.file), "--connection-file", join(home, "x.json")]);
@@ -305,6 +312,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
+  check("...and its next step creates it in another folder with --project, or starts, selects or forgets research",
+    literal(`create "research2" in another folder with --project <dir>; for "research", which uses this folder, start it with \`cotal up\` from ${dir}, select it with \`cotal use research\`, or forget it with \`cotal space forget research\``).test(other.env?.error?.remedy ?? ""), other.env?.error);
   const moved = await json(FULL("research", project("elsewhere")));
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
@@ -472,8 +481,8 @@ if (process.platform !== "win32") {
       (await t.at(SAVE)) && t.s.text().includes(`project      ${dir}`) && /space\s+pty-local/.test(t.s.text()) && /application\s+codex/.test(t.s.text()) && /runtimes\s+pty, tmux/.test(t.s.text()), t.s.text().slice(-900));
     check("nothing is written before the save", findPreparedSpace("pty-local") === undefined);
     await t.answer(SAVE, ENTER);
-    check("after the save the terminal offers to start, with No selected",
-      (await t.at(START_LOCAL, t.cursor())) && /○ Yes \/ ● No/.test(t.s.text().slice(t.cursor())), t.s.text().slice(-600));
+    check("after the save the terminal offers to start, and Enter alone keeps No",
+      (await t.at(START_LOCAL, t.cursor())) && /type y to confirm; Enter keeps No/.test(t.s.text().slice(t.cursor())), t.s.text().slice(-600));
     await t.answer(START_LOCAL, ENTER);
     check("saving prepares the space and records the application", (await t.exited()) && t.s.code === 0 && findPreparedSpace("pty-local")?.root === dir && harnessOf("pty-local") === "codex" && existsSync(join(dir, ".cotal", "agents", "default.md")), { code: t.s.code, out: t.s.text().slice(-900) });
   }

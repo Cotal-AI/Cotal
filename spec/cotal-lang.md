@@ -277,7 +277,10 @@ as Orc's `otherwise`.
 
 A duration is a string of a whole number and one unit: `ms`, `s`, `m`, `h`, `d` (`"30s"`, `"10m"`,
 `"4h"`, `"2d"`). Nothing else parses; there is no bare number and no default unit. `duration(text)`
-converts one to milliseconds.
+converts one to milliseconds. A validator MUST refuse a literal that is not a duration, with L2034,
+where the language reads one: the argument of `sleep` and `duration`, the second argument of `idle`,
+the `deadline` of `turn` and `ask`, the `timeout` of `checkpoint` and `wait`, and the `every` and
+`deadline` of `waitUntil`. A value computed at run time is refused where it is used.
 
 ## 5. The library
 
@@ -707,7 +710,9 @@ request id that does not end in a refusal. A refused call performed nothing, so 
 dispatches again as a fresh attempt; retries a handler performs inside one call are not
 dispatches, and neither are the hold's own calls, which run under the hold id. Under a `once`
 frame only `ask` may run, and every other effect MUST be refused before its entry begins, with
-L4028. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
+L4028. A validator MUST refuse such an effect called in the body of `once`, or in a function the
+body calls by name, with L2033, so a program that writes one does not start; L4028 refuses one the
+run reaches that the validator could not see. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
 key (a hold is itself a checkpoint, one observation per look, an open and a close that a resume
 calls again). A `spawn`, a `turn`, a `monitor` and a `notify` build run state inside that method
 (a seat, a handoff, a watched agent, a filed notice), which a settled answer cannot build. A
@@ -1193,6 +1198,8 @@ time, L5xxx durability, L6xxx simulation.
 | L2013 | An async call is not awaited |
 | L2031 | Mutation of a frozen value |
 | L2032 | Write from a concurrent branch to something declared outside it |
+| L2033 | Effect not admitted inside `once` |
+| L2034 | Literal is not a duration |
 | L3011 | Unknown option key |
 | L3012 | Missing required step name |
 | L3013 | Step name is not a literal |
@@ -1310,3 +1317,5 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-07 | A value the program throws out of a concurrency scope reaches `catch` as itself on resume, as it does live (§9.1, §10.6): the scope's `L4000` `scope-fault` record carries it as `error.thrown` (§10.1), the live run, a replay and a migration's dry walk (§11.2) all deliver that recorded copy, deep-frozen like a scope's result (§4.3). The copy is the value as JSON reads it back, so a record held at two places in it arrives as two on the live run as on a resume from a durable store, and a resume refuses a loaded `error.thrown` that is not `{ value }` or `{}` (L5024). Measured before it: a `conclave` body that threw `"failure"` was caught as `"failure"` live and as `{ code: "L4000", kind: "scope-fault", message: "failure" }` on resume, on both engines, and a `notify` branching on the caught value diverged (L5001) on the resume of unchanged source. A thrown value with no canonical form is delivered as the record live as well. |
 | 2026-10-18 | A `waitUntil` probe and its `terminal` may not write outside themselves (L2032, §7.7): both engines already call them one level deeper and refuse the write at run time, and the validator now walks them as it walks a `once` body. Measured before it: a probe that assigned an outer `let` or pushed onto an outer array, and a `terminal` that assigned an outer `let`, passed `validate` and then failed with L2032 after the first observation of every run. |
 | 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
+| 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
+| 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |

@@ -130,7 +130,8 @@ Preferences are the defaults your own commands use when nothing more specific na
 them with [`cotal config`](cli.md#config), for yourself or for one space, and they are saved in
 `preferences.json` in the configuration directory (see [Configuration files](#configuration-files)).
 `cotal setup` saves the application it sets up as the space's `harness`, and as yours when you have
-none, so a space you prepare later starts with it.
+none, so a space you prepare later starts with it. `cotal space forget` removes the values saved for
+the space it forgets.
 
 | Key | Values | Per space | Environment | Default | Read by |
 |---|---|---|---|---|---|
@@ -151,7 +152,9 @@ value is visible.
 
 `harness` is checked against the official connectors and the ones installed extensions provide.
 `persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
-with no control characters; whether that persona exists is checked when a launch uses it. A
+with no control characters. When the catalog of the space a command here uses (`--space`, else the
+selected space, else the space `spawn` resolves from this folder) does not hold it, the value is still saved, since the file may be created later,
+with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A
 value is checked when it is written, and an unknown key or an invalid value is refused with the valid
 ones. Preferences hold no credentials. They change future commands, not agents already running.
 
@@ -162,10 +165,30 @@ The file is private to its owner and versioned:
 ```
 
 `revision` counts the writes. A write holds a lock, refuses with `CONFLICT` if the file changed after
-the command read it, and replaces the file atomically, so two writers never lose an edit. A file that
+the command read it, and replaces the file atomically, so two writers never lose an edit. The new
+file is private, mode `0600`, whatever mode the old one had. When that was another mode, such as a
+read-only `0400`, the write names it in a `PREFERENCES_MODE_CHANGED` warning, since a file's mode does
+not stop `config set` or `unset`. A file that
 does not validate (not JSON, a newer `schemaVersion`, an unknown key or an invalid value) stops every
-command except help and shell completion, with an error that names the file and the problem.
-Nothing resets it: fix or remove the file.
+command that could act on a default, with an error that names the file and the problem. Help, shell
+completion, `version` and `docs` use no preference and still run. `status` reports the file as a part
+it could not read, exit 4, and gives the fix as its next step.
+Nothing resets it: fix or remove the file. A UTF-8 byte-order mark at its start, which some Windows
+editors write, is ignored, and the next write leaves it out. A file saved as UTF-16 stops them the
+same way, saying to save it as UTF-8. A `preferences.json` that is a symbolic link stops them the
+same way with `PERMISSION_DENIED` (exit 2), naming the file it points to: `editor` runs as a shell
+command, so the file is neither read through the link nor replaced by `cotal config set`. A
+`preferences.json` that is a FIFO, a device or a folder stops them with `PERMISSION_DENIED` too,
+before it is opened, so no command waits on it.
+
+The folder that holds the file, and every folder above it, must be one only you or root can write.
+Group write is accepted only for your own private group with no extended ACL, and world write never
+is. Another account that could write one of them could replace the file. In such a folder every
+command that uses your preferences still applies them, with a `PREFERENCES_FOLDER_UNPROTECTED` warning
+that names the folder and the `chmod` that fixes it, and `cotal status` lists that `chmod` under Next. A
+write there (`config set` or `unset`, `setup`, or `space forget` removing a space's values) is refused
+with `PERMISSION_DENIED` (exit 2) before anything is changed. When the folder does not exist yet, the
+nearest folder above it is checked.
 
 ## Environment variables
 
@@ -182,7 +205,7 @@ other value when it starts, naming the variable.
 | `COTAL_SPACE` | connector session | Space to join | `demo` (or the join link's) |
 | `COTAL_NAME` | connector session | Presence name / identity | required (or via `COTAL_AGENT_FILE` / `COTAL_LINK`) |
 | `COTAL_ROLE` | connector session | Role | agent file's `role:`, else none |
-| `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below) | the default local broker (or the link's) |
+| `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below). A URL with a user name or password is refused when the session starts; pass the credential in `COTAL_CREDS`, `COTAL_TOKEN` or `COTAL_LINK` | the default local broker (or the link's) |
 | `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode). Hand-driven sessions only, same as above | none (open mode) |
 | `COTAL_LINK` | connector session | `cotal://token@host/space` join link: supplies server, auth, space | none |
 | `COTAL_AGENT_FILE` | connector session | Path to a persona file: supplies name, role, kind, channels | none |
@@ -208,17 +231,17 @@ other value when it starts, naming the variable.
 | `COTAL_FEEDBACK_URL` | `feedback`, connector | Intake URL override (self-hosted) | keyed / public intake |
 | `COTAL_TELEMETRY` | any `cotal` command | The [usage telemetry](telemetry.md) level (`off`, `minimal`, `regular`), above the settings file; any other value refuses | the file's level, `regular` at first |
 | `COTAL_TELEMETRY_DISABLED` / `DO_NOT_TRACK` | any `cotal` command | Force usage telemetry off (`1` or `true`) | off |
-| `COTAL_TELEMETRY_URL` | any `cotal` command | Usage telemetry intake override (self-hosted) | `https://cotal.ai/v1/telemetry` |
+| `COTAL_TELEMETRY_URL` | any `cotal` command | Usage telemetry intake override (self-hosted), an `http` or `https` URL; any other value refuses | `https://cotal.ai/v1/telemetry` |
 | `COTAL_SKIP_ASSIST` | `setup` | Disable the connector debug handoff on a failed step (`1`; for CI) | off |
-| `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors to stderr | off |
-| `COTAL_DEBUG` | any `cotal` command | Print the stack trace under a command's error, followed by the stack of each error that caused it | off |
+| `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors to stderr (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |
+| `COTAL_DEBUG` | any `cotal` command | Print the stack trace under a command's error, followed by the stack of each error that caused it (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_CODEX_BIN` / `COTAL_OPENCODE_BIN` / `COTAL_ORCA_BIN` | Codex and OpenCode connectors, Orca runtime | Pin the `codex`, `opencode` or Orca CLI binary | found on `PATH` |
 | `COTAL_IDP_TIMEOUT_MS` | `cotal login`, IdP requests | Per-request IdP timeout in milliseconds, for a slow IdP; a malformed value fails loud | `30000` |
 | `COTAL_ENROLLMENT_FILE` | foreground `spawn` | Private `0600` file containing one remote enrollment URL; preferred over the environment form | none |
 | `COTAL_MANAGED_HANDOFF_FILE` | `cotal` entry, foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; taken and deleted before anything else runs | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |
 | `COTAL_SERVE_HEADLESS` | OpenCode runtime | Run the OpenCode server without a foreground TUI (`1`). Stdout gets one `[cotal-serve]` line with the server's port and session and no password; a host that drives the server passes its own `OPENCODE_SERVER_PASSWORD` to the launcher | off |
-| `COTAL_HOME` | workspace | Override the machine-home dir: the mesh registry (`meshes/`, `current-mesh`, onboard marker) and records such as prepared spaces and service records. Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
+| `COTAL_HOME` | workspace | Override the machine-home dir with an absolute path: the mesh registry (`meshes/`, `current-mesh`, onboard marker) and records such as prepared spaces and service records. Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
 
 > `--console-port` is a `cotal supervise` flag, not an environment variable; there is no
 > `COTAL_CONSOLE_PORT`.
@@ -406,7 +429,17 @@ rather than read as absent. A process record's read error names the record's pat
 ### Machine files
 
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:
-`~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`.
+`~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`. A `COTAL_HOME`
+that names a file, or a path under one, stops every command except help and shell completion with
+`SCHEMA_INVALID`, naming the variable: point it at a directory or unset it. A relative `COTAL_HOME`
+stops them the same way with `USAGE_INVALID`: set an absolute path.
+
+On POSIX, a space, a registry entry, the current selection or a service record is written into the
+home only while no other account can replace or write the home or a folder above it. Otherwise the
+write is refused with `PERMISSION_DENIED`, naming each path and the `chmod` that fixes it, and nothing
+is written. A home other accounts can only read is made private (`0700`) on the write, because
+service records are read only from a private home; reading them from one others can read is refused
+with the `chmod` that fixes it.
 
 `COTAL_HOME` overrides **this tree only**: the registry, current pointer and onboard marker, and
 records such as prepared spaces and service records. It is not a full workstation sandbox. Broker launch policy, the JetStream
@@ -417,9 +450,10 @@ project paths on the live machine.
 
 A controller stack's member records live in this tree, so commands run under another `COTAL_HOME`
 cannot see a stack started under this one. While that stack's manager or delivery daemon runs,
-`status` there says the stack runs under another Cotal home and names the home in use, and `up`
-refuses `TARGET_UNAVAILABLE` with nothing started. Both name the step: run with the `COTAL_HOME` the
-stack was started under.
+`status` there says the stack runs under another Cotal home and names the home in use, even when
+that home prepared a space at the same root. `up`, `down` and `space create` for that root refuse
+`TARGET_UNAVAILABLE` with nothing started, stopped or written. Each names the step: run with the
+`COTAL_HOME` the stack was started under.
 
 | Path | What it is |
 |---|---|
@@ -433,7 +467,9 @@ stack was started under.
 ### Configuration files
 
 Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/cotal` on POSIX, or
-`%APPDATA%\Cotal` on Windows.
+`%APPDATA%\Cotal` on Windows. A file at that path, or at a folder above it, stops every command except
+help, version, docs and shell completion with `SCHEMA_INVALID`, naming the file: move it aside, and
+Cotal makes the folder when it next saves there.
 
 | Path | What it is |
 |---|---|

@@ -21,7 +21,8 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { hardenPrivate } from "@cotal-ai/core";
+import { hardenPrivate, wfjStreamName } from "@cotal-ai/core";
+import { recordOperationWarning } from "./output.js";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
 export const MAINTENANCE_JOURNAL_VERSION = 1 as const;
@@ -339,10 +340,16 @@ export interface CleanupProgress {
   readonly identity: StoreIdentity;
 }
 
+export type RestoreSelection = "full" | "registry";
+
 export interface RestoreContext {
   readonly attemptId: string;
   readonly method: "same-path" | "alternate" | "disaster";
   readonly targetPath: string;
+  /** What the restore brought back. A `registry` restore leaves every other stream out, so the
+   *  previous store holds the only copy of that history. Absent in journals written before it was
+   *  recorded. */
+  readonly selection?: RestoreSelection;
   readonly fallbackPath?: string;
   readonly previousSource?: PreviousSource;
   readonly target?: StoreIdentity;
@@ -603,6 +610,9 @@ export interface MaintenanceLock {
 export interface AcquireMaintenanceLockOptions {
   readonly owner?: ProcessOwner;
   readonly ownerStatus?: (owner: ProcessOwner) => OwnerStatus;
+  /** What the holder does, such as `backup create`, recorded in the lock so a refused contender can
+   *  name it ({@link readMaintenanceLockHolder}). */
+  readonly operation?: string;
 }
 
 const noRecourse: readonly MaintenanceRecourse[] = [];
@@ -675,8 +685,14 @@ function fsyncDirectory(path: string): void {
 
 function ensureDirectory(path: string, harden: boolean): void {
   if (!existsSync(path)) {
-    mkdirSync(path, { mode: 0o700 });
-    fsyncDirectory(dirname(path));
+    // A concurrent first operation on this root can create it between the check and the mkdir; the
+    // checks below verify what is there, and the lock then names that operation.
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      fsyncDirectory(dirname(path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
   }
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink())
@@ -889,7 +905,7 @@ function parseOwner(value: unknown, label: string): ProcessOwner {
   return o;
 }
 
-function readLockFile(path: string): { token: string; owner: ProcessOwner } {
+function readLockFile(path: string): { token: string; owner: ProcessOwner; operation?: string } {
   let parsed: unknown;
   try {
     const stat = lstatSync(path);
@@ -901,10 +917,20 @@ function readLockFile(path: string): { token: string; owner: ProcessOwner } {
     if (errno(error) === "ENOENT") throw error;
     maintenanceError("journal-corrupt", "maintenance lock cannot be parsed", { paths: [path] });
   }
-  const lock = parsed as { token?: unknown; owner?: unknown };
+  const lock = parsed as { token?: unknown; owner?: unknown; operation?: unknown };
   if (!lock || typeof lock !== "object" || typeof lock.token !== "string" || !lock.token)
     maintenanceError("journal-corrupt", "maintenance lock has no token", { paths: [path] });
-  return { token: lock.token, owner: parseOwner(lock.owner, "lock") };
+  const operation = typeof lock.operation === "string" && /^[a-z][a-z -]{0,63}$/.test(lock.operation) ? lock.operation : undefined;
+  return { token: lock.token, owner: parseOwner(lock.owner, "lock"), ...(operation ? { operation } : {}) };
+}
+
+/** The process that holds this root's maintenance lock, and the operation it recorded, for a refused
+ *  contender to name. Undefined when no lock is held or it cannot be read. */
+export function readMaintenanceLockHolder(root: string): { readonly owner: ProcessOwner; readonly operation?: string } | undefined {
+  try {
+    const { owner, operation } = readLockFile(maintenancePaths(root).lock);
+    return { owner, ...(operation ? { operation } : {}) };
+  } catch { return undefined; }
 }
 
 function removeReaper(path: string, token: string): void {
@@ -919,6 +945,17 @@ function removeReaper(path: string, token: string): void {
   }
 }
 
+/** Whether a live process holds `root`'s maintenance lock, read without taking it: the holder's
+ *  status as {@link acquireMaintenanceLock} would judge it, or `undefined` when no lock is held. */
+export function maintenanceLockHolder(root: string): OwnerStatus | undefined {
+  try {
+    return localProcessOwnerStatus(readLockFile(maintenancePaths(root).lock).owner);
+  } catch (error) {
+    if (errno(error) === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 export function acquireMaintenanceLock(
   root: string,
   options: AcquireMaintenanceLockOptions = {},
@@ -928,7 +965,7 @@ export function acquireMaintenanceLock(
   const owner = options.owner ?? defaultOwner();
   parseOwner(owner, "requested lock");
   const token = randomUUID();
-  const body = `${JSON.stringify({ token, owner }, null, 2)}\n`;
+  const body = `${JSON.stringify({ token, owner, ...(options.operation ? { operation: options.operation } : {}) }, null, 2)}\n`;
 
   try {
     writePrivateExclusive(paths.lock, body);
@@ -973,6 +1010,7 @@ export function acquireMaintenanceLock(
     throw error;
   }
 
+  let takenOver: ProcessOwner | undefined;
   try {
     let existing: { token: string; owner: ProcessOwner } | undefined;
     try {
@@ -1000,6 +1038,7 @@ export function acquireMaintenanceLock(
         });
       unlinkSync(paths.lock);
       fsyncDirectory(paths.maintenanceDir);
+      takenOver = existing.owner;
     }
   } finally {
     removeReaper(paths.reaper, reaperToken);
@@ -1016,6 +1055,12 @@ export function acquireMaintenanceLock(
       });
     throw error;
   }
+  // A lock is taken over only from an owner proven dead, and the run that takes it says so.
+  if (takenOver) recordOperationWarning({
+    code: "MAINTENANCE_LOCK_TAKEN_OVER",
+    target: { root: paths.root, path: paths.lock, owner: { pid: takenOver.pid, host: takenOver.host, startedAt: takenOver.startedAt } },
+    message: `took over the maintenance lock in ${paths.root} that process ${takenOver.pid} (started ${takenOver.startedAt}) left; that process is no longer running, so the command it ran there ended without releasing it`,
+  });
   return { root: paths.root, path: paths.lock, token, owner };
 }
 
@@ -1833,7 +1878,8 @@ function validateRestoreContext(
   const restore = record.restore;
   if (!restore || typeof restore.attemptId !== "string" || !ATTEMPT_ID.test(restore.attemptId) ||
       !["same-path", "alternate", "disaster"].includes(restore.method) ||
-      typeof restore.targetPath !== "string" || !isAbsolute(restore.targetPath))
+      typeof restore.targetPath !== "string" || !isAbsolute(restore.targetPath) ||
+      (restore.selection !== undefined && !["full", "registry"].includes(restore.selection)))
     maintenanceError("journal-corrupt", "restore context is invalid", { paths: [path] });
   if (restore.target && (!validIdentity(restore.target) || restore.target.path !== restore.targetPath))
     maintenanceError("journal-corrupt", "restore target identity is invalid", { paths: [path] });
@@ -3237,10 +3283,10 @@ export function consumeRetiredMaintenance(lock: MaintenanceLock): OrdinaryResume
   return record;
 }
 
-function restoreBase(ready: MaintenanceReadyRecord, attemptId: string, method: RestoreContext["method"], targetPath: string): RestoreContext {
+function restoreBase(ready: MaintenanceReadyRecord, attemptId: string, method: RestoreContext["method"], targetPath: string, selection: RestoreSelection | undefined): RestoreContext {
   if (!ATTEMPT_ID.test(attemptId))
     maintenanceError("invalid-transition", "restore attempt id must be a safe token", { root: ready.source.path, attemptId });
-  return { attemptId, method, targetPath };
+  return { attemptId, method, targetPath, ...(selection ? { selection } : {}) };
 }
 
 export interface RestoreClaimInput {
@@ -3326,7 +3372,7 @@ export function recordRestoreAttemptResources(
 
 export function prepareSamePathRestore(
   lock: MaintenanceLock,
-  input: { readonly attemptId: string; readonly targetPath: string; readonly fallbackPath: string; readonly claim: RestoreClaimInput },
+  input: { readonly attemptId: string; readonly targetPath: string; readonly fallbackPath: string; readonly claim: RestoreClaimInput; readonly selection?: RestoreSelection },
 ): RestoreReadyRecord {
   const ready = requireReady(lock);
   const targetPath = resolve(input.targetPath);
@@ -3346,7 +3392,7 @@ export function prepareSamePathRestore(
     });
   const { claim, ownedPaths } = newRestoreClaim(input.claim);
   const restore = {
-    ...restoreBase(ready, input.attemptId, "same-path", targetPath), fallbackPath,
+    ...restoreBase(ready, input.attemptId, "same-path", targetPath, input.selection), fallbackPath,
     ...(ownedPaths ? { ownedPaths } : {}),
   };
   return writeJournal(lock, ready, { ...readyFrom(ready), state: "restore-ready", phase: "move-pending", restore, claim }) as RestoreReadyRecord;
@@ -3398,7 +3444,7 @@ export function moveSamePathRestoreSource(lock: MaintenanceLock): RestoreReadyRe
 
 export function prepareAlternateRestore(
   lock: MaintenanceLock,
-  input: { readonly attemptId: string; readonly targetPath: string; readonly claim: RestoreClaimInput },
+  input: { readonly attemptId: string; readonly targetPath: string; readonly claim: RestoreClaimInput; readonly selection?: RestoreSelection },
 ): RestoreReadyRecord {
   const ready = requireReady(lock);
   const targetPath = canonicalCandidatePath(input.targetPath);
@@ -3414,7 +3460,7 @@ export function prepareAlternateRestore(
     });
   const { claim, ownedPaths } = newRestoreClaim(input.claim);
   const restore = {
-    ...restoreBase(ready, input.attemptId, "alternate", targetPath),
+    ...restoreBase(ready, input.attemptId, "alternate", targetPath, input.selection),
     previousSource: { kind: "retained", identity: ready.source } as PreviousSource,
     ...(ownedPaths ? { ownedPaths } : {}),
   };
@@ -3423,7 +3469,7 @@ export function prepareAlternateRestore(
 
 export function prepareMissingSourceRestore(
   lock: MaintenanceLock,
-  input: { readonly attemptId: string; readonly targetPath: string; readonly claim: RestoreClaimInput },
+  input: { readonly attemptId: string; readonly targetPath: string; readonly claim: RestoreClaimInput; readonly selection?: RestoreSelection },
 ): RestoreReadyRecord {
   assertLock(lock);
   const record = currentJournal(lock);
@@ -3441,7 +3487,7 @@ export function prepareMissingSourceRestore(
     });
   const { claim, ownedPaths } = newRestoreClaim(input.claim);
   const restore = {
-    ...restoreBase(record, input.attemptId, "disaster", targetPath),
+    ...restoreBase(record, input.attemptId, "disaster", targetPath, input.selection),
     ...(ownedPaths ? { ownedPaths } : {}),
   };
   return writeJournal(lock, record, { ...readyFrom(record), state: "restore-ready", phase: "disaster-source-missing", restore, claim }) as RestoreReadyRecord;
@@ -4040,7 +4086,62 @@ export function rollbackRestore(lock: MaintenanceLock, options: RollbackRestoreO
   return writeJournal(lock, record, readyFrom(record)) as MaintenanceReadyRecord;
 }
 
-export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string): RestoreActiveRecord {
+type LeftOutRecord = { readonly space: string; readonly restore: Pick<RestoreContext, "selection">; readonly launch?: { readonly [key: string]: JsonValue } };
+
+/** Whether a restore's launch records that the cut it replaced was preserved after its artifact was
+ *  made, so the store it set aside holds history newer than the artifact. */
+export function restoreReplacedNewerCut(record: LeftOutRecord): boolean {
+  return record.launch?.previousCutNewer === true;
+}
+
+/** What a restore left only in the store it set aside. A registry restore left out every other
+ *  stream, and a full restore whose launch names no workflow journal, of a user-mode artifact or one
+ *  made before full backups held runs, left out the workflow runs. A full restore that replaced a
+ *  newer cut ({@link restoreReplacedNewerCut}) also left out what was written after its artifact.
+ *  Undefined when it left out nothing. */
+export function restoreLeftOut(record: LeftOutRecord): "chat and DM history and workflow runs" | "workflow runs" | "newer chat and DM history and workflow runs" | "workflow runs and newer chat and DM history" | undefined {
+  if (record.restore.selection === "registry") return "chat and DM history and workflow runs";
+  const restored = record.launch?.restoredStreams;
+  const runs = Array.isArray(restored) && restored.includes(wfjStreamName(record.space));
+  if (restoreReplacedNewerCut(record)) return runs ? "newer chat and DM history and workflow runs" : "workflow runs and newer chat and DM history";
+  return runs ? undefined : "workflow runs";
+}
+
+/** A run a restore over a newer cut rolled back: its journal in the store the restore set aside goes
+ *  further than the restored one. `reopened` names each step settled there that is open again, and
+ *  `missing` marks a run that started after the artifact, so the restored store does not hold it. */
+export interface RolledBackRun {
+  readonly run: string;
+  readonly reopened: readonly string[];
+  readonly missing?: true;
+}
+
+/** The runs a restore's launch records it rolled back, and how many more it counted than it listed.
+ *  Empty when it recorded none. */
+export function restoreRolledBackRuns(record: LeftOutRecord): { readonly runs: readonly RolledBackRun[]; readonly more: number } {
+  const recorded = record.launch?.rolledBackRuns, more = record.launch?.rolledBackRunsMore;
+  const runs = Array.isArray(recorded) ? recorded.flatMap((row): RolledBackRun[] => {
+    const value = row as { run?: unknown; reopened?: unknown; missing?: unknown };
+    if (!value || typeof value !== "object" || typeof value.run !== "string" || !Array.isArray(value.reopened) || !value.reopened.every((key) => typeof key === "string")) return [];
+    return [{ run: value.run, reopened: value.reopened as string[], ...(value.missing === true ? { missing: true as const } : {}) }];
+  }) : [];
+  return { runs, more: typeof more === "number" && Number.isSafeInteger(more) && more > 0 ? more : 0 };
+}
+
+/** Why a restore left something only in the store it set aside ({@link restoreLeftOut}), as a clause
+ *  about the restore. Undefined when it left out nothing. */
+export function restoreLeftOutReason(record: LeftOutRecord): string | undefined {
+  const leftOut = restoreLeftOut(record);
+  if (!leftOut) return undefined;
+  if (record.restore.selection === "registry") return "this restore was registry-only";
+  const why = [...(restoreReplacedNewerCut(record) ? ["was made before the state it replaced was preserved"] : []), ...(leftOut.startsWith("workflow runs") ? ["held no workflow runs"] : [])];
+  return `this restore's artifact ${why.join(" and ")}`;
+}
+
+/** Delete the old store a healthy active restore set aside, then retire its journal. When the
+ *  restore left something out ({@link restoreLeftOut}), that store holds its only copy and is
+ *  deleted only with `discardHistory`. */
+export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string, options: { readonly discardHistory?: boolean } = {}): RestoreActiveRecord {
   let record = currentJournal(lock);
   if (record.state !== "active" || record.restore.attemptId !== attemptId)
     maintenanceError("cleanup-forbidden", "old-source cleanup requires the matching healthy active restore", {
@@ -4064,6 +4165,13 @@ export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string)
       recourse: [{ action: "repair", description: "Preserve both trees and repair the overlapping restore journal.", paths: [previous.identity.path, record.restore.target.path] }],
     });
   if (record.restore.cleanup?.status === "complete") return retireCleanedRestore(lock, record);
+  // A cleanup already under way had this consent when it started.
+  const leftOut = restoreLeftOut(record);
+  if (!record.restore.cleanup && leftOut && !options.discardHistory)
+    maintenanceError("cleanup-forbidden", `the restore's old source holds the only copy of the ${leftOut} it left out`, {
+      root: lock.root, attemptId, paths: [previous.identity.path],
+      recourse: [{ action: "cleanup", description: "Keep the old source, or repeat the cleanup with explicit consent to discard that history.", paths: [previous.identity.path] }],
+    });
   if (!record.restore.cleanup)
     record = startCleanup(lock, record, "previous-source", previous.identity) as RestoreActiveRecord;
   if (record.restore.cleanup?.kind !== "previous-source")

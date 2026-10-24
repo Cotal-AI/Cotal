@@ -1,5 +1,85 @@
 # @cotal-ai/runtime
 
+## 0.100.2
+
+### Patch Changes
+
+- Updated dependencies [8d81c12]
+- Updated dependencies [bb4145f]
+  - @cotal-ai/core@0.100.2
+  - @cotal-ai/workspace@0.100.2
+  - @cotal-ai/lang@0.100.2
+
+## 0.100.1
+
+### Patch Changes
+
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [86b2cd5]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/lang@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
+## 0.100.0
+
+### Patch Changes
+
+- 8360fbf: With the space's manager stopped, `cotal run` and its hosted verbs and `cotal models` refuse at once, as `cotal ps` does: `TARGET_UNAVAILABLE` (exit 2) with the Mesh header, the registry's own answer as the native detail, and bare `cotal up` as the next step. They used to wait about 10 seconds for a manager answer that could not come and then print a refusal about the `ep.v1` rail with no code or next step. An unpinned operator call reads the service registry first and refuses only when it lists no live manager; an unreadable registry, a pinned call and a user's manager view go to the manager as before. Core marks the registry's empty answer with a new `ai.cotal.ep.no-live-instances` detail, so a caller can tell it from an unreadable registry.
+- 72272d6: `cotal run check` no longer tells you to pass `--discard-approvals` when an edit drops an answered checkpoint, an override that `run check` refuses because it decides what a migration commit does. The L5004 reason now says to keep the checkpoint in the edited program, or to discard the decision in a migration commit under the `--discard-approvals` override.
+- 4a8f6b6: A hosted `cotal run` verb the manager refuses now reports the outcome and code as other commands do, with `--json` as one refusal envelope. `run show` of a run the manager holds no record of is `TARGET_NOT_FOUND`, exit 2, and names `cotal run ps`. It used to print `run status: …` on stderr, write nothing on stdout and exit 1.
+- 183fa2a: A workflow program file that cannot be read is now refused with `TARGET_NOT_FOUND`, exit 2, by `cotal run start`, `run start --local`, `run resume --local --file` and `run check`, as `run validate`, `plan` and `simulate` already refused it. `run start` and `resume` reported the raw `ENOENT` as an unknown outcome with exit 3, and `run check` printed it as a bare error with exit 1. The `--json` envelope now names the file as its target.
+- 19f64b8: The `cotal run answer` and `cotal run amend` receipts now name the run in their Next line and their JSON target. They printed `cotal r show <run-id>` although the command had named the run.
+- 2f8b98b: `cotal run show` and `run journal` list a pause under `Needs an answer` only while its last journal row is pending, and offer `answer` as a next step only when one is open. A checkpoint that was answered or expired kept its earlier pending rows in the journal, so completed and failed runs still listed it as needing an answer. A pause settled with an accepted answer now prints that answer's value, answerer, artifact when present, time and answer id, then one `amended` line per later amendment, as the docs describe; before, only `--json` carried them.
+- 6471d27: `cotal run show` and `cotal run journal` now say why a step failed. A failed or refused step's journal row carries its recorded `errorMessage` beside `errorCode` in `--json`, and the text view lists each such step with its outcome and message under `Step errors`, escaping control characters. Before, both views printed only `failed (L4000)`, and the reason, such as a hosted run that is not admitted to read a channel, was only in the manager's log. The manager's `run-status` reply schema admits the new field.
+- c807eeb: `cotal run simulate` refuses a results script whose scripted checkpoint result is not one `checkpoint()` can return, with `SCHEMA_INVALID` (exit 1) naming the checkpoint and the problem. A status other than `resolved` or `expired`, a missing status, a non-object entry, an unknown field or a scripted `at` used to simulate as a resolved answer and report `ok`, and a scripted `at` was dropped without a word.
+- 41e50de: `cotal run validate`, `run plan` and `run simulate` list every problem in a program that does not validate: its code, title, position, cause and fix, as a hosted `run start` refusal lists them. They used to print only `the workflow is not valid cotal-lang` with no problem at all, and `--json` carried only each problem's code and span. The JSON envelope now carries the full problems under `result.problems`, beside the unchanged `SCHEMA_INVALID` refusal.
+- a80904f: `cotal run validate`, `plan` and `simulate` now say what each validator warning is: its code, title, position, cause and fix, on stderr and in the `--json` envelope's `warnings`, and `validate --json` lists each one under `result.warnings` with the same fields. Before, a warning printed only "The language validator reported a warning at this source position.", so a `fanOut` over a literal list with no `key` validated with no visible reason and then failed its run with L3021.
+- e091aa8: A workflow `wait` given a value that is not an event, such as `wait("never-sent")`, now fails its step with a message that names the four event constructors and the value it was given. Before, the hosted and local runtime failed it with the host's own `Cannot read properties of undefined (reading 'split')`.
+- Updated dependencies [7e62dcf]
+- Updated dependencies [0aa2ca7]
+- Updated dependencies [a78af23]
+- Updated dependencies [9eed6bc]
+- Updated dependencies [f5424e1]
+- Updated dependencies [3ec07a5]
+- Updated dependencies [a4e37f4]
+- Updated dependencies [72c4595]
+- Updated dependencies [869d26f]
+- Updated dependencies [2c21df1]
+- Updated dependencies [ba5a685]
+- Updated dependencies [c8550cc]
+- Updated dependencies [ac5a105]
+- Updated dependencies [d235fb0]
+- Updated dependencies [0e729b5]
+- Updated dependencies [28f3ca0]
+- Updated dependencies [73cd25b]
+- Updated dependencies [9f69a20]
+- Updated dependencies [0934f70]
+- Updated dependencies [cdceff6]
+- Updated dependencies [773e6d3]
+- Updated dependencies [42d9ea1]
+- Updated dependencies [8360fbf]
+- Updated dependencies [f0aebea]
+- Updated dependencies [047b289]
+- Updated dependencies [152e236]
+- Updated dependencies [afb587c]
+- Updated dependencies [ca4ce70]
+- Updated dependencies [b9ddce8]
+- Updated dependencies [b24190d]
+- Updated dependencies [6471d27]
+- Updated dependencies [af26abf]
+- Updated dependencies [b079d7d]
+- Updated dependencies [85213b4]
+- Updated dependencies [4f58a3c]
+- Updated dependencies [0caaa99]
+- Updated dependencies [d29311b]
+- Updated dependencies [28a9e11]
+- Updated dependencies [9234229]
+  - @cotal-ai/workspace@0.100.0
+  - @cotal-ai/core@0.100.0
+  - @cotal-ai/lang@0.100.0
+
 ## 0.99.3
 
 ### Patch Changes

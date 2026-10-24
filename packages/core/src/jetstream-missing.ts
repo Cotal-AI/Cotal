@@ -13,6 +13,11 @@ export function isConsumerNotFound(e: unknown): boolean {
   return isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound);
 }
 
+/** A missing stream, as a read of a space whose streams were removed finds it. */
+export function isStreamNotFound(e: unknown): boolean {
+  return isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound);
+}
+
 /** Measured on nats-server 2.15: a create whose config differs from the consumer already under that
  *  name is a `JetStreamApiError` with `code: 10148`, and the client gives it no class of its own. A
  *  create whose config equals it returns that consumer instead. */

@@ -31,6 +31,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { writePrivateRecord } from "./secret-fs.js";
+import { utf16Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 
 export interface AgentDef {
@@ -143,8 +144,11 @@ export function loadAgentFile(path: string): AgentDef {
 }
 
 /** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
- *  BOM and CRLF line endings, as Windows editors and git's `core.autocrlf` write them, read as LF. */
+ *  BOM and CRLF line endings, as Windows editors and git's `core.autocrlf` write them, read as LF. A
+ *  file saved as UTF-16 is refused by its encoding (see {@link utf16Problem}). */
 export function parseAgentFileSource(src: string, path: string): AgentDef {
+  const encoding = utf16Problem(src);
+  if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
   const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
   if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
   const fm = parseFrontmatter(m[1], path);
@@ -325,7 +329,8 @@ export function saveAgentFile(path: string, def: AgentDef): void {
 /** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */
 export type WirePersonaArgs = {
   name: string;
-  owner: string;
+  /** The principal a fresh file records as its owner; absent, the file is operator-owned. */
+  owner?: string;
   prompt: string;
   model?: string;
   role?: string;

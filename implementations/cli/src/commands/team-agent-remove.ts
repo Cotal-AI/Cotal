@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import * as prompts from "../lib/prompts.js";
 import { DEV_OWNER, contractDigest } from "@cotal-ai/core";
-import { acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, oneLine, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, oneLine, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
 import { askManager, managerFailure, resolveControlTarget } from "../lib/control.js";
 import { listAdditiveTeamAttempts, type AdditiveAgentReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { writeAgentRemovalAttempt, writeAgentRemovalReceipt, writeAgentRemovalStep, type AgentRemovalAttempt, type AgentRemovalStep, type AgentRetirementObservation } from "../lib/team-agent-removal.js";
@@ -207,9 +207,9 @@ async function reconcileAgentTeam(input: { root: string; space: string; deployme
     { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "uid", label: "Original lifecycle" }, { key: "state", label: "Observation" }], rows: agentSettlementRows(data.agents) },
     { kind: "lines", lines: [AGENT_RECONCILE_NOTE] },
   ] }] });
-  if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "The original manager's slots were read in order, not atomically. Nothing was recorded or stopped." } }, view); return; }
+  if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...view(data).sections, { blocks: [{ kind: "lines", lines: ["The original manager's slots were read in order, not atomically. Nothing was recorded or stopped."] }] }] })); return; }
   if (!values.yes) {
-    if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted reconciliation needs --yes after reviewing which observations it records", { target });
+    if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
     const answer = await prompts.confirm({ message: `Record ${preview.recordable} observed retirement(s) for this unsettled removal? No stop is sent.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "agent-team-removal-reconcile", recorded: 0 }, noOp: true }, () => ({ sections: [{ title: "Nothing recorded", blocks: [{ kind: "lines", lines: ["The unsettled intent is unchanged."] }] }] })); return; }
   }
@@ -259,7 +259,7 @@ export async function removeAgentTeam(deploymentId: string, values: TeamValues):
   const view = (data: typeof preview): Report => ({ sections: [{ title: "Agent team removal impact", blocks: [{ kind: "fields", rows: [["Deployment", deploymentId], ["Manager", manager], ["Original incarnations", String(data.agents.length)], ["Channels", "none"], ["Read consistency", "ordered, not atomic"]] }, { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "id", label: "Identity" }, { key: "uid", label: "Lifecycle" }, { key: "state", label: "Native observation" }], rows: data.agents.map((row) => ({ name: row.name, id: row.id, uid: row.lifecycleUid, state: row.observedState })) }, { kind: "lines", lines: ["Apply rechecks each original incarnation, requests each necessary stop once, and waits for native retirement and cleanup evidence. Missing rows and stop acknowledgements are not completion. No channel, service, broker or successor agent is in scope."] }] }] });
   if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview }, view); return; }
   if (!values.yes) {
-    if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted agent-team removal needs --yes after reviewing its native impact", { target });
+    if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted agent-team removal needs --yes after reviewing its native impact", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
     const answer = await prompts.confirm({ message: `Retire ${receipt.createdAgents.length} recorded agent incarnation(s) from ${oneLine(space)}? No channels or services will be removed.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "agent-team-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Team kept", blocks: [{ kind: "lines", lines: ["No removal intent or stop was submitted."] }] }] })); return; }
   }

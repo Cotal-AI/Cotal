@@ -3,16 +3,18 @@
  * sandbox per case: one envelope whose result the report is drawn from, the agreed section order with
  * the hints last and no roster, only the selected registration checked unless `--all` asks for each,
  * a part it cannot read named on its row and reported partial (exit 4) rather than complete, and the
- * usage refusals. Broker-free: every registration points at a closed port. The live rows are in
+ * usage refusals, and the nats-server it would run named, with one on PATH below the broker floor
+ * refused by `up` before any broker starts. Broker-free: every registration points at a closed port. The live rows are in
  * `smoke:delivery-responder-visibility`, `smoke:component-health`, `smoke:ps-user-mode` and
  * `smoke:up-tls-routes`.
  *
  * Run: pnpm smoke:status-report
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { acquireMaintenanceLock, beginMaintenanceCut, findMesh, recordMesh, releaseMaintenanceLock, renderReport, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
@@ -38,11 +40,12 @@ type Envelope = {
   command: string;
   result: {
     kind: string;
-    machine: { nats: string };
+    machine: { nats: string; natsServer: { path: string; version: string | null } | null; natsProblem: string | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
     maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
+    store?: { state: string; at?: string; cause?: string; path?: string | null };
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
@@ -113,7 +116,11 @@ if (!brokerDisplayOnly) {
   );
   check("the report names no roster", !/roster/i.test(plain.stdout) && !/roster/i.test(verbose.stdout), plain.stdout);
   // The NATS row is in the verbose Machine section; the default view says Broker executable.
-  check("the NATS row says where nats-server comes from in words", /^ {2}NATS: +(nats-server on PATH|bundled nats-server|missing)$/m.test(verbose.stdout) && ["path", "bundled", "missing"].includes(env?.result?.machine?.nats ?? ""), { nats: env?.result?.machine?.nats, out: verbose.stdout.slice(0, 400) });
+  const machine = env?.result?.machine;
+  const natsRow = verbose.stdout.split("\n").find((line) => /^ {2}NATS: /.test(line))?.replace(/^ {2}NATS: +/, "");
+  const version = machine?.natsServer?.version ? `nats-server ${machine.natsServer.version}` : "nats-server, version not reported";
+  const expected = machine?.nats === "missing" ? "missing" : machine?.natsProblem ?? (machine?.nats === "path" ? `${version} on PATH at ${machine.natsServer?.path}` : `bundled ${version} at ${machine?.natsServer?.path}`);
+  check("the NATS row names the nats-server it would run, where it came from and its version", natsRow === expected && ["path", "bundled", "missing"].includes(machine?.nats ?? ""), { machine, natsRow });
   check("each hint in the result is printed under Next", (env?.result?.hints ?? []).every((hint) => plain.stdout.split("\nNext\n")[1]?.includes(ascii(hint))), { hints: env?.result?.hints, out: plain.stdout });
   check("no report line ends in padding", [plain.stdout, verbose.stdout].every((out) => out.split("\n").every((line) => !line.endsWith(" "))), plain.stdout);
 }
@@ -164,6 +171,33 @@ if (!brokerDisplayOnly) {
   const restoring = { ...json.envelope!.result!, maintenance: { root: home, space: "held", state: "restore-ready", attemptId: attempt, next: restoreNextStep("restore-ready", attempt) } };
   const report = renderReport(statusView(restoring as unknown as Parameters<typeof statusView>[0]), "plain");
   check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --yes`), report);
+}
+
+// ── a launch summary recorded at a folder this one was moved from is listed, not unreadable ──────
+{
+  const { home, run } = sandbox();
+  const server = ["--server", `nats://127.0.0.1:${await freePort()}`];
+  const before = run(["status", ...server, "--json"]);
+  const summaries = join(home, ".cotal", "team-summaries");
+  mkdirSync(summaries, { mode: 0o700 });
+  const moved = "0123456789abcdef", recordedRoot = `${home}-moved-from`;
+  writeFileSync(join(summaries, `${moved}.json`), JSON.stringify({ schemaVersion: 1, kind: "fresh-team-summary", deploymentId: moved, space: "held", root: recordedRoot, server: server[1], authMode: "auth", manifestPath: join(recordedRoot, "cotal.yaml"), requestedAgents: [], declaredChannels: ["general"], recordedAt: new Date().toISOString(), managerRequested: true, controlPlaneReturned: true, authServiceReturned: true, deliveryResponderBound: true, agentReadiness: "not-checked" }), { mode: 0o600 });
+  const json = run(["status", ...server, "--json"]);
+  const attempts = (json.envelope?.result as { bootAttempts?: { unreadable: string[]; elsewhere: { deploymentId: string; root: string }[] } } | null)?.bootAttempts;
+  check("a summary naming the folder it was moved from is not an unreadable record", json.status === before.status && !json.envelope?.warnings.some((w) => w.code === "FRESH_BOOT_RECORD_UNREADABLE") && attempts?.unreadable.length === 0, shown(json));
+  check("status --json lists it with the root it was recorded at", attempts?.elsewhere.length === 1 && attempts.elsewhere[0]!.deploymentId === moved && attempts.elsewhere[0]!.root === recordedRoot, attempts);
+  const plain = run(["status", ...server, "--plain"]);
+  check("the report says where it was recorded", words(plain.stdout).includes(`Launch summary ${moved} was recorded at ${recordedRoot}.`) && !plain.stdout.includes("Unreadable record"), plain.stdout);
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, ".cotal-home");
+  try { recordMesh({ space: "held", server: server[1]!, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() }); }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+  const show = run(["team", "show", moved, "--space", "held", "--json"]);
+  check("team show refuses it with CONFLICT naming the recorded root", show.status === 2 && show.envelope?.error?.code === "CONFLICT" && show.envelope.error.message.includes(`recorded at ${recordedRoot}`), shown(show));
+  // Control: a summary that does not parse is still unreadable.
+  writeFileSync(join(summaries, "fedcba9876543210.json"), "{", { mode: 0o600 });
+  const broken = run(["status", ...server, "--json"]);
+  check("control: an unparsable summary is still reported unreadable", broken.envelope?.warnings.some((w) => w.code === "FRESH_BOOT_RECORD_UNREADABLE") === true, shown(broken));
 }
 
 // ── a part it cannot read is named on its row, and the read is partial ───────────────────────────
@@ -251,6 +285,27 @@ if (!brokerDisplayOnly) {
   check("the report names the record under the recorded meshes", plain.status === 4 && /unreadable: .*space\.dead\.json does not parse/.test(plain.stdout.split("\nRecorded Meshes\n")[1]?.split("\nSelected Mesh\n")[0] ?? ""), shown(plain));
 }
 
+// ── a folder this account cannot read is the one gap, named with its chmod ───────────────────────
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const { home } = sandbox();
+  // No `.cotal` above it, so the folder is its own root, as a fresh project folder is.
+  const outside = mkdtempSync(join(tmpdir(), "cotal-status-unreadable-"));
+  roots.push(outside);
+  const folder = join(outside, "z");
+  mkdirSync(folder, { mode: 0o700 });
+  const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  // The shell enters the folder before its mode drops, as it would for an operator already in it.
+  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 000 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
+  chmodSync(folder, 0o700);
+  const envelope = (r.stdout ?? "").startsWith("{") ? (JSON.parse(r.stdout) as Envelope) : undefined;
+  const shownR = { status: r.status, stdout: (r.stdout ?? "").slice(0, 900), stderr: (r.stderr ?? "").slice(0, 600) };
+  check("status in a folder this account cannot read is partial, exit 4, with a warning naming the folder",
+    r.status === 4 && envelope?.outcome === "partial" && envelope.warnings.some((w) => w.code === "FOLDER_UNREADABLE" && w.message === `this folder ${folder} cannot be read by this account (EACCES), so nothing in it was read`), shownR);
+  check("…and no other warning about a part of that folder, such as an auth.json it does not hold",
+    envelope?.warnings.every((w) => !/^(AUTH_UNREADABLE|PERSONAS_UNREADABLE|FRESH_BOOT_RECORD_UNAVAILABLE|ADDITIVE_ATTEMPT_UNAVAILABLE|MAINTENANCE_JOURNAL_UNREADABLE)$/.test(w.code)) === true && !(envelope?.result?.hints ?? []).some((h) => h.includes("auth.json")), envelope?.warnings);
+  check("…and its Next is the chmod that makes it readable", (envelope?.result?.hints ?? []).includes(`make it readable by you, for example with chmod u+rx ${folder}`), envelope?.result?.hints);
+}
+
 // ── usage ────────────────────────────────────────────────────────────────────────────────────────
 {
   const { run } = sandbox();
@@ -262,6 +317,56 @@ if (!brokerDisplayOnly) {
   check("status --components --plain is refused before any probe, exit 1", plainOnly.status === 1 && plainOnly.stdout === "" && /--components checks the selected mesh/.test(plainOnly.stderr), shown(plainOnly));
   const all = run(["status", "--components", "--all"]);
   check("status --components --all is refused before any probe, exit 1", all.status === 1 && all.stdout === "" && /--components checks the selected mesh/.test(all.stderr), shown(all));
+}
+
+// ── a store write failure the running local broker logged is shown with its cause and file ───────
+{
+  const { home, run } = sandbox();
+  const server = ["--server", `nats://127.0.0.1:${await freePort()}`];
+  const none = run(["status", ...server, "--json"]);
+  check("control: with no broker recorded here, the store is not checked", none.envelope?.result?.store?.state === "not-checked", shown(none));
+  // A legacy root's broker: its pidfile names a live process, and its log holds an earlier broker's
+  // error, one logged before this broker's start under the same process ID, then this broker's own.
+  const pid = process.pid, stamp = "2026/10/23 19:38:44.773287";
+  writeFileSync(join(home, ".cotal", "nats.pid"), `${pid}\n`, { mode: 0o600 });
+  const log = join(home, ".cotal", "nats.log");
+  writeFileSync(log, [
+    `[1] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: write /old/msgs/1.blk: file too large`,
+    `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: write /reused/msgs/1.blk: file too large`,
+    `[${pid}] ${stamp} [INF] Starting nats-server`,
+    "",
+  ].join("\n"), { mode: 0o600 });
+  const started = run(["status", ...server, "--json"]);
+  check("an error from another broker, or from before this broker started, is not reported", started.envelope?.result?.store?.state === "none-recorded", shown(started));
+  appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: write /store/msgs/1.blk: no space left on device\n`);
+  const failed = run(["status", ...server, "--json"]);
+  const store = failed.envelope?.result?.store;
+  check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk", shown(failed));
+  const plain = run(["status", ...server, "--plain"]);
+  check("the report shows a Store row and leads Next with down", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +Free space on the disk that holds \/store\/msgs\/1\.blk first/.test(plain.stdout), plain.stdout);
+}
+
+// ── a nats-server on PATH below the broker floor ─────────────────────────────────────────────────
+if (process.platform !== "win32") {
+  const { home, run } = sandbox();
+  const bin = join(home, "old-bin"), old = join(bin, "nats-server"), project = join(home, "project");
+  mkdirSync(bin);
+  mkdirSync(project);
+  writeFileSync(old, '#!/bin/sh\n[ "$1" = --version ] && { echo "nats-server: v2.2.0"; exit 0; }\nexit 1\n', { mode: 0o755 });
+  const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  const named = /the nats-server on PATH at \S+\/old-bin\/nats-server reports version 2\.2\.0, and this stack needs nats-server 2\.12 or newer/;
+  const json = run(["status", "--space", "nosuch", "--json"], onPath);
+  const machine = json.envelope?.result?.machine;
+  check("status names the old nats-server on PATH, its version and why up refuses it", json.status === 0 && machine?.nats === "path" && machine.natsServer?.path === old && machine.natsServer.version === "2.2.0" && named.test(machine.natsProblem ?? ""), machine);
+  const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
+  check("the Broker executable row says so", new RegExp(`^ {2}Broker executable: +${named.source}$`, "m").test(plain.stdout), shown(plain));
+  const port = await freePort();
+  const created = run(["space", "create", "gate", "--root", project, "--json"], onPath);
+  check("space create prepares the project", created.status === 0, shown(created));
+  const up = spawnSync(process.execPath, [BIN, "up", "--space", "gate", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: project, env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...onPath }, encoding: "utf8", timeout: 120_000 });
+  const refusal = JSON.parse(up.stdout || "{}") as { outcome?: string; error?: { code?: string; message?: string; remedy?: string } };
+  check("up refuses it DEPENDENCY_UNAVAILABLE, exit 2, naming its path and version", up.status === 2 && refusal.outcome === "refused" && refusal.error?.code === "DEPENDENCY_UNAVAILABLE" && named.test(refusal.error.message ?? "") && /take it off PATH so cotal uses its bundled nats-server/.test(refusal.error.remedy ?? ""), { status: up.status, error: up.error?.message, stdout: (up.stdout ?? "").slice(0, 900), stderr: (up.stderr ?? "").slice(0, 600) });
+  check("and no broker answers at its address", !(await new Promise<boolean>((done) => { const socket = connect(port, "127.0.0.1"); socket.once("connect", () => { socket.destroy(); done(true); }); socket.once("error", () => done(false)); })), port);
 }
 
 

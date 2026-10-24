@@ -20,9 +20,10 @@
  * error comes back in line order. Unknown types, unknown fields and malformed values refuse with
  * USAGE_INVALID and never reach the session.
  */
-import { assertValidChannel, assertValidRole, isConcreteChannel, MAX_NAME_LENGTH } from "@cotal-ai/core";
+import { assertValidRole, MAX_NAME_LENGTH } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import type { AdmittedChatSession, CloseReport, PublishResult, Result, SessionEvent, SessionMessage } from "./session.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
 
 export const STDIO_SCHEMA_VERSION = 1;
 /** Bound on one request line, in UTF-16 code units. Provisional; set at review. */
@@ -97,15 +98,10 @@ function validId(v: unknown): v is string {
   return typeof v === "string" && v.length > 0 && v.length <= MAX_REQUEST_ID && /^[\x21-\x7e]+$/.test(v);
 }
 
-/** A concrete, policy-valid channel, or the reason it is not. */
-function channelProblem(v: unknown): string | undefined {
-  if (typeof v !== "string") return "must be a string";
-  try {
-    assertValidChannel(v);
-  } catch (e) {
-    return (e as Error).message;
-  }
-  return isConcreteChannel(v) ? undefined : "must be a concrete channel (no * or >)";
+/** A concrete, policy-valid channel, or the refusal for it. A string gets the sentence `cotal send -c`
+ *  gives for the same name. */
+function channelProblem(type: string, v: unknown): string | undefined {
+  return typeof v === "string" ? concreteChannelProblem(v) : `${type}.channel must be a string`;
 }
 
 /** Parse and validate one request line. Never throws and never touches a session. */
@@ -141,14 +137,19 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
     if (max !== undefined && (v.length === 0 || v.length > max)) return usage(id, `${type}.${key} must be 1-${max} characters`);
     return v;
   };
+  // A message body that is empty or only whitespace is refused with the sentence `cotal send` gives.
+  const body = (): string | ParsedLine => {
+    const text = str("text");
+    return typeof text === "string" && !text.trim() ? usage(id, "the message is empty") : text;
+  };
   const isErr = (v: unknown): v is ParsedLine => typeof v === "object" && v !== null && "ok" in v;
   const ok = (request: StdioRequest): ParsedLine => ({ ok: true, request });
   switch (type) {
     case "send": {
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
-      const problem = channelProblem(r.channel);
-      if (problem) return usage(id, `send.channel ${problem}`);
+      const problem = channelProblem(type, r.channel);
+      if (problem) return usage(id, problem);
       const mentions = r.mentions ?? [];
       if (!Array.isArray(mentions) || mentions.some((m) => typeof m !== "string" || m.length === 0 || m.length > MAX_NAME_LENGTH))
         return usage(id, `send.mentions must be an array of names of 1-${MAX_NAME_LENGTH} characters`);
@@ -157,7 +158,7 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
     case "dm": {
       const to = str("to", MAX_DM_TARGET);
       if (isErr(to)) return to;
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
       if (r.replyTo !== undefined) {
         const replyTo = str("replyTo", MAX_MESSAGE_ID);
@@ -174,7 +175,7 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
       } catch (e) {
         return usage(id, (e as Error).message);
       }
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
       return ok({ type, id, role, text });
     }
@@ -192,8 +193,8 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
       return ok({ type, id, mode });
     }
     case "channelMode": {
-      const problem = channelProblem(r.channel);
-      if (problem) return usage(id, `channelMode.channel ${problem}`);
+      const problem = channelProblem(type, r.channel);
+      if (problem) return usage(id, problem);
       const mode = r.mode;
       if (mode !== "normal" && mode !== "quiet" && mode !== "muted") return usage(id, "channelMode.mode must be normal, quiet or muted");
       return ok({ type, id, channel: r.channel as string, mode });
@@ -201,8 +202,8 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
     case "join":
     case "leave":
     case "channelInfo": {
-      const problem = channelProblem(r.channel);
-      if (problem) return usage(id, `${type}.channel ${problem}`);
+      const problem = channelProblem(type, r.channel);
+      if (problem) return usage(id, problem);
       return ok({ type, id, channel: r.channel as string });
     }
     case "inbox": {
@@ -389,11 +390,12 @@ export class StdioParticipant {
     this.queueRefusal(null, error);
   }
 
-  /** stdin closed: finish already accepted requests in order, close the session, then write the end record. */
-  async endOfInput(): Promise<CloseReport | undefined> {
+  /** stdin closed: finish already accepted requests in order, close the session, then write the end
+   *  record. Its reason is the signal that ended input, or `input closed`. */
+  async endOfInput(reason = "input closed"): Promise<CloseReport | undefined> {
     this.closing = true;
     await this.drain();
-    return this.finish("input closed");
+    return this.finish(reason);
   }
 
   /** Wait until every queued record is written, including refusals queued while waiting. */

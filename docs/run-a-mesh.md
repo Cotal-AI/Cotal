@@ -410,7 +410,7 @@ How a spawn resolves:
   [Hermes](connect-hermes.md) · [pi](connect-pi.md).
 - **Model.** `--model` overrides the persona file's `model:` (Claude: `opus` / `sonnet` or
   a full id; OpenCode: `provider/model`). Connectors that expose a catalog report it via
-  `cotal models --agent opencode`: model ids plus available variants; pick one with
+  `cotal models --harness opencode`: model ids plus available variants; pick one with
   `--model provider/model --variant high`.
 - **Tools.** A spawned Claude Code agent gets the cotal tools plus the MCP servers the cotal
   config shares, which first-run `cotal setup` fills with your own; narrow them per spawn with
@@ -463,7 +463,8 @@ personas, and its mode). So a bare `cotal spawn <persona>` from *any* directory 
 running mesh with the right credentials instead of mistaking the cwd for a space:
 
 - `cotal use <name>` sets the default from every directory, including inside another mesh's
-  project. `--space <name>` overrides it for one command.
+  project. There a command warns that it targets the selection and names the `--space` for the
+  folder's own space. `--space <name>` overrides the selection for one command.
 - When one broker has records for several spaces, `cotal up --space <name>` refreshes that named
   space.
 - A refresh rewrites only what that command decided: the server, root and mode, the user-auth
@@ -476,7 +477,7 @@ running mesh with the right credentials instead of mistaking the cwd for a space
   Neither reaches another mesh.
 - With nothing selected, a project with its own `.cotal/` resolves to that project's mesh;
   otherwise one running mesh is used automatically and several are an error.
-- `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry. A
+- `cotal meshes` lists them (`(default)` marks the default); `cotal down` removes the entry. A
   controller stack's space stays prepared at its root, and a selection that names it stays.
 - `cotal space create <name> [--root <dir>]` names a space before it runs. It records the name
   and root apart from the registry and makes `<root>/.cotal/`, and `cotal up` in that root starts
@@ -522,7 +523,9 @@ is a certificate authority for the mesh rather than a client of it: anyone who r
 impersonate any agent, read every retained channel and DM, change ACLs, and keep issuing
 themselves credentials. There is no per-machine revocation; undoing it means rotating the signing
 key and re-minting every credential in the space. Copy it only to machines you would trust with
-the whole mesh. `cotal auth mint` on its own does not substitute here: registering an `auth` mesh needs
+the whole mesh. A machine that should not hold it does not register the space: it uses a credential
+the owner mints with `cotal auth mint` where the space runs, passed with `--creds <file> --server <url>`,
+and the refusals of `space add` say so. `cotal auth mint` on its own does not substitute here: registering an `auth` mesh needs
 signing material that composes, which a minted user credential is not. The
 broker is probed before the record is written, so a bad address or a credential that mesh will not
 accept fails at registration rather than at your first `spawn` (`--force` records it without verifying,
@@ -653,8 +656,9 @@ only partial selection (`backup create ... --only registry`; `up --restore ... -
 registry`). Backup never stops or restarts a mesh implicitly, never opens the original store, and
 does not contain credentials or trust secrets. Backup/restore in every auth mode, open included,
 uses isolated, operation-specific maintenance logins; normal agent credentials cannot enter that
-listener. Full
-restore requires the same space and exact current local trust continuity, recreates conservative
+listener. A full
+backup of a static-auth or open mesh also holds the workflow runs, so a run waiting at a checkpoint
+or a timer is back after a full restore. Full restore requires the same space and exact current local trust continuity, recreates conservative
 consumer checkpoints bound to their snapshot stream sequence state, and resumes retained agents under
 their original principals. The trust commitment includes the cryptographically validated full
 operator/system/data-account root chain as well as static/user authority state. A registry-only

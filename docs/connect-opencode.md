@@ -47,8 +47,8 @@ connector-defined selector, e.g. a reasoning-effort tier). List what the running
 can see:
 
 ```bash
-cotal models --agent opencode            # ids + variants, from the manager
-cotal models --agent opencode --refresh  # refresh the provider cache first
+cotal models --harness opencode            # ids + variants, from the manager
+cotal models --harness opencode --refresh  # refresh the provider cache first
 ```
 
 Pick one at spawn, or set `model:` / `variant:` in the agent file (the flags win over the file):
