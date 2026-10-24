@@ -1173,6 +1173,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     else await start();
     return;
   }
+  // A named space this machine runs from another folder is refused before anything is written here,
+  // and in every presentation, since the launcher below has no structured receipt.
+  if (!values.file && values.space !== undefined) await refuseRunningElsewhere(values.space, meshRoot);
   if (values.json || values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; the additive team deploy route is separate.
@@ -1643,13 +1646,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
       seedPersonaAfterUp(root);
       return;
-    }
-    // The broker answering here is the named space's own, started from another folder.
-    const owner = values.space !== undefined ? findMesh(space) : undefined;
-    if (owner && owner.server === server && owner.root !== root) {
-      let controller = false;
-      try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
-      throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server }, remedy: `use it from here with --space ${space}, or stop it with cotal down${controller ? " --yes" : ""} in ${owner.root}` });
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
     // Reaching here with `--rotate-sys` means something IS answering at the requested address and it
@@ -4292,6 +4288,16 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
   const path = cotalPath("channels.json");
   if (!existsSync(path)) return undefined;
   return readChannelsFile(path, false);
+}
+
+/** Refuse `up --space` of a space this machine started from another folder while its broker answers,
+ *  naming that folder: the stack there is the one to use or stop. */
+async function refuseRunningElsewhere(space: string, root: string): Promise<void> {
+  const owner = findMesh(space);
+  if (!owner || owner.origin === "manual" || owner.origin === "catalog" || !isAbsolute(owner.root) || canonicalRoot(owner.root) === canonicalRoot(root) || !(await isReachable(owner.server))) return;
+  let controller = false;
+  try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
+  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with cotal down${controller ? " --yes" : ""} in ${owner.root}` });
 }
 
 /** The channels files one `up` has read, by path. It reads its seed when it checks the flags, when it

@@ -538,8 +538,9 @@ runs the same space again. A folder whose stack and registrations name more than
 with `CONFLICT` and asks for `--space`. With no
 `--server`, it auto-selects a free port if the default address is taken, and a later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
-stays fail-loud on collision. When the broker at that address is the named space's own, started
-from another folder, `up --space` refuses `CONFLICT`, exit 2, naming that folder. A background boot also brings up the control plane (delivery daemon in auth
+stays fail-loud on collision. When the named space runs from another folder on this machine,
+`up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
+`--plain`, and writes nothing in the folder it ran from. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. A refresh under the flag of a mesh whose manager is live refuses rather
