@@ -51,6 +51,20 @@ const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
 const parser = run(["status", "--bogus"]);
 check("control: a parser usage error has the documented shape", usageShape(parser, /Unknown option '--bogus'/), shown(parser));
 
+// A refusal points the way the command reads its words: a word that starts with "-" goes after
+// --, an option value that starts with "-" is written --name=value, a short option takes its value
+// after a space, and an option typed with a typographic dash is named with hyphens.
+const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
+check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
+const dashValue = run(["history", "--from", "-bob"]);
+check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
+const shortEquals = run(["send", "-c=general", "hello"]);
+check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
+for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
+  const r = run(["status", typed]);
+  check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
+}
+
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
 
@@ -68,6 +82,32 @@ check("help with an unknown subcommand names it and lists the command's subcomma
 
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
+
+// --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
+// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
+}
+const nearHelp = run(["space", "creat", "--help"]);
+check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
+for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+  const r = run([...args]);
+  check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
+}
+
+// A subcommand's help gives its whole usage, name argument included, and only its own options.
+for (const [args, usage, foreign] of [
+  [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
+  [["help", "channel", "show"], "cotal channel show <name> ", /--purge|--desc/],
+  [["help", "persona", "create"], "cotal persona create <name> ", /--yes/],
+  [["help", "history", "clear"], "cotal history clear ", /--grep|--follow/],
+  [["help", "meshes"], "cotal meshes ", undefined],
+  [["help", "personas"], "cotal personas ", undefined],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} prints the usage ${usage.trim()} and no other subcommand's options`, r.status === 0 && r.stdout.includes(`Usage\n  ${usage}`) && !foreign?.test(r.stdout), shown(r));
+}
 
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
 const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>

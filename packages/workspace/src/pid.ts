@@ -21,7 +21,7 @@
 import { spawnSync } from "node:child_process";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync } from "node:fs";
 import { createPrivateRecord, writePrivateRecord } from "@cotal-ai/core";
 import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 
@@ -83,6 +83,52 @@ export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   } catch (e) {
     return livenessFromErrno((e as NodeJS.ErrnoException).code);
   }
+}
+
+/** Whether `pid` is stopped by a signal such as SIGSTOP, read from its `/proc` state. Only Linux
+ *  can answer here; elsewhere this is `false`, and callers keep their unanswered-broker path. */
+export function processStopped(pid: number): boolean {
+  if (process.platform !== "linux") return false;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) === "T";
+  } catch { return false; }
+}
+
+/** The stopped process of this account that holds the listening socket a loopback `server` dials,
+ *  or `undefined`. A stopped broker still takes connections, because the kernel completes them, and
+ *  never greets, so a dial waits out its whole budget. Linux reads `/proc/net/tcp{,6}` and the
+ *  stopped processes' descriptors; elsewhere this is `undefined`. */
+export function stoppedLoopbackListener(server: string): number | undefined {
+  if (process.platform !== "linux") return undefined;
+  let host: string, port: number;
+  try {
+    const url = new URL(server.includes("://") ? server : `nats://${server}`);
+    host = url.hostname.replace(/^\[|\]$/g, "");
+    port = url.port ? Number(url.port) : 4222;
+  } catch { return undefined; }
+  if (!(host === "localhost" || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host))) return undefined;
+  const sockets = new Set<string>();
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text: string;
+    try { text = readFileSync(table, "utf8"); } catch { continue; }
+    for (const line of text.split("\n").slice(1)) {
+      const field = line.trim().split(/\s+/);
+      // `0A` is TCP_LISTEN; the local address ends in the port in hex.
+      if (field[3] === "0A" && parseInt(field[1]?.split(":").pop() ?? "", 16) === port && field[9]) sockets.add(`socket:[${field[9]}]`);
+    }
+  }
+  if (sockets.size === 0) return undefined;
+  for (const entry of readdirSync("/proc")) {
+    const pid = parsePid(entry);
+    if (pid === undefined || !processStopped(pid)) continue;
+    let fds: string[];
+    try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+    for (const fd of fds) {
+      try { if (sockets.has(readlinkSync(`/proc/${pid}/fd/${fd}`))) return pid; } catch { /* the descriptor closed */ }
+    }
+  }
+  return undefined;
 }
 
 // ---- the manager's own record ------------------------------------------------------------------

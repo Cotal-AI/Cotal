@@ -13,6 +13,7 @@ import {
   envelopeLine,
   exitCode,
   failureEnvelope,
+  GLOBAL_FLAGS,
   globalConfigDirProblem,
   globalFlagDeclarationProblems,
   hasMeshTargetFlags,
@@ -316,29 +317,68 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command): v
   printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
 }
 
-/** A usage error, written by {@link usageRefusal} with the command's help when there is one. Exit 1. */
-function usageExit(message: string, cmd?: Command, json = false, plain = false): never {
+/** A usage error, written by {@link usageRefusal} with the command's help when there is one, and
+ *  with `remedy` under the message when the parser can name one. Exit 1. */
+function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
-  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
+  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true);
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
-  usageRefusal(new CommandFailure("refused", "USAGE_INVALID", message), plain, cmd);
+  usageRefusal(new CommandFailure("refused", "USAGE_INVALID", message, remedy === undefined ? undefined : { remedy }), plain, cmd);
   process.exit(1);
 }
 
-/** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. Node's
- *  parse error is trimmed to its first sentence: the verbose "To specify a positional argument
- *  starting with a '-' …" tail is dropped. */
+/** An option the parser would misread without an error: a short option written `-c=value`, which
+ *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
+ *  text, which is read as a positional. */
+function misspelledOption(cmd: Command, rest: readonly string[]): { message: string; remedy: string } | undefined {
+  const names = new Set<string>([...(cmd.flags ?? []).map((flag) => flag.name), ...GLOBAL_FLAGS]);
+  for (const [index, word] of rest.entries()) {
+    if (word === "--") return undefined;
+    const previous = rest[index - 1];
+    if (previous !== undefined && cmd.flags?.some((flag) => flag.type === "string" && (previous === `--${flag.name}` || previous === `-${flag.short}`))) continue;
+    const short = /^-([^-=])=(.*)$/su.exec(word);
+    const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
+    if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
+    const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
+    if (typed && names.has(typed[1]!)) return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: --${typed[1]}` };
+  }
+  return undefined;
+}
+
+/** A parse error as a refusal. Node's message is trimmed to its first sentence, and the hint its tail
+ *  carries is given as the remedy in this CLI's words: a word that starts with `-` goes after `--`,
+ *  and an option value that starts with `-` is written `--name=value`. */
+function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
+  const message = parseErrorMessage(cmd, error);
+  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)
+    return { message, remedy: "to pass a word that starts with \"-\", put -- before it" };
+  const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
+  const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
+  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
+    const at = rest.findIndex((word) => word === `--${flag.name}` || (flag.short !== undefined && word === `-${flag.short}`));
+    const value = at < 0 ? undefined : rest[at + 1];
+    if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${value}` };
+  }
+  return { message };
+}
+
+/** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const json = asksForJson(cmd, rest);
   const plain = rest.includes("--plain");
+  const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest);
+  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
-    if (isArgError(e)) usageExit(parseErrorMessage(cmd, e as Error), cmd, json, plain);
+    if (isArgError(e)) {
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest);
+      usageExit(refusal.message, cmd, json, plain, refusal.remedy);
+    }
     throw e;
   }
   const first = parsed.positionals[0];
@@ -401,6 +441,9 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
   const path: string[] = [];
   for (const word of words) {
     const sub: Subcommand | undefined = findSubcommand(surface, word);
+    // A word where a subcommand belongs that names none refuses as `cotal help` does, so a mistyped
+    // subcommand never gets its group's help. History's own first word may be a channel.
+    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return printHelpPath(cmd, [...path, word]);
     if (!sub || sub.hidden) break;
     path.push(sub.name); surface = sub;
     if (!sub.subcommands?.length) break;

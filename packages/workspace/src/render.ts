@@ -18,7 +18,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
  */
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
-  | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean }
+  | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean; pid?: number }
   | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout"; server: string; hasAuth: boolean };
 
 /** A workspace failure in two parts: what happened, and what to run next when there is something. */
@@ -36,7 +36,7 @@ export function workspaceErrorParts(e: WorkspaceError): WorkspaceErrorParts {
     case "target":
       return targetErrorParts(e.error);
     case "preflight":
-      return preflightFailureParts(e.failure, e.target, e.pruned);
+      return preflightFailureParts(e.failure, e.target, e.pruned, e.pid);
     case "reachable":
       return reachableParts(e.reason, e.server, e.hasAuth);
   }
@@ -110,7 +110,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
 const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broker process is not stopped or overloaded and that the link to it is not too slow";
 
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
-function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean): WorkspaceErrorParts {
+function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   switch (kind) {
     case "unreachable":
@@ -157,6 +157,11 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       return parts(
         `mesh "${t.space}" at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the registry entry was kept`,
         NOT_ANSWERING_REMEDY,
+      );
+    case "broker-stopped":
+      return parts(
+        `mesh "${t.space}" at ${server} is served by process ${pid}, which is stopped, so it accepts the connection and never answers; the registry entry was kept`,
+        `resume it with kill -CONT ${pid}`,
       );
   }
 }

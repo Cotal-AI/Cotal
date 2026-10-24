@@ -139,7 +139,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`help lists alias ${alias} beside ${cmd.name}`, new RegExp(`^\\s+${cmd.name}(, [^ ]+)*, ${alias}(,|\\s)`, "m").test(all.stdout), shown(all));
   const spawnHelp = cotal(["help", "spawn"]);
   local("help spawn writes nothing", spawnHelp);
-  check("command help shows the usage and the aliases", /^Usage\n  spawn /m.test(spawnHelp.stdout) && /^Shorthands\n  cotal sp$/m.test(spawnHelp.stdout), shown(spawnHelp));
+  check("command help shows the usage and the aliases", /^Usage\n  cotal spawn /m.test(spawnHelp.stdout) && /^Shorthands\n  cotal sp$/m.test(spawnHelp.stdout), shown(spawnHelp));
   check("help sp, spawn --help and sp -h print the same help", same(spawnHelp, cotal(["help", "sp"])) && same(spawnHelp, cotal(["spawn", "--help"])) && same(spawnHelp, cotal(["sp", "-h"])));
   const subHelp = cotal(["help", "ext", "remove"]);
   local("help ext remove writes nothing", subHelp);
@@ -153,6 +153,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);
   check("command help does not list a hidden subcommand", !cotal(["help", "ext"]).stdout.includes("__update-add"));
   refused("help of a hidden internal command is a usage error", cotal(["help", "__complete"]), /unknown command: __complete/);
+  // `docs` reads its page names from the bundled docs, so completion offers them offline.
+  const pages = cotal(["__complete", "docs", ""], undefined, noSeed);
+  check("docs completes its page names", pages.status === 0 && ["spec", "lang", "architecture"].every((page) => new RegExp(`^${page}(\\t|$)`, "m").test(pages.stdout)) && !/^--/m.test(pages.stdout), shown(pages));
   // A subcommand alias reaches the command as its canonical word. The seed is skipped by env so the
   // run reaches `ext remove` quickly; it refuses because nothing is installed.
   const removeByAlias = cotal(["x", "rm", "not-installed"], undefined, noSeed);
@@ -445,6 +448,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     ["an alias bomb", `${head}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, ["m.yaml: Excessive alias count indicates a resource exhaustion attack"]],
     ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ['m.yaml:7:16: "ghost" is not declared in agents: (at channels.ops.subscribe)']],
     ["a persona with invalid frontmatter", `${head}agents:\n  sec: agents/sec.md\nchannels:\n  ops:\n    subscribe: [sec]\n`, ["m.yaml: agent file ", "sec.md: invalid YAML frontmatter; Flow sequence in block collection must be sufficiently indented and end with a ] at line 2, column 24 (at agents.sec)"]],
+    ["a missing channels map and the missing persona behind it", `${head}agents:\n  ghost: ./agents/ghost.md\n`, ["2 problems", "m.yaml:1:1: `channels:` is required (at channels)", "m.yaml:6:10: persona file not found: ", "ghost.md (at agents.ghost)"]],
+    ["a missing persona alone", `${head}agents:\n  ghost: ./agents/ghost.md\nchannels:\n  ops:\n    subscribe: [ghost]\n`, ["m.yaml:6:10: persona file not found: ", "ghost.md (at agents.ghost)"]],
+    ["an empty file", "", ["m.yaml:1:1: the manifest is empty; it needs apiVersion, kind, space and channels"]],
+    ["a list where a mapping goes", `${head}channels: [ops]\n`, ["m.yaml:5:11: expected a mapping, not a list (at channels)"]],
+    ["a kind other than Mesh", `${head.replace("kind: Mesh", "kind: Team")}channels: {}\n`, ['m.yaml:2:7: must be "Mesh" (at kind)']],
   ];
   for (const verb of ["boot", "deploy"]) {
     const r = cotal(["team", verb, "m.yaml"], files(cases[0]![1]), noSeed);
@@ -456,6 +464,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`team check names ${label} by file, line and reason`,
       r.status === 1 && located.every((part) => r.stderr.includes(part)) && r.stderr.includes("fix each named problem and run team check again") && !r.stderr.includes("SECRETPERSONA42"), shown(r));
   }
+  const missing = cotal(["team", "check", "nosuch.yaml"], files(cases[0]![1]), noSeed);
+  check("team check of a manifest that does not exist names it as not found",
+    missing.status === 2 && missing.stderr.includes("TARGET_NOT_FOUND") && /the team manifest \S*nosuch\.yaml was not found/.test(missing.stderr), shown(missing));
   // `space:` takes only a name `space create` takes, so the check and both dry runs refuse any other
   // with the reason, before a later step fails on it. A dead broker address keeps any probe local.
   const named = (space: string) => `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: nats://127.0.0.1:9\nchannels: {}\n`;

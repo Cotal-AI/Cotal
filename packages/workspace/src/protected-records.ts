@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "./output.js";
@@ -310,18 +310,27 @@ function protectionGap(path: string, stat: EntryStat, options: { ancestor?: bool
 }
 
 /** One refusal naming every gap, so a single change fixes them all. Paths that share a reason are
- *  listed together, and each kind of fix is one command over its paths. */
-function protectionRefusal(what: string, gaps: readonly ProtectionGap[]): CommandFailure {
+ *  listed together, and each kind of fix is one command over its paths. When links are the only
+ *  gaps a physical path fixes, the remedy names the `checked` path with its links resolved. */
+function protectionRefusal(what: string, gaps: readonly ProtectionGap[], checked?: string): CommandFailure {
   const reasons = [...new Set(gaps.map((gap) => gap.reason))].map((reason) => {
     const paths = gaps.filter((gap) => gap.reason === reason).map((gap) => gap.path);
     return paths.length === 1 ? `${paths[0]} ${reason}` : `${paths.slice(0, -1).join(", ")} and ${paths.at(-1)} ${reason.replace(/^is /, "are ")}`;
   });
   const remedies = [...new Set(gaps.map((gap) => gap.fix))].map((fix) => {
     const paths = gaps.filter((gap) => gap.fix === fix).map((gap) => shellPath(gap.path)).join(" ");
-    return fix === "physical" ? "use a physical path owned by you or root, without symlinks" : fix === "o-w" ? `chmod o-w ${paths}` : fix === "g-w" ? `chmod g-w ${paths}` : `chmod g-w ${paths}, or install acl`;
+    return fix === "physical" ? physicalRemedy(gaps, checked) : fix === "o-w" ? `chmod o-w ${paths}` : fix === "g-w" ? `chmod g-w ${paths}` : `chmod g-w ${paths}, or install acl`;
   });
   const path = gaps[0]!.path;
   return new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${reasons.join("; ")}`, { remedy: remedies.join("; "), target: gaps.length === 1 ? { path } : { path, paths: gaps.map((gap) => gap.path) } });
+}
+
+function physicalRemedy(gaps: readonly ProtectionGap[], checked: string | undefined): string {
+  let physical: string | undefined;
+  if (checked !== undefined && gaps.every((gap) => gap.fix !== "physical" || gap.reason === "is a symbolic link")) {
+    try { physical = realpathSync.native(checked); } catch { physical = undefined; }
+  }
+  return physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${shellPath(physical)}`;
 }
 
 /** Refuse an existing entry that another local account could replace or write; see
@@ -338,7 +347,7 @@ export function assertProtectedEntry(what: string, path: string, stat: EntryStat
  *  the path for the refusal, such as "the project root". */
 export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
   const gaps = directoryChainGaps(path, what, policy);
-  if (gaps.length) throw protectionRefusal(what, gaps);
+  if (gaps.length) throw protectionRefusal(what, gaps, path);
 }
 
 /** {@link protectedLocalDirectory} for an existing file or directory and every directory above it,
@@ -348,7 +357,7 @@ export function protectedLocalEntry(path: string, what = "the path", policy?: Pr
   const entry = lstatSync(path);
   const gap = requireLocalRecordAccess() === "posix" ? protectionGap(path, entry, { policy }) : undefined;
   const gaps = [...(gap ? [gap] : []), ...directoryChainGaps(dirname(path), what, policy)];
-  if (gaps.length) throw protectionRefusal(what, gaps);
+  if (gaps.length) throw protectionRefusal(what, gaps, path);
 }
 
 /** {@link protectedLocalEntry} for a directory together with the named entries in it, read together

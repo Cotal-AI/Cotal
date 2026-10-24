@@ -40,7 +40,7 @@ import { maintenanceNextStep } from "../lib/restore.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { foreignStoreEntries, listEntries, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
+import { foreignStoreEntries, lastServedStore, listEntries, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
 /** How a removed trust record is labeled. A full backup is bound to the trust it was taken under,
@@ -143,7 +143,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
       if (await isReachable(mesh.server))
         throw new Error(`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`);
     }
-    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir: values["store-dir"], dryRun });
+    // With no --store-dir, read the record a start reads: while the default store holds no data, the
+    // store the last broker served is this root's store, and a bare `up` refuses and names it.
+    const defaultStore = join(root, ".cotal", "nats");
+    const storeDir = values["store-dir"] ?? (existsSync(join(defaultStore, "jetstream")) ? undefined : lastServedStore(root, defaultStore));
+    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun });
     // Keep registry/current-pointer cleanup in the same lock transaction as local identity removal.
     if (target === "all" && dryRun) removed.push(...localMeshesForRoot(root).map((mesh) => `the registration of space ${mesh.space}`));
     else if (target === "all") removeMeshesByRoot(root);

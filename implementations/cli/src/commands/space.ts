@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -92,6 +93,8 @@ export interface PreparedRow {
 
 interface PreparedDetail extends PreparedRow {
   readonly kind: "prepared-space";
+  /** Its project folder no longer exists, so `up` cannot start it there. */
+  readonly rootMissing: boolean;
 }
 
 /** One registration in full. Pins and endpoints are public; credential paths are left out. */
@@ -161,7 +164,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     if (!m) {
       const p = findPreparedSpace(name);
       if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
-      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current) };
+      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current), rootMissing: !existsSync(p.root) };
       writeResult(presentation, { command: "space", target: { space: p.space }, result }, preparedView);
       return;
     }
@@ -272,8 +275,11 @@ function spacesView(result: SpacesResult): Report {
 }
 
 function preparedView(p: PreparedDetail): Report {
-  const hints: Cell[] = [{ text: `start it with \`cotal up\` in ${p.root}`, tone: "hint" }];
-  if (!p.current) hints.push({ text: `select it with \`cotal use ${p.space}\``, tone: "hint" });
+  // A folder that is gone cannot be started; the space is forgotten and prepared again elsewhere.
+  const hints: Cell[] = p.rootMissing
+    ? [{ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with \`cotal space forget ${p.space}\`, then prepare it again with \`cotal space create ${p.space} --root <dir>\``, tone: "hint" }]
+    : [{ text: `start it with \`cotal up\` in ${p.root}`, tone: "hint" }];
+  if (!p.current && !p.rootMissing) hints.push({ text: `select it with \`cotal use ${p.space}\``, tone: "hint" });
   return {
     sections: [{
       blocks: [
