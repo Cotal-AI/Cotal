@@ -4786,7 +4786,8 @@ has `space`, `mode` (`open`, `static` or `user`), `principal` (`<owner>.<actor>`
 `label`, the `allowSubscribe` and `allowPublish` ceilings, and `expiresAt` in epoch milliseconds
 when the session has a set end. A roster's `view` is `current`, `unpopulated` or `stale`, and its
 `rows` are complete only when it is `current`. A row has `id`, `name`, `kind` and `status`, and
-`role`, `activity` and `sessionKind` when they are set.
+`role`, `activity` and `sessionKind` when they are set. A `status` request with an `activity` sets
+both in one presence write, so a peer gets one `updated` record carrying both.
 
 A `result` record has `type`, `id` and `outcome`. With `ok` or `stored` it carries `result`, which
 is `null` when the request returns nothing. With `refused`, `unknown` or `failed` it carries `error`
@@ -4806,6 +4807,11 @@ The session also writes these records on its own:
 | `error` | `id` (`null`), `error` | A line was refused before an id could be read from it, or was too long |
 | `end` | `reason`, `close` | The session ended. Nothing follows it |
 
+A `presence` record's `joined` is a member coming online and `left` one going offline. `updated`
+means a field the row shows changed, such as `status` or `activity`. A presence change the row does
+not show, such as a member's attention or channel modes, writes no record. `cotal who --all --json`
+shows attention.
+
 A message's `text` is untrusted. JSON escapes its control characters, so a body can never start
 another record. `channel` is set on a channel message and `service` on an anycast. `mentionsMe`
 means the message's mention list holds this session's label, ignoring case. The sender writes that
@@ -4819,6 +4825,13 @@ channel's messages are dropped. `inbox` with `peek` lists the held messages and 
 Without `peek` it returns them, and they are acknowledged once its result is handed to stdout. A
 message still unacknowledged when the session closes is left unacknowledged and does not come back
 to this session.
+
+`join`'s `backfilled` counts the messages the join read back from the channel's retained history:
+those sent before the join and within the channel's replay window, not counting this session's own.
+It is 0 when the session is already on the channel or replay is off for it. Each of them then follows
+the rules above. One the session already handed over, holds or dropped is not held again, and one on
+a muted channel is dropped, so the inbox can gain fewer messages than `backfilled` says. The session
+remembers at least the last 4096 messages it handled for this.
 
 A `live` gap means the connection dropped or is reconnecting, so live channel messages may be
 missed until it returns. Its reason defaults to
