@@ -499,13 +499,21 @@ export function noteFolderSpace(space: string, current: string): void {
   recordOperationSpaceNote(space, `this folder's space; the selected space "${current}" applies outside it`);
 }
 
+/** The one space registered or prepared at the root of the project folder `cwd` is in, which a
+ *  command without `--space` targets there. Undefined outside a project and where the root has none
+ *  or several. */
+export function folderSpace(cwd: string): string | undefined {
+  const folder = folderSpaces(cwd, loadMeshes());
+  return folder?.spaces.length === 1 ? folder.spaces[0] : undefined;
+}
+
 /** The space a command without `--space` targets in the project folder `cwd` is in when that is not
  *  the selection `current`: the root's one registered or prepared space. Undefined with nothing
  *  selected, outside a project, and where the selection is the target. */
 export function folderSpaceOverSelection(cwd: string, current: string | null): string | undefined {
   if (current === null) return undefined;
-  const folder = folderSpaces(cwd, loadMeshes());
-  return folder?.spaces.length === 1 && folder.spaces[0] !== current ? folder.spaces[0] : undefined;
+  const folder = folderSpace(cwd);
+  return folder !== current ? folder : undefined;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one

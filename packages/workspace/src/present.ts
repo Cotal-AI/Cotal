@@ -266,6 +266,9 @@ export function writeResult<R>(
   const outcome = out.failure?.outcome ?? (out.partial ? "partial" : out.noOp ? "no-op" : "ok");
   const code = out.failure?.code ?? (out.partial ? "OPERATION_PARTIAL" : undefined);
   const error = out.failure?.detail() ?? (out.partial ? { code: "OPERATION_PARTIAL" as const, message: out.partial.message, ...(out.partial.remedy === undefined ? {} : { remedy: out.partial.remedy }) } : undefined);
+  // A warning the run already recorded was printed then, and its envelope carries it once.
+  const recorded = operationWarnings();
+  const warnings = (out.warnings ?? []).filter((w) => !recorded.some((r) => r.code === w.code && r.message === w.message));
   if (presentation === "json") {
     writeEnvelope({
       schemaVersion: 1,
@@ -274,7 +277,7 @@ export function writeResult<R>(
       outcome,
       completeness: out.completeness ?? "complete",
       result: out.result,
-      warnings: [...operationWarnings(), ...(out.warnings ?? [])],
+      warnings: [...recorded, ...warnings],
       ...(error ? { error } : {}),
       ...(out.failure?.changed === undefined ? {} : { changed: out.failure.changed }),
     });
@@ -285,7 +288,7 @@ export function writeResult<R>(
     const errWidth = terminalWidth(process.stderr);
     const say = (cell: Styled, hang: number) => { for (const line of drawWrapped(cell, presentation, errWidth, hang)) console.error(line); };
     // The run's own warnings were printed on stderr when they were recorded.
-    for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
+    for (const warning of warnings) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
     if (error) {
       say({ text: `${marks(presentation) ? "✗" : "!"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
       if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2);
