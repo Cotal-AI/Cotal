@@ -593,6 +593,17 @@ export function stackDefinitionsAt(space: string, root: string): ServiceDefiniti
   });
 }
 
+/** The folder `space`'s saved stack broker starts in, when that folder is gone: it holds neither its
+ *  stack journal nor the broker configuration the definition names, whatever a still-running broker
+ *  wrote back into it. Undefined otherwise, or when the definition cannot be read. */
+export function goneStackRoot(space: string): string | undefined {
+  try {
+    const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
+    if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || typeof launch.options.root !== "string" || typeof launch.options.config !== "string") return undefined;
+    return existsSync(stackJournalPath(launch.options.root)) || existsSync(launch.options.config) ? undefined : launch.options.root;
+  } catch { return undefined; }
+}
+
 /** Remove the controller stack definitions saved for `space` at `root`, with their stopped instance
  *  records, as `service remove` does, so that another folder can start a stack under the same name.
  *  A definition saved for another root is left alone. Nothing is removed while the root holds
@@ -609,7 +620,8 @@ export function releaseStackDefinitions(root: string, space: string): { released
   try {
     for (const row of owned) removableServiceInstances(space, row.name);
   } catch (error) {
-    const route = existsSync(root) ? `stop the stack with cotal down --yes in ${root}, then run cotal space forget ${space} again`
+    const route = goneStackRoot(space) === root ? `its folder is gone; cotal down --space ${space} --yes stops the stack and removes them`
+      : existsSync(root) ? `stop the stack with cotal down --yes in ${root}, then run cotal space forget ${space} again`
       : isCommandFailure(error) && error.remedy || `inspect them with cotal service --space ${space}`;
     return { released: [], kept: { names, why: `${(error as Error).message}; ${route}` } };
   }
