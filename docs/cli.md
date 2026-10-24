@@ -3509,8 +3509,9 @@ The legacy `personas` parser remains available during migration: `list [-v] [--r
 `show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
 draft validation and commit fence. Its `list` escapes control characters in the names, fields and
-bodies it prints, as `persona show` does. Its `show` does the same on a terminal, and writes the
-file byte for byte when its output is piped or redirected. Only its explicit `--running` overlay connects to the mesh.
+bodies it prints, as `persona show` does. Its `show` does the same on a terminal, under the file's
+path, and writes only the file, byte for byte, when its output is piped or redirected, so
+`personas show <name> > <file>` copies it. Only its explicit `--running` overlay connects to the mesh.
 
 ## supervise
 

@@ -272,9 +272,13 @@ try {
   // `rm` is the one that matters most: resolving the wrong root deletes a file from a directory the
   // operator never named, and nothing in the repo reddened.
 
-  // show — prints the resolved path as its first line, so the path itself is the observation.
-  const shownPath = (await captureCmd(["show", "mesh-lead"], {})).split("\n").find((l) => l.trim())?.trim();
-  check("show: opens the card under the MESH root", shownPath === join(MESH, ".cotal", "agents", "mesh-lead.md"), shownPath);
+  // show — the card it writes is the observation: the MESH root's file, which no cwd card matches.
+  // Piped, it writes only the file, so stdout is read here as well as console.log.
+  const shown: string[] = [];
+  const realWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; }) as typeof process.stdout.write;
+  try { await captureCmd(["show", "mesh-lead"], {}); } finally { process.stdout.write = realWrite; }
+  check("show: opens the card under the MESH root", shown.join("") === readFileSync(join(MESH, ".cotal", "agents", "mesh-lead.md"), "utf8"), shown.join("").slice(0, 160));
   // …and refuses a name that exists ONLY in the cwd, rather than silently opening the cwd's copy.
   const shownCwdOnly = await captureCmd(["show", "cwd-one"], {});
   check("show: a cwd-only persona is NOT found (it is not in the mesh's catalog)", /no persona "cwd-one"/.test(shownCwdOnly), shownCwdOnly.slice(0, 120));
