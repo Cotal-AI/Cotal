@@ -1,7 +1,9 @@
 /**
  * The manager service preset with a roster, and in the foreground. The first cells need no broker:
  * the adapter declaration, the roster path protection, the native child's launch argv and its
- * one-time roster parse. On Linux the live cell then saves the preset over a broker-only open stack,
+ * one-time roster parse, and the private `.cotal` a launch makes in a registered root that has none,
+ * which a refused launch does not make and a link standing there does not lose. On Linux the live
+ * cell then saves the preset over a broker-only open stack,
  * runs `service start --foreground`, waits for the roster boot, sends SIGINT to the CLI alone and
  * requires exit 130 with the native stop recorded on the instance.
  *
@@ -18,7 +20,7 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -28,6 +30,10 @@ const TSX_LOADER = import.meta.resolve("tsx");
 const BIN = join(WT, "bin", "cotal.ts");
 const home = mkdtempSync(join(tmpdir(), "cotal-manager-preset-home-"));
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}manager-preset-root-`));
+// Two roots a registration names before any command wrote there: one with no `.cotal`, and one
+// whose `.cotal` is a link to the main root's.
+const fresh = mkdtempSync(join(tmpdir(), "cotal-manager-preset-fresh-"));
+const linkedRoot = mkdtempSync(join(tmpdir(), "cotal-manager-preset-linked-"));
 const xdg = join(home, "xdg");
 for (const dir of [join(root, ".cotal"), xdg]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 const anchor = recordSmokeSandbox({ root, cotalHome: join(home, ".cotal"), xdgConfigHome: xdg });
@@ -123,6 +129,31 @@ else {
   const resumedChild = refusal(() => managerServiceChild(childArgs(["--roster", roster, "--resume-attempt", "resume1"])));
   check("the native child refuses a roster on a resumed launch", resumedChild?.startsWith("USAGE_INVALID") === true && resumedChild.includes("boots no roster"), resumedChild);
   removeMesh(OFFLINE);
+
+  // A root that only `space add --root` registered has no `.cotal`. The launch makes it, private,
+  // only after its refusals, and never replaces a link that stands there.
+  const FRESH = "managerpresetfresh", LINKED = "managerpresetlinked";
+  recordMesh({ space: FRESH, server: offlineServer, root: fresh, mode: "open", ts: new Date().toISOString() });
+  recordMesh({ space: LINKED, server: offlineServer, root: linkedRoot, mode: "open", ts: new Date().toISOString() });
+  const freshContext = { ...context, space: FRESH, instanceId: randomUUID(), launchRequestId: randomUUID(), options: { root: fresh, runtime: "pty" } };
+  const refusedFresh = await rejection(() => adapter.buildServiceLaunch!({ ...freshContext, options: { ...freshContext.options, roster }, attempt: { kind: "maintenance-resume", attemptId: "resume1" } }));
+  check("a refused launch in a root with no .cotal makes none", refusedFresh?.includes("boots no roster") === true && !existsSync(join(fresh, ".cotal")), refusedFresh);
+  const freshBuilt = await rejection(() => adapter.buildServiceLaunch!(freshContext));
+  const made = lstatSync(join(fresh, ".cotal"), { throwIfNoEntry: false });
+  check("a launch in a registered root with no .cotal makes it, a directory private to you", freshBuilt === undefined && made?.isDirectory() === true && (made.mode & 0o777) === 0o700, { freshBuilt, mode: made?.mode.toString(8) });
+  const freshArgs = (space: string, at: string) => parseCommandArgs(child, [
+    "--root", at, "--space", space, "--server", offlineServer, "--runtime", "pty",
+    "--service-instance", randomUUID(), "--launch-request", randomUUID(), "--state-directory", stateDirectory,
+  ]);
+  const freshChild = refusal(() => managerServiceChild(freshArgs(FRESH, fresh)));
+  check("  and the native child then accepts that root", freshChild === undefined, freshChild);
+  symlinkSync(join(root, ".cotal"), join(linkedRoot, ".cotal"));
+  await rejection(() => adapter.buildServiceLaunch!({ ...freshContext, space: LINKED, options: { root: linkedRoot, runtime: "pty" } }));
+  const linkedChild = refusal(() => managerServiceChild(freshArgs(LINKED, linkedRoot)));
+  check("a root whose .cotal is a link keeps it, and the native child refuses it as a link",
+    lstatSync(join(linkedRoot, ".cotal")).isSymbolicLink() && linkedChild?.startsWith("PERMISSION_DENIED") === true && linkedChild.includes("is a symbolic link"), linkedChild);
+  removeMesh(FRESH);
+  removeMesh(LINKED);
 }
 
 // ---- A foreground manager with a roster stops on SIGINT through its native stop ----------------
@@ -225,7 +256,7 @@ try {
     const down = cotal(["down"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
-  for (const dir of [home, root]) rmSync(dir, { recursive: true, force: true });
+  for (const dir of [home, root, fresh, linkedRoot]) rmSync(dir, { recursive: true, force: true });
   finish();
   process.exit(process.exitCode ?? 0);
 }

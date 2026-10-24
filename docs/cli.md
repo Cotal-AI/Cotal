@@ -856,6 +856,14 @@ root, as after `space forget`, there are no saved definitions, and the Next says
 and run `cotal up`. When members still run, it names the `cotal service stop` for each one first,
 manager first and broker last.
 
+A saved local record under the Cotal home that is not valid JSON, such as a service instance record
+under `services/` cut short the same way, is left as it is. `up`, `down`, `service` and
+`reset store` refuse it `SCHEMA_INVALID`, exit 1. `service` names its path and the `mv` that moves
+it aside, and so do the others for a stack that has run. Once it is moved, Cotal no longer tracks
+the process that record names, so stop that process yourself if it still runs. For a stopped
+space, `status` warns `SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place
+of `cotal up`.
+
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
 The manager serves its console over plain HTTP on a port it picks when it starts. All three bind the
@@ -1018,7 +1026,9 @@ selected, `up` selects the space it started and says so.
 The receipt also names each service saved for the space that `up` does not start, such as one
 `cotal service add` saved, and `--json` carries their names as `result.savedServices`. Saved
 services belong to the space name, so a space forgotten under that name leaves its services to the
-next one; `cotal service show <name>` shows what one runs.
+next one. The receipt names those it left from another folder, which do not start here, with
+`cotal service remove <name> --space <space> --yes`, and `--json` carries them as
+`result.inheritedServices`. `cotal service show <name>` shows what one runs.
 
 On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
 every stack mode. It refuses while validating its arguments, before the confirmation and before any
@@ -7895,6 +7905,10 @@ joined. Saving it starts nothing and grants no authority. Its native child start
 delivery daemon, does not adopt an existing legacy manager, and never prints its private console URL.
 It declares one instance per definition and runs in the background or with `start --foreground`.
 It is not OS-supervised installation or platform parity.
+A root that `space add --root` registered has no `.cotal` until a command writes there. A start
+makes it, as a directory private to you, after its other checks pass and once the root itself is
+protected against other local writers. It does not replace a `.cotal` that is already there, such
+as a link, which the child refuses.
 
 The real child exclusively claims its creation-pinned native PID custody before hosted authority
 preparation or local endpoint initialization. That starting record is not readiness; another existing slot is not adopted or reclaimed.

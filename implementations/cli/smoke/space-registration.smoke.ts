@@ -643,7 +643,8 @@ if (process.platform === "linux") {
 
 // ── A saved service stays with the space's name ────────────────────────────────────────────────────────
 // Saved services belong to the space name, so a forget keeps them and names them, and the next space
-// of that name, in another folder, names them on its up.
+// of that name, in another folder, names them on its up as inherited. An up in the folder that saved
+// one names it without saying a space was forgotten.
 if (process.platform === "linux") {
   const selected = getCurrent();
   const first = join(home, "inheritfirst"), second = join(home, "inheritsecond");
@@ -657,6 +658,11 @@ if (process.platform === "linux") {
   check("an up whose space has no saved service of its own names none", fresh.status === 0 && JSON.stringify(fresh.env?.result.savedServices) === "[]", shown(fresh));
   const added = await json(["service", "add", "tick", "--file", definition], first);
   check("rig: a service is saved for the space", added.status === 0, shown(added));
+  const own = await json(["up", "--detach", "--open", "--no-manager", "--server", server], first);
+  check("an up whose space saved a service here names it, and names none as inherited", own.status === 0 && JSON.stringify(own.env?.result.savedServices) === JSON.stringify(["tick"]) && JSON.stringify(own.env?.result.inheritedServices) === "[]", shown(own));
+  const ownText = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, first);
+  check("...and its text says up does not start it without saying a space was forgotten",
+    ownText.status === 0 && ownText.stdout.includes("saved services up does not start: tick") && ownText.stdout.includes("`cotal service show <name> --space inherit` shows what one runs") && !ownText.stdout.includes("forgotten"), shown(ownText));
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
   await run(["down", "--yes"], {}, first);
   const forgot = await run(["space", "forget", "inherit"], {}, first);
@@ -666,9 +672,10 @@ if (process.platform === "linux") {
   await json(["space", "create", "inherit"], second);
   const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
   const later = await json(["up", "--detach", "--open", "--no-manager", "--server", server], second);
-  check("the next space of that name, in another folder, names the service it inherits on its up", later.status === 0 && JSON.stringify(later.env?.result.savedServices) === JSON.stringify(["tick"]), shown(later));
+  check("the next space of that name, in another folder, names the service it inherits on its up", later.status === 0 && JSON.stringify(later.env?.result.savedServices) === JSON.stringify(["tick"]) && JSON.stringify(later.env?.result.inheritedServices) === JSON.stringify(["tick"]), shown(later));
   const text = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
-  check("...and its text receipt says up does not start it", text.status === 0 && text.stdout.includes("saved services up does not start: tick"), shown(text));
+  check("...and its text receipt says up does not start it, that a forgotten space left it, and the remove that forgets it",
+    text.status === 0 && text.stdout.includes("saved services up does not start: tick") && text.stdout.includes("tick came from a space forgotten under the name inherit in another folder and does not start here; `cotal service remove <name> --space inherit --yes` forgets one"), shown(text));
   assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
   await run(["down", "--yes"], {}, second);
   const removed = await json(["service", "remove", "tick", "--space", "inherit", "--yes"], second);

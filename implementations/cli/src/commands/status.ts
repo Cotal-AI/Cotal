@@ -1087,6 +1087,13 @@ function unusableStackJournal(root: string): CommandFailure | undefined {
   catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
 }
 
+/** The refusal of `space`'s service instance records when one is a record no command can use, as
+ *  `up` and `down` refuse it. Undefined when they read. */
+function unusableServiceInstances(space: string): CommandFailure | undefined {
+  try { serviceInstances(space); return undefined; }
+  catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
+}
+
 /** Why the broker of the stack at `root` cannot start on its store: the one its stack journal recorded,
  *  or `.cotal/nats`. */
 function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
@@ -1141,10 +1148,14 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
     // A stack journal that no command can use refuses `up` there, so Next names its way out instead.
     const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;
+    // So does a service instance record of its space that no command can read, which is also a warning.
+    const instances = e.code === "not-started" && !journal && d.space !== undefined ? unusableServiceInstances(d.space) : undefined;
+    if (instances) gaps.add("SERVICE_INSTANCES_UNAVAILABLE", instances.remedy ? `${instances.message}; ${instances.remedy}` : instances.message, { space: d.space, ...(instances.target as object | null) });
     // This folder's stack cut off with no recorded outcome is named under the selected space, and
     // Next names the step that finishes or settles it. One that neither blocks nor stays part way
     // settles from its members' processes when it starts.
     if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
+    else if (instances) hints.push(instances.remedy ?? instances.message);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
     else if (!d.unsettled || !servedStack(folder, result)) hints.push(remedy ?? message);
     else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
