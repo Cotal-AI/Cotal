@@ -6,7 +6,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { personaReferences, resolveManifest } from "./resolve.js";
-import { preparePersonas, type PreparedManifest } from "./preflight.js";
+import { missingPersona, preparePersonas, type PreparedManifest } from "./preflight.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
 import { UnusableFile } from "../unusable-file.js";
 
@@ -49,7 +49,7 @@ function withMissingPersonas(issues: readonly ManifestIssue[], src: string, sour
   const out = [...issues];
   for (const ref of personaReferences(src, sourcePath)) {
     try { statSync(ref.persona); continue; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") continue; }
-    const issue: ManifestIssue = { message: `persona file not found: ${ref.persona}`, path: ["agents", ref.name], line: ref.line, col: ref.col };
+    const issue: ManifestIssue = { message: missingPersona(ref.persona, sourcePath), path: ["agents", ref.name], line: ref.line, col: ref.col };
     const named = out.findIndex((other) => other.message === issue.message && other.path?.join(".") === issue.path!.join("."));
     if (named < 0) out.push(issue); else out[named] = issue;
   }

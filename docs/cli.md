@@ -849,7 +849,8 @@ another root says so and names that root, and in a linked folder it names the li
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
 `down`, `clean`, `reset` and `space create` refuse `SCHEMA_INVALID`, exit 1, naming its path, and
-`status` warns about it. When no member of the stack runs, the Next says to remove the file, and the
+`status` warns about it and gives the same step under Next, in place of `cotal up` and
+`cotal clean store`. When no member of the stack runs, the Next says to remove the file, and the
 next `cotal up` starts the stack again from its saved definitions. When no space is recorded at the
 root, as after `space forget`, there are no saved definitions, and the Next says to remove the file
 and run `cotal up`. When members still run, it names the `cotal service stop` for each one first,

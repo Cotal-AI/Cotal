@@ -122,6 +122,10 @@ check("status --components refuses the target and probes no default broker", /ta
   check("clean all over it refuses, exit 1, naming the path and the way out", clean.status === 1 && clean.stderr.includes(`the stack journal ${path} is not valid JSON`) && clean.stderr.includes(`so remove ${path}`), shown(clean));
   const status = run(["status", "--json"]);
   check("status warns about the journal with its way out", (status.envelope?.warnings ?? []).some((w) => w.code === "STACK_JOURNAL_INVALID" && w.message.includes(path) && w.message.includes("so remove")), shown(status));
+  // up and clean store refuse until the journal is fixed, so Next gives its step instead.
+  const hints = (status.envelope?.result as { hints?: string[] } | undefined)?.hints ?? [];
+  check("status gives that step under Next and offers neither a plain cotal up nor clean store",
+    hints.filter((hint) => hint === `no space is recorded at this root, so remove ${path} and run cotal up from ${root}`).length === 1 && !hints.some((hint) => /start it with `cotal up`|clean store --force/.test(hint)), hints);
   writeFileSync(path, whole);
 }
 
