@@ -773,6 +773,15 @@ if (process.platform === "linux") {
       refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
         cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
   }
+  // The `✗` line quotes the parser's excerpt of a file that is not JSON with its control characters
+  // escaped, so an escape sequence in a cloned file never reaches the terminal.
+  const escSeed = join(fresh, "esc-channels.json");
+  writeFileSync(escSeed, '{"channels": \u001b[2J}');
+  const escaped = await run(["up", "--open", "--channels", escSeed, "--server", server], { LC_ALL: "C.UTF-8" }, fresh);
+  check("up with a --channels file holding an escape sequence quotes its excerpt escaped, exit 1, and leaves the root unchanged",
+    escaped.status === 1 && escaped.stderr.startsWith("✗ ") && escaped.stderr.includes('"{"channels": \\u001b[2J}"') && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(escaped.stdout + escaped.stderr) &&
+      cotalFiles() === beforeRuntime.files, shown(escaped));
+  unlinkSync(escSeed);
   // The default file is read once the root is settled, so it refuses after the stack lock's layout
   // exists and before a store, a broker or a registration.
   const defaultSeed = join(fresh, ".cotal", "channels.json");

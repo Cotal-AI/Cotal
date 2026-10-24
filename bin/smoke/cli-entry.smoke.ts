@@ -440,6 +440,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /unknown command: web - run `cotal help`/);
 }
 
+// ── A `✗` line shows the control characters of an argument it repeats as escapes ─────────────────
+{
+  const utf8 = { ...noSeed, LC_ALL: "C.UTF-8" };
+  for (const [what, args] of [["an unknown command", ["c\u001b[2J"]], ["an unknown docs page", ["docs", "d\u001b[2J"]], ["an unknown preference", ["config", "get", "k\u001b[2J"]], ["an invalid channel", ["send", "-c", "c\u001b[2J", "x"]]] as const) {
+    const r = cotal([...args], undefined, utf8);
+    check(`${what} is refused on a ✗ line that shows its escape sequence escaped`,
+      r.status === 1 && r.stderr.startsWith("✗ ") && r.stderr.includes("\\u001b[2J") && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(r.stdout + r.stderr), shown(r));
+  }
+}
+
 // ── Every alias is its command: same help, same refusal ───────────────────────────────────────────
 // The refusal pairs skip the seed by env. Whether an alias's usage error writes anything is the
 // `sp --bogus` cell below; a seed in every pair would make a proof of the seed order outrun its budget.
