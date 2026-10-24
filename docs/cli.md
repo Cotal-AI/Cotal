@@ -5735,8 +5735,9 @@ rather than implying those inputs narrowed anything.
 
 The default credential is created through its canonical secret-store kind. An existing label is
 not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
-standing credential when it has expired or has no expiry claim, under a new identity unless
-`--identity` names one, and removes a no-expiry record beside it unless `--no-expiry` writes a new
+standing credential when it has expired, has no expiry claim or has a key that
+`auth revoke-credential` revoked. It mints under a new identity unless `--identity` names one, which
+a revoked key never is, and removes a no-expiry record beside it unless `--no-expiry` writes a new
 one. The receipt names what it replaced and its public key under `result.replaced`. A replacement
 does not revoke the credential it replaced, so a copy of one with no expiry claim stays valid. The
 receipt then warns `REPLACED_CREDENTIAL_VALID`, naming that key and the
@@ -5956,7 +5957,8 @@ Otherwise a usage error refuses with exit 1 before any authority is read, and on
 missing input: `--sub` or `--owner`, and for `grant` the ACL flags left off without `--full`. An
 input that is not valid refuses the same way, naming each field and why: the actor, `--owner`,
 `--role`, `--parent`, a channel pattern, or a `--scope` name other than `admin`, `run`, `spawn`,
-`supervise` and `role:<r>`. Nothing is written.
+`supervise` and `role:<r>`. Nothing is written. A channel needs no creation, so a grant may name one
+that has no message or registry entry yet.
 `grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
 `grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
 refused and writes nothing. A re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
@@ -5973,7 +5975,8 @@ action. `revoke` uses the same retirement before deleting the row, which lets a 
 real successor instead of colliding with a live predecessor. `supervise` is separate from `spawn` and `admin`: it only makes a signed-in
 person eligible for the host-provided closed remote manager-service view; it does not grant
 management of another owner or a general host profile. `revoke` denies the next exchange and
-the next connect with no restart, and evicts the principal's live connections. It reports
+the next connect with no restart, and evicts the principal's live connections. It asks nothing and
+takes no `--yes`, because a later grant gives the actor access again under a new lifecycle. It reports
 `verified gone` only when the delivery daemon's eviction result names the principal and shows a
 complete scan with no connection left; any other result prints `live-connection eviction INCOMPLETE`
 with its counts, or with the reason the result was not accepted. Managed-agent rows
@@ -6020,7 +6023,10 @@ a copy made before stays valid until it is revoked. Rotating the space identity 
 `cotal reset space <space>`, then `cotal up`) retires every credential the space issued and removes
 the file, and the reset removes the space's store with its history. An expired label's file is a finding too, and
 its guidance names that same `--replace`, next to the managed renewal that re-signs an agent a
-manager runs.
+manager runs. An agent file whose key was revoked is a finding in state `revoked`, with
+`result.items[].revokedAt`, however far off its expiry is. A revoked key is not signed again, so
+for a label's file the guidance names `--replace` with the file's read and post channels and role,
+and for any other agent file it names stopping the agent that uses it.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
