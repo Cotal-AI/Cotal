@@ -37,9 +37,8 @@ export function channelComplete(argv: string[]): CompletionResult {
   const last = argv.at(-1) ?? "";
   if (completingFlagValue(argv, channelFlags)?.name === "delivery" || last.startsWith("--delivery="))
     return { items: ["live", "durable"].map((value) => ({ value: last.startsWith("--delivery=") ? `--delivery=${value}` : value })), directive: "nofiles" };
-  // Only --creds takes a file; a URL, a window, a description and instructions do not.
-  const flag = completingFlagValue(argv, channelFlags);
-  if (flag) return { items: [], directive: flag.name === "creds" ? "default" : "nofiles" };
+  // A URL, a window, a description and instructions take no file; the dispatcher completes --creds.
+  if (completingFlagValue(argv, channelFlags)) return { items: [], directive: "nofiles" };
   const positionals = positionalsForCompletion(argv, channelFlags);
   if (positionals.length <= 1 && !last.startsWith("-")) return { items: ["show", "members", "set", "defaults", "remove"].map((value) => ({ value })), directive: "nofiles" };
   // A named action takes a channel: the ones the target space's personas declare, as `send -c` offers.

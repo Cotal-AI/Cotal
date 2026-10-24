@@ -5263,7 +5263,14 @@ cotal completion uninstall [shell] [--json|--plain]
 
 Bare `completion` reads local integration files. It reports the script version, startup reference
 and recorded ownership separately. It does not inspect or load the running shell. An unreadable
-file or ownership record produces a warning and a partial result, exit 4. A relative `ZDOTDIR`
+file or ownership record produces a warning and a partial result, exit 4. The warning names the
+file and why. A record wired into another startup file, as an install under another `ZDOTDIR` leaves
+one, names that file and the `ZDOTDIR` to read it with. A folder above the files that is a symlink,
+owned by another user, or group- or other-writable is named once, with the `chmod go-w` that fixes
+it when one does. The files under it are not opened, and one that does not exist is reported missing,
+so a report with nothing installed stays complete, exit 0. Next offers that `chmod` first, offers
+`install` and `uninstall` only when nothing stops them, and offers `uninstall` only when something is
+installed. A relative `ZDOTDIR`
 is resolved from the current directory for this report, as zsh resolves it.
 
 In zsh, initialize its completion system with `autoload -Uz compinit && compinit` before
@@ -5282,13 +5289,16 @@ cotal completion script powershell | Out-String | Invoke-Expression
 offline. The stable hidden `__complete` entry reads registered command specifications, the spaces
 registered or prepared on this machine, the extension manifest, the bundled docs index and local
 persona files. It does not contact the mesh or refresh extensions. Every `--space` offers the spaces
-`cotal use` offers. `config` offers its keys, and `config set color` and `config set harness` the
+`cotal use` offers, and every `--creds` lets the shell complete a file name. `config` offers its keys, and `config set color` and `config set harness` the
 values a write accepts. `docs` offers its pages, `watch --view` its views and `space add --mode` its
 modes. A channel name for `send -c`, `history` or `channel show`, `members`, `set` and `remove` comes
-from the channels the target space's personas declare, because the broker keeps the others.
+from the channels the target space's personas declare, because the broker keeps the others. The bash
+and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's
+own candidates.
 
 `install` and `uninstall` take a shell name or detect it from `SHELL`. Pass `powershell`
-explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX hosts:
+explicitly when PowerShell inherited another shell's `SHELL`. A `SHELL` that names a shell
+completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2), naming it. On supported POSIX hosts:
 
 - Bash uses `~/.config/cotal/completion.bash` and an owned block in `~/.bashrc`.
 - Zsh uses `~/.config/cotal/completion.zsh` and an owned block in `$ZDOTDIR/.zshrc`, or
@@ -5300,7 +5310,8 @@ explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access before it creates anything. One refusal names every refused startup
+owner or unsafe file access before it creates anything. A missing startup directory is named, with
+`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every refused startup
 file, stub, record and directory on the way to them with its reason, and a group- or other-writable
 one with its mode and one `chmod go-w <paths>` that fixes them all. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
@@ -5315,7 +5326,14 @@ profile or permits scripts under its execution policy.
 
 Installation writes a private `.ownership.json` record beside its stub. Reinstall refreshes only
 an unchanged recorded stub. Uninstall removes only that stub and the unchanged recorded startup
-block, keeping other startup bytes. Modified or unrecorded material is preserved with a refusal.
+block, keeping other startup bytes. A startup file that `install` created is removed when nothing
+else is left in it; one that was there before stays, even empty. Modified or unrecorded material is preserved with a refusal.
+For a recorded stub or startup block you edited, the refusal names `--force`: `install --force`
+rewrites the stub and each block from `# >>> cotal completion >>>` to `# <<< cotal completion <<<`,
+and `uninstall --force` removes them. Startup content outside those markers is kept. A block whose
+end marker is gone is still refused, with the file named, because only you can tell which lines
+are cotal's; remove them there yourself. For an integration you modified, bare `completion` offers
+`install` and `uninstall` only with `--force`.
 A stub from an earlier release without an ownership record needs manual review; matching
 generated text alone is not treated as ownership. An unowned startup reference to a managed stub must be reviewed
 before removing the stub. These commands cannot unload functions in a parent shell.
