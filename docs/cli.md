@@ -1358,7 +1358,9 @@ is stopped, `down` removes the stack's saved definitions, their instance records
 registration that names the folder, so the space can be created and started in another folder.
 Outside a terminal it needs `--yes`, and `--dry-run` lists each member with its pid and process.
 `cotal status` marks such a project folder as gone, with `selected.rootGone` set to `true` in its
-JSON, and its Next names `cotal down --space <space> --yes`.
+JSON, and its Next names `cotal down --space <space> --yes`. A command that connects to a static-auth
+space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, because the seed went
+with the folder, and its Next names the same `down`.
 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
