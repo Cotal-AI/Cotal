@@ -188,9 +188,11 @@ export function serializePersona(def: AgentDef): Promise<Buffer> {
   for (const [flag, value] of [["--role", def.role], ["--model", def.model]] as const)
     if (value !== undefined && /[\u0000-\u001f\u007f]/u.test(value))
       throw new CommandFailure("refused", "USAGE_INVALID", `${flag} takes a label without control characters`);
+  if (def.model !== undefined && !def.model.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--model is empty", { remedy: "name a model, or leave --model out for the application default" });
   return withDraft(def.name, path => {
     try { writeSecretFile(path, ""); saveAgentFile(path, def); }
-    catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "invalid persona fields"); }
+    catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona fields: ${(error as Error).message.replace(/^saveAgentFile: /, "")}`); }
     const bytes = readFileSync(path);
     validatePersona(bytes, path, def.name);
     return bytes;

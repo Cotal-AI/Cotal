@@ -484,6 +484,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
   }
+  // An empty --model is refused by name.
+  for (const [argv, model] of [[["persona", "create", "q"], ""], [["persona", "create", "q"], " "], [["personas", "new", "q"], ""]] as const) {
+    const r = cotal([...argv, "--model", model, "--prompt", "body", "--subscribe", ""], persona, noSeed);
+    check(`cotal ${argv.join(" ")} --model ${JSON.stringify(model)} is refused naming --model`,
+      r.status === 1 && r.stderr.includes("--model is empty") && !r.stderr.includes("invalid persona fields"), shown(r));
+  }
   // A name refusal says which rule it broke.
   for (const [name, reason] of [["a".repeat(200), "persona names are at most 128 characters; this one has 200"], ["a.b", "persona names use letters, digits, '_' or '-', up to 128 characters"]]) {
     const r = cotal(["persona", "create", name, "--prompt", "x", "--subscribe", ""], persona, noSeed);

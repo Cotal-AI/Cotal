@@ -3881,7 +3881,8 @@ and accepts `--role`, `--model` and `--harness`. `--allow-subscribe` sets the ch
 may read, and an omitted or empty one reads as the `--subscribe` set. `--allow-publish` sets the
 channels it may post to, and without it the persona posts nowhere. Both take a comma list, as the
 [agent file](agent-files.md) fields `allowSubscribe` and `allowPublish` do. Both refuse control
-characters with `USAGE_INVALID`. A role is an address `send -r` reaches, so a role that is not one
+characters with `USAGE_INVALID`. An empty `--model` is refused with `USAGE_INVALID` too. A role is
+an address `send -r` reaches, so a role that is not one
 token of letters, digits, `_` and `-` is refused, `USAGE_INVALID` from `--role` and `SCHEMA_INVALID`
 from a file's `role`. Each entry of `--subscribe`, `--allow-subscribe` and
 `--allow-publish` must be a valid channel name, written without `#`, and each `--subscribe` channel
