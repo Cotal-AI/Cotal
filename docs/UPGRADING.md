@@ -87,6 +87,19 @@ as before. Nothing on a running mesh changes.
   them the selection.
 - `cotal up` says when it selects the space it started.
 
+## Bare down beside a running service after 0.100.2
+
+On a legacy root, bare `cotal down` refuses `LIFECYCLE_BLOCKED`, exit 2, while a saved service in
+the space still runs or cannot be verified, and stops nothing. Before, it stopped those services
+first through the service controller. A controller stack's `down` already refused this way, and
+`down --preserve-state` refuses the same way on both.
+
+- Stop each service the refusal names with
+  `cotal service stop <name> --instance <id> --space <space> --yes`, then run `cotal down` again.
+  A stopped service does not block.
+- `cotal down --dry-run` warns with that refusal. Its JSON lists the instances as `serviceChecks`,
+  where `stop-first` marks one that blocks; `serviceStops` is gone.
+
 ## Endpoint caller files after 0.99.0
 
 `cotal auth mint <name> --endpoint <class> --out <file>` from 0.91.0 through 0.99.0 recorded the
