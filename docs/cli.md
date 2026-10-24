@@ -6119,7 +6119,7 @@ anything. One guarded `team deploy <file>` route accepts a
 channel-only manifest whose declared cards are all absent and explicitly set
 `deliveryClass: live`. It refuses agents, runtime requests, defaults,
 broker bind changes, access edges, existing cards,
-re-apply, registered broker lists and unresolved prior attempts before an effect.
+a changed re-apply, registered broker lists and unresolved prior attempts before an effect.
 A card that does not set `deliveryClass: live` is refused with `UNSUPPORTED`. The refusal names
 the cards, and its Next says to set `deliveryClass: live` on each card or to create a durable
 channel with `cotal channel set <name> --delivery durable`. `team deploy --dry-run` warns

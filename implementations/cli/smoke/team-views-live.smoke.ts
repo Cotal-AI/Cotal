@@ -7,6 +7,8 @@
  *     the report says what the read does not establish, with no failure line on stderr.
  *  B. a card without `deliveryClass: live`: the apply refuses `UNSUPPORTED`, names the cards and
  *     says what to set, and its preview warns `LIVE_DELIVERY_REQUIRED` for the same cards.
+ *  C. a reapply of the identical settled deployment is a no-op, and the preview says so instead of
+ *     saying a reapply refuses.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -102,6 +104,13 @@ try {
       refused.error.remedy === "set `deliveryClass: live` on each card, or create a durable channel with `cotal channel set <name> --delivery durable`", notLive.out.slice(-800));
   const liveCheck = cotal(s, "team", "deploy", "live.yaml", "--dry-run", "--json");
   check("a manifest whose cards all set deliveryClass: live has no such warning", !envelope(liveCheck.stdout)?.warnings?.some((w) => w.code === "LIVE_DELIVERY_REQUIRED"));
+
+  console.log("\nC. a reapply of an identical settled deployment");
+  const reapplied = cotal(s, "team", "deploy", "live.yaml", "--json");
+  check("the second team deploy of the same manifest is a no-op", reapplied.status === 0 && envelope(reapplied.stdout)?.outcome === "no-op", reapplied.out.slice(-600));
+  const reapplyPreview = cotal(s, "team", "deploy", "live.yaml", "--dry-run");
+  check("its preview says a reapply of an identical settled deployment changes nothing, not that it refuses",
+    reapplyPreview.stdout.includes("Reapplying an identical settled deployment changes nothing") && !reapplyPreview.stdout.includes("reapply refuse"), reapplyPreview.stdout.slice(-900));
 } finally {
   if (up) {
     const down = cotal(s, "down", "--yes");
