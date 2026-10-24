@@ -69,7 +69,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
   boundedValue,
   CommandFailure,
@@ -536,7 +536,11 @@ async function amend(values: RunValues, reader: Planes, runId: string | undefine
   const accepted = await locateAcceptedAnswer(
     { kv: reader.kv, js: reader.js, jsm: reader.jsm, space: reader.space, endpoint },
     { runId, stepKey, takeoverId },
-  );
+  ).catch((e: unknown) => {
+    // Locating writes nothing, so an answer it does not find is refused as the hosted amend refuses it.
+    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's answers with cotal run show ${runId} --local` });
+    throw e;
+  });
   const writer = await openPlanes(values, "run-operator", { runOperator: { endpoint, takeoverId: newTakeoverId(), answers: { token: accepted.token } } });
   try {
     const result = await amendAcceptedAnswer(

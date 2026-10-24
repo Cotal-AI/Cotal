@@ -254,6 +254,7 @@ export async function locateAcceptedAnswer(
   deps: ResolveCheckpointDeps,
   req: { readonly runId: string; readonly stepKey: string; readonly takeoverId: string },
 ): Promise<AcceptedAnswer> {
+  if (await readRunRecord(deps.kv, deps.endpoint, req.runId) === undefined) throw new CheckpointNotAmendable(req.runId, req.stepKey, "no-run");
   const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
   let token: string | undefined;
   try {

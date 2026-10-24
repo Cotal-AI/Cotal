@@ -409,6 +409,14 @@ let P = "";
   c("an answer to a run ID nothing records is refused TARGET_NOT_FOUND, saying no run is recorded under that ID",
     isCommandFailure(nowhere) && nowhere.code === "TARGET_NOT_FOUND"
       && nowhere.message === "run run-0123456789abcdef0123456789abcdef has no open checkpoint at /checkpoint:approve#0: no run is recorded under that id", nowhere?.message);
+  // An amend located nothing either, and the local amend reported that as an unknown outcome too.
+  const nowhereAmend = await wf(["amend", "run-0123456789abcdef0123456789abcdef", "/checkpoint:approve#0"], { by: "smoke", value: '"no"' }).then(() => undefined, (e: Error) => e);
+  c("an amend of a run ID nothing records is refused TARGET_NOT_FOUND, saying no run is recorded under that ID",
+    isCommandFailure(nowhereAmend) && nowhereAmend.code === "TARGET_NOT_FOUND"
+      && nowhereAmend.message === "run run-0123456789abcdef0123456789abcdef has no accepted answer to amend at /checkpoint:approve#0: no run is recorded under that id", nowhereAmend?.message);
+  const noStep = await wf(["amend", rid, "/checkpoint:nosuch#0"], { by: "smoke", value: '"no"' }).then(() => undefined, (e: Error) => e);
+  c("an amend at a step the run does not have is refused TARGET_NOT_FOUND, since nothing was written",
+    isCommandFailure(noStep) && noStep.code === "TARGET_NOT_FOUND" && noStep.message.endsWith("no step is recorded under that key"), noStep?.message);
 
   // Which branch a second, concurrent answer lands in is decided by the broker, so the not-acted-on
   // lines are read from the rows a lost race leaves: one resolved and one cancelled after it
@@ -779,7 +787,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 85;
+const DECLARED = 87;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

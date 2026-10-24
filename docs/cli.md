@@ -6541,7 +6541,9 @@ deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receip
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
-answer refuses an amend. The run records an accepted answer a moment after `answer` returns, and an
+answer refuses an amend. So does a run ID that no run is recorded under, and that refusal says no
+run is recorded under that ID. With `--local` these refusals are `TARGET_NOT_FOUND`, exit 2, as the
+hosted ones are, since nothing was written. The run records an accepted answer a moment after `answer` returns, and an
 amend sent in between is refused with a message saying the answer is not recorded yet; amend again
 once `run show` lists it. A spawned seat may amend only an answer recorded under its own name.
 `check` replays a run's journal against an edited program, from this terminal under a read
