@@ -24,11 +24,15 @@ import {
   type PersistentConsumerCheckpoint,
   type SpaceBackupSelection,
   realDirNoSymlink,
+  spaceBackupInventory,
 } from "@cotal-ai/core";
 import { protectedLocalEntries, readLocalRecordSource, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
 
-export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v1" as const;
+export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v2" as const;
+/** The format before full backups held workflow runs. Such an artifact still restores; its full
+ *  selection is the message, registry and authorization streams, and the run stores come back empty. */
+export const BACKUP_MANIFEST_FORMAT_V1 = "cotal-space-backup/v1" as const;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 const COPY_BUFFER_BYTES = 1024 * 1024;
@@ -49,7 +53,7 @@ export interface BackupStreamRecord {
 }
 
 export interface BackupManifest {
-  format: typeof BACKUP_MANIFEST_FORMAT;
+  format: typeof BACKUP_MANIFEST_FORMAT | typeof BACKUP_MANIFEST_FORMAT_V1;
   createdAt: string;
   space: string;
   selection: SpaceBackupSelection;
@@ -103,7 +107,7 @@ export class ArtifactFileFault extends Error {
       : fault === "invalid-name" ? "backup manifest declares a file name that is not a plain name in the artifact folder, such as a path with ../ or an absolute path; the name was not printed"
       : fault === "manifest-not-regular" ? "backup artifact manifest.json is not a regular file, such as a symbolic link; it was not read"
       : fault === "manifest-too-large" ? `backup artifact manifest.json is larger than its ${MAX_MANIFEST_BYTES / 1024 / 1024} MiB limit; it was not read`
-      : fault === "manifest-invalid" ? `backup artifact manifest.json is not a valid ${BACKUP_MANIFEST_FORMAT} manifest${reason ? `: ${reason}` : ""}`
+      : fault === "manifest-invalid" ? `backup artifact manifest.json is not a valid cotal-space-backup manifest${reason ? `: ${reason}` : ""}`
       : `backup artifact file ${file} does not match its declared size and SHA-256`);
     this.name = "ArtifactFileFault";
   }
@@ -241,10 +245,19 @@ function parseManifest(path: string, pinnedBytes?: Buffer): BackupManifest {
   }
 }
 
+/** The streams an artifact holds for its selection. A user-mode artifact holds no workflow store:
+ *  the records store's lifecycle heads name credential ledger rows in the auth store, which a backup
+ *  does not carry, so a restored head would name a row that is gone. */
+export function artifactStreams(manifest: Pick<BackupManifest, "format" | "space" | "selection" | "mode">): readonly string[] {
+  const inventory = spaceBackupInventory(manifest.space);
+  if (manifest.selection !== "full") return inventory.registry;
+  return manifest.format === BACKUP_MANIFEST_FORMAT_V1 || manifest.mode === "user" ? inventory.backedUp.filter((stream) => stream.class !== "workflow").map((stream) => stream.name) : inventory.full;
+}
+
 /** The manifest's shape, format, inventory and source identity. Messages name no manifest value. */
 function validManifest(value: BackupManifest): BackupManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("backup manifest is not a JSON object");
-  if (value.format !== BACKUP_MANIFEST_FORMAT) throw new Error("backup manifest names an unsupported format");
+  if (value.format !== BACKUP_MANIFEST_FORMAT && value.format !== BACKUP_MANIFEST_FORMAT_V1) throw new Error("backup manifest names an unsupported format");
   if (!value.space || !["full", "registry"].includes(value.selection) || !["auth", "open", "user"].includes(value.mode))
     throw new Error("backup manifest has invalid space, selection, or mode");
   if (typeof value.space !== "string" || value.space.length > 200) throw new Error("backup manifest names an invalid space");

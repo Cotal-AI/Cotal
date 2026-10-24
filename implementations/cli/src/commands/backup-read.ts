@@ -1,8 +1,9 @@
-import { lstatSync } from "node:fs";
+import { lstatSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, presentationOf, readMaintenanceJournal, writeResult, type Report } from "@cotal-ai/workspace";
 import { ArtifactFileFault, inspectBackupArtifact, missingBackupPath, missingBackupPathText, TRUST_BOUND_TEXT } from "../lib/backup-artifact.js";
+import { cotalRoot } from "../lib/paths.js";
 
 /** Integrity is a file observation, never evidence of a successful restore or authority continuity. */
 export function backupRead(args: ParsedArgs): void {
@@ -13,6 +14,10 @@ export function backupRead(args: ParsedArgs): void {
     if (isCommandFailure(error)) throw error;
     const missing = missingBackupPath(resolve(directory!));
     if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(resolve(directory!), missing)}; nothing was checked`, { target: { directory: resolve(directory!), folder: dirname(resolve(directory!)), missing }, remedy: "name an existing backup artifact folder" });
+    // A folder or file that holds nothing a backup create writes is not an artifact at all, so it is
+    // not told the story of an interrupted create, unless this root's claim names it as the
+    // destination of a create that was interrupted before it wrote a file.
+    if (notAnArtifact(resolve(directory!)) && !claimedDestination(resolve(directory!))) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${resolve(directory!)} is not a backup artifact: it ${statSync(resolve(directory!)).isDirectory() ? "holds no manifest.json and no file a backup create writes" : "is not a folder"}; nothing in it was checked`, { target: { directory: resolve(directory!) }, remedy: "name the folder backup create wrote" });
     if (manifestMissing(resolve(directory!))) throw new CommandFailure("refused", "SCHEMA_INVALID", `${resolve(directory!)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`, { target: { directory: resolve(directory!), fault: "manifest-missing" }, remedy: "it cannot be verified or restored. In the folder it was created from, cotal status names the interrupted backup attempt, and cotal backup recover <attempt> --yes removes this directory; then create a new backup" });
     if (error instanceof ArtifactFileFault) throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; no file content or other manifest value was printed`, { target: { directory: resolve(directory!), file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: verify another copy of the same artifact, or create a new backup from a stopped preserved cut; this command did not restore, start a broker or write a staging directory" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the artifact is missing, unreadable, changed, or does not match its declared format/inventory/integrity; raw manifest values were not printed", { remedy: "inspect the original private artifact without editing it; this command did not restore, start a broker or write a staging directory" });
@@ -28,6 +33,24 @@ export function backupRead(args: ParsedArgs): void {
       { kind: "lines", lines: ["No broker was contacted or started, no snapshot was restored, and no staging directory was written. The artifact is not modified. Private snapshot bytes, stream configuration bodies and trust material are not printed or uploaded."] },
     ] },
   ] }));
+}
+
+/** Whether `path` is not a folder, or is a folder, linked or not, with no manifest that holds none of
+ *  the files a backup create writes: snapshots, the checkpoints file or a manifest's temporary name. */
+function notAnArtifact(path: string): boolean {
+  try {
+    if (!statSync(path).isDirectory()) return true;
+    if (lstatSync(join(path, "manifest.json"), { throwIfNoEntry: false })) return false;
+    return !readdirSync(path).some((name) => /^stream-[0-9a-f]{24}\.snap$/.test(name) || name === "checkpoints.json" || /^manifest\.json\..+\.tmp$/.test(name));
+  } catch { return false; }
+}
+
+/** Whether the claim on the root this command runs in names `path` as its backup destination. */
+function claimedDestination(path: string): boolean {
+  try {
+    const journal = readMaintenanceJournal(cotalRoot());
+    return journal?.state === "claimed" && !!journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === path);
+  } catch { return false; }
 }
 
 /** A real directory with no `manifest.json`: create writes the manifest last, so this is a backup that

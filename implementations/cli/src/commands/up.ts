@@ -234,14 +234,17 @@ import {
   preservedSourceState,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
+  journaledRestoredStreams,
   registryRestoreNotes,
   replacePreparedDeadRestoreListener,
+  restoreComposition,
   restoreNextStep,
   retainedPreviousStore,
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
+import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
 
 const pendingRestores = new Map<string, PreparedRestore>();
@@ -256,6 +259,7 @@ export interface RestoreStartupResult {
   server: string;
   mode: PreparedRestore["mode"];
   selection: PreparedRestore["selection"];
+  restoredStreams: readonly string[];
   targetPath: string;
   runtime: string;
   brokerPid: number;
@@ -920,6 +924,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
           throw new Error(`--runtime ${values.runtime} contradicts the preserved agent runtime ${runtimes[0]}; omit it to resume the same principals`);
         const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
+        // The resumed broker binds this address, so another listener there would leave the resume
+        // degraded. It is refused here, before anything is journalled or started, as backup create does.
+        await assertEndpointUnreachable(resumeServer).catch((error: Error) => {
+          throw new CommandFailure("refused", "CONFLICT", `${error.message}; the resumed broker needs that address, so nothing was started`, { target: { root, space: journal.space, server: resumeServer }, remedy: `stop the process that listens on ${resumeServer}, then run cotal up again` });
+        });
         // Admit every seat checkpoint the cut wrote and take custody, BEFORE the resume attempt is
         // journalled and long before a manager starts. A refusal here costs nothing because
         // nothing has been started; the same refusal after a launch would be a second writer.
@@ -1802,6 +1811,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // `backup restore` prints its own receipt; `up --restore` names the attempt and its next step here.
     if (restored && !quietRestore) {
       console.log(c.green(`✓ restored the backup ${restored.selection === "registry" ? "registry" : "in full"} as restore attempt ${restored.attemptId}`));
+      const composition = restoreComposition(restored.space, restored.restoredStreams, restored.mode);
+      console.log(c.dim(`restored: ${composition.restoredWords}; recreated empty: ${composition.emptyWords}`));
+      if (composition.note) console.log(c.yellow(composition.note));
       if (restored.selection === "registry")
         for (const line of registryRestoreNotes(restored.attemptId, retainedPreviousStore(restored.root, restored.attemptId))) console.log(c.yellow(line));
       const journal = readMaintenanceJournal(restored.root);
@@ -1811,7 +1823,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext(detached, receiptSpace) }] }] }, "rich", terminalWidth(process.stdout))}`);
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
-      selection: restored.selection, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,
+      selection: restored.selection, restoredStreams: restored.restoredStreams, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,
       delivery, authService, controlPlane, manager,
     });
     return;
@@ -2403,12 +2415,14 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
     const has = (role: string) => cut.members.some((member) => member.role === role);
     const result: RestoreStartupResult = {
       attemptId, space, root, server: launch.server, mode: restored.mode, selection: restored.launch.restoreOnly === "registry" ? "registry" : "full",
+      restoredStreams: journaledRestoredStreams(restored.launch, space, restored.mode),
       targetPath, runtime: launch.runtime, brokerPid: broker.pid, delivery: has("delivery"), authService: has("auth"), controlPlane: true, manager: true,
     };
+    const composition = restoreComposition(space, result.restoredStreams, result.mode);
     if (restoreSink) restoreSink(result);
-    else writeResult(presentationOf(values), { command: "up", target: { root, space, server: launch.server }, result: { kind: "controller-stack-restore", root, space, server: launch.server, attemptId, targetPath, selection: result.selection, retiredBrokerRemoved: attempt.brokerRequired } }, (row) => ({ sections: [{ title: "Controller stack restored", blocks: [
-      { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Broker", row.server], ["Attempt", row.attemptId], ["Store", row.targetPath], ["Selection", row.selection]] },
-      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness."] },
+    else writeResult(presentationOf(values), { command: "up", target: { root, space, server: launch.server }, result: { kind: "controller-stack-restore", root, space, server: launch.server, attemptId, targetPath, selection: result.selection, restored: composition.restored, recreatedEmpty: composition.recreatedEmpty, retiredBrokerRemoved: attempt.brokerRequired } }, (row) => ({ sections: [{ title: "Controller stack restored", blocks: [
+      { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Broker", row.server], ["Attempt", row.attemptId], ["Store", row.targetPath], ["Selection", row.selection], ["Restored", composition.restoredWords], ["Recreated empty", composition.emptyWords]] },
+      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : [])] },
     ] }] }));
     return values.foreground === true && !restoreSink;
   }

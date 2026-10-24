@@ -100,6 +100,13 @@ try {
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(partial)], values: {}, raw: [] }), (error: unknown) =>
     isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`
       && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").includes("cotal backup recover <attempt> --yes"));
+  // A folder that holds nothing a create writes, or a file, is not an artifact, not an interrupted one.
+  const plain = join(root, "not-a-backup");
+  mkdirSync(plain);
+  writeFileSync(join(root, "a-file"), "x");
+  for (const [mode, path, text] of [["inspect", plain, "holds no manifest.json and no file a backup create writes"], ["verify", plain, "holds no manifest.json and no file a backup create writes"], ["inspect", join(root, "a-file"), "is not a folder"]] as const)
+    assert.throws(() => backupRead({ positionals: [mode, realpathSync(path)], values: {}, raw: [] }), (error: unknown) =>
+      isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.message === `${realpathSync(path)} is not a backup artifact: it ${text}; nothing in it was checked` && !(error.remedy ?? "").includes("recover"));
   // A path that names nothing says whether its folder or the artifact is missing, as restore does.
   for (const [mode, path, missing] of [["verify", join(root, "no-such-folder", "artifact"), "folder"], ["inspect", join(root, "no-such-artifact"), "artifact"]] as const)
     assert.throws(() => backupRead({ positionals: [mode, path], values: {}, raw: [] }), (error: unknown) =>
@@ -125,7 +132,7 @@ try {
   assert.throws(() => stageArtifact(destination, stagingParent), stageFault(null, "invalid-name"));
   assert.throws(verify, verifyFault(null, "invalid-name", /^backup manifest declares a file name that is not a plain name in the artifact folder.*; the name was not printed/), "verify names a traversing file name as its fault");
   writeFileSync(join(destination, "manifest.json"), `${"[".repeat(100_000)}${"]".repeat(100_000)}`);
-  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /^backup artifact manifest\.json is not a valid cotal-space-backup\/v1 manifest: it is not a JSON object/), "verify names a deeply nested manifest as invalid");
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /^backup artifact manifest\.json is not a valid cotal-space-backup manifest: it is not a JSON object/), "verify names a deeply nested manifest as invalid");
   const inventory = (edit: (manifest: { space: string; files: { path: string }[]; streams: { stream: string }[] }) => void) => {
     const manifest = JSON.parse(originalManifest) as { space: string; files: { path: string }[]; streams: { stream: string }[] };
     edit(manifest);
