@@ -72,6 +72,8 @@ function rowText(text: string): string {
   }
   return text;
 }
+/** How long a `--dms` read waits for the roster that names DM recipients before it shows principals. */
+const ROSTER_MS = 2_000;
 
 /** One retained message as `history` reports it. `seq` is the chat stream sequence; DMs and reads
  *  mediated by the delivery daemon carry none. */
@@ -235,7 +237,8 @@ export async function history(args: ParsedArgs): Promise<void> {
     channels: [],
     consume: false,
     registerPresence: false,
-    watchPresence: false,
+    // A DM carries only its recipient's principal, so the roster names a recipient that sent nothing.
+    watchPresence: Boolean(v.dms),
     card: { name: "history", kind: "endpoint" },
   });
   ep.on("error", (e: Error) => errors.push(e.message));
@@ -258,7 +261,8 @@ export async function history(args: ParsedArgs): Promise<void> {
       ? { message: `history could not read ${warnings.length === 1 ? "one part" : `${warnings.length} parts`} of what it reports; the warnings name ${warnings.length === 1 ? "it" : "each"}` }
       : undefined;
     const completeness = partial ? "partial" : "complete";
-    const names = new Map(result.items.map((item) => [item.from.id, item.from.name]));
+    if (v.dms) await ep.waitForPresenceSnapshot(ROSTER_MS);
+    const names = new Map([...ep.getRoster().map((p) => [p.card.id, p.card.name] as const), ...result.items.map((item) => [item.from.id, item.from.name] as const)]);
     if (live && presentation === "json") {
       // A follow's snapshot is its first record, and the exit says what `writeResult` would have.
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
@@ -504,8 +508,8 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
   };
 }
 
-/** A DM row shows its recipient's name when a message read so far came from that principal, else
- *  the principal. */
+/** A DM row shows its recipient's name when the roster or a message read so far from that principal
+ *  carries it, else the principal. */
 function where(item: HistoryItem, names: ReadonlyMap<string, string>): string {
   if (item.channel !== null) return `#${item.channel}`;
   return `DM to ${item.to === null ? "?" : names.get(item.to) ?? item.to}`;

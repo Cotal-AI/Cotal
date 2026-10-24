@@ -52,6 +52,7 @@ let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
 let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
+let spaceCompletion!: typeof import("../src/lib/completion.js").spaceCompletion;
 let spawnPersona!: typeof import("../src/commands/spawn.js").spawnPersona;
 let enrollmentInput!: typeof import("../src/commands/spawn.js").enrollmentInput;
 let scrubEnrollmentEnv!: typeof import("../src/commands/spawn.js").scrubEnrollmentEnv;
@@ -76,6 +77,7 @@ try {
   } = await import("@cotal-ai/workspace"));
   ({ checkEnrollmentBundle, enrollmentInput, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersona } = await import("../src/commands/spawn.js"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
+  ({ spaceCompletion } = await import("../src/lib/completion.js"));
   ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
 } catch (e) { cleanScratch(e); }
 
@@ -329,7 +331,8 @@ try {
     check("completion: lists the resolved mesh's personas (not cwd's)", personas.items.map((i) => i.value).join(",") === "builder", personas.items);
     const configFlag = spawnComplete(["--config", ""]);
     check("completion: --config lists the resolved mesh's personas", configFlag.items.map((i) => i.value).join(",") === "builder", configFlag.items);
-    const spaces = spawnComplete(["--space", ""]);
+    // `--space` is completed by the kernel's one rule for every command, not by spawn's own completer.
+    const spaces = spaceCompletion();
     check("completion: --space lists the running spaces", spaces.items.map((i) => i.value).sort().join(",") === "teamA,teamB", spaces.items);
   } finally {
     process.chdir(prevCwd);

@@ -24,10 +24,10 @@
  * only when the old credential eventually expires. A downed reader never comes back without a
  * service restart; there is no file-only fallback.
  */
-import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { chatAuthorityWriteSubjects } from "./chat-session-store.js";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
@@ -607,7 +607,7 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
   }, opts.probeRenewal?.intervalMs ?? (AUTHORITY_CLIENT_TTL_SEC / 2) * 1000);
   let nc: NatsConnection;
   try {
-    nc = await connect({
+    nc = await dialerFor(opts.server)({
       servers: opts.server,
       name: opts.label,
       authenticator: jwtAuthenticator(() => currentJwt, new TextEncoder().encode(identity.seed)),

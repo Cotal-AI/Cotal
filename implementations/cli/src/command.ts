@@ -50,6 +50,7 @@ import { chooseMeshTarget } from "./lib/choose-target.js";
 import { ConfirmationRequired } from "./lib/confirmation-required.js";
 import { MissingFlags } from "./lib/missing-flags.js";
 import { UnusableFile } from "./lib/unusable-file.js";
+import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
@@ -123,8 +124,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes or a missing scripted input is not a grammar mistake, and its remedy says the
-  // whole fix. A file the command cannot use is reported like one that does not exist.
-  if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile)) {
+  // whole fix. A file the command cannot use is reported like one that does not exist, and a refused
+  // flag value names its corrected value, so it gets the classified report.
+  if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
     stderrLine("✗ ", failure.message, c.red);
     if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
     if (!(failure instanceof ConfirmationRequired) && !(failure instanceof MissingFlags)) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
@@ -552,18 +554,21 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     }
   }
-  // A preferences file that does not validate stops every command except help and shell completion,
-  // as a broken config file does, so nothing runs on a default the person did not mean. `--help` on a
-  // command has already returned above.
+  // A preferences file that does not validate stops every command that could act on a default, as a
+  // broken config file does, so nothing runs on a default the person did not mean. Help, shell
+  // completion, version and docs use no preference, and status reports the file as a warning, so they
+  // still run. `--help` on a command has already returned above.
   if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
     // A COTAL_HOME that cannot be a directory stops them the same way, before any command reads it.
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
-    try {
-      cachedPreferences();
-    } catch (e) {
-      if (!isCommandFailure(e)) throw e;
-      failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+    if (!["version", "docs", "status"].includes(cmd.name)) {
+      try {
+        cachedPreferences();
+      } catch (e) {
+        if (!isCommandFailure(e)) throw e;
+        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+      }
     }
   }
   // A failure raised after the command recorded the space it resolved is reported in that space.

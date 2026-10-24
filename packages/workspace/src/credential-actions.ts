@@ -13,8 +13,9 @@ export const credentialMintFlags = [
   { name: "allow-publish", type: "string", value: "<a,b>", description: "agent: channel post ACL; empty means no entries" },
   { name: "role", type: "string", value: "<role>", description: "agent: scope its role task queue" },
   { name: "provision", type: "boolean", description: "agent: also pre-create this new lifecycle's bind-only inbox and delivery footprint" },
-  { name: "expires-in", type: "string", value: "<seconds>", description: "positive integer credential lifetime; never with --expires-at" },
-  { name: "expires-at", type: "string", value: "<unix-seconds>", description: "absolute credential expiry; never with --expires-in" },
+  { name: "expires-in", type: "string", value: "<seconds>", description: "positive integer credential lifetime (fixed profiles default to 86400, 24 hours); never with --expires-at or --no-expiry" },
+  { name: "expires-at", type: "string", value: "<unix-seconds>", description: "absolute credential expiry; never with --expires-in or --no-expiry" },
+  { name: "no-expiry", type: "boolean", description: "fixed profiles: issue a credential with no expiry claim and record that choice beside its file" },
   { name: "identity", type: "string", value: "<private-creds>", description: "reuse this file's native nkey; the actual resulting lifecycle is reported", completion: "files" },
   spaceFlag, serverFlag, jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
@@ -63,6 +64,7 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   if (!["agent", "observer", "admin"].includes(String(profile))) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint supports agent, observer or admin; internal service profiles are not exposed");
   if (profile !== "agent" && ["allow-subscribe", "allow-publish", "role", "provision"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
+  if (values["no-expiry"] !== undefined && (values["expires-in"] !== undefined || values["expires-at"] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at", { remedy: "pass one of --expires-in, --expires-at or --no-expiry" });
   for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < (key === "expires-in" ? 1 : 0))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
   assertExpiryInRange(values);
   // A past or present expiry writes a credential the broker already refuses, under a label that is

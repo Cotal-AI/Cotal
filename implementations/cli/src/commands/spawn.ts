@@ -87,6 +87,9 @@ import {
   type ConnectFlags,
   type ControlAuth,
   type ControlTarget,
+  DEFAULT_CONNECTOR,
+  manifestExtensionNames,
+  OFFICIAL_CONNECTORS,
   type MeshTarget,
   type SpaceMaterialComposition,
   recordOperationSpace,
@@ -97,7 +100,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, onInstance, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { askManager, failIfNotOk, liveManagerIds, onInstance, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -465,6 +468,19 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
   return [];
 }
 
+/** Whether the installed manifest lists a connector named `name`. An unreadable manifest answers
+ *  true, so the import's own refusal reports it. */
+function connectorListed(name: string): boolean {
+  try { return manifestExtensionNames("connector").includes(name); } catch { return true; }
+}
+
+/** The refusal for a harness with no installed connector, naming the package when it is official. */
+function missingConnector(name: string, target: object): CommandFailure {
+  const pkg = OFFICIAL_CONNECTORS[name];
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${name}" is installed`, { target,
+    remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
+}
+
 /** Comma-list flag → string[] (shared by both spawn modes). Only an absent flag is `undefined` and
  *  defers to the persona; an empty value is the empty list, so `--subscribe ""` clears it. */
 const splitFlag = (v?: string) => (v === undefined ? undefined : v.split(",").map((s) => s.trim()).filter(Boolean));
@@ -586,6 +602,7 @@ export async function launchManagedPersona(
     throw new CommandFailure("refused", "PERMISSION_DENIED", `space "${t.space}" requires the event plane by registration policy; no launch was submitted`);
   }
   provenance.read("mesh", `${t.space} (${t.server})`);
+  if (on === undefined && !t.auth.bearer) await refuseWithoutLiveManager(t.space, t.server, t.auth, { space: t.space, managerInstanceId: null, managerEpoch: null }, "launch an agent");
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
   const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
   const defaultAgent = callerHarness(t.space);
@@ -636,6 +653,9 @@ export async function launchManagedPersona(
     const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "unimplemented": "UNSUPPORTED" };
     const code = reply.code === undefined ? undefined : refusal[reply.code];
     const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
+    // The broker attested that no manager received an unpinned launch: none takes the class queue.
+    if (on === undefined && !t.auth.bearer && reply.unanswered && reply.nativeOutcome === "not-executed")
+      throw await unservedClassLaunch(seat ? undefined : flags, t, values.agent ?? defaultAgent, { target, native });
     if (reply.nativeOutcome === "not-executed" && code) {
       // A manager without the default persona: name your other live managers whose catalog has one.
       const elsewhere = ref === "default" && managerConfigRef === undefined && reply.error?.startsWith('no persona "default"') ? await managersWithPersona(flags, reply.managerInstanceId ?? on, "default").catch((): string[] => []) : [];
@@ -669,6 +689,31 @@ export async function launchManagedPersona(
   if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: { message: verdict.message } }, remedy: "inspect the original agent and reattach; do not relaunch" });
   if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: "inspect the original lifecycle and manager before another startup" });
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
+}
+
+/** Why no manager received an unpinned launch. A manager whose boot inventory found no agent
+ *  application leaves the class queue, so when every live one reports that on its own instance rail
+ *  the refusal names the application to add. A seat (`flags` undefined) does not read the census
+ *  as the operator. `agent` is the harness this caller would choose, for the install hint. */
+async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTarget, agent: string | undefined, at: { target: object; native: object }): Promise<CommandFailure> {
+  if (flags && await noManagerTakesClassLaunches(flags, t).catch(() => false)) {
+    const name = agent ?? DEFAULT_CONNECTOR, pkg = OFFICIAL_CONNECTORS[name];
+    return new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager of yours takes unpinned launches: none has an agent application installed; nothing was launched", { ...at,
+      remedy: `add one where the manager runs, such as ${pkg ? `\`cotal ext add ${pkg}\`` : `\`cotal ext add <npm-package>\` for "${name}"`}, then restart that manager; it reads its agent applications when it starts` });
+  }
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager of yours received this unpinned launch; nothing was launched", { ...at, remedy: "run the spawn again, or pin one manager with --on <instance> from cotal ps" });
+}
+
+/** True when the registry lists a live manager and each one's own status says it runs agents but
+ *  takes no unpinned launch. Status has no scatter route, so each is read pinned to its instance. */
+async function noManagerTakesClassLaunches(flags: ConnectFlags, t: ControlTarget): Promise<boolean> {
+  for (const instanceId of await liveManagerIds(t.space, t.server, t.auth)) {
+    const pinned = await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" });
+    const status = await askManager(pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId });
+    const data = status.data as { classSpawn?: unknown; execution?: unknown } | undefined;
+    if (!status.ok || data?.classSpawn !== false || data.execution === "none") return false;
+  }
+  return true;
 }
 
 /** The harness the manager's `spawn` resolves for this persona, read with the same fields `start` sends. */
@@ -900,7 +945,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // A manager runs it only with --detach or --on, and the persona then stays on the manager's
   // execution host. Every other spawn keeps the native custody path below, in this terminal.
   if (!direct) return launchManagedPersona(values, positionals, events, cliLaunchOptions);
-  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
   if (values.creds) {
@@ -984,7 +1028,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
     } else if (code === "ENOENT" && path !== join(target.personaRoot, `${ref}.md`)) {
       // A path reference opened that one file and never read the catalog, so name the file.
-      console.error(c.red(`✗ no persona "${ref}"${fromEnv} - ${path} not found`));
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona "${ref}"${fromEnv}: ${path} was not found`, { target: { space, path }, remedy: "check the path, or name a persona from the catalog" });
     } else if (code === "ENOENT") {
       // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
       // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
@@ -995,13 +1039,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
       const fix = defaultPersonaFix(target);
       const write = fix.cwd ? `run \`${fix.command}\` in ${fix.cwd} to write one` : `create one with \`${fix.command}\``;
-      console.error(
-        c.red(
-          ref === "default" && personaFrom === undefined
-            ? `✗ no default persona in ${where} - ${write}, name a persona: \`cotal spawn <name>\`, or pass a persona file: \`cotal spawn --file <persona.md>\``
-            : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or a persona file elsewhere with \`--file <persona.md>\``,
-        ),
-      );
+      throw ref === "default" && personaFrom === undefined
+        ? new CommandFailure("refused", "TARGET_NOT_FOUND", `no default persona in ${where}`, { target: { space, path }, remedy: `${write}, name a persona with \`cotal spawn <name>\`, or pass a persona file with \`cotal spawn --file <persona.md>\`` })
+        : new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona "${ref}"${fromEnv} in ${where}`, { target: { space, path }, remedy: "pass a catalog name, or a persona file elsewhere with `--file <persona.md>`" });
     } else {
       console.error(c.red(`✗ ${(e as Error).message}`));
     }
@@ -1074,6 +1114,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   try {
     await materializeExtension({ kind: "connector", name: agentType });
   } catch (e) {
+    if (!connectorListed(agentType)) throw missingConnector(agentType, { space, path });
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
@@ -1159,6 +1200,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), run the agent there, or add -d to launch it through one of your managers`));
     process.exit(1);
   }
+  // Said once every check above has passed, so a refusal is never read as a launch that started.
+  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
   // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. The SAME
   // retirement serves a failed provisioning or launch (rollback) and the normal foreground

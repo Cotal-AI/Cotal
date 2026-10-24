@@ -489,7 +489,7 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
-// --- up refuses a --server with no port, an IPv6 address, a --host that is no bind host or names
+// --- up refuses a --server with no port, an IPv6 address or a host name, a --host that is no bind host or names
 // another address than --server, and a --server that the default bind host does not serve, before
 // project lookup ---
 {
@@ -498,6 +498,7 @@ async function completionOut(positionals: string[]): Promise<string> {
   const refused: [string[], RegExp, string?][] = [
     [["--server", "nats://127.0.0.1"], /^--server names no port/],
     [["--server", "nats://[::1]:4222"], /^--server names an IPv6 address/],
+    [["--server", "nats://localhost:4222"], /^--server names the host localhost/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:4222"],
     [["--host", "::1"], /^--host names an IPv6 address/],
     [["--host", "[::1]"], /^--host names an IPv6 address/],
     [["--host", "nats://127.0.0.1"], /^--host nats:\/\/127\.0\.0\.1 looks like a URL/],

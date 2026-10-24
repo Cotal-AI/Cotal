@@ -79,7 +79,7 @@ writeFileSync(join(material, "membership-rw.creds"), await mintCreds(auth, rwId,
 writeFileSync(join(material, "membership-observer.creds"), sysObserver, { mode: 0o600 });
 const agents = agentCredsDir(root, SPACE);
 mkdirSync(agents, { recursive: true, mode: 0o700 });
-// A static agent cred with no expiry, what `auth mint` writes without an expiry flag: a finding.
+// A static agent cred with no expiry and no record beside it that someone asked for one: a finding.
 const alice = join(agents, "alice.creds");
 writeFileSync(alice, unbounded, { mode: 0o600 });
 // User-auth managed-agent sentinel: deny-all callout-account bearer plumbing, NOT a static agent cred.
