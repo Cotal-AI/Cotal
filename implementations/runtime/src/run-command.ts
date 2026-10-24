@@ -840,10 +840,13 @@ async function resolveRunControlTarget(values: RunValues): Promise<{ target: Con
   return { ...resolved, target: { ...target, auth: { ...target.auth, managerInstanceId: on } } };
 }
 
-function renderLangProblem(d: EpErrorDetail): string {
+/** A validation problem the manager returned, as `run validate` prints one. Each value can quote the
+ *  program, such as a step name, so its control characters are escaped before the terminal sees them. */
+export function renderLangProblem(d: EpErrorDetail): string {
   const where = d.where as { file?: string; line?: number; column?: number } | undefined;
   const at = where ? `${where.file ?? "<program>"}:${where.line ?? "?"}:${where.column ?? "?"}` : "<program>";
-  return `  ${String(d.code ?? "L????")} ${String(d.title ?? "")} (${at})\n    ${String(d.cause ?? "")}\n    fix: ${String(d.fix ?? "")}`;
+  const text = (value: unknown) => oneLine(String(value ?? ""));
+  return `  ${text(d.code ?? "L????")} ${text(d.title)} (${text(at)})\n    ${text(d.cause)}\n    fix: ${text(d.fix)}`;
 }
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {

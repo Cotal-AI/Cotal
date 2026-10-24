@@ -6070,7 +6070,8 @@ exit 2, and with `--json` one refusal envelope on stdout.
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
-run is recorded; a program that does not validate is refused with every problem listed. A program
+run is recorded; a program that does not validate is refused with every problem listed, each
+control character in it shown as its `\uXXXX` escape. A program
 file that cannot be read is refused with `TARGET_NOT_FOUND`, exit 2, by every verb that takes one.
 A `start` interrupted with Ctrl-C or `SIGTERM` after its request went out reports outcome `unknown`,
 because the manager may already have recorded the run, and exits 130 or 143. List the runs with

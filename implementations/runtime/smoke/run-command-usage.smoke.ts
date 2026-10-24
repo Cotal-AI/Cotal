@@ -13,10 +13,10 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EpEnvelopeError, EP_UNANSWERED, registry, type Command, type RunStatusView } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
 import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
-import { managerRefusal, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
+import { managerRefusal, renderLangProblem, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
 
 let ok = 0, fail = 0;
@@ -367,6 +367,14 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with cotal run show run-1", blocked);
   c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with cotal run show run-1 --on mgr-1");
   c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
+}
+
+// A validation problem a hosted start prints quotes the program, so a step name's control characters
+// reach the terminal escaped, as run validate shows them.
+{
+  const name = "\u001b]52;c;SGFsbG8=\u0007\u001b]0;FENSTER\u0007";
+  const shown = renderLangProblem({ kind: LANG_PROBLEM_DETAIL_KIND, code: "L3014", title: "Malformed step name", where: { file: "osc.cotal.js", line: 1, column: 28 }, cause: `"${name}" is not a well-formed step name.`, fix: "Use kebab-case." });
+  c("a hosted start's problem line escapes a step name's control characters", !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(shown) && shown.includes("\\u001b]52;c;SGFsbG8=\\u0007") && shown.startsWith("  L3014 Malformed step name (osc.cotal.js:1:28)\n    "), shown);
 }
 
 restore();
