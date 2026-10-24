@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 649,
+    "total": 650,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 545
+    "non-render/control": 546
   },
   "renderers": [
     {
@@ -3627,13 +3627,6 @@
       "rationale": "Doctor renewal record parse: admits only the lease or offline authority values; not an agent presence status."
     },
     {
-      "path": "implementations/cli/src/commands/down-services.ts",
-      "kind": "status-token",
-      "anchor": "\"waiting\"",
-      "class": "non-render/control",
-      "rationale": "Bare down service plan table: \"waiting\" is the color tone for a service marked stop, not any peer's presence."
-    },
-    {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
@@ -3657,9 +3650,23 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
-      "anchor": "assertBareDownServicesVerified(mesh.space, services)",
+      "anchor": "liveServicesRefusal(mesh.space, serviceChecks, \"down\")",
       "class": "non-render/control",
-      "rationale": "Down control flow: verifies the bare-down service plan for the registered space; no rendering."
+      "rationale": "Down preview control flow: builds the refusal the real stop would give for the registered space's live services; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the real stop would refuse: ${refusal.message}${refusal.remedy ? `; ${refusal.remedy}` : \"\"}`",
+      "class": "non-render/control",
+      "rationale": "Down preview warning text: the service refusal's message and remedy; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`; ${refusal.remedy}`",
+      "class": "non-render/control",
+      "rationale": "Down preview warning text: appends the service refusal's remedy; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/down.ts",

@@ -1187,8 +1187,9 @@ hosts, supervisor receipts, and retained install, uninstall and unit-action
 attempts in the selected space's workstation store. Saved records are not attributed to this project root, and their recorded
 states do not prove live process or supervisor status. A submitted native attempt may have
 changed state; the preview neither reconciles nor retries it. For each saved service instance it
-also shows what bare `down` would do with it: stop it, skip it as already stopped, or refuse, with
-the reason. That plan observes processes on this host and changes nothing. Other local registrations with
+also shows whether it blocks bare `down`: one that still runs or cannot be verified blocks it, with
+the reason, and one already stopped is skipped. When one blocks, the preview warns with the refusal
+the real stop would give. That check observes processes on this host and changes nothing. Other local registrations with
 the exact recorded broker address appear as possible sharing. No match does not exclude
 address aliases, remote tenants or live attachments. The preview does not establish process
 ownership, the complete service set, exclusive broker use or agent impact.
@@ -1350,23 +1351,22 @@ manager with `cotal up`, then run `cotal down --preserve-state` again.
 It also refuses `LIFECYCLE_BLOCKED`, exit 2, before it stops anything, while a saved service in the
 space still runs or cannot be verified, because the service depends on the broker it would stop.
 The refusal names each one and the `cotal service stop <name> --instance <id> --space <space> --yes`
-that stops it. Bare `down` stops those services first instead.
+that stops it. Bare `down` refuses the same way.
 The preserved state records its store by absolute path. If the project folder is moved after
 `down --preserve-state`, `up`, `backup create` and `backup restore` refuse `CONFLICT`, exit 2, name
 the folder it was moved from, and say to move it back there first. A store missing from its recorded
 path is refused `TARGET_NOT_FOUND` with that path; only `backup restore --accept-missing-source`
 restores over a lost store.
 
-After those checks, a retained bare apply stops the selected space's service instances before its
-pidfile sweep. Each goes through the service controller with the checks and receipt of
-`cotal service stop <name> --instance <id> --yes`, and saved definitions stay. An instance whose
-process is already gone is skipped. Every instance is checked before the first stop, and one that
-cannot be verified refuses with no service stopped and the broker still running. An unreadable
-service record keeps the code of its read refusal. A retained native attempt, an unsettled request,
-a process that cannot be observed, or a record from another host, which bare `down` does not touch,
-refuses `LIFECYCLE_BLOCKED`, exit 2. The remedy names that service and the command to run. A stop that does not confirm ends the sequence with the
-stack still running, and completed stops are not rolled back. `--with-agents` refuses when a
-service would be stopped, because the legacy reap does not reach a service's agents.
+After those checks, a retained bare apply refuses `LIFECYCLE_BLOCKED`, exit 2, before its pidfile
+sweep while a service instance in the selected space still runs or cannot be verified, because the
+service depends on the broker the sweep stops. It stops nothing. As on a controller stack, bare
+`down` does not stop a service itself: the refusal names each instance with the
+`cotal service stop <name> --instance <id> --space <space> --yes` that stops it, then `cotal down`
+again. An instance whose process is already gone is skipped, and saved definitions stay. An
+unreadable service record keeps the code of its read refusal. A retained native attempt, an
+unsettled request, a process that cannot be observed, or a record from another host, which bare
+`down` does not touch, refuses too, and the remedy names the command that inspects or stops it.
 
 
 ```bash
@@ -2811,7 +2811,9 @@ the entry's root; the registry records only the path.
 
 `meshes rm` drops records. It never stops a mesh. For a mesh running on this machine `cotal down`
 is the right verb, and `rm` refuses and says so, with or without `--force`, because `cotal down`
-finds a running mesh by its record. `--force` drops a record only when its folder cannot be checked
+finds a running mesh by its record. A stack `cotal up` started stays a prepared space at its root
+after that `down`, which `meshes rm` does not list or remove, so the refusal names `cotal space
+forget <space>` for it. `--force` drops a record only when its folder cannot be checked
 for a running mesh. A broker record that cannot be proven
 stopped counts as running, as it does for `clean`. A hand-added record is removed by
 `meshes rm`, by an `add --force` replacement, or by a `cotal up` that actually starts the broker for that same space, server and root, which becomes that
@@ -5891,8 +5893,10 @@ user-auth agents. `team remove` retires a returned deployment by its full ID wit
 [Recorded team views](#recorded-team-views). `spawn -f` no longer deploys a manifest; an additive
 ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. `up -f`,
 `team deploy` and `team remove` take `--dry-run` to print the plan without mutating anything.
-`topology` validates the manifest and renders its channel / role / ACL graph. See
-[Define a team](define-a-team.md) and the [manifest reference](manifest.md).
+`topology` validates the manifest and renders its channel / role / ACL graph. Given a folder
+instead of a manifest file, `topology view`, `up -f` and `down -f` refuse with exit 1, naming the
+path and that it is a directory. See [Define a team](define-a-team.md) and the
+[manifest reference](manifest.md).
 
 ## ext
 
