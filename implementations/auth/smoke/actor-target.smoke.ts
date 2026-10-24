@@ -8,7 +8,9 @@
  * under both spellings and say that actor grants need a user-auth space, grant and revoke before
  * they ask for a subject or the ACL flags; nothing is written. A
  * user-auth space lists its row under both spellings, with its role, label and parent in the table
- * and in `--json`, which `actor list` takes as `auth grants` does. Bare `cotal auth` fills its Next lines
+ * and in `--json`, which `actor list` takes as `auth grants` does. With `--sub`, both list only the rows
+ * of the owner that IdP subject derives to, titled with the subject and that owner, and an empty
+ * `--sub` is a value refusal. Bare `cotal auth` fills its Next lines
  * with the named or resolved space. `auth retire` refuses UNSUPPORTED there too, and its help and
  * refusal name the lever that works, rotating the space identity. Broker-free; the mesh registry and
  * the prepared spaces are private to this run.
@@ -143,6 +145,29 @@ try {
       { actor: "rev", role: "reviewer", label: "Code reviewer", parent: `${owner}.cli` },
     ], "actor list --json carries each row's role, label and parent");
     assert.deepEqual(actorItems.result, (JSON.parse(authJson.out) as { result: unknown }).result, "actor list --json and auth grants --json list the same rows");
+
+    // `--sub` lists one IdP subject's rows. The ledger keeps no subject, so the subject derives to its
+    // owner as a grant does, and another owner's row is left out.
+    const otherOwner = deriveOwnerForIdpSubject(secret, issuer, "other-human");
+    grantActor(dir, { owner: otherOwner, actor: "cli", scope: ["spawn"], allowSubscribe: [">"], allowPublish: [">"] });
+    for (const [name, cmd, verb] of [["actor list", actorCommand, "list"], ["auth grants", authCommand, "grants"]] as const) {
+      const plain = flat((await run(cmd, root, { space, sub: "target-human" }, [verb])).out);
+      assert.ok(plain.includes(`Rows for target-human (owner ${owner})`), `${name} --sub is titled with the subject and its owner: ${plain}`);
+      assert.ok(plain.includes(`${owner}.cli`) && plain.includes(`${owner}.rev`) && !plain.includes(otherOwner), `${name} --sub lists only that subject's rows: ${plain}`);
+    }
+    type SubjectEnvelope = { target: unknown; result: { subject?: string; owner?: string; items: { owner: string; actor: string }[] } };
+    const bySubject = JSON.parse((await run(actorCommand, root, { space, sub: "target-human", json: true }, ["list"])).out) as SubjectEnvelope;
+    const bySubjectAuth = JSON.parse((await run(authCommand, root, { space, sub: "target-human", json: true }, ["grants"])).out) as SubjectEnvelope;
+    assert.deepEqual(bySubject.target, { space, owner }, "actor list --sub --json names the owner in its target");
+    assert.deepEqual([bySubject.result.subject, bySubject.result.owner], ["target-human", owner], "actor list --sub --json carries the subject and its owner");
+    assert.deepEqual(bySubject.result.items.map((item) => `${item.owner}.${item.actor}`), [`${owner}.cli`, `${owner}.rev`], "actor list --sub --json lists only that subject's rows");
+    assert.deepEqual(bySubject.result, bySubjectAuth.result, "actor list --sub and auth grants --sub list the same rows");
+    const everyRow = JSON.parse((await run(actorCommand, root, { space, json: true }, ["list"])).out) as SubjectEnvelope;
+    assert.ok(everyRow.result.items.some((item) => item.owner === otherOwner) && everyRow.result.subject === undefined, "control: without --sub every owner's rows are listed");
+    const nobody = flat((await run(actorCommand, root, { space, sub: "nobody-human" }, ["list"])).out);
+    assert.ok(nobody.includes(`Rows for nobody-human (owner ${deriveOwnerForIdpSubject(secret, issuer, "nobody-human")})`) && nobody.includes("No rows for this owner"), `a subject with no rows lists none: ${nobody}`);
+    const empty = await run(actorCommand, root, { space, sub: "" }, ["list"]);
+    assert.deepEqual([empty.failure?.code, empty.failure?.selfContained, empty.out], ["USAGE_INVALID", true, ""], "an empty --sub is a value refusal that lists nothing");
   }
 
   // 4. A registered static space has no user-auth ledger anywhere: list, grant and revoke refuse

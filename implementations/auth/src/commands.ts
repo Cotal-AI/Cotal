@@ -10,7 +10,7 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
 import { readFileSync } from "node:fs";
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, writePrivateRecord, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -312,11 +312,16 @@ function publicActor(row: ActorRow & { kind?: string }) {
   return { owner: row.owner, actor: row.actor, kind: row.kind, role: row.role ?? null, label: row.label ?? null, parent: row.parent ?? null, scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish };
 }
 
-function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[]) {
-  return { sections: [{ title: "Recorded actor grants", blocks: [
+/** The ledger rows of one IdP subject, as `--sub` names them: the ledger keeps no subject, so the
+ *  owner they derive to is shown beside it. */
+type SubjectRows = { subject: string; owner: string };
+
+function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[], only?: SubjectRows) {
+  const title = only ? `Rows for ${oneLine(boundedValue(only.subject, SHOWN_VALUE_MAX))} (owner ${only.owner})` : "Recorded actor grants";
+  return { sections: [{ title, blocks: [
     { kind: "fields" as const, rows: [["Space", space], ["Source", "local authoritative actor ledger"]] as [string, string][] },
     // A re-grant replaces the whole row, so every field it must spell again is shown.
-    rows.length ? { kind: "table" as const, columns: [{ key: "principal", label: "Principal" }, { key: "kind", label: "Kind" }, { key: "scope", label: "Capabilities" }, { key: "read", label: "May read" }, { key: "post", label: "May post" }, { key: "role", label: "Role" }, { key: "label", label: "Label" }, { key: "parent", label: "Parent" }], rows: rows.map((row) => ({ principal: `${row.owner}.${row.actor}`, kind: row.kind ?? "not recorded", scope: row.scope.join(", ") || "none", read: row.allowSubscribe.join(", ") || "none", post: row.allowPublish.join(", ") || "none", role: row.role ?? "none", label: row.label ?? "none", parent: row.parent ?? "none" })) } : { kind: "lines" as const, lines: ["No rows in this authoritative ledger snapshot."] },
+    rows.length ? { kind: "table" as const, columns: [{ key: "principal", label: "Principal" }, { key: "kind", label: "Kind" }, { key: "scope", label: "Capabilities" }, { key: "read", label: "May read" }, { key: "post", label: "May post" }, { key: "role", label: "Role" }, { key: "label", label: "Label" }, { key: "parent", label: "Parent" }], rows: rows.map((row) => ({ principal: `${row.owner}.${row.actor}`, kind: row.kind ?? "not recorded", scope: row.scope.join(", ") || "none", read: row.allowSubscribe.join(", ") || "none", post: row.allowPublish.join(", ") || "none", role: row.role ?? "none", label: row.label ?? "none", parent: row.parent ?? "none" })) } : { kind: "lines" as const, lines: [only ? "No rows for this owner in this authoritative ledger snapshot." : "No rows in this authoritative ledger snapshot."] },
     { kind: "lines" as const, lines: [{ text: "Recorded grants are not proof of current connections, task progress or the authority of a cached account session.", tone: "hint" as const }] },
   ] }] };
 }
@@ -364,8 +369,10 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
   await legibly(async () => {
     if (sub === "list") {
       if (!(await loadOwnerSecret(st.store, space)) || !loadPinnedIdp(dir)) throw noLedger(st, "an empty grant list was not inferred");
-      const items = loadActorLedger(dir).sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)).map(publicActor);
-      writeResult(presentationOf(args.values), { command, target: { space }, result: { kind: "actor-grants", items } }, (result) => grantView(space, result.items));
+      // `--sub` derives its owner as a grant does, so a subject's rows are found with no subject stored.
+      const only = values.sub === undefined ? undefined : { subject: values.sub, owner: await resolveGrantOwner(st, { sub: values.sub }, "an empty grant list was not inferred") };
+      const items = loadActorLedger(dir).filter((row) => !only || row.owner === only.owner).sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)).map(publicActor);
+      writeResult(presentationOf(args.values), { command, target: only ? { space, owner: only.owner } : { space }, result: { kind: "actor-grants", ...only, items } }, (result) => grantView(space, result.items, only));
       return;
     }
     if (sub === "grant") {
@@ -594,11 +601,11 @@ const authCommands: Command[] = [
     subcommands: [
       { name: "grant", flagNames: ["space", "sub", "owner", "full", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent"], summary: "store an actor's whole ledger row: name all three ACL flags, or --full for the wide defaults", usage: "cotal actor grant <actor> (--sub <IdP subject> | --owner <u_…>) (--full | --scope a,b --allow-subscribe a,b --allow-publish a,b) [--role r] [--label l] [--parent <owner.actor>] [--space <s>]" },
       { name: "revoke", flagNames: ["space", "sub", "owner"], summary: "revoke an actor's ledger row", usage: "cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--space <s>]" },
-      { name: "list", flagNames: ["space"], summary: "list the space's actor ledger", usage: "cotal actor list [--space <s>]" },
+      { name: "list", flagNames: ["space", "sub"], summary: "list the space's actor ledger, or one IdP subject's rows", usage: "cotal actor list [--sub <IdP subject>] [--space <s>]" },
     ],
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the resolved mesh, as for auth grants)" },
-      { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to" },
+      { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to; with list, only that subject's rows" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
       { name: "full", type: "boolean", description: "grant: the full row - every ACL flag left off takes its wide default (all channels; scope spawn,role:default). Without it, grant needs --scope, --allow-subscribe and --allow-publish" },
       { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise and role:<r> (with --full: default spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
@@ -744,9 +751,12 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   const list = command === "auth" ? "grants" : "list";
   if (extra.length || (mode !== list && mode !== "grant" && mode !== "revoke") || (mode === list ? actor !== undefined : !actor))
     throw new CommandFailure("refused", "USAGE_INVALID", grantUsage(command));
-  const allowed = [...GRANT_COMMON_FLAGS, ...(mode === list ? [] : ["sub", "owner"]), ...(mode === "grant" ? ["scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full"] : [])];
+  const allowed = [...GRANT_COMMON_FLAGS, ...(mode === list ? ["sub"] : ["sub", "owner"]), ...(mode === "grant" ? ["scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full"] : [])];
   if (Object.keys(flags).some((key) => !allowed.includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", `a flag does not belong to this ${command} action`);
-  if (mode === list) return;
+  if (mode === list) {
+    if (flags.sub === "") throw new CommandFailure("refused", "USAGE_INVALID", `${command} ${list} --sub is empty, so no subject's rows can be listed`, { remedy: `name the IdP subject \`cotal login\` prints: cotal ${command} ${list} --sub <IdP subject>`, selfContained: true });
+    return;
+  }
   // A static or open space has no ledger on any machine, so it refuses before this asks for a subject
   // or ACL it could never use.
   const ledgerless = ledgerlessTarget(flags as { space?: string });
@@ -914,7 +924,7 @@ const authCommand: Command = {
     { name: "retire", flagNames: ["space", "yes", "json", "plain"], summary: "not available from this CLI; revoke-credential stops one minted credential, and rotating the space identity with reset space stops all of them and removes its store", usage: "cotal auth retire <full-lifecycle-uid> [--space <space>] [--yes]", prepareMeshTarget: false },
     { name: "redeem", flagNames: ["space", "json", "plain"], summary: "conferring-handle redemption requires a supported native auth path", usage: "cotal auth redeem <private-handle-file> [--space <space>]", prepareMeshTarget: false },
     { name: "signer", flagNames: ["space", "out", "force", "json", "plain"], summary: "export existing account-signing material to a protected private file", usage: "cotal auth signer --out <private-file> [--force]", prepareMeshTarget: false },
-    { name: "grants", flagNames: ["space", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", usage: "cotal auth grants [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false },
+    { name: "grants", flagNames: ["space", "sub", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", usage: "cotal auth grants [--sub <IdP subject>] [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false },
     { name: "grant", flagNames: ["space", "sub", "owner", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full", "json", "plain"], summary: "store a deliberate operator grant through the existing authority path", usage: "cotal auth grant <actor>", prepareMeshTarget: false },
     { name: "revoke", flagNames: ["space", "sub", "owner", "json", "plain"], summary: "retire and revoke an interactive actor grant under its existing authority", usage: "cotal auth revoke <actor>", prepareMeshTarget: false },
   ] as const).map((sub) => ({ ...sub, outputs: ["json", "plain"] as const })),
