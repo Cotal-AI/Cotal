@@ -9,6 +9,7 @@ import {
   getCurrent,
   loadMeshes,
   pinnedFetch,
+  PinnedFetchRefused,
   removeMesh,
   renderReport,
   terminalWidth,
@@ -334,7 +335,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
       bundle = take(await checkDiscoveryDocument(res));
     } catch (e) {
       const m = (e as Error).message;
-      console.error(c.red(m.startsWith("✗") ? m : `✗ could not fetch ${disco} (${m})`));
+      console.error(c.red(e instanceof PinnedFetchRefused ? `✗ ${m}` : `✗ could not fetch ${disco} (${m})`));
       process.exit(1);
     }
   }

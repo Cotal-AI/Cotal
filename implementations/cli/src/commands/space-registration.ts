@@ -20,6 +20,7 @@ import {
   isMeshRegistryError,
   loadMeshes,
   pinnedFetch,
+  PinnedFetchRefused,
   preparedRecordSpace,
   preparedSpaceAt,
   protectedLocalDirectory,
@@ -290,8 +291,8 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
     try {
       res = await pinnedFetch(disco.toString(), `--from ${disco}`);
     } catch (e) {
-      const m = (e as Error).message;
-      throw refuse(m.startsWith("✗") ? "UNSUPPORTED" : "TARGET_UNAVAILABLE", m.startsWith("✗") ? m.slice(2) : `could not fetch ${disco} (${m})`, target);
+      if (e instanceof PinnedFetchRefused) throw refuse("UNSUPPORTED", e.message, target);
+      throw refuse("TARGET_UNAVAILABLE", `could not fetch ${disco} (${(e as Error).message})`, target);
     }
     if (!res.ok) throw refuse("TARGET_UNAVAILABLE", `${disco} answered ${res.status}: no discovery document there`, target);
     bundle = take(await checkDiscoveryDocument(res), target);

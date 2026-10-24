@@ -18,6 +18,7 @@ import {
   loadSpaceAuth,
   personaDir,
   pinnedFetch,
+  PinnedFetchRefused,
   JoinRefusal,
   preflightCode,
   preflightTarget,
@@ -301,7 +302,7 @@ export async function verifyUserExchange(base: string, issuer: string): Promise<
   // may be redirected off it — otherwise the "pinned" exchange is whatever a 302 chooses.
   try {
     const badBase = assertPinnedFetchUrl(new URL(base), `the pinned exchange at ${base}`);
-    if (badBase) return bad(badBase, "UNSUPPORTED");
+    if (badBase) return bad(`✗ ${badBase}`, "UNSUPPORTED");
   } catch {
     return bad(`✗ the bundle's pinned exchange endpoint ${JSON.stringify(base)} is not a URL`, "SCHEMA_INVALID");
   }
@@ -311,9 +312,8 @@ export async function verifyUserExchange(base: string, issuer: string): Promise<
     if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`, "TARGET_UNAVAILABLE");
     health = (await res.json()) as never;
   } catch (e) {
-    const m = (e as Error).message;
-    if (m.startsWith("✗")) return bad(m, "UNSUPPORTED");
-    return bad(`✗ the pinned exchange at ${base} did not answer /health (${m}) - the bundle's endpoint must be reachable to register against it`, "TARGET_UNAVAILABLE");
+    if (e instanceof PinnedFetchRefused) return bad(`✗ ${e.message}`, "UNSUPPORTED");
+    return bad(`✗ the pinned exchange at ${base} did not answer /health (${(e as Error).message}) - the bundle's endpoint must be reachable to register against it`, "TARGET_UNAVAILABLE");
   }
   if (health.issuer !== issuer)
     return bad(`✗ the exchange at ${base} answers for issuer ${JSON.stringify(health.issuer)} but the bundle pins ${JSON.stringify(issuer)} - a different issuer is a different authority; nothing was registered`, "CONFLICT");
@@ -324,9 +324,8 @@ export async function verifyUserExchange(base: string, issuer: string): Promise<
     if (!Array.isArray(jwks.keys) || jwks.keys.length === 0)
       return bad(`✗ the pinned exchange at ${base} serves an empty /jwks - it holds no verification keys for the trust the bundle pins`, "CONFLICT");
   } catch (e) {
-    const m = (e as Error).message;
-    if (m.startsWith("✗")) return bad(m, "UNSUPPORTED");
-    return bad(`✗ the pinned exchange at ${base} did not answer /jwks (${m})`, "TARGET_UNAVAILABLE");
+    if (e instanceof PinnedFetchRefused) return bad(`✗ ${e.message}`, "UNSUPPORTED");
+    return bad(`✗ the pinned exchange at ${base} did not answer /jwks (${(e as Error).message})`, "TARGET_UNAVAILABLE");
   }
   return good(undefined);
 }

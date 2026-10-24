@@ -87,7 +87,7 @@ function checkBundleDocument(parsed: unknown): Check<UserBundle> {
       return bad("✗ the user-auth bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl) is not a URL");
     }
     const refusal = assertPinnedFetchUrl(pu, "the bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl)");
-    if (refusal) return bad(refusal, "UNSUPPORTED");
+    if (refusal) return bad(`✗ ${refusal}`, "UNSUPPORTED");
   }
   if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
     return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
@@ -122,7 +122,7 @@ export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
   // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
   // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
   return (
-    `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
+    `${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
     (u.protocol === "http:"
       ? `. Plain http is accepted only for a loopback LITERAL (127.0.0.1, ::1), where nothing leaves this machine - "${u.hostname}" is a name, and a hosts entry or a poisoned lookup could point it anywhere, so use the literal`
       : "")
@@ -141,15 +141,25 @@ export async function pinnedFetchProbe(target: string): Promise<{ refused: boole
   }
 }
 
-/** One hop, no downgrade, no redirect-following. */
+/** A pinned fetch the policy refused: a target {@link assertPinnedFetchUrl} rejects, or a redirect.
+ *  Distinct so a caller can tell a refusal from a transport failure, which escapes as `fetch`
+ *  throws it. The message is the plain sentence; a front end adds its own marker where it prints. */
+export class PinnedFetchRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PinnedFetchRefused";
+  }
+}
+
+/** One hop, no downgrade, no redirect-following. Both refusals throw {@link PinnedFetchRefused}. */
 export async function pinnedFetch(target: string, what: string): Promise<Response> {
   const u = new URL(target);
   const bad = assertPinnedFetchUrl(u, what);
-  if (bad) throw new Error(bad);
+  if (bad) throw new PinnedFetchRefused(bad);
   const res = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
   if (res.status >= 300 && res.status < 400)
-    throw new Error(
-      `✗ ${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
+    throw new PinnedFetchRefused(
+      `${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
     );
   return res;
 }
@@ -202,12 +212,7 @@ export async function refreshRegistrationPolicy(target: { space: string; policy?
   } catch {
     throw new Error(`manual registration for "${entry.space}" has an invalid pinned exchange URL`);
   }
-  let response: Response;
-  try {
-    response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
-  } catch (error) {
-    throw new Error((error as Error).message.replace(/^✗ /, ""));
-  }
+  const response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
   if (!response.ok)
     throw new Error(`manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url} answered HTTP ${response.status}`);
   const checked = await checkDiscoveryDocument(response);

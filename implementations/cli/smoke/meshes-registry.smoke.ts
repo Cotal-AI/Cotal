@@ -649,6 +649,17 @@ try {
   check("the exchange probe refuses a 302 instead of following it",
     !redirected.ok && /redirect/i.test(redirected.ok ? "" : redirected.message), redirected);
   check("…and the redirect target is never contacted", exchangeHits === 0, { exchangeHits });
+  // A caller tells a refusal from a transport failure by its class, and its message carries no
+  // front end's mark: the CLI adds the ✗ where it prints.
+  const { pinnedFetch, PinnedFetchRefused } = await import("@cotal-ai/workspace");
+  const thrown = (target: string) => pinnedFetch(target, "x").then(() => undefined, (e: unknown) => e);
+  for (const [refusal, target] of [["a plain-http name", "http://exchange.example.com/health"], ["a redirect", `${redirectorUrl}/health`]] as const) {
+    const e = await thrown(target);
+    check(`${refusal} is refused as a PinnedFetchRefused with an unmarked message`,
+      e instanceof PinnedFetchRefused && !e.message.startsWith("✗"), String(e));
+  }
+  const unanswered = await thrown(`http://127.0.0.1:${await freePort()}/health`);
+  check("…while a transport failure is not one", unanswered instanceof Error && !(unanswered instanceof PinnedFetchRefused), String(unanswered));
 
   // THE ACTUAL ATTACK: an HTTPS→HTTP DOWNGRADE, exercised from a REAL https SOURCE.
   //
