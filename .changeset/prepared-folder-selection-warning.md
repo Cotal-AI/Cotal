@@ -3,4 +3,4 @@
 "@cotal-ai/cli": patch
 ---
 
-A command run with a selection inside a project folder whose space is prepared and not started yet now warns with `SELECTION_NOT_FOLDER_SPACE`, as it does in a registered space's folder, so a `send` there before the first `up` no longer lands in the selected space unannounced.
+A space prepared in a project folder and not started yet counts as that folder's space: a command run there with another space selected targets the prepared space, as it targets a registered one, so a `send` there before the first `up` no longer lands in the selected space unannounced.

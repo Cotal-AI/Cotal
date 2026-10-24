@@ -9,7 +9,7 @@
  */
 import { isAbsolute, resolve as resolvePath, dirname } from "node:path";
 import { parseDocument, LineCounter } from "yaml";
-import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral, utf16Problem } from "@cotal-ai/core";
+import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral, utf16Problem, token } from "@cotal-ai/core";
 import { MeshManifestSchema, type RawManifest } from "./schema.js";
 import type { AgentPolicy, PersonaPermissions, ResolvedAgent, ResolvedChannel, ResolvedManifest } from "./model.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -78,6 +78,10 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
   // 3 + 4. Normalize/invert and run pure semantic checks, collecting every problem in one pass.
   const issues: ManifestIssue[] = [];
   const add = (message: string, path?: (string | number)[]) => issues.push({ message, path, ...locate(path) });
+
+  // `space create` and `cotal up` take a space only under a name that is one native routing token.
+  if (raw.space.length > 200 || token(raw.space) !== raw.space)
+    add(`space ${JSON.stringify(raw.space)} is not a space name: a space name is 1 to 200 letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, ["space"]);
 
   const agentNames = new Set(Object.keys(raw.agents ?? {}));
   for (const name of agentNames)

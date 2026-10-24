@@ -515,6 +515,16 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("history offers clear and the channels the space's personas declare", exactly(history, ["clear", "review"]), shown(history));
   const channel = offered(["channel", "remove", "--space", "rr"]);
   check("channel remove offers those channels", exactly(channel, ["review"]), shown(channel));
+  // A catalog file name holding a control character is not offered: the shell would write it to the
+  // terminal, and a newline or tab would forge another candidate or the directive line.
+  const agents = join(prepared, ".cotal", "agents");
+  const definition = readFileSync(join(agents, "default.md"), "utf8");
+  for (const name of ["\u001b[2Jx", "nl\n:default\nforged", "bidi‮z", "tab\tx"]) writeFileSync(join(agents, `${name}.md`), definition, { mode: 0o600 });
+  for (const words of [["persona", "show"], ["persona", "edit"], ["persona", "remove"], ["personas", "show"]]) {
+    const r = offered([...words, "--space", "cc"]);
+    const directives = r.stdout.split("\n").filter((line) => line.startsWith(":"));
+    check(`${words.join(" ")} leaves out a catalog file name with a control character`, exactly(r, ["default"]) && directives.length === 1 && !/[\u0000-\u0009\u000b-\u001f\u007f‮]/u.test(r.stdout), shown(r));
+  }
   // A path lets the shell complete file names; any other value does not.
   for (const [words, directive] of [[["space", "add", "x", "--root"], ":default"], [["space", "add", "x", "--file"], ":default"], [["channel", "set", "ops", "--creds"], ":default"],
     [["status", "--creds"], ":default"], [["history", "--creds"], ":default"], [["watch", "--creds"], ":default"], [["who", "--creds"], ":default"],

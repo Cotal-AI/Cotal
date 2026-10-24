@@ -233,6 +233,18 @@ channels: { general: { subscribe: [a] } }
 
 // a manifest saved as UTF-16 is refused by its encoding, not as a schema shape
 fails(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${HEAD}\nchannels: {}\n`, "utf16le")]).toString("utf8"), "it is saved as UTF-16, and Cotal reads only UTF-8; save it as UTF-8");
+// space: only a name `space create` takes, one routing token of 1 to 200 characters
+const spaced = (space: string) => `apiVersion: cotal/v1
+kind: Mesh
+space: ${space}
+agent: claude
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`;
+for (const space of ['"bad name"', "a/b", "x.y", "a".repeat(201)]) fails(spaced(space), "is not a space name: a space name is 1 to 200 letters");
+fails(spaced('"e\\u001b]0;X\\u0007c"'), 'space "e\\u001b]0;X\\u0007c" is not a space name');
+assert.equal(ok(spaced('"-lead"')).space, "-lead");
+assert.equal(ok(spaced("a".repeat(200))).space, "a".repeat(200));
 
 // duplicate map key (yaml unique-keys)
 fails(`${HEAD}

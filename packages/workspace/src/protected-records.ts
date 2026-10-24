@@ -3,8 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure } from "./output.js";
-import { homeCotalDir } from "./mesh-registry.js";
+import { CommandFailure, isCommandFailure } from "./output.js";
+import { homeCotalDir } from "./cotal-home.js";
 import { spaceKey } from "./auth-paths.js";
 
 export const LOCAL_INPUT_LIMIT = 256 * 1024;
@@ -57,9 +57,39 @@ function privateDirectory(path: string, access: LocalRecordAccess): void {
     if (!statSync(path).isDirectory()) throw new CommandFailure("refused", "PERMISSION_DENIED", "the local-record store must use directories", { target: { path } });
     return;
   }
-  const stat = lstatSync(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)
-    throw new CommandFailure("refused", "PERMISSION_DENIED", "the local-record store must use owned private directories without symlinks", { target: { path } });
+  const gap = privateDirectoryGap(path, lstatSync(path));
+  if (gap) throw new CommandFailure("refused", "PERMISSION_DENIED", `the local-record store must use owned private directories without symlinks: ${path} ${gap.reason}`, { remedy: gap.remedy, target: { path } });
+}
+
+/** Why a POSIX directory is not owned, private and free of a link, and the change that fixes it, or
+ *  undefined when it is: the rule for the Cotal home and the record store under it. */
+function privateDirectoryGap(path: string, stat: Stats): { reason: string; remedy: string } | undefined {
+  if (stat.isSymbolicLink()) return { reason: "is a symbolic link", remedy: "use a physical path owned by you, without symlinks" };
+  if (!stat.isDirectory()) return { reason: "is not a folder", remedy: `move ${shellPath(path)} aside` };
+  if (stat.uid !== process.getuid!()) return { reason: "is owned by another account", remedy: "use a folder you own" };
+  if ((stat.mode & 0o077) !== 0) return { reason: `is not private to you (mode ${(stat.mode & 0o777).toString(8).padStart(4, "0")})`, remedy: `chmod go-rwx ${shellPath(path)}` };
+  return undefined;
+}
+
+/** Make the Cotal home ready for a write. While another local account could replace or write the
+ *  home or a folder above it (the rule of {@link protectedLocalEntry}), the write is refused, naming
+ *  each path with the chmod that fixes it, and nothing is written. Otherwise the home is created, or an
+ *  owned home others can only read is tightened, to the private folder the record store requires.
+ *  Windows keeps its access-list model, so only POSIX checks. */
+export function prepareCotalHomeForWrite(): void {
+  const home = homeCotalDir();
+  if (localRecordAccess() === "posix") {
+    let dir = home;
+    while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
+    try {
+      if (dir === home) protectedLocalEntry(home, "the Cotal home");
+      else protectedLocalDirectory(dir, "the Cotal home");
+    } catch (e) {
+      if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
+      throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was written`, { remedy: e.remedy, target: e.target });
+    }
+  }
+  mkSecretDir(home);
 }
 
 /** Establish a regular descriptor, then read only bounded bytes. POSIX opens nonblocking and
@@ -252,7 +282,9 @@ const systemPolicy = (): ProtectedPathPolicy => processPolicy ??= protectedPathP
 
 type EntryStat = Pick<Stats, "uid" | "gid" | "mode" | "isDirectory" | "isSymbolicLink">;
 
-const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
+/** `path` as one POSIX shell word, quoted when a shell would split or expand it, so a remedy that
+ *  names it can be pasted. */
+export const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
 
 /** One entry another local account could replace or write, and the kind of change that fixes it. */
 type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "g-w-or-acl" };
@@ -398,6 +430,7 @@ export class ProtectedRecordStore<T> {
   directory(create = false): string | undefined {
     const access = requireLocalRecordAccess();
     const home = homeCotalDir();
+    if (create) prepareCotalHomeForWrite();
     try { privateDirectory(home, access); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

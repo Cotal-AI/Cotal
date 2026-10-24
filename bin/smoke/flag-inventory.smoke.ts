@@ -461,8 +461,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Per-user auth (D4c): the actor-ledger operator surface.
   actor: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "full:boolean", "label:string", "owner:string",
-      "parent:string", "role:string", "scope:string", "space:string", "sub:string",
+      "allow-publish:string", "allow-subscribe:string", "full:boolean", "json:boolean:j", "label:string", "owner:string",
+      "parent:string", "plain:boolean", "role:string", "scope:string", "space:string", "sub:string",
     ],
     positionals: true,
   },

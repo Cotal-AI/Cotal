@@ -240,13 +240,26 @@ export function preferencesFolderWarning(): { warning: OutputWarning; remedy: st
   }
 }
 
+/** Refuse a preferences path that is a FIFO, a device or a folder: opening one would block or fail,
+ *  and preferences are kept only in a regular file. */
+function assertPreferencesRegular(path: string): void {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat && !stat.isFile())
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences file ${path} is not a regular file, such as a FIFO or a device; preferences are kept only in a regular file, so nothing was read or changed`, {
+      target: { path },
+      remedy: `remove ${path}, or replace it with a regular file`,
+    });
+}
+
 /** The saved preferences. A missing file is no preferences at revision 0; a file that does not
  *  validate refuses with `SCHEMA_INVALID`, and is never reset. A linked file refuses with
- *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}). */
+ *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}), and so does a FIFO or another file
+ *  that is not regular (see {@link assertPreferencesRegular}). */
 export function readPreferences(): Preferences {
   let text: string;
   try {
     assertPreferencesNotLinked(preferencesPath());
+    assertPreferencesRegular(preferencesPath());
     text = readFileSync(preferencesPath(), "utf8");
   } catch (e) {
     if (isCommandFailure(e)) throw e;

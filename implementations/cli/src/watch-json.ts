@@ -22,7 +22,7 @@ export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubjec
   const ended = new Promise<void>((resolve) => { end = resolve; });
   const stop = () => { stopped = true; end(); };
   const interrupt = () => { process.exitCode = 130; stop(); };
-  const terminate = () => { process.exitCode = 143; stop(); };
+  const terminate = () => { reason = "terminated"; process.exitCode = 143; stop(); };
   const outputClosed = () => { closed = true; reason = "output-closed"; stop(); };
   const emit = (type: "snapshot" | "event" | "connection" | "gap" | "error" | "end", data: unknown) => {
     if (closed) return;

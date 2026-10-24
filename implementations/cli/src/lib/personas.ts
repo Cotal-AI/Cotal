@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
 
@@ -36,6 +36,8 @@ export interface PersonaEntry {
   /** Why the file cannot be read when it was saved as UTF-16: the one parse reason that quotes nothing
    *  from the file, so a list that keeps `error` private can still name it. */
   encoding?: string;
+  /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
+  notRegular?: true;
 }
 
 /** List the persona files, each parsed (a malformed file becomes an entry with `error`, not a
@@ -63,6 +65,9 @@ export function readPersonas(root: string): PersonaEntry[] {
     const name = f.slice(0, -3);
     const path = join(dir, f);
     try {
+      // A FIFO or a device would block the read, so only a regular file is opened. A link is
+      // followed, as the read follows it.
+      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const };
       return { name, path, def: loadAgentFile(path) };
     } catch (e) {
       let encoding: string | undefined;

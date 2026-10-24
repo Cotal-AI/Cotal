@@ -1,5 +1,5 @@
 import { writeSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -13,6 +13,7 @@ import {
   envelopeLine,
   exitCode,
   failureEnvelope,
+  globalConfigDirProblem,
   globalFlagDeclarationProblems,
   hasMeshTargetFlags,
   inOperationSpace,
@@ -153,13 +154,20 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   process.exit(exitCode(failure.outcome, failure.code));
 }
 
+type ConfigFolderProblem = NonNullable<ReturnType<typeof globalConfigDirProblem>>;
+
+/** The refusal of a command that would read or write a config folder that is a file. */
+function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
+  return new CommandFailure("refused", "SCHEMA_INVALID", `${problem.message}; Cotal keeps your preferences, config and extensions there, so the command did not run`, { remedy: problem.remedy });
+}
+
 /**
  * `ext seed [--repair|--reset|--force]`, dispatched before the manifest overlay so repair survives a
  * corrupt manifest. Returns `true` iff `argv` was that command (or its help), so the caller returns.
  * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
  * which resolves its alias too.
  */
-async function extSeedGate(registry: Registry, argv: string[]): Promise<boolean> {
+async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined): Promise<boolean> {
   const [word, sub] = argv;
   const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
   if (extCmd?.name !== "ext" || sub !== "seed") return false;
@@ -169,6 +177,7 @@ async function extSeedGate(registry: Registry, argv: string[]): Promise<boolean>
     printCommandHelp(extCmd);
     return true;
   }
+  if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
   await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1))));
   return true;
 }
@@ -450,9 +459,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
   else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
+  const configFolder = globalConfigDirProblem();
   if (opts.extensions) {
     try {
-      if (await extSeedGate(registry, argv)) return;
+      if (await extSeedGate(registry, argv, configFolder)) return;
     } catch (e) {
       stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
@@ -517,6 +527,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
   let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;
   // ---- Effects: only a validated invocation reaches this line. ----
+  // A config folder that is a file fails every read and write of the preferences, the config file and
+  // the extensions, so a command that could use them stops here, before the seed would write there.
+  // Help, shell completion, version and docs use none of them.
+  if (configFolder && cmd && parsed && !cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name))
+    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
@@ -561,7 +576,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // completion, version and docs use no preference, and status reports the file as a warning, so they
   // still run. `--help` on a command has already returned above.
   if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
-    // A COTAL_HOME that cannot be a directory stops them the same way, before any command reads it.
+    // A relative COTAL_HOME would name another home in each folder a command runs in, and a
+    // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
+    // reads it.
+    const home = process.env.COTAL_HOME;
+    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no

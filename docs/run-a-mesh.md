@@ -656,8 +656,9 @@ only partial selection (`backup create ... --only registry`; `up --restore ... -
 registry`). Backup never stops or restarts a mesh implicitly, never opens the original store, and
 does not contain credentials or trust secrets. Backup/restore in every auth mode, open included,
 uses isolated, operation-specific maintenance logins; normal agent credentials cannot enter that
-listener. Full
-restore requires the same space and exact current local trust continuity, recreates conservative
+listener. A full
+backup of a static-auth or open mesh also holds the workflow runs, so a run waiting at a checkpoint
+or a timer is back after a full restore. Full restore requires the same space and exact current local trust continuity, recreates conservative
 consumer checkpoints bound to their snapshot stream sequence state, and resumes retained agents under
 their original principals. The trust commitment includes the cryptographically validated full
 operator/system/data-account root chain as well as static/user authority state. A registry-only

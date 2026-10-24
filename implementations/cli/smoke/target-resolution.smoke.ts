@@ -22,7 +22,7 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
@@ -133,29 +133,38 @@ const QUESTION = "Which one?";
   const selected = terminal(["who"]);
   check("a selection on a terminal is the target, with no question", await until(() => selected.s.code !== undefined) && !selected.s.text().includes(QUESTION) && /\bin alpha\b/.test(selected.s.text()), { code: selected.s.code, out: selected.s.text().slice(-600) });
 
-  // In beta's own root the selection is still the target, and the run says so before it acts.
-  const NOTE = `this targets the selected space "alpha", not this folder's space "beta"; pass --space beta to target it`;
+  // In beta's own root beta is the target, and its heading says the selection applies outside it.
   const inBeta = run(["who", "--json"], join(home, "beta"));
-  const warned = envelope(inBeta)?.warnings?.find((w: { code: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE");
-  check("in another space's root the selection stays the target and warns, naming both spaces and --space",
-    envelope(inBeta)?.target?.space === "alpha" && warned?.message === NOTE && warned.target?.space === "alpha" && warned.target.folderSpaces?.join() === "beta" &&
-      inBeta.stderr.includes(`! ${NOTE}`), shown(inBeta));
-  const inAlpha = run(["who", "--json"], join(home, "alpha"));
-  const inBetaNamed = run(["who", "--json", "--space", "beta"], join(home, "beta"));
-  check("control: no warning in the selected space's root, from a folder with no project, or with --space",
-    [inAlpha, inBetaNamed, run(["who", "--json"])].every((r) => envelope(r)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") && !r.stderr.includes("SELECTION") && !/^! this targets/m.test(r.stderr)),
-    [inAlpha, inBetaNamed].map(shown));
-  // A space prepared in a folder is that folder's space before its first `up` too, so a send there
-  // does not land in the selection unannounced.
-  const gamma = join(home, "gamma");
-  mkdirSync(join(gamma, ".cotal"), { recursive: true });
-  recordPreparedSpace({ space: "gamma", root: gamma, ts: new Date(0).toISOString() });
-  const GAMMA_NOTE = `this targets the selected space "alpha", not this folder's space "gamma"; pass --space gamma to target it`;
-  const inGamma = run(["who", "--json"], gamma);
-  check("in a prepared space's folder, before its first up, the selection warns the same way",
-    envelope(inGamma)?.target?.space === "alpha" && envelope(inGamma)?.warnings?.some((w: { code: string; message: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE" && w.message === GAMMA_NOTE) &&
-      inGamma.stderr.includes(`! ${GAMMA_NOTE}`), shown(inGamma));
-  removePreparedSpace("gamma");
+  check("in another space's root that folder's space is the target, with no warning",
+    envelope(inBeta)?.target?.space === "beta" && envelope(inBeta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") && !/^! /m.test(inBeta.stderr), shown(inBeta));
+  const inBetaText = run(["who"], join(home, "beta"));
+  check("its heading notes that the selection applies outside the folder",
+    /^Mesh: beta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(inBetaText.stdout + inBetaText.stderr), shown(inBetaText));
+  const inAlpha = run(["who"], join(home, "alpha"));
+  const away = run(["who"]);
+  check("control: the selection is the target in its own root and from a folder with no project, with no note",
+    [inAlpha, away].every((r) => /\bin alpha\b/.test(r.stdout + r.stderr) && !/this folder's space/.test(r.stdout + r.stderr)), [inAlpha, away].map(shown));
+  // A root with several spaces, none of them selected, keeps the selection and warns first.
+  recordMesh({ space: "gamma", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const NOTE = `this targets the selected space "alpha", not this folder's spaces "beta", "gamma"; pass --space <space> to target one of them`;
+  const inShared = run(["who", "--json"], join(home, "beta"));
+  const warned = envelope(inShared)?.warnings?.find((w: { code: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE");
+  check("in a root with several spaces the selection stays the target and warns, naming them and --space",
+    envelope(inShared)?.target?.space === "alpha" && warned?.message === NOTE && warned.target?.space === "alpha" && warned.target.folderSpaces?.slice().sort().join() === "beta,gamma" &&
+      inShared.stderr.includes(`! ${NOTE}`), shown(inShared));
+  removeMesh("gamma");
+  // A space prepared in a folder is that folder's space before its first `up` too, so a command there
+  // targets it, with the note, and nothing lands in the selection unannounced.
+  const delta = join(home, "delta");
+  mkdirSync(join(delta, ".cotal"), { recursive: true });
+  recordPreparedSpace({ space: "delta", root: delta, ts: new Date(0).toISOString() });
+  const inDelta = run(["who", "--json"], delta), inDeltaText = run(["who"], delta);
+  // The refusal is the prepared space's own: it is not started yet, and its next step is there.
+  check("in a prepared space's folder, before its first up, that space is the target and the refusal is its own",
+    envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
+      envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
+      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout + inDeltaText.stderr), { json: shown(inDelta), text: shown(inDeltaText) });
+  removePreparedSpace("delta");
   clearCurrent();
 }
 
