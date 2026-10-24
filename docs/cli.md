@@ -1717,8 +1717,10 @@ remains as the equivalent startup form. After its startup lines it names the res
 gives the cleanup step that retires it, with `--discard-history` for a registry restore. Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
-Two commands refuse an active restore. `down --preserve-state` begins a new cut only after
-the restore journal is retired, so it names `backup cleanup-fallback` as the next step. `team boot`
+Two commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses
+`LIFECYCLE_BLOCKED` (exit 2) and stops nothing: a new cut begins only after the restore journal is
+retired, so it names the attempt and `backup cleanup-fallback` as the next step, with
+`--discard-history` after a registry restore. `team boot`
 resumes only a stopped stack whose manager never launched, and a restored stack's manager already
 ran, so start it with bare `cotal up` instead.
 

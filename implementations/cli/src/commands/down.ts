@@ -101,6 +101,7 @@ import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js
 import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
+import { restoreNextStep } from "../lib/restore.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
@@ -624,6 +625,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
     const all = localProcessSurface();
     const context: LocalProcessContext = { root, space: mesh.space };
     const existing = readMaintenanceJournal(root);
+    // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
+    if (existing && "restore" in existing && existing.state === "active")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, existing.restore.selection) });
     if (existing && existing.state !== "cut-intent" && existing.state !== "cut-committed" && existing.state !== "ready")
       throw new Error(`cannot preserve while maintenance state is ${existing.state}`);
     if (existing && (existing.space !== mesh.space || existing.mode !== mesh.mode ||
