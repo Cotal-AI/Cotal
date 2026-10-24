@@ -1981,7 +1981,8 @@ space's root, and the home folder, whose `.cotal` holds this machine's own recor
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. `space` lists
-prepared spaces under their own heading, and `space show` and `use` accept one. A command that
+prepared spaces under their own heading, below a line that says no space has been started or
+registered yet when that is so, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
