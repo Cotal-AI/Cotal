@@ -7,7 +7,7 @@ import {
   ConfirmationRequired,
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
   canonicalRoot, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
-  presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Block, type Report,
+  presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, STORE_CONTENTS, storeContentsText, writeResult, type Block, type Report, type Section,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses, removeLocalState, safeStoreCleanupPath } from "./clean.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -39,13 +39,6 @@ export interface ResetTarget {
 
 export type ResetCommand = "reset store" | "reset space";
 
-/** What the broker kept in a space's store, all of which a store reset removes. They are named, not
- *  listed: a stopped broker is the only reader of its store. */
-export const STORE_CONTENTS = ["workflow runs and their journals", "channel history", "stored messages", "every other record the broker kept there"];
-
-/** {@link STORE_CONTENTS} as one phrase. */
-export const storeContentsText = (items: readonly string[]) => `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
-
 /** The runs the stack journal's last down recorded, or undefined when it holds no down with them. */
 export function runsAtLastDown(root: string): StackRuns | undefined {
   try {
@@ -72,6 +65,15 @@ export function storeRunBlocks(runs: StackRuns | undefined, remedy: string | und
     ...(rows.length ? [{ kind: "table" as const, columns: [{ key: "run", label: "Run" }, { key: "state", label: "State" }, { key: "step", label: "Waiting step" }, { key: "asks", label: "Request" }], rows }] : []),
     ...(runs.omitted ? [{ kind: "lines" as const, lines: [`${runs.omitted} more unfinished run${runs.omitted === 1 ? " is" : "s are"} not listed.`] }] : []),
   ];
+}
+
+/** The preview's Store contents section, which `reset store` and `reset space` share: what removing
+ *  the store at `root` removes, and the runs its last down recorded. None when no store is present. */
+export function storeContentsSection(removed: readonly string[], runs: StackRuns | undefined, root: string): Section[] {
+  return removed.length ? [{ title: "Store contents", blocks: [
+    { kind: "lines", lines: [`Removing the store removes ${storeContentsText(removed)}. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards.`] },
+    ...storeRunBlocks(runs, `Only the broker reads the store, and it is stopped. To see the runs, run cotal up and cotal run ps from ${root}, then cotal down --yes.`),
+  ] }] : [];
 }
 
 export function selectResetTarget(space: string, command: ResetCommand): ResetTarget {

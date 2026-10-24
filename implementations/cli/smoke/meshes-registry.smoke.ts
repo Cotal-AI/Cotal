@@ -359,6 +359,12 @@ try {
   const creddy = await run(["add", "leaky"], { server: "nats://alice:swordfish@127.0.0.1:1", root });
   check("add refuses a --server with embedded credentials", creddy.code === 1 && findMesh("leaky") === undefined, creddy.out);
   check("…and does not echo the password back", !creddy.out.includes("swordfish"), creddy.out);
+  // One sentence and next step for every broker-URL credential refusal, a value with no scheme included.
+  check("…in the words and next step every broker-URL credential refusal uses",
+    creddy.out.includes("--server must not embed credentials") && creddy.out.includes("name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust"), creddy.out);
+  const schemeless = await run(["add", "leaky"], { server: "alice:swordfish@127.0.0.1:1", root });
+  check("a --server with no scheme and a user name is refused the same way, with no part of it echoed",
+    schemeless.code === 1 && schemeless.out.includes("--server must not embed credentials") && !schemeless.out.includes("alice") && !schemeless.out.includes("swordfish") && findMesh("leaky") === undefined, schemeless.out);
   for (const [label, url] of [["a non-broker scheme", "http://127.0.0.1:4222"], ["junk", "not-a-url"]] as const) {
     const bad = await run(["add", "badurl"], { server: url, root });
     check(`add refuses ${label} in --server`, bad.code === 1 && findMesh("badurl") === undefined, bad.out);
@@ -452,6 +458,11 @@ try {
   const dashedUser = await run(["add"], { mode: "user", "user-auth-file": dashedPath, root: hostedRoot });
   check("a user-auth bundle for a space whose name starts with - is refused, and records nothing",
     dashedUser.code === 1 && dashedUser.out.includes("cannot be passed as a flag value") && findMesh("-hosted") === undefined, dashedUser.out);
+  const creddyPath = join(root, "creddy-bundle.json");
+  writeFileSync(creddyPath, JSON.stringify(bundleFor({ server: "nats://alice:swordfish@127.0.0.1:1" })));
+  const creddyUser = await run(["add"], { mode: "user", "user-auth-file": creddyPath, root: hostedRoot });
+  check("a bundle whose server carries credentials is refused in the shared words and next step, naming the bundle's server",
+    creddyUser.code === 1 && creddyUser.out.includes("the bundle's server must not embed credentials") && creddyUser.out.includes("name the broker URL without user:password@") && !creddyUser.out.includes("swordfish") && findMesh("hosted") === undefined, creddyUser.out);
 
   // ── REMOTE CONSUMER IS LIVE ───────────────────────────────────────────────────────────────────
   // The remote bearer client consumes the pinned exchange and sentinel carried by this entry, so

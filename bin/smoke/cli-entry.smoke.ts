@@ -8,7 +8,8 @@
  * with a typographic dash, naming the dash and the flag; after `--`, or naming no flag, such a word is
  * an argument. A usage refusal escapes the control bytes of each word it quotes. `version --json`
  * writes one envelope, and a usage error under `--json` is one refusal envelope. A `--server` with a
- * user and password is refused by every command that takes one, without repeating it. `--no-color` and
+ * user and password is refused by every command that takes one, and a `COTAL_SERVER` with one by the
+ * manager, without repeating it. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`, once each. A command an
  * official extension adds, run or asked for help before that extension is added, names the package
  * to add.
@@ -276,6 +277,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const upUserinfo = cotal(["up", "--server", "nats://u:pw0rdX@127.0.0.1:1"], undefined, noSeed);
   refused("control: up keeps its own --server credential refusal", upUserinfo, /--server must not embed credentials; nothing was started or written/);
   check("control: up's refusal is its own, and does not repeat the value", !upUserinfo.stderr.includes(userinfo) && !`${upUserinfo.stdout}${upUserinfo.stderr}`.includes("pw0rdX"), shown(upUserinfo));
+  // COTAL_SERVER stands in for the manager's --server, so it is refused the same way and never dialed.
+  const envServer = { ...noSeed, COTAL_SERVER: "nats://u:pw0rdX@127.0.0.1:1" };
+  for (const argv of [["__daemon-manager"], ["supervise"]]) {
+    const r = cotal(argv, undefined, envServer);
+    refused(`cotal ${argv[0]} refuses a COTAL_SERVER with a user and password`, r, /^✗ COTAL_SERVER must not embed credentials; the command did not run$/m);
+    check(`cotal ${argv[0]} prints no part of that COTAL_SERVER`, !`${r.stdout}${r.stderr}`.includes("pw0rdX") && !r.stderr.includes("127.0.0.1"), shown(r));
+  }
+  const flagWins = cotal(["__daemon-manager", "--server", "nats://127.0.0.1:1"], undefined, envServer);
+  check("control: an explicit --server is used in place of COTAL_SERVER, so that is not refused", !flagWins.stderr.includes("COTAL_SERVER must not embed") && !`${flagWins.stdout}${flagWins.stderr}`.includes("pw0rdX"), shown(flagWins));
 }
 
 // ── Global flags: accepted by every command, before or after its words, and text after -- ─────────

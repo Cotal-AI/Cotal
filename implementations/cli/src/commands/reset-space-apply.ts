@@ -6,14 +6,14 @@ import { accountFromCreds, isLoopbackLiteral, type ParsedArgs } from "@cotal-ai/
 import {
   ConfirmationRequired,
   acquireMaintenanceLock, canonicalRoot, CommandFailure, isCommandFailure, findMesh, localMeshesForRoot, oneLine, presentationOf,
-  releaseMaintenanceLock, removeMeshesByRoot, renderReport, terminalWidth, writeResult, type Report,
+  releaseMaintenanceLock, removeMeshesByRoot, renderReport, STORE_CONTENTS, terminalWidth, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import { protectedCredentialReference } from "../lib/protected-records.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { assertResetIdentityRemoved, planResetSpaceIdentity, recheckResetSpaceIdentity, reviewedResetIdentityCleanup, resetSpaceIdentityProjection } from "../lib/reset-space-plan.js";
 import { removeLocalState, userAuthTrustNote, type safeStoreCleanupPath } from "./clean.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { assertResetEligible, selectResetTarget } from "./reset-store-apply.js";
+import { assertResetEligible, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
 import { acquireStackOperationLock } from "../lib/stack-journal.js";
 
 /** This space's saved service definitions whose credential file the account `accountPub` issued.
@@ -53,7 +53,10 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
   // A kept definition would hand its child a credential the next identity rejects, so its reference is cleared.
   const issued = plan.accountPub === undefined ? [] : credentialRefsIssuedBy(space, plan.accountPub);
   const credentialRefs = issued.map((row) => ({ definition: row.name, path: row.record.value.credentialRef!.path }));
-  const impact = { kind: "reset-space-impact" as const, space, root, storePath: expected.path, storeState: expected.identity ? "present-with-pinned-directory" : "absent-at-read", identity: resetSpaceIdentityProjection(plan), registration: selected.source === "registration" ? "only-this-local-up-entry" : "none-recorded-prepared-record-and-journal-kept", preserved: ["personas", "service definitions and stopped-instance records", "installed packages", "login sessions and remote data"], clearsCredentialRefs: credentialRefs, dryRun, effectAttempted: false };
+  // The store goes with the identity, so the preview names what it holds as `reset store`'s does.
+  const runsAtDown = runsAtLastDown(root);
+  const storeContents = { removed: expected.identity ? STORE_CONTENTS : [], listed: runsAtDown?.read === true, runsAtLastDown: runsAtDown ?? null };
+  const impact = { kind: "reset-space-impact" as const, space, root, storePath: expected.path, storeState: expected.identity ? "present-with-pinned-directory" : "absent-at-read", storeContents, identity: resetSpaceIdentityProjection(plan), registration: selected.source === "registration" ? "only-this-local-up-entry" : "none-recorded-prepared-record-and-journal-kept", preserved: ["personas", "service definitions and stopped-instance records", "installed packages", "login sessions and remote data"], clearsCredentialRefs: credentialRefs, dryRun, effectAttempted: false };
   // A user-auth reset also removes the pinned IdP and the actor ledger, so a bare up refuses afterwards.
   const userAuth = selected.mode === "user";
   const refLines = (done: boolean) => credentialRefs.map((ref) => `${done ? "Cleared" : "Clears"} the credentialRef of service ${ref.definition}: ${ref.path} was issued by ${done ? "the identity this reset removed" : "this space's identity, which the next up replaces"}.`);
@@ -61,7 +64,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     { kind: "fields", rows: [["Space", space], ["Root", root], ["Store", impact.storePath], ["Store observation", impact.storeState], ["Identity paths", String(impact.identity.paths.length)], ["Auth provider", impact.identity.provider ?? "none registered"], ["Declared provider keys", String(impact.identity.providerKeyCount)], ["Trust", impact.identity.trust], ["Registration", impact.registration]] },
     { kind: "table", columns: [{ key: "path", label: "Identity path under root" }, { key: "state", label: "Observed state" }], rows: impact.identity.paths.slice(0, 100) },
     { kind: "lines", lines: [...(impact.identity.paths.length > 100 ? ["Additional paths are retained in --json output."] : []), selected.source === "registration" ? "Removes the stopped store, local credential/identity material and this locally created registration." : `Removes the stopped store and local credential/identity material. The space has no registration; its prepared record and stack journal stay${userAuth ? "." : ", so a later up starts it with a new identity."}`, ...(userAuth ? [userAuthTrustNote(false)] : []), "Keeps personas, service definitions, installed packages, IdP login sessions and remote data. No process is stopped and no remote authority is revoked.", ...refLines(false)] },
-  ] }] });
+  ] }, ...storeContentsSection(storeContents.removed, runsAtDown, root)] });
   if (dryRun) {
     // Every check passed, so the verdict is that the apply is offered; it runs them all again.
     writeResult(presentation, { command: "reset", target, result: { ...impact, applyVerdict: { offered: true } } }, () => {

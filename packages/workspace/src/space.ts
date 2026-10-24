@@ -62,3 +62,10 @@ export function resolveRuntimeSpace(cwd: string): string {
   if (recorded.length === 1) return recorded[0].space; // dead residue, unambiguous: still this folder's space
   return resolveSpace(cwd);
 }
+
+/** What a space's broker store holds, all of which removing the store removes, as `reset store` and
+ *  `reset space` do. They are named, not listed: a stopped broker is the only reader of its store. */
+export const STORE_CONTENTS = ["workflow runs and their journals", "channel history", "stored messages", "every other record the broker kept there"];
+
+/** {@link STORE_CONTENTS} as one phrase. */
+export const storeContentsText = (items: readonly string[]) => `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;

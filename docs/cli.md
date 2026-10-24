@@ -1758,8 +1758,11 @@ deprovisioning hooks. The inventory is bounded to 10,000 paths. Foreign space
 segments, symlinks, hard-linked files, foreign ownership, group/world-writable
 paths and providers without bounded cleanup metadata refuse. The refusal names the path and its
 reason; for a group- or world-writable path it names `chmod go-w <path>`. Values and content
-fingerprints are not printed. No maintenance lock is taken by the preview. A preview that passes
-every check says the apply is offered and names `cotal reset space <space> --yes` as Next.
+fingerprints are not printed. No maintenance lock is taken by the preview. Like the store dry-run, it
+has a Store contents section when a store is present, naming what removing it removes and the runs
+the last down recorded, and `--json` carries them as `storeContents`. The apply's confirmation shows
+the same section. A preview that passes every check says the apply is offered and names
+`cotal reset space <space> --yes` as Next.
 
 Apply shows the path inventory and defaults to cancellation, or requires
 `--yes` in a script. Under the maintenance lock it repeats the eligibility
@@ -2480,7 +2483,10 @@ is refused with `USAGE_INVALID`, exit 1, by every command that takes `--server`,
 read, written or dialed. The refusal does not repeat the value. The NATS client uses only the host
 and port of that URL, so the command would otherwise connect with the credential it resolves. Pass
 that credential with `--creds`, a login or the space's own trust instead. `up` refuses such a URL
-with its own message.
+with its own message. The manager reads `COTAL_SERVER` when `--server` is unset, and refuses a
+`COTAL_SERVER` with a user name or password the same way, naming `COTAL_SERVER`. `space add` and
+`meshes add` refuse such a server in a connection bundle, and the `meshes add` prompt refuses one
+typed there, in the same words and with the same next step.
 
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
@@ -5439,7 +5445,10 @@ is refused with the literal namespace replacement.
 A minted credential cannot be revoked on its own, and `auth retire` refuses. It stays valid until it
 expires, and one minted with `--no-expiry` until the space identity rotates: `cotal down`, then
 `cotal reset space <space>` (or `cotal clean all --force` from the root when `down` left no
-registration), then `cotal up`. That stops every credential the space issued. It also stops every
+registration), then `cotal up`. That stops every credential the space issued. The reset also
+removes the space's store, with its workflow runs and their journals, channel history and stored
+messages, so the space starts again with no history. `cotal reset space <space> --dry-run` lists
+what the store holds first. It also stops every
 earlier full backup of the space from restoring into this root: only its registry restores, and
 chat and DM history start empty (see [Backups](#backups)).
 
@@ -5628,7 +5637,8 @@ stays a finding until its file is gone. The exception is one `auth mint --no-exp
 record beside it still names the file's bytes: someone asked for it, so it is a
 `CREDENTIAL_UNBOUNDED_BY_REQUEST` warning instead, and the run ends ok, exit 0. Both get guidance that
 names both ways out. Rotating the space identity (`cotal down`, `cotal reset space <space>`, then
-`cotal up`) retires it with every other credential the space issued and removes the file. Replacing
+`cotal up`) retires it with every other credential the space issued and removes the file, and the
+reset removes the space's store with its history. Replacing
 a label's file with `cotal auth mint <label> --replace` once nothing uses it bounds it from then on,
 and so does removing any other file and its record and minting a replacement without `--no-expiry`;
 a copy made before stays valid until that rotation. An expired label's file is a finding too, and
@@ -7795,8 +7805,8 @@ endpoint accepts retirement only from the requester's own current serve identity
 CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
 loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal
 names the lever that works, rotating the space identity, which stops every credential the space issued
-(see [auth mint](#auth-mint)). The rotation also leaves earlier full backups of the space restoring
-only their registry.
+and removes the space's store with its history (see [auth mint](#auth-mint)). The rotation also leaves
+earlier full backups of the space restoring only their registry.
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
 refuses with `UNSUPPORTED` because its conferring-handle redemption path is not exposed. It does
