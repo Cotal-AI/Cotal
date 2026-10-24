@@ -698,9 +698,15 @@ on the way out: `failed` when no child was spawned yet, or with the child's proc
 the next `up` or `down` settles it from evidence. Members it already started keep running, and it
 names them and the next step: `cotal up`
 finishes the start, and `cotal down --yes` stops them. When only its broker started and the space
-was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. A bare
-`down` interrupted the same way exits with the same codes and names the members still running;
-`cotal down --yes` finishes the stop.
+was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. An `up`
+interrupted while it writes a new space's trust material leaves the space new, so the next `up`
+writes all of it again. A bare `down` interrupted the same way exits with the same codes and names
+the members still running; `cotal down --yes` finishes the stop. When it had signalled a member that
+had not yet exited, it also names that stop's request: `cotal down --yes` stops the member again
+while it runs, and once it has exited, `cotal down --abandon-stop <request-id> --yes` finishes the
+stop. Any command interrupted while the CLI is still loading, before the command begins, exits with
+the same codes and says it did nothing. `up` keeps that notice until its own takes over, so no moment
+of a detached start exits without one.
 
 `up` runs the `nats-server` on PATH when one answers `--version`, and the bundled one otherwise. One
 on PATH must report version 2.12 or newer. An older one, or one that reports no version, refuses
@@ -971,14 +977,22 @@ refuses `CONFLICT`, and nothing is adopted. A stack definition saved for another
 same space name refuses `CONFLICT`, naming that folder and every stack definition saved for it;
 `space forget` removes them once that folder's stack is stopped. A preserve or resume that
 never recorded its outcome stays with its own maintenance attempt. A member that exits before
-readiness is recorded as failed with its exit code, and the refusal names its log with
+readiness is recorded as failed with its exit code, and the refusal quotes the last line it logged
+during that launch and names its log with
 `cotal service logs <definition> --instance <id> --space <space>`. When the broker this `up` started cannot
 create the space's streams, `up` stops that broker again, so the next `up` starts a fresh one. It
 fails `OPERATION_FAILED`, exit 5, and names the cause when the broker's log shows it ran out of
 open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log. When
 another member, such as the manager, exits before readiness and the broker's log shows it ran out of
 open files, `up` names that log and that cause. A running broker keeps the open-file limit it started
-with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`.
+with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`. When such a
+member exits before readiness while the space's store holds more than its recorded
+`--max-file-store` cap, `up` names the store and the cap, because the broker refuses every write
+until there is room, the delivery daemon's lease included. Its next step makes room with
+`cotal history clear --yes`, which purges the space's channel history, then runs `cotal up` again.
+To keep that history, it names `cotal down --yes` and `cotal up --max-file-store <bytes>` with a
+larger cap, after `kill -TERM <pid>` for a manager that still runs, as a full store refuses the
+manager's stop.
 
 Before it launches a broker, the controller binds the broker address once, and so does the legacy
 launcher that an unprepared folder or `up -f` starts. When another process holds it, `up` refuses
@@ -3049,7 +3063,9 @@ recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
 cap and the store's path. The first Next is `cotal history clear --space <space> --yes`, which makes
-room by purging the space's channel history. The bytes are the space account's own, as
+room by purging the space's channel history. The `Delivery responder` row then says that the full
+store refuses the daemon's lease, so `up` starts the daemon only once there is room. The bytes are
+the space account's own, as
 `$JS.API.INFO` reports them; the cap counts every account on the broker. A broker started without
 a cap sizes its store from the free disk, and `status` does not compare that.
 
@@ -3739,8 +3755,12 @@ original registration revision and preserves successor or in-flight governance s
 create-only intent, registration and removal records retain the original coordinates. A later
 launch of the same local instance refuses an unsettled or malformed attempt instead of silently
 repeating it. Unconfirmed initialization or cleanup remains unknown; neither process disappearance
-nor an initialization receipt proves native cleanup. The separate `endpoint deregister` route
-retains its broker-gone and revision guards.
+nor an initialization receipt proves native cleanup. When the earlier host process is gone, as
+after a `kill -9`, the refusal names its native registration and gives the way out: remove it with
+`cotal endpoint deregister <endpoint> <instance> --yes`, then start a fresh instance with
+`cotal service start <name> --new-instance --space <s>`. A `service restart` of that instance
+gives the same commands. The separate `endpoint deregister` route retains its broker-gone and
+revision guards.
 
 ## Endpoint control
 
@@ -8192,7 +8212,9 @@ controller's final provider check. Providers still run as the current OS user, n
 
 Process readiness waits up to one second, or its deadline when that is shorter, for the process to
 exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
-recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A live
+recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A
+background start also quotes the last line the process logged during that launch, and says its log
+records the cause when it logged nothing. A live
 creation-pinned direct process is reported Running. HTTP readiness uses
 a bounded loopback request with credentials omitted and redirects disabled. Its success is
 Reachable, not proof that the child owns that listener or serves a native endpoint. Status labels

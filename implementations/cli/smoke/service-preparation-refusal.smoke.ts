@@ -301,6 +301,7 @@ const answering = (port: number, status: number) => ({ type: "process", executab
     && r.envelope.target?.recordedState === "failed" && (r.envelope.target.exit as { code?: number } | null)?.code === 1;
   const start = run(["service", "start", "broken", "--space", "b1"]);
   check("its start fails OPERATION_FAILED, exit 5, and records exit code 1", exited(start), shown(start));
+  check("...and quotes the last line it logged during that launch", (start.envelope?.error?.message ?? "").endsWith("the last line it logged is: broken"), shown(start));
   const restart = run(["service", "restart", "broken", "--space", "b1", "--yes"]);
   check("its restart is partial, exit 4, naming the replacement's exit code and its log",
     restart.status === 4 && restart.envelope?.error?.code === "OPERATION_PARTIAL" && (restart.envelope.error.message ?? "").includes("exited before readiness was established (exit code 1") && (restart.envelope.error.remedy ?? "").startsWith("read its log with cotal service logs broken --instance "), shown(restart));

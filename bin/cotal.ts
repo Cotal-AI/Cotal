@@ -66,4 +66,9 @@ process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
   if (warning !== "The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.") emitWarning(warning, ...rest);
 }) as typeof process.emitWarning;
 
+// The notice holds until the command begins, or until the command's own notice takes it over. An
+// internal entry, such as a stack member or shell completion, keeps Node's default signal exit.
+// Every word before the command word is a flag.
+const commandWord = process.argv.slice(2).find((word) => !word.startsWith("-"));
+if (!commandWord?.startsWith("__")) (await import("./startup-interrupt.js")).holdStartupInterrupt();
 await import("./run.js");

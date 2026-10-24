@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, boundedValue, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -579,6 +579,8 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     }
     const path = serviceLogPath(value.space, id, true)!;
     let log: number | undefined;
+    // Where this launch's own log lines start, so a failure quotes this launch and not an earlier one.
+    let logFrom: number | undefined;
     let exitCode: number | null = null, exitSignal: NodeJS.Signals | null = null;
     let exited = false;
     let done!: () => void;
@@ -589,6 +591,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
         log = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
         const info = fstatSync(log);
         if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
+        logFrom = info.size;
       }
       child = spawn(launch.program, [...launch.args], { cwd: launch.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
       if (!options.foreground) child.unref();
@@ -619,7 +622,8 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       if (!isCommandFailure(error) || error.code !== "OPERATION_FAILED" || observeServiceProcess(row.record.value) === "running") throw error;
       await Promise.race([exit, delay(1000)]);
       const failed = transition(row, { state: "failed", readiness: "not-checked", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
-      throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; its log records the cause`, { target: instanceProjection(failed), remedy: `read its log with cotal service logs ${definition.name} --instance ${id} --space ${value.space}` });
+      const last = logFrom === undefined ? undefined : lastLoggedLine(path, logFrom);
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${last ? `the last line it logged is: ${last}` : "its log records the cause"}`, { target: instanceProjection(failed), remedy: `read its log with cotal service logs ${definition.name} --instance ${id} --space ${value.space}` });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
   } finally { if (unpinned) unpinnedLaunches.delete(unpinned); if (!held) hold.release(); }
@@ -934,6 +938,22 @@ export function readOwnedLogTail(path: string, tail: number) {
     const all = text.replace(/\n$/, "").split("\n");
     return { lines: text ? all.slice(-tail) : [], omittedBytes: start, path };
   } finally { closeSync(fd); }
+}
+
+/** The last line an owned private log holds past byte `from`, as one bounded line of operator output,
+ *  or undefined when nothing was logged there or the log cannot be read as an owned file. */
+function lastLoggedLine(path: string, from: number): string | undefined {
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return undefined; }
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0 || info.size <= from) return undefined;
+    const length = Math.min(info.size - from, 8192), bytes = Buffer.alloc(length);
+    let read = 0;
+    while (read < length) { const count = readSync(fd, bytes, read, length - read, info.size - length + read); if (!count) break; read += count; }
+    const line = bytes.subarray(0, read).toString("utf8").split("\n").map((text) => text.trim()).filter(Boolean).pop();
+    return line ? oneLine(boundedValue(line, 400)) : undefined;
+  } catch { return undefined; } finally { closeSync(fd); }
 }
 
 /** One bounded raw log slice. File identity and byte offsets are local file facts, not global sequences. */

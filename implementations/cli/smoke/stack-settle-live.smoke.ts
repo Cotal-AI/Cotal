@@ -39,7 +39,11 @@
  *     history and name the manager's SIGTERM that keeps it. After that clear `send` stores again. When
  *     the manager instead ends on its own host's SIGTERM, `down` stops the rest and keeps the delivery
  *     credential, because the full store refused the daemon's release, and the next `up` with a larger
- *     cap waits out that lease and starts every member with the history kept. A store that refused a
+ *     cap waits out that lease and starts every member with the history kept. Left over its cap, the
+ *     store ends the delivery daemon once its lease lapses: its log quotes the refused create and
+ *     names no other daemon, `status` says the full store refuses its lease, and `up` fails naming
+ *     the store, quoting that line, and giving `history clear` or the SIGTERM route, after which it
+ *     starts the daemon. A store that refused a
  *     write for permission makes the broker disable JetStream: `down`, `service stop stack-manager`
  *     and `up` refuse `DEPENDENCY_UNAVAILABLE` naming the logged failure and the manager's SIGTERM on
  *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. A project folder renamed while its stack runs: the broker names
@@ -132,6 +136,16 @@
  *     `TARGET_UNAVAILABLE` and names `cotal status` in the root. `down` settles that up and stops the
  *     broker, `up` then starts the stack and registers the space, and `down` stops it, after which the
  *     Brokers block and `meshes.currentStopped` call it stopped.
+ * 16. A `down` interrupted while it waits on a frozen delivery daemon it signalled. It exits 130 naming
+ *     `cotal down --abandon-stop <request> --yes` with the stop's request. Once the daemon exits,
+ *     `down --yes` refuses `LIFECYCLE_BLOCKED` naming the same command, which stops the rest of the
+ *     stack.
+ * 17. An `up` interrupted while it writes a new space's trust material, held there by
+ *     `COTAL_SMOKE_HOLD_IN_SPACE_AUTH` with part of it written. It exits 130, and the next `up`
+ *     writes all of it again and starts the stack, delivery included.
+ * 18. An `up` signalled the moment it makes the root's maintenance folder, for the lock of its
+ *     recovery check, before it reaches the stack. It keeps the CLI's startup notice until its own
+ *     takes over, so it exits 130 with a notice, and the next `up` starts the stack.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -144,7 +158,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, MIN_FILE_STORE, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, MIN_FILE_STORE, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -617,6 +631,39 @@ try {
     check("up with a larger cap right after waits out that lease and starts every member", again.status === 0 && again.env?.outcome === "ok", shown(again));
     const after = await channelMessages(root, space, "general");
     check("the history is kept", typeof before === "number" && before > 0 && after === before, { before, after });
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3i. A space over its cap ends its delivery daemon. The lease key expires and the broker refuses
+  // the create that would take it again, which says nothing of another daemon. The up that would
+  // start the daemon again names the full store and the line the daemon logged.
+  {
+    const space = "fulllease";
+    const root = prepare(space);
+    const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-file-store", "70000000", "--json");
+    track(space);
+    check("up with a 70 MB cap starts", up.status === 0, shown(up));
+    const store = readStackJournal(root)!.journal.broker!.storeDir;
+    const refused = await fillStore(root, space);
+    check("rig: the broker refuses a publish once the store is over its cap", (refused as { code?: unknown } | undefined)?.code === 10023, String(refused));
+    check("the delivery daemon exits once its lease lapses on the full store", await until(() => gone(space, "stack-delivery"), 120_000));
+    const logs = cli(root, "service", "logs", "stack-delivery", "--json");
+    check("its log quotes the broker's refusal of the new lease and names no other daemon",
+      /could not re-acquire it \(insufficient resources\); it serves only under its lease, so it exits/.test(logs.stdout) && !/taken shard/.test(logs.stdout), logs.stdout.slice(-1200));
+    const plain = cli(root, "status", "--plain");
+    check("status says the full store refuses the delivery lease", plain.stdout.includes("the full store refuses its lease"), plain.stdout);
+    const managerPid = pidOf(space, "stack-manager");
+    const restart = cli(root, "up", "--json");
+    check("up fails OPERATION_FAILED, exit 5, quoting the daemon's line and naming the full store, then history clear and the SIGTERM that keeps the history",
+      restart.status === 5 && restart.env?.error?.code === "OPERATION_FAILED"
+        && restart.env.error.message.includes("the last line it logged is: ✗ delivery: acquiring the lease for shard 0 failed: insufficient resources. Not binding.")
+        && restart.env.error.message.includes(`the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, so it refuses every write`)
+        && restart.env.error.remedy === `from ${root}, make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal up again; to keep that history, end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down --yes and cotal up --max-file-store <bytes> with a larger cap`
+        && managerPid !== null, shown(restart));
+    check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
+    const again = cli(root, "up", "--json");
+    track(space);
+    check("up then starts the delivery daemon", again.status === 0 && !gone(space, "stack-delivery"), shown(again));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
@@ -1328,8 +1375,8 @@ try {
     const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
     let downErr = "";
     stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
-    // Node dies on a SIGINT that lands before a listener exists. The down installs its handler right
-    // after it takes the lock, so this waits for a lock this down owns, and a margin, before signalling.
+    // The down installs its handler before it takes the lock, so a lock this down owns, and a margin,
+    // put the signal inside the stop.
     const lockFile = join(root, ".cotal", "maintenance", "lock.json");
     const held = await until(() => { try { return JSON.parse(readFileSync(lockFile, "utf8")).owner?.pid === stopping.pid; } catch { return false; } }, 60_000);
     await sleep(200);
@@ -1422,6 +1469,74 @@ try {
     const after = cli(root, "status"), afterJson = cli(root, "status", "--json");
     check(`${space}: once a completed down stopped it, the Brokers block calls it stopped and status --json says so`,
       after.stdout.includes(`Selected space '${space}' is stopped`) && (afterJson.env?.result?.meshes as { currentStopped?: boolean } | undefined)?.currentStopped === true, { stdout: after.stdout.slice(0, 2500) });
+  }
+
+  // 16. A down interrupted while it waits on a delivery daemon it signalled.
+  {
+    const space = "abandon";
+    const root = prepare(space);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    track(space);
+    const delivery = pidOf(space, "stack-delivery");
+    check("a manager-free stack starts", started.status === 0 && delivery !== null, shown(started));
+    // A stopped daemon holds the SIGTERM, so the down waits on its exit with the stop recorded.
+    if (delivery !== null) process.kill(delivery, "SIGSTOP");
+    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes"], { cwd: root, env });
+    const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let downErr = "";
+    stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
+    const record = () => serviceInstances(space, "stack-delivery")[0]?.record.value;
+    const signalled = await until(() => record()?.state === "stopping", 60_000);
+    const request = record()?.requestId;
+    stopping.kill("SIGINT");
+    await exited(stopping);
+    if (delivery !== null) process.kill(delivery, "SIGCONT");
+    check("a down interrupted while the delivery it signalled is frozen exits 130 naming down --abandon-stop with that stop's request",
+      signalled && stopping.exitCode === 130 && downErr.includes("The stop of delivery is not confirmed") && downErr.includes(`cotal down --abandon-stop ${request} --yes`), { signalled, request, exitCode: stopping.exitCode, stderr: downErr.slice(-500) });
+    check("the resumed daemon exits on the signal it held", await until(() => delivery === null || !alive(delivery), 10_000), { delivery });
+    const refused = cli(root, "down", "--yes", "--json");
+    check("down --yes then refuses LIFECYCLE_BLOCKED naming the same down --abandon-stop", refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(refused.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`)), shown(refused));
+    const abandoned = cli(root, "down", "--abandon-stop", String(request), "--yes", "--json");
+    check("and down --abandon-stop with that request stops the rest of the stack", abandoned.status === 0 && Boolean(abandoned.env?.warnings?.some((warning) => warning.code === "STOP_ABANDONED")) && gone(space, "stack-broker"), shown(abandoned));
+  }
+
+  // 17. An up interrupted while it writes a new space's trust material.
+  {
+    const space = "fresh-auth";
+    const root = prepare(space);
+    const port = await freePort();
+    const held = join(root, ".cotal", spaceSegment(space), "membership-observer.creds");
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env: { ...env, COTAL_SMOKE_HOLD_IN_SPACE_AUTH: "1" }, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
+    const holding = await until(() => existsSync(held), 120_000);
+    child.kill("SIGINT");
+    await exited(child);
+    check("an up interrupted while it writes a new space's trust material exits 130", holding && child.exitCode === 130, { holding, exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    track(space);
+    check("the next up writes it again and starts the stack, delivery included", started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
+    const last = cli(root, "down", "--yes", "--json");
+    check("and down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 18. An up signalled during its recovery check, before its own notice exists.
+  {
+    const space = "recovery-lock";
+    const root = prepare(space);
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "", signalled = false;
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
+    const watcher = watch(join(root, ".cotal"), (_event, file) => { if (file === "maintenance" && !signalled) { signalled = true; child.kill("SIGINT"); } });
+    await exited(child);
+    watcher.close();
+    check("an up signalled as it makes its maintenance folder exits 130 with a notice", signalled && child.exitCode === 130 && /^Interrupted /m.test(upErr), { signalled, exitCode: child.exitCode, signal: child.signalCode, stderr: upErr.slice(-400) });
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    track(space);
+    check("the next up starts the stack", started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
+    const last = cli(root, "down", "--yes", "--json");
+    check("and down --yes stops it", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");

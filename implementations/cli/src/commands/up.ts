@@ -228,7 +228,7 @@ import {
   type StackUpNative,
   unparsableDaemonCredsNotice,
 } from "./stack-up.js";
-import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
+import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
@@ -658,6 +658,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     };
     const interrupt = () => request("SIGINT"), terminate = () => request("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    handOverStartupNotice();
     let failure: { error: unknown } | undefined;
     try { await start(); } catch (error) { failure = { error }; }
     finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
@@ -693,6 +694,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    handOverStartupNotice();
   });
 }
 
@@ -812,6 +814,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // A restore rewrites the shared store and the trust root under it, from an artifact that names
     // one space (see `cotal backup`) - it cannot leave the root's other tenants standing.
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal up --restore");
+    // `up` keeps the startup interrupt notice (`keepsStartupNotice`); a restore reports its own.
+    await releaseStartupNotice();
     // A `backup restore` owns stdout for its receipt, so its seat admission lines go to stderr.
     const prepared = await prepareRestore(cotalRoot(), values as RestoreFlags, restoreSink ? (line) => console.error(line) : undefined);
     pendingRestores.set(prepared.attemptId, prepared);
@@ -923,6 +927,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     let handedOff = false;
     try {
       const journal = readMaintenanceJournal(root);
+      // A recorded maintenance attempt is recovered on its own terms, with no startup notice.
+      if (journal) await releaseStartupNotice();
       if (journal?.state === "restore-ready") {
         // Ordinary up NEVER rolls back an in-progress restore: a live attempt's target may still be
         // written by its isolated broker. Refuse with the exact recovery recourse instead.
@@ -1297,24 +1303,27 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (holder !== undefined)
       throw new CommandFailure("refused", "CONFLICT", `a foreground cotal up in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with cotal down --yes from ${meshRoot} and run cotal up --foreground again` });
     const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
-    const stackLock = acquireStackOperationLock(meshRoot);
-    const native = controllerStackNative();
-    // A foreground terminal holds the start as well, so a signal during it stops what it started.
-    const start = async () => {
-      try {
-        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
-      } finally { releaseMaintenanceLock(stackLock); }
-    };
-    if (values.foreground) await holdForegroundStack(meshRoot, start);
-    else {
-      // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
-      // its child, and the notice names what it left running.
-      const release = noticeOnInterrupt(() => { settleInterruptedLaunches(); return stackUpInterruptNotice(meshRoot, stackSpace); });
-      try { await start(); } finally { release(); }
-    }
+    // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
+    // its child, and the notice names what it left running. It is installed before the lock, so no
+    // moment of the start exits without it.
+    const release = values.foreground ? undefined : noticeOnInterrupt(() => { settleInterruptedLaunches(); return stackUpInterruptNotice(meshRoot, stackSpace); });
+    try {
+      const stackLock = acquireStackOperationLock(meshRoot);
+      const native = controllerStackNative();
+      // A foreground terminal holds the start as well, so a signal during it stops what it started.
+      const start = async () => {
+        try {
+          if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+        } finally { releaseMaintenanceLock(stackLock); }
+      };
+      if (values.foreground) await holdForegroundStack(meshRoot, start);
+      else await start();
+    } finally { release?.(); }
     return;
   }
+  // A manifest or retained-launcher start reports no interrupt notice of its own.
+  await releaseStartupNotice();
   // A named space this machine runs from another folder is refused before anything is written here,
   // and in every presentation, since the launcher below has no structured receipt.
   if (!values.file && values.space !== undefined) await refuseRunningElsewhere(values.space, meshRoot);
@@ -4875,9 +4884,13 @@ async function authSetup(
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space);
   if (!auth) {
     auth = await createSpaceAuth(space);
-    await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
-    await retainSystemSigningSeed(store, auth); // … and the host keeps the seed itself, beside the record, for own-broker caller issuance
-    await provisionMembershipCreds(auth, cotalRoot(), space); // … so the observer can still be minted here (fresh-space only)
+    // The trust record is written last. Until it exists the next up treats the space as fresh and
+    // mints all of this again, so an up stopped partway never leaves a space without its $SYS creds.
+    await provisionMembershipCreds(auth, cotalRoot(), space); // the observer is minted while the $SYS seed is in memory (fresh-space only)
+    // Smoke only: hold a new space with part of its material written, so a signal can land there.
+    if (process.env.COTAL_SMOKE_HOLD_IN_SPACE_AUTH === "1") await new Promise((done) => setTimeout(done, 60_000));
+    await retainSystemSigningSeed(store, auth); // the host keeps the seed itself, beside the record, for own-broker caller issuance
+    await putSpaceAuth(store, auth); // strips the $SYS seed at rest
     // A fresh space's $SYS material was just minted from the seed this branch holds in memory, so
     // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never
     // report a rotation that did not happen.

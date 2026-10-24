@@ -204,6 +204,7 @@ const baseCommands: Command[] = [
     examples: ["cotal up", "cotal up --root <prepared-project> --space <space>", "cotal up --foreground", "cotal up -f cotal.yaml --dry-run"],
     validate: validateUpArguments,
     prepareMeshTarget: false,
+    keepsStartupNotice: true,
     run: upCommand,
     complete: upComplete,
   },
