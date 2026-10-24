@@ -6079,12 +6079,14 @@ control request. Connection or authorization failure is an error, not an empty c
 ### Recorded team views
 
 `team` (`t`) reads fresh launch summaries, additive ownership ledgers and their
-root-local attempt records at the selected local root. When native `up -f` returns from its broker start, it writes a creation-only fresh
+root-local attempt records at the selected local root. A team read or `--dry-run` preview that
+completes exits 0. Its JSON marks `completeness` as `partial`, and its report has a line
+saying what it does not establish. When native `up -f` returns from its broker start, it writes a creation-only fresh
 summary with its full run ID, initial broker PID, declared agent/channel names
 and the initial control-plane, auth-service and delivery-responder results.
 Older summaries without a broker PID, auth-mode pin or responder observation
 remain readable; `team show` labels their absent facts not recorded and
-reports partial. A PID
+says the record proves no current ownership. A PID
 or a responder bound when boot returned is not current process or listener
 ownership proof. A private create-only fresh boot attempt is written and fsynced
 before the launch spec and broker start. A returned summary is also published create-only and
@@ -6098,7 +6100,7 @@ or refused summary after boot is not a reason to boot again. A summary records t
 `up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
 path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
 refuses it with CONFLICT, naming the folder it was recorded at.
-The inventory stays partial because older fresh boots may have no summary. The
+The inventory's `completeness` stays `partial` because older fresh boots may have no summary. The
 terminal lists up to 100 records; JSON retains all readable records. Its Next column
 says inspect the stack for a fresh record or review the native scoped teardown plan for an
 additive ledger; neither row grants permission to stop anything. A fresh summary is
@@ -6206,7 +6208,7 @@ aliases or remote tenants. A host-derived candidate leaves this comparison not
 checked.
 Where the manifest supplies a broker URL or uses the default without a host override,
 it makes a credless reachability probe. A failed probe is not proof of absence on a
-TLS-first listener. The result is partial: port binding, exclusive local ownership,
+TLS-first listener. Its `completeness` is `partial`: port binding, exclusive local ownership,
 installed providers, credentials, grants and startup readiness have not been checked.
 It writes no record and starts nothing.
 
@@ -6309,8 +6311,8 @@ requires the original registered root, broker, TLS mode and exact manager.
 The revision-32 native `slots` query checks each recorded name, principal and
 lifecycle UID. A successor, omitted slot or unconfirmed transition refuses
 before a stop. A dry-run only reads this impact; apply requires a default-cancel
-terminal confirmation or `--yes` in scripts. Every `team remove --dry-run` is `partial`, exit 4: it
-reads the manager's slots and the card revisions in order, not atomically, and the membership feed
+terminal confirmation or `--yes` in scripts. Every `team remove --dry-run` exits 0 with
+`completeness` `partial`: it reads the manager's slots and the card revisions in order, not atomically, and the membership feed
 is display-only, so the preview does not establish what the apply will find. The apply reads the
 slots and revisions again before it acts.
 
