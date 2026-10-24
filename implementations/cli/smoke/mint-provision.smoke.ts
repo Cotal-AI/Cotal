@@ -521,6 +521,24 @@ try {
     const r1 = await runMint(["x", "--profile", "observer", "--expires-in", "3600", "--expires-at", "2000000000", "--out", out]);
     check("--expires-in with --expires-at exits 1 with the reason", r1.code === 1 && /choose --expires-in or --expires-at, not both/.test(r1.out), r1.out);
     check("  and mints nothing", !existsSync(out));
+    // A label or role the grammar does not take is a value refusal: it names the character, the value
+    // and the characters allowed, with its own Next and no command help, in text and in JSON.
+    const labelTakes = "a label takes only letters, digits and _";
+    for (const [words, said, next] of [
+      [["p-agent"], `the credential label "p-agent" has "-", which a label cannot hold; ${labelTakes}`, "use letters, digits and _ only, such as p_agent"],
+      [["team.lead"], `the credential label "team.lead" has ".", which a label cannot hold; ${labelTakes}`, "use letters, digits and _ only, such as team_lead"],
+      [["a\nb"], `the credential label "a\\u000ab" has "\\u000a", which a label cannot hold; ${labelTakes}`, "use letters, digits and _ only, such as a_b"],
+      [[""], "the credential label is empty; a label takes letters, digits and _", "use letters, digits and _ only"],
+      [["ok1", "--role", "bad role!"], `the --role "bad role!" has " ", which a role cannot hold; a role takes only letters, digits, _ and -`, "use letters, digits, _ and - only, such as bad_role_"],
+    ] as const) {
+      const text = await runMint([...words, "--out", out]);
+      check(`auth mint ${JSON.stringify(words)} names the character and the characters allowed, with its Next and no help`,
+        text.code === 1 && text.out.includes(`✗ ${said}\n  ${next}\n`) && !/^Usage$/m.test(text.out) && !existsSync(out), text.out);
+      const json = await runMint([...words, "--out", out, "--json"]);
+      let envelope: { error?: { code?: string; message?: string; remedy?: string } } = {};
+      try { envelope = JSON.parse(json.out); } catch { /* not one envelope; the check below shows it */ }
+      check("  and --json carries the same message and Next", json.code === 1 && envelope.error?.code === "USAGE_INVALID" && envelope.error.message === said && envelope.error.remedy === next && !existsSync(out), json.out);
+    }
     for (const flag of [["--expires-in", "3600"], ["--expires-at", "2000000000"]]) {
       const r = await runMint(["x", "--profile", "observer", "--no-expiry", ...flag, "--out", out]);
       check(`--no-expiry with ${flag[0]} exits 1 with the reason and mints nothing`, r.code === 1 && /--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at/.test(r.out) && !existsSync(out) && !existsSync(`${out}.no-expiry.json`), r.out);
