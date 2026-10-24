@@ -1698,7 +1698,8 @@ manifest whose space is longer than 200 characters is invalid, so restore refuse
 receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
-confirm that any seat joined. A registry restore brings back channel settings only, so chat and DM
+confirm that any seat joined. Its `restored` and `recreatedEmpty` fields name the streams the
+restore brought back and the ones it recreated empty. A registry restore brings back channel settings only, so chat and DM
 history start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
 names the store the restore set aside, which holds the only copy of that history. Its next step says
 that `backup cleanup-fallback` deletes that store only with `--discard-history`.
@@ -1722,18 +1723,28 @@ resumes only a stopped stack whose manager never launched, and a restored stack'
 ran, so start it with bare `cotal up` instead.
 
 Stopped client-managed KV ordered consumers are ephemeral read residue, not backup state. Backup
-ignores only the pinned client's exact stopped shapes: ordinary last-value watchers and the
-whole-bucket scanner that uses all-history delivery to collapse concurrent tombstones. A bound
-consumer or any lookalike with a different filter, inbox, lifetime, or other config is still refused.
+ignores only the pinned client's exact stopped shapes: ordinary last-value watchers, a watcher of one
+subtree of its bucket such as the manager's goal index, and the whole-bucket scanner that uses
+all-history delivery to collapse concurrent tombstones. A bound consumer or any lookalike with a
+filter outside its bucket, another inbox, lifetime, or other config is still refused.
 
-`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, and
-validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
+`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, on
+a static-auth or open mesh the workflow run stores (the WFJ step journal, the records store and the
+run admission store), and validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
 feed, leases, native ephemeral/history consumers, credentials, keys, tokens, owner secrets, and actor
-ledger files are excluded. `full` means every transferable message and registry stream, not every
-JetStream resource: endpoint submissions/facts/events/timers/workflow state, contract artifacts, and
-the records/auth/session stores are nonportable control state. Restore recreates those streams empty
-with their canonical configs before exposing the normal listener, so active endpoint runs,
-lifecycles, and sessions do not cross a backup. Artifacts are exclusively created `0700`;
+ledger files are excluded. The other endpoint stores are nonportable control state: endpoint
+submissions, facts, events, timer requests and fires, work pools, contract artifacts, and the
+auth, session and issued-authority stores. Restore recreates those streams empty with their
+canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup. A
+workflow run that waited at a checkpoint or a timer at the cut is back after a full restore, and the
+manager takes it over as after a restart. The records store also holds the endpoint authority rows,
+such as lifecycle heads, obligations and policy versions, and a full restore rolls them back to the
+cut with the runs. A user-mode full backup holds no workflow run store, because the records store's
+lifecycle heads name credential rows in the auth store, which a backup does not carry; its restore
+recreates the run stores empty and says so. An artifact in the earlier `cotal-space-backup/v1`
+format still restores; it holds no workflow run, so the run stores come back empty and the restore
+says so. Each restore lists what
+it restored and what it recreated empty. Artifacts are exclusively created `0700`;
 snapshot/checkpoint files and
 the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
 directory is trusted operator input: hashes detect corruption, not malicious rewriting. So

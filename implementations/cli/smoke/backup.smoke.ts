@@ -132,7 +132,7 @@ try {
   assert.throws(() => stageArtifact(destination, stagingParent), stageFault(null, "invalid-name"));
   assert.throws(verify, verifyFault(null, "invalid-name", /^backup manifest declares a file name that is not a plain name in the artifact folder.*; the name was not printed/), "verify names a traversing file name as its fault");
   writeFileSync(join(destination, "manifest.json"), `${"[".repeat(100_000)}${"]".repeat(100_000)}`);
-  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /^backup artifact manifest\.json is not a valid cotal-space-backup\/v1 manifest: it is not a JSON object/), "verify names a deeply nested manifest as invalid");
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /^backup artifact manifest\.json is not a valid cotal-space-backup manifest: it is not a JSON object/), "verify names a deeply nested manifest as invalid");
   const inventory = (edit: (manifest: { space: string; files: { path: string }[]; streams: { stream: string }[] }) => void) => {
     const manifest = JSON.parse(originalManifest) as { space: string; files: { path: string }[]; streams: { stream: string }[] };
     edit(manifest);

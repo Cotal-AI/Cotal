@@ -38,7 +38,7 @@ import {
   type MaintenanceReadyRecord,
   type ProcessOwner,
 } from "@cotal-ai/workspace";
-import { createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
+import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
 import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
 import { refuseControllerCut } from "../lib/stack-journal.js";
@@ -145,7 +145,7 @@ async function inspectionConnection(broker: IsolatedBroker): Promise<NatsConnect
   return connectIsolatedBroker(broker, broker.initialLogin);
 }
 
-async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection): Promise<{
+async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[]): Promise<{
   checkpoints: PersistentConsumerCheckpoint[];
 }> {
   const requestPage = async <T>(subject: string, offset: number): Promise<T & { total: number; offset: number; limit: number }> => {
@@ -173,7 +173,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
   // The clone is a stopped store on a fresh broker, so the memory-backed presence bucket is gone.
   validateSpaceBackupInventory(space, streamNames, { atRest: true });
   const inventory = spaceBackupInventory(space);
-  const expected = inventory[selected];
+  const expected = held;
   const consumersByStream: Record<string, ConsumerInfo[]> = {};
   const statesByStream: Record<string, BackupStreamState> = {};
   for (const stream of expected) {
@@ -207,14 +207,14 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
       throw new Error(`${registry} has an unsupported consumer`);
     return { checkpoints: [] };
   }
-  const backedConsumers = Object.fromEntries(inventory.full.map((stream) => {
+  const backedConsumers = Object.fromEntries(held.map((stream) => {
     const consumers = consumersByStream[stream] ?? [];
     for (const consumer of consumers)
       if (stream.startsWith("KV_") && consumer.name.startsWith("oc_") && !isStoppedKvWatcher(stream, consumer))
         throw new Error(`${stream}/${consumer.name} has an unsupported stopped KV watcher config: ${JSON.stringify(consumer.config)}`);
     return [stream, consumers.filter((consumer) => !isStoppedKvWatcher(stream, consumer))];
   }));
-  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream) };
+  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held) };
 }
 
 export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): boolean {
@@ -232,7 +232,8 @@ export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): bool
   );
   // The public KV watcher (`keys`/ordinary watch) uses LastPerSubject; the core-owned whole-bucket
   // scanner uses All so concurrent tombstones can collapse correctly. Both are stopped ephemeral
-  // readers when every other field below matches the pinned client's ordered-consumer shape.
+  // readers when every other field below matches the pinned client's ordered-consumer shape. A
+  // watcher may read one subtree of its bucket, as the manager's goal index does on the records store.
   return consumer.push_bound !== true &&
     config.name === consumer.name &&
     !config.durable_name &&
@@ -240,10 +241,12 @@ export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): bool
     (config.deliver_policy === "last_per_subject" || config.deliver_policy === "all") &&
     config.ack_policy === "none" &&
     (config.max_deliver === undefined || config.max_deliver === -1 || config.max_deliver === 1) &&
-    config.filter_subject === `$KV.${stream.slice(3)}.>` &&
+    typeof config.filter_subject === "string" && config.filter_subject.startsWith(`$KV.${stream.slice(3)}.`) &&
     config.replay_policy === "instant" &&
     config.flow_control === true &&
-    typeof config.deliver_subject === "string" && config.deliver_subject.startsWith("_INBOX_") &&
+    // A connection with its own inbox prefix delivers to `_INBOX_<id>`, one without it, as on an open
+    // mesh, to the client's default `_INBOX.`.
+    typeof config.deliver_subject === "string" && (config.deliver_subject.startsWith("_INBOX_") || config.deliver_subject.startsWith("_INBOX.")) &&
     (config.idle_heartbeat === 5_000_000_000 || config.idle_heartbeat === 30_000_000_000) &&
     (config.inactive_threshold === undefined || config.inactive_threshold === 300_000_000_000) &&
     (config.num_replicas === 0 || config.num_replicas === 1) &&
@@ -610,10 +613,11 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     releaseMaintenanceLock(lock);
     lock = undefined as never;
 
+    const held = artifactStreams({ format: BACKUP_MANIFEST_FORMAT, space: ready.space, selection: selected, mode: ready.mode });
     const inspect = await inspectionConnection(broker);
     let checkpoints;
     try {
-      ({ checkpoints } = await collectInventory(inspect, ready.space, selected));
+      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held));
     } finally {
       await inspect.drain().catch(() => {});
     }
@@ -621,7 +625,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       throw new Error("smoke-injected failure at snapshot initiation");
     const files: BackupFileRecord[] = [];
     const streams: BackupStreamRecord[] = [];
-    for (const stream of spaceBackupInventory(ready.space)[selected]) {
+    for (const stream of held) {
       const snapshot = await snapshotStream(writer, broker, ready.space, stream);
       files.push(snapshot.file);
       streams.push(snapshot.stream);
