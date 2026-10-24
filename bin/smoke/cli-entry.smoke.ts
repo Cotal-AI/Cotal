@@ -16,6 +16,8 @@
  * to add. FORCE_COLOR with NO_COLOR prints no Node warning about the pair. A failing command prints
  * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
  * A folder given to `topology view -f`, `up -f` or `down -f` is refused by its path as a directory.
+ * A signal while the CLI loads prints that the command did not begin and exits with that signal's
+ * code, and an internal entry keeps Node's default signal exit.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -25,7 +27,7 @@
  *
  * Run: pnpm smoke:cli-entry
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -797,6 +799,51 @@ for (const { alias, cmd } of aliases) {
   refused("a missing flag value writes no seed store", cotal(["spawn", "--space"]), /--space/);
   const control = cotal(["sync"]);
   check("control: a valid command that is not a read seeds the same sandbox shape", control.status === 0 && control.wrote.length > 0, shown(control));
+}
+
+// ── A signal while the CLI loads ──────────────────────────────────────────────────────────────────
+// A resolve hook holds the entry's import of the CLI, so the signal lands before any command code
+// runs. Node's default would end the process silently there; the entry holds a notice instead.
+{
+  const hooks = mkdtempSync(join(tmpdir(), "cotal-entry-hold-"));
+  cleanup.push(hooks);
+  writeFileSync(join(hooks, "register.mjs"), `import { register } from "node:module";\nregister("./hooks.mjs", import.meta.url);\n`);
+  writeFileSync(join(hooks, "hooks.mjs"), [
+    `import { writeFileSync } from "node:fs";`,
+    `export async function resolve(specifier, context, next) {`,
+    `  if (specifier === "./run.js") { writeFileSync(process.env.ENTRY_HOLD_MARKER, ""); await new Promise((done) => setTimeout(done, 2000)); }`,
+    `  return next(specifier, context);`,
+    `}`,
+  ].join("\n"));
+  const interrupted = async (args: string[], signal: NodeJS.Signals) => {
+    const root = mkdtempSync(join(tmpdir(), "cotal-entry-root-"));
+    const cfg = mkdtempSync(join(tmpdir(), "cotal-entry-cfg-"));
+    const cotalHome = join(root, "home"), marker = join(root, "held");
+    cleanup.push(root, cfg);
+    mkdirSync(cotalHome, { recursive: true });
+    const sandbox = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: cfg });
+    const options = { cwd: root, env: { ...HOST_ENV, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: cfg, NO_COLOR: "1", ENTRY_HOLD_MARKER: marker, ...noSeed } };
+    assertSmokeSandboxDown(sandbox, args, options);
+    const child = spawn("node", ["--import", join(hooks, "register.mjs"), BIN, ...args], { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exit = new Promise<void>((done) => child.on("exit", () => done()));
+    const deadline = Date.now() + 60_000;
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 10));
+    const held = existsSync(marker);
+    child.kill(signal);
+    await exit;
+    const written = join(cfg, "cotal");
+    return { held, status: child.exitCode, signal: child.signalCode, stdout, stderr, wrote: existsSync(written) ? readdirSync(written) : [] };
+  };
+  const notice = "Interrupted before the command began, so it did nothing. Run it again.";
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+    const r = await interrupted(["down", "--yes"], signal);
+    check(`${signal} while the CLI loads: down --yes exits ${code}, says it did nothing, and writes nothing`, r.held && r.status === code && r.stderr.trim() === notice && r.stdout === "" && r.wrote.length === 0, r);
+  }
+  const internal = await interrupted(["--no-color", "__complete", "st"], "SIGINT");
+  check("an internal entry interrupted while the CLI loads ends by the signal, with no notice", internal.held && internal.signal === "SIGINT" && internal.stderr === "", internal);
 }
 
 // ── Short flags parse as their long form; a wrong-case short is refused ───────────────────────────

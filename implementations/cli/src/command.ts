@@ -326,6 +326,9 @@ export interface RunCliOptions {
    *  specs. OFF by default — library composition roots keep the explicit-import model; only the
    *  published binary opts in. */
   extensions?: boolean;
+  /** Awaited once, as the command's own work begins. The published entry releases its startup
+   *  interrupt notice here, so from this point an interrupt is the command's to report. */
+  onCommandStart?: () => void | Promise<void>;
 }
 
 /** A usage refusal on stderr, then `cmd`'s help when one is given. Plain output and a locale without
@@ -700,6 +703,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       await cmd.run(parsed);
     });
   };
+  await opts.onCommandStart?.();
   try {
     await execute();
   } catch (e) {

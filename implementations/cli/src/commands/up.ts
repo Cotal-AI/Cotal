@@ -1297,22 +1297,23 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (holder !== undefined)
       throw new CommandFailure("refused", "CONFLICT", `a foreground cotal up in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with cotal down --yes from ${meshRoot} and run cotal up --foreground again` });
     const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
-    const stackLock = acquireStackOperationLock(meshRoot);
-    const native = controllerStackNative();
-    // A foreground terminal holds the start as well, so a signal during it stops what it started.
-    const start = async () => {
-      try {
-        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
-      } finally { releaseMaintenanceLock(stackLock); }
-    };
-    if (values.foreground) await holdForegroundStack(meshRoot, start);
-    else {
-      // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
-      // its child, and the notice names what it left running.
-      const release = noticeOnInterrupt(() => { settleInterruptedLaunches(); return stackUpInterruptNotice(meshRoot, stackSpace); });
-      try { await start(); } finally { release(); }
-    }
+    // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
+    // its child, and the notice names what it left running. It is installed before the lock, so no
+    // moment of the start exits without it.
+    const release = values.foreground ? undefined : noticeOnInterrupt(() => { settleInterruptedLaunches(); return stackUpInterruptNotice(meshRoot, stackSpace); });
+    try {
+      const stackLock = acquireStackOperationLock(meshRoot);
+      const native = controllerStackNative();
+      // A foreground terminal holds the start as well, so a signal during it stops what it started.
+      const start = async () => {
+        try {
+          if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+        } finally { releaseMaintenanceLock(stackLock); }
+      };
+      if (values.foreground) await holdForegroundStack(meshRoot, start);
+      else await start();
+    } finally { release?.(); }
     return;
   }
   // A named space this machine runs from another folder is refused before anything is written here,

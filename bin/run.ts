@@ -32,6 +32,7 @@ import "./daemon/command.js"; // self-registers `daemon`: the local machine daem
 // runtime and its zod copy into CLI startup, and a renderer needs none of it.
 import "@cotal-ai/connector-core/agui-render";
 import { registry } from "@cotal-ai/core";
+import { releaseStartupInterrupt } from "./startup-interrupt.js";
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
 // or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
@@ -51,4 +52,4 @@ process.stdout.on("error", stdoutError);
 // runtimes, connectors, and local process components all self-register from those packages. Library
 // roots keep the explicit-import model.
 const argv = process.argv.slice(2);
-await runCli(registry, argv, { extensions: true });
+await runCli(registry, argv, { extensions: true, onCommandStart: releaseStartupInterrupt });

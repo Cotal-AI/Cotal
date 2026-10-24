@@ -282,14 +282,17 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   // The preview reads without the lock and writes nothing. The real stop holds the root's
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
   if (values["dry-run"] === true) return await previewStackStop(root, values, presentation, withAgents);
-  // A busy root's refusal names the recorded space, as every refusal after the lock does.
-  const recorded = readStackJournal(root)?.journal.space;
-  if (recorded !== undefined) recordOperationSpace(recorded);
-  const lock = acquireStackOperationLock(root);
-  // A signal ends the stop where it is, and the notice names the members that still run.
+  // A signal ends the stop where it is, and the notice names the members that still run. It is
+  // installed before the lock, so no moment of the stop exits without it.
   const release = noticeOnInterrupt(() => stackStopInterruptNotice(root));
-  try { await applyStackStop(root, values, presentation, interactive, withAgents, lock); }
-  finally { release(); releaseMaintenanceLock(lock); }
+  try {
+    // A busy root's refusal names the recorded space, as every refusal after the lock does.
+    const recorded = readStackJournal(root)?.journal.space;
+    if (recorded !== undefined) recordOperationSpace(recorded);
+    const lock = acquireStackOperationLock(root);
+    try { await applyStackStop(root, values, presentation, interactive, withAgents, lock); }
+    finally { releaseMaintenanceLock(lock); }
+  } finally { release(); }
 }
 
 /** What an interrupted bare down left: the members still running, and the down that finishes it. */

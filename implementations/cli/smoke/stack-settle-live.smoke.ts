@@ -1328,8 +1328,8 @@ try {
     const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
     let downErr = "";
     stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
-    // Node dies on a SIGINT that lands before a listener exists. The down installs its handler right
-    // after it takes the lock, so this waits for a lock this down owns, and a margin, before signalling.
+    // The down installs its handler before it takes the lock, so a lock this down owns, and a margin,
+    // put the signal inside the stop.
     const lockFile = join(root, ".cotal", "maintenance", "lock.json");
     const held = await until(() => { try { return JSON.parse(readFileSync(lockFile, "utf8")).owner?.pid === stopping.pid; } catch { return false; } }, 60_000);
     await sleep(200);
