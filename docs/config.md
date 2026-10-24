@@ -233,7 +233,7 @@ other value when it starts, naming the variable.
 | `COTAL_TELEMETRY_DISABLED` / `DO_NOT_TRACK` | any `cotal` command | Force usage telemetry off (`1` or `true`) | off |
 | `COTAL_TELEMETRY_URL` | any `cotal` command | Usage telemetry intake override (self-hosted), an `http` or `https` URL; any other value refuses | `https://cotal.ai/v1/telemetry` |
 | `COTAL_SKIP_ASSIST` | `setup` | Disable the connector debug handoff on a failed step (`1`; for CI) | off |
-| `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors to stderr (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |
+| `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors and warnings to stderr (`1`). The shell stubs discard stderr, so run `cotal __complete <words>` by hand to see them. Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_DEBUG` | any `cotal` command | Print the stack trace under a command's error, followed by the stack of each error that caused it (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_CODEX_BIN` / `COTAL_OPENCODE_BIN` / `COTAL_ORCA_BIN` | Codex and OpenCode connectors, Orca runtime | Pin the `codex`, `opencode` or Orca CLI binary | found on `PATH` |
 | `COTAL_IDP_TIMEOUT_MS` | `cotal login`, IdP requests | Per-request IdP timeout in milliseconds, for a slow IdP; a malformed value fails loud | `30000` |

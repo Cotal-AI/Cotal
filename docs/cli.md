@@ -6375,7 +6375,10 @@ offers none. A
 candidate that holds a control character, such as a persona file name with an escape sequence or a
 newline in it, is not offered. `persona` still lists that file with the characters escaped. A
 persona catalog folder that cannot be read fails the completion of a persona name, so the shell
-offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints the folder. The bash
+offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints the folder. A record it skips, such as a
+prepared space record that does not parse, is named on stderr only under that flag too. The stubs
+discard stderr, so run the completion by hand to see it, as
+`COTAL_COMPLETE_DEBUG=1 cotal __complete persona show ''` does. The bash
 and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own
 candidates.
 
@@ -6739,7 +6742,8 @@ greater than 9007199254740991, and a refusal names the value it rejected.
 ## Plumbing
 
 `cotal __complete <words…>` is the internal entry the shell-completion stubs call to emit candidates
-for the current command line; you never run it directly. `cotal agent-bearer` is machine-facing
+for the current command line; you run it directly only to debug a completion, with
+`COTAL_COMPLETE_DEBUG=1`. `cotal agent-bearer` is machine-facing
 plumbing on user-auth meshes: spawned agents exec it to print a fresh short-lived bearer from their
 spawn-time secret; you never run it directly either. Its local arm uses `--dir` to discover the
 capability-gated loopback service. A remotely enrolled, already-granted agent instead receives

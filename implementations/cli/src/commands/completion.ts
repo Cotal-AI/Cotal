@@ -38,7 +38,8 @@ import { SCRIPTS, LOAD_NOW } from "../lib/completion-scripts.js";
  * files (your personas and their declared channels/roles), never the mesh — so a keystroke never
  * blocks on the network. And there is no fallback: a completer that can't produce its authoritative
  * answer (e.g. a malformed agent file) fails the process — nothing on stdout, non-zero exit — so a
- * partial set is never mistaken for a complete one. Set COTAL_COMPLETE_DEBUG=1 to see why on stderr.
+ * partial set is never mistaken for a complete one. Set COTAL_COMPLETE_DEBUG=1 to see why on stderr,
+ * and to see the warnings a completion records; the stubs discard stderr, so run it by hand.
  */
 
 /** Wire format: one `value\tdescription` (or bare `value`) per line, then a `:directive`
