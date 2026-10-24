@@ -450,10 +450,10 @@ export function decodeLocalJson(bytes: Buffer): unknown {
 /** Workstation records only. Providers are never imported and revisions confer no native authority. */
 export class ProtectedRecordStore<T> {
   constructor(
-    readonly namespace: "endpoints" | "services",
+    readonly namespace: "endpoints" | "services" | "credentials",
     readonly space: string,
     readonly validate: (value: unknown, checkReferences: boolean) => T,
-    readonly family?: "definitions" | "instances" | "supervisors" | "install-intents" | "uninstall-intents" | "unit-actions",
+    readonly family?: "definitions" | "instances" | "supervisors" | "install-intents" | "uninstall-intents" | "unit-actions" | "exports",
   ) {}
 
   directory(create = false): string | undefined {

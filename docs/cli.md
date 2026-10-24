@@ -5464,8 +5464,12 @@ resolved refuses with its next step, such as `cotal up`. Conflicting current-fol
 selected-root accounts refuse before issuance.
 
 `agent` is the default profile. Its channel ACLs and role come from the selected root's persona
-when present; explicit `--allow-subscribe`, `--allow-publish` and `--role` override them. An empty
-ACL flag means no explicit entries. The native read-ACL resolver still enforces boot membership.
+when present; explicit `--allow-subscribe`, `--allow-publish` and `--role` override them. With
+`--identity` naming an agent credential this space issued, the new credential keeps that
+credential's read channels, post channels and role in place of the persona's, and each flag still
+replaces its own grant. The receipt lists the grants as May read, May post and Role, marking those
+carried from `--identity`; JSON has them under `result.grants`, with `fromIdentity` naming the
+carried ones. An empty ACL flag means no explicit entries. The native read-ACL resolver still enforces boot membership.
 Observer and admin have fixed native scope and reject agent ACL, role and provisioning flags
 rather than implying those inputs narrowed anything.
 
@@ -5475,8 +5479,9 @@ standing credential when it has expired or has no expiry claim, under a new iden
 `--identity` names one, and removes a no-expiry record beside it unless `--no-expiry` writes a new
 one. The receipt names what it replaced under `result.replaced`. A standing credential that is still
 valid refuses `CONFLICT`, naming its expiry, and so does one that is not a native credential.
-`--replace` takes no `--out`. Explicit exports stay outside
-managed `.cotal` and workstation state. A pre-existing explicit output must be an owned private
+`--replace` takes no `--out`. An exported file stays outside
+managed `.cotal` and workstation state. Its path, label, profile and public key, without the
+credential, are recorded under `credentials/` in the Cotal home so `doctor auth` lists the file. A pre-existing explicit output must be an owned private
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files
 and identities refuse. New outputs use create-only publication. The output's directories follow
 the [`space create`](#selecting-a-space) path rule, which also accepts a root-owned sticky directory
@@ -5737,8 +5742,15 @@ a copy made before stays valid until it is revoked. Rotating the space identity 
 `cotal reset space <space>`, then `cotal up`) retires every credential the space issued and removes
 the file, and the reset removes the space's store with its history. An expired label's file is a finding too, and
 its guidance names that same `--replace`, next to the managed renewal that re-signs an agent a
-manager runs. `doctor auth` reads only the
-space's credential store, so a credential minted with `--out` is not listed, whatever its expiry.
+manager runs.
+
+Each file `auth mint --out` wrote for the space from this root and that is still there is listed
+under Exported credential files, and in `result.exported`, with its state and expiry. These rows
+are not findings. An expired one is an `EXPORTED_CREDENTIAL_EXPIRED` warning. One near expiry or
+expired names `cotal auth mint <label> --identity <file> --out <file>`, which signs the same key
+again with the same grants. One whose key was revoked, or that an earlier space identity issued,
+names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`
+refuses a revoked one.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.
