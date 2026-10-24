@@ -113,6 +113,20 @@ first through the service controller. A controller stack's `down` already refuse
 - `cotal down --dry-run` warns with that refusal. Its JSON lists the instances as `serviceChecks`,
   where `stop-first` marks one that blocks; `serviceStops` is gone.
 
+## Manager instance in the exchange response after 0.100.2
+
+`POST /exchange` no longer answers a `manager-caller` exchange with `managerInstanceId`. Both the
+human and the agent exchange answer with `token`, `owner` and `exp`. The instance a bearer may
+address is its signed `act.managerInstanceId` claim, which the callout enforces and the CLI reads.
+
+### What stops working
+
+Code of your own that reads `managerInstanceId` from an exchange response reads `undefined`.
+
+### Before the upgrade
+
+Read the instance from the bearer's `act.managerInstanceId` claim.
+
 ## Endpoint caller files after 0.99.0
 
 `cotal auth mint <name> --endpoint <class> --out <file>` from 0.91.0 through 0.99.0 recorded the

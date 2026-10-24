@@ -6501,7 +6501,9 @@ limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A c
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
 or from this default. It takes a duration
 longer than zero, such as `30m`, and refuses anything else with `USAGE_INVALID` before the run starts. `--on <instance>` sends a hosted verb to one manager
-instance, with the same rules as [`ps`](#managed-seats). On a user-auth mesh where you run more than one
+instance, with the same rules as [`ps`](#managed-seats). On a mesh whose managers this terminal can
+list, an `--on` that names none of the running ones is refused `TARGET_NOT_FOUND` at once, naming
+them, and nothing is sent. On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
