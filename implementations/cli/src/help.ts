@@ -157,6 +157,8 @@ export function printEntry(commands: readonly Command[]): void {
   });
   let space: string | undefined;
   let context: string | undefined;
+  // The selection, when this folder's space is the target here instead.
+  let outside: string | undefined;
   // The `up` that starts a prepared space: no other command works on it until it runs.
   let start: string | undefined;
   let unreadable = false;
@@ -167,8 +169,11 @@ export function printEntry(commands: readonly Command[]): void {
   if (!removed) try {
     const selected = getCurrent();
     const root = findCotalRoot(process.cwd());
-    // With nothing selected, commands run here target the space registered or prepared in this folder.
-    space = selected ?? folderSpace(process.cwd());
+    // A command run here targets the space registered or prepared in this folder over the selection,
+    // as it does with nothing selected.
+    const folder = folderSpace(process.cwd());
+    space = folder ?? selected;
+    if (selected && folder !== undefined && folder !== selected) outside = selected;
     if (space) {
       const mesh = readMesh(space);
       const prepared = mesh === undefined ? findPreparedSpace(space) : undefined;
@@ -184,7 +189,7 @@ export function printEntry(commands: readonly Command[]): void {
   const sections: Section[] = [];
   if (removed) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.", tone: "waiting" }] }] });
   else if (unreadable) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "The local space or defaults could not be read. Status reports the affected records.", tone: "waiting" }] }] });
-  else if (context) sections.push({ blocks: [{ kind: "lines", lines: [{ text: context, tone: "hint" }] }] });
+  else if (context) sections.push({ blocks: [{ kind: "lines", lines: [{ text: context, tone: "hint" }, ...(outside ? [{ text: `this folder's space; the selected space "${outside}" applies outside it`, tone: "hint" } as const] : [])] }] });
   else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Set up a local space, or connect to a self-hosted one.", tone: "hint" }] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [

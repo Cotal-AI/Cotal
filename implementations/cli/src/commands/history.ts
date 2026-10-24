@@ -36,7 +36,7 @@ import { scriptLine } from "../watch-data.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
-const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear: confirm the selected space-wide purge without prompting" } as const;
+const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear: confirm the space-wide purge without prompting" } as const;
 const dryRunFlag = { name: "dry-run", type: "boolean", description: "clear: show the selected target and streams without connecting; purge nothing. A space that is prepared but not started is refused" } as const;
 const sinceFlag = { name: "since", type: "string", value: "<time|seq>", description: "only messages after a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence" } as const;
 const limitFlag = { name: "limit", type: "string", value: "<n>", description: "how many of the newest retained messages to read, 1 to 1000 (default 50)" } as const;
@@ -46,7 +46,7 @@ const followFlag = { name: "follow", type: "boolean", description: "keep listeni
 export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 export const historySubcommands = [
-  { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the selected space", usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+  { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the space it targets", usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete `clear` and the channels the target space's personas declare, as `send -c` offers, then
@@ -230,7 +230,7 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   presentationOf(values);
   if (values.force !== undefined) throw usage("--force is no longer a history flag; use cotal history clear --yes");
   if (args.positionals[0] === "clear") {
-    if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the selected space");
+    if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the space it targets");
     if ((["since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history clear accepts no read-window or follow flags; use a separate history read");
     return;
   }

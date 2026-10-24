@@ -29,8 +29,9 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the selected space, or with none selected the space registered or prepared in the current folder,
-and lists common commands. It points a prepared space to the `cotal up` that starts it, with
+the space a command run here targets, the one registered or prepared in the current folder, else
+the selected space, and lists common commands. When that folder's space is not the selection, it
+adds that the selected space applies outside the folder. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
 split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
@@ -2941,7 +2942,10 @@ into agent runs or copy channel and DM text into an event stream. This launch po
 additional broker authorization boundary. The broker still enforces each endpoint's grants.
 
 The selection `cotal use` sets applies from every directory except another space's project folder,
-where the command targets that folder's space. `status` is a read-only report in this order: this machine
+where the command targets that folder's space. There `status` reports that space under its `Mesh:`
+heading and a `This folder's space` section, also while it is prepared or stopped, and says the
+selected space applies outside the folder. `--json` names it in `target.space` and in
+`meshes.folder`, which `cotal space --json` gives as `folder`. `status` is a read-only report in this order: this machine
 (the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
@@ -5347,7 +5351,7 @@ record names a failure on the live feed, and a lost connection is one `TARGET_UN
 shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
 when the credential ended the follow, or 130 or 143 when SIGINT or SIGTERM ended it.
 
-`history clear` purges retained history from every channel in the selected space; `--dms` extends
+`history clear` purges retained history from every channel in the space it targets; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
 purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](#clean). On a user-auth mesh the purge rides a short-lived
 purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
@@ -7788,9 +7792,10 @@ separate. No active probe or process control is implied by a registration row.
 
 ### Clearing retained history
 
-`history clear` purges all retained channel history in the selected space. It takes no channel
-argument. `--dms` also requests DM history under the existing purger authority. In a terminal,
-confirmation names the space, broker and space-wide scope and defaults to cancellation. Scripts
+`history clear` purges all retained channel history in the space it targets: `--space`, else this
+folder's space, else the selected one. It takes no channel argument. `--dms` also requests DM
+history under the existing purger authority. In a terminal, confirmation names the space, broker
+and space-wide scope and defaults to cancellation. Scripts
 and `--json` require `--yes`. The old `--force` spelling refuses with the replacement.
 
 `history clear --dry-run` resolves the target and names the affected streams offline. It issues no
