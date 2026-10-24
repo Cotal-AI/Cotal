@@ -1,10 +1,13 @@
 import { writeSync } from "node:fs";
+import { resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  cotalDirProblem,
   cotalHomeProblem,
+  findCotalRoot,
   disableColor,
   disableInput,
   envelopeLine,
@@ -327,6 +330,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
   const canonical = canonicalSubcommand(cmd, parsed);
+  refuseRemovedFolder(cmd, canonical);
   try {
     cmd.validate?.(canonical);
   } catch (error) {
@@ -335,6 +339,19 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     throw error;
   }
   return canonical;
+}
+
+/** A working folder removed before this process read it fails every cwd read the command makes, and
+ *  Node caches the first read that succeeds. One read refuses that case before the command's own
+ *  checks, such as `up`'s, or any effect. Help, version and completion never read the folder. */
+function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs): void {
+  if (cmd.name.startsWith("__") || ["help", "version", "completion"].includes(cmd.name)) return;
+  try {
+    process.cwd();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+  }
 }
 
 /** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
@@ -533,6 +550,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // A COTAL_HOME that cannot be a directory stops them the same way, before any command reads it.
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+    // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
+    // records, and every reader would otherwise report a different wrong cause.
+    const dirProblem = cmd.name === "version" ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
+    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     if (!["version", "docs", "status"].includes(cmd.name)) {
       try {
         cachedPreferences();

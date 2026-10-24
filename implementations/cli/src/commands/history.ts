@@ -29,6 +29,9 @@ import { historyClear } from "./history-clear.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
+import { streamsAbsent } from "../lib/space-streams.js";
+import { scriptLine } from "../watch-data.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
@@ -102,7 +105,8 @@ export interface HistoryResult {
   readonly items: HistoryItem[];
 }
 
-type Since = { kind: "seq"; seq: number; text: string } | { kind: "time"; ms: number; text: string };
+/** `input` is the value as given; `text` is the sequence, or the time it resolved to as ISO. */
+type Since = { kind: "seq"; seq: number; text: string; input: string } | { kind: "time"; ms: number; text: string; input: string };
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
 
@@ -120,16 +124,28 @@ function parseSince(raw: string | undefined, now: number): Since | undefined {
   if (/^\d+$/.test(raw)) {
     const seq = Number(raw);
     if (!Number.isSafeInteger(seq)) throw usage("--since sequence must be a whole number this client can represent without rounding");
-    return { kind: "seq", seq, text: raw };
+    return { kind: "seq", seq, text: raw, input: raw };
   }
   const age = /^(\d+)([smhd])$/.exec(raw);
   if (age) {
     const at = new Date(now - Number(age[1]) * UNIT_MS[age[2]!]!);
     if (!Number.isFinite(at.getTime())) throw usage("--since age is outside the supported date range");
-    return { kind: "time", ms: at.getTime(), text: at.toISOString() };
+    return { kind: "time", ms: at.getTime(), text: at.toISOString(), input: raw };
   }
-  const at = Date.parse(raw);
-  if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString() };
+  // A bare date is local midnight, as a date-time without an offset is local time. ECMAScript reads a
+  // bare date as UTC, so east of UTC it dropped the first hours of the day.
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (day) {
+    const [year, month, date] = [Number(day[1]), Number(day[2]) - 1, Number(day[3])];
+    const at = new Date(0);
+    at.setFullYear(year, month, date);
+    at.setHours(0, 0, 0, 0);
+    if (at.getFullYear() !== year || at.getMonth() !== month || at.getDate() !== date) throw usage(`--since ${raw} is not a calendar date`);
+    return { kind: "time", ms: at.getTime(), text: at.toISOString(), input: raw };
+  }
+  // An ISO 8601 date and time only: Date.parse also reads forms such as "-5" or "1/2/3".
+  const at = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(raw) ? Date.parse(raw) : NaN;
+  if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString(), input: raw };
   throw usage(`--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "${raw}"`);
 }
 
@@ -185,6 +201,11 @@ function credentialReader(conn: Connection): { lifecycleUid: string; channels: s
 /** The channels a credential's history grant names, as a refusal quotes them. */
 const grantedText = (channels: readonly string[]): string =>
   channels.includes(">") ? "every channel" : channels.length ? channels.map((ch) => `#${ch}`).join(", ") : "no channel";
+/** A bare number that reads as a year, which `--since` still takes as a sequence. */
+const yearShaped = (input: string): boolean => /^(19|20)\d\d$/.test(input);
+
+/** Reports write a channel as `#general`, so the name may carry the `#`. */
+const channelOf = (name: string): string => name.replace(/^#/, "");
 
 /** Pure input checks run before shared target preparation or credential issuance. */
 export function validateHistoryArguments(args: ParsedArgs): void {
@@ -199,6 +220,8 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (values.yes !== undefined || values["dry-run"] !== undefined) throw usage("--yes and --dry-run belong to history clear");
   if (args.positionals.length > 1) throw usage("history reads one channel at a time");
   if (args.positionals[0] !== undefined && values.dms) throw usage("name a channel or request --dms, not both");
+  const problem = args.positionals[0] === undefined ? undefined : concreteChannelProblem(channelOf(args.positionals[0]));
+  if (problem) throw usage(problem);
   parseLimit(values.limit);
   const since = parseSince(values.since, Date.now());
   if (since?.kind === "seq" && values.dms) throw usage("DM history has no chat-stream sequence; use --since with a time");
@@ -214,7 +237,7 @@ export async function history(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(v);
   if (rest.length) throw usage(`history reads one channel at a time; got ${args.positionals.length} names`);
   if (v.force) throw usage("--force applies to `history clear` only");
-  const channel = first;
+  const channel = first === undefined ? undefined : channelOf(first);
   if (channel !== undefined && v.dms) throw usage("name a channel or pass --dms, not both: --dms adds DMs to the history of every channel");
   const now = Date.now();
   const limit = parseLimit(v.limit);
@@ -254,8 +277,10 @@ export async function history(args: ParsedArgs): Promise<void> {
       if (e instanceof CommandFailure) throw e;
       throw new CommandFailure("failed", "OPERATION_FAILED", `history could not be read: ${e instanceof Error ? e.message : String(e)}`, { target });
     });
-    const partial = warnings.length
-      ? { message: `history could not read ${warnings.length === 1 ? "one part" : `${warnings.length} parts`} of what it reports; the warnings name ${warnings.length === 1 ? "it" : "each"}` }
+    // A channel the space lacks was read in full; only the other warnings name a part not read.
+    const unread = warnings.filter((w) => w.code !== "CHANNEL_NOT_FOUND").length;
+    const partial = unread
+      ? { message: `history could not read ${unread === 1 ? "one part" : `${unread} parts`} of what it reports; the warnings name ${unread === 1 ? "it" : "each"}` }
       : undefined;
     const completeness = partial ? "partial" : "complete";
     if (v.dms) await ep.waitForPresenceSnapshot(ROSTER_MS);
@@ -265,7 +290,7 @@ export async function history(args: ParsedArgs): Promise<void> {
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
       process.exitCode = partial ? exitCode("partial", "OPERATION_PARTIAL") : exitCode("ok");
     } else {
-      writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names));
+      writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names, since, live !== undefined));
     }
     if (!live) return;
     await live.follow(result.items, (item) => keep(item, undefined, v.from, v.grep), presentation, target, names, () => stopping);
@@ -364,8 +389,12 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   }
 
   let retention: HistoryResult["retention"] = null;
+  let chat: boolean | undefined;
+  let lastSeq: number | undefined;
   try {
     const held = await ep.chatRetention();
+    chat = held.stream;
+    lastSeq = held.lastSeq;
     const names = new Map(read.map((item) => [item.from.id, item.from.name]));
     retention = {
       perSender: held.perSender,
@@ -380,18 +409,33 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     warnings.push({ code: "RETENTION_UNREAD", target: req.target, message: `the chat stream's retention could not be read, so gaps it left are unknown: ${(e as Error).message}` });
   }
 
+  // `cotal up` creates the streams of a recorded auth or user space, so a missing chat stream there
+  // means they were removed. An open space creates them on first use.
+  if (chat === false && (conn.mode === "auth" || conn.mode === "user")) throw streamsAbsent(conn);
+  // A bare number past the newest sequence names no message; it is most often a year.
+  if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${yearShaped(req.since.input) ? req.since.input : new Date().getFullYear()}-01-01` });
+
   // Each channel's replay policy, read from the registry: the endpoint's watch cache may not have
   // caught up this soon after start.
-  const replay = await Promise.all(
-    channels.map(async (ch): Promise<HistoryResult["replay"][number]> => {
+  const policies = await Promise.all(
+    channels.map(async (ch) => {
       try {
         return { channel: ch, ...(await ep.channelReplayPolicy(ch)) };
       } catch (e) {
         warnings.push({ code: "REPLAY_UNREAD", target: { space: conn.space, channel: ch }, message: `#${ch}'s replay policy could not be read: ${(e as Error).message}` });
-        return { channel: ch, replay: null, window: null };
+        return { channel: ch, replay: null, window: null, registered: null };
       }
     }),
   );
+  // A named channel with nothing read and no registry entry is one the space does not have. Its
+  // replay row would show the space default as if it existed, so it says so and shows no policy.
+  const absent = req.channel !== undefined && read.length === 0 && policies[0]?.registered === false;
+  if (absent) {
+    const held = (listed ?? []).filter((row) => row.messages > 0).map((row) => `#${row.channel}`);
+    warnings.push({ code: "CHANNEL_NOT_FOUND", target: req.target, message: `#${req.channel} has no retained messages and no saved entry in ${conn.space}${held.length ? `; channels with retained messages: ${held.join(", ")}` : ""}` });
+  }
+  const replay: HistoryResult["replay"] = absent ? [] : policies.map(({ channel, replay, window }) => ({ channel, replay, window }));
 
   // Whether the window goes back to `--since`: it does when nothing older is retained, or when its
   // oldest message is at or before the point asked for. Otherwise messages in between may be missing.
@@ -489,7 +533,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
             remember(entry.item.id);
             names.set(entry.item.from.id, entry.item.from.name);
             if (presentation === "json") writeStreamRecord(streamRecord("history", "event", target, entry.item));
-            else line(itemLine(entry.item, names));
+            else line(followLine(entry.item));
           } else if (entry.gap) {
             outage = false;
             if (presentation === "json") writeStreamRecord(streamRecord("history", "gap", target, { reason: entry.gap }));
@@ -521,15 +565,23 @@ function where(item: HistoryItem, names: ReadonlyMap<string, string>): string {
   return `DM to ${item.to === null ? "?" : names.get(item.to) ?? item.to}`;
 }
 
-function itemLine(item: HistoryItem, names: ReadonlyMap<string, string>): Cell {
-  return `${shownTime(item.ts)}  ${where(item, names)}  ${item.from.name}: ${item.text}`;
+/** A followed message, in the line `watch --plain` writes after its `[space]` prefix. */
+function followLine(item: HistoryItem): string {
+  return scriptLine(item.ts, item.from.name || item.from.id, item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "not attributed"}`, item.text);
 }
 
-function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>): Report {
+function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>, since: Since | undefined, follow = false): Report {
   const scope = r.channels.length === 1 && !r.dms ? `#${r.channels[0]}` : r.dms ? "every channel and DMs" : "every channel";
   const notes: Cell[] = [];
   const filtered = r.window.since !== null || r.window.from !== null || r.window.grep !== null;
   notes.push({ text: `${r.items.length} ${r.items.length === 1 ? "message" : "messages"}${filtered ? ` of the ${r.window.read} read` : ""}: the newest retained in ${scope} of ${space}, up to --limit ${r.window.limit}`, tone: "hint" });
+  if (since?.kind === "time") {
+    const at = new Date(since.ms);
+    notes.push({ text: `--since ${since.input} is ${at.toLocaleDateString()} ${at.toLocaleTimeString()} local time (${since.text}); only messages after it are shown`, tone: "hint" });
+  }
+  // A bare number is a sequence, so a year such as 2026 reads as one; the note says how it was read.
+  if (since?.kind === "seq")
+    notes.push({ text: `--since ${since.input} is chat stream sequence ${since.seq}; only messages after it are shown${yearShaped(since.input) ? `. For a date, write it in full, such as ${since.input}-01-01` : ""}`, tone: "hint" });
   if (r.window.olderRetained === true) notes.push({ text: "older retained messages are not shown; raise --limit (up to 1000) to read further back", tone: "hint" });
   if (r.window.olderRetained === null) notes.push({ text: "whether older retained messages exist is unknown", tone: "waiting" });
   if (r.window.reachesSince === false) notes.push({ text: `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
@@ -546,7 +598,9 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
     sections: [
       {
         blocks: [
-          ...(r.items.length
+          // A follow prints the window as the lines its live messages use.
+          ...(follow && r.items.length ? [{ kind: "lines" as const, lines: r.items.map((item) => `[${space}] ${followLine(item)}`) }] : []),
+          ...(!follow && r.items.length
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],

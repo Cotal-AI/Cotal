@@ -55,7 +55,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 72;
+const EXPECTED = 73;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -412,21 +412,22 @@ try {
   check("`cotal send -t` to an absent agent says TARGET_NOT_FOUND and no matching participant", missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes("no matching participant"), missing.stderr);
 
   // Two participants sharing a name used to be listed by id alone, with nothing saying which is which.
+  // Names match without regard to case, so "twin" and "Twin" are one name and each label shows its own.
   const twinProvisioner = provisioner;
-  const twins = await Promise.all([{ kind: "agent" as const }, { kind: "endpoint" as const, meta: { sessionKind: "chat" } }].map(async (card) => {
+  const twins = await Promise.all([{ name: "twin", kind: "agent" as const }, { name: "Twin", kind: "endpoint" as const, meta: { sessionKind: "chat" } }].map(async (card) => {
     const identity = newIdentity();
     const lifecycleUid = mintLifecycleUid();
     const creds = await provisionAgent(twinProvisioner, auth, identity, { lifecycleUid, subscribe: [], allowSubscribe: [] });
-    const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid, card: { name: "twin", id: identity.id, ...card }, channels: [], heartbeatMs: 500, ttlMs: 10_000 });
+    const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid, card: { id: identity.id, ...card }, channels: [], heartbeatMs: 500, ttlMs: 10_000 });
     ep.on("error", () => {});
     await ep.start();
     return ep;
   }));
   await wait(500);
-  const twin = await run(["send", "-t", "twin", "x", "--json"]);
-  const twinRemedy = /"remedy":"([^"]*)"/.exec(twin.stdout)?.[1] ?? "";
-  check("a name two participants share refuses with each full identity labelled by its kind and start time",
-    twin.code === 2 && twin.stdout.includes('"code":"TARGET_AMBIGUOUS"') && twins.every((ep) => twinRemedy.includes(ep.card.id)) && /\(agent, started [^)]+\)/.test(twinRemedy) && /\(chat session, started [^)]+\)/.test(twinRemedy), twin);
+  const twin = await run(["send", "-t", "TWIN", "x", "--json"]);
+  const twinRemedy = (() => { try { return (JSON.parse(twin.stdout) as { error?: { remedy?: string } }).error?.remedy ?? ""; } catch { return ""; } })();
+  check("a name two participants share in any case refuses with each full identity labelled by its display name, kind and start time",
+    twin.code === 2 && twin.stdout.includes('"code":"TARGET_AMBIGUOUS"') && twinRemedy.includes(`${twins[0]!.card.id} ("twin", agent, started `) && twinRemedy.includes(`${twins[1]!.card.id} ("Twin", chat session, started `), twin);
   for (const ep of twins) await ep.stop();
 
   // A lone `-` used to be published as the text "-": stdin is read only when asked for. An empty
@@ -452,6 +453,10 @@ try {
   const spaced = await run(["send", "-c", "gen eral", "x", "--json"]);
   check("`cotal send -c` with a space in the name names the segment, not wildcards",
     spaced.code === 1 && spaced.stdout.includes('segment \\"gen eral\\" must be a NATS-safe token') && !spaced.stdout.includes("wildcards") && !spaced.stdout.includes("'*', or '>'"), spaced);
+  // A flag combination the parser can judge used to be a boundary refusal, exit 2.
+  const mentionDm = await run(["send", "-t", "bob", "--mention", "carol", "x", "--json"]);
+  check("`cotal send -t` with --mention is USAGE_INVALID, exit 1, naming the channel-only rule",
+    mentionDm.code === 1 && mentionDm.stdout.includes('"code":"USAGE_INVALID"') && mentionDm.stdout.includes("native mention hints belong to channel publications") && mentionDm.stdout.includes("drop --mention, or send to a channel with -c <channel>"), mentionDm);
   const badRole = await run(["send", "-r", "bad role!", "x", "--json"]);
   check("`cotal send -r` with a role that is not one NATS-safe token is USAGE_INVALID, exit 1, with the role rule",
     badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);
@@ -474,11 +479,12 @@ try {
   const notUtf8 = join(storeDir, "not-utf8.txt");
   writeFileSync(notUtf8, Buffer.from([0x6f, 0x6b, 0xff, 0xfe]));
   const [noFile, dirBody, badBody] = await Promise.all([absentFile, dirFile, notUtf8].map((file) => run(["send", "-c", "general", "--file", file])));
-  check("a missing, directory or non-UTF-8 --file is each refused in one classified block naming the path, without the usage block",
-    noFile.code === 2 && /Code: +TARGET_NOT_FOUND/.test(noFile.stderr) && noFile.stderr.includes(`"${absentFile}" could not be read`)
-      && dirBody.code === 1 && /Code: +USAGE_INVALID/.test(dirBody.stderr) && dirBody.stderr.includes(`"${dirFile}" is a directory; --file reads one file`)
-      && badBody.code === 1 && /Code: +USAGE_INVALID/.test(badBody.stderr) && badBody.stderr.includes(`"${notUtf8}" is not valid UTF-8`)
-      && [noFile, dirBody, badBody].every((r) => r.stderr.includes("Request refused") && !r.stderr.includes("Usage")), { noFile, dirBody, badBody });
+  // Each block begins with the mesh and ends with a Next that keeps the destination, as a refusal after connecting does.
+  check("a missing, directory or non-UTF-8 --file is each refused in one classified block naming the path and the mesh, with a Next and without the usage block",
+    noFile.code === 2 && /Code: +TARGET_NOT_FOUND/.test(noFile.stderr) && noFile.stderr.includes(`"${absentFile}" does not exist`) && noFile.stderr.includes('check the path, or run cotal send -c general "<message>"')
+      && dirBody.code === 1 && /Code: +USAGE_INVALID/.test(dirBody.stderr) && dirBody.stderr.includes(`"${dirFile}" is a directory; --file reads one file`) && dirBody.stderr.includes('give --file one file in it, or run cotal send -c general "<message>"')
+      && badBody.code === 1 && /Code: +USAGE_INVALID/.test(badBody.stderr) && badBody.stderr.includes(`"${notUtf8}" is not valid UTF-8`) && badBody.stderr.includes('save it as UTF-8 text, or run cotal send -c general "<message>"')
+      && [noFile, dirBody, badBody].every((r) => r.stderr.startsWith(`Mesh: ${space}\n`) && r.stderr.includes("Request refused") && /\nNext\n/.test(r.stderr) && !r.stderr.includes("Usage")), { noFile, dirBody, badBody });
 
   // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.
   const bigFile = join(storeDir, "big.txt");

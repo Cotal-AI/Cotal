@@ -98,11 +98,11 @@ export async function runStdio(opts: {
     paused = false;
     if (!finished && !outputBroken && !stdin.destroyed) stdin.resume();
   };
-  const stopOutput = (): void => {
+  const stopOutput = (error: Error | null | undefined): void => {
     if (outputBroken) return;
     outputBroken = true;
     stdout.off("drain", onDrain);
-    diagnostic("stdout closed by the reader; ending the session");
+    diagnostic((error as NodeJS.ErrnoException | null | undefined)?.code === "EPIPE" ? "stdout closed by the reader; ending the session" : "stdout could not be written; ending the session");
     stdin.destroy();
   };
   const detachOutput = (): void => {
@@ -110,9 +110,9 @@ export async function runStdio(opts: {
     if (finished && pendingBytes === 0 && (!outputBroken || outputErrorObserved))
       stdout.off("error", onOutputError);
   };
-  const onOutputError = (): void => {
+  const onOutputError = (error: Error): void => {
     outputErrorObserved = true;
-    stopOutput();
+    stopOutput(error);
     detachOutput();
   };
   stdout.on("error", onOutputError);
@@ -123,7 +123,7 @@ export async function runStdio(opts: {
     pendingBytes += bytes;
     const ok = stdout.write(line, (err) => {
       pendingBytes -= bytes;
-      if (err) stopOutput();
+      if (err) stopOutput(err);
       detachOutput();
     });
     // Backpressure: stop reading requests while the reader is behind, so output cannot grow unbounded.

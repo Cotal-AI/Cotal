@@ -84,7 +84,11 @@ export function selectResetTarget(space: string, command: ResetCommand): ResetTa
   const root = prepared ? canonicalRoot(prepared.root) : undefined;
   let recorded: ReturnType<typeof readStackJournal>;
   try { recorded = root ? readStackJournal(root) : undefined; }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the prepared root's stack journal could not be read; no reset target was inferred", { target: { space, root } }); }
+  catch (error) {
+    // A journal refusal names the file and its way out.
+    if (isCommandFailure(error)) throw error;
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the prepared root's stack journal could not be read; no reset target was inferred", { target: { space, root } });
+  }
   // A legacy root has no stack journal, and its down removes the registration a reset selects, so it
   // is cleared with clean from that root instead.
   if (!root || !recorded || recorded.journal.space !== space)

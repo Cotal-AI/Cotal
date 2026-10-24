@@ -7,6 +7,9 @@ import {
   authDir,
   canonicalRoot,
   checkDiscoveryDocument,
+  cotalDirLink,
+  stackJournalPath,
+  rootPathProblem,
   clearCurrent,
   discoveryDocumentUrl,
   findMesh,
@@ -38,7 +41,7 @@ import {
 } from "@cotal-ai/workspace";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
-import { releaseStackDefinitions } from "../lib/stack-journal.js";
+import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions } from "../lib/stack-journal.js";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -371,14 +374,22 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
  * default persona there as setup does, so a bare `cotal spawn` in the space has one to launch. It
  * starts nothing, and the selection is left as it is. The root is `--root`, else this folder.
  */
-export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, presentation: Presentation): Promise<void> {
-  if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>]");
+export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
+  if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
   const name = rest[0]!;
   const root = resolve(rootFlag ?? process.cwd());
   if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");
-  checkLocalSpace(name, root, "--root", false);
+  if (adopt) {
+    // Its own rules come first, so a folder moved on this machine is told to move back, not to forget.
+    let found: ReturnType<typeof journalRecordedElsewhere>;
+    try { found = journalRecordedElsewhere(root); } catch { found = undefined; }
+    const blocked = found && adoptionRefusal(root, found);
+    if (blocked) throw refuse("CONFLICT", `${blocked.message}; it was not adopted and nothing was written`, { space: name, root: canonicalRoot(root), recordedRoot: found!.recordedRoot }, blocked.remedy);
+  }
+  checkLocalSpace(name, root, "--root", false, adopt);
+  const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
   const prepared = recordLocalSpace(name, root);
-  const written = [{ what: "prepared space", path: prepared.file }];
+  const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), { what: "prepared space", path: prepared.file }];
   const persona = seedDefaultPersona(root);
   if (persona) written.push(persona);
   const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: prepared.preparedAt, current: getCurrent() === name, written };
@@ -393,15 +404,19 @@ export type LocalSpaceState = "created" | "prepared" | "started";
  * The checks `space create` runs before it prepares `name` at `root`; it writes nothing. `flag`
  * names the input that chose the root. With `again`, a space already prepared or started at this
  * same root is reported as its state instead of refused, so `cotal setup` run again with the same
- * answers changes nothing.
+ * answers changes nothing. With `adopting`, a stack journal another folder recorded here counts as
+ * this root's own, as `space create --adopt` is about to make it.
  */
-export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean): LocalSpaceState {
+export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean, adopting = false): LocalSpaceState {
   const target = { space: name };
   // `cotal up` starts a space only under a name that is one native routing token.
   if (name.length > 200 || token(name) !== name)
     throw refuse("USAGE_INVALID", "a space name is 1 to 200 letters, digits, underscores or hyphens, which `cotal up` needs to start it", target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
+  // Such a space could be prepared but never started: its first `up` would refuse to record the root.
+  const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
+  if (pathProblem) throw refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, `rename the folder without those characters, or create the space in another folder with ${flag} <dir>`);
   const here = (other: string): boolean => canonicalRoot(other) === canonicalRoot(root);
   const registered = findMesh(name);
   if (registered) {
@@ -422,13 +437,21 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   try { journal = readStackJournal(root)?.journal; } catch { journal = undefined; }
   if (journal && stackRunsUnderOtherHome(root, journal))
     throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} runs under another Cotal home; ${homeCotalDir()} holds no record of its members`, target, stackHomeRemedy());
+  // A stack journal another folder recorded, as a copy or a moved folder keeps it, is taken over only
+  // with --adopt, so nothing rewrites it unasked. A linked .cotal is named below.
+  let elsewhere: ReturnType<typeof journalRecordedElsewhere>;
+  try { elsewhere = journalRecordedElsewhere(root); } catch { elsewhere = undefined; }
+  if (elsewhere && !adopting && cotalDirLink(root) === undefined) {
+    const blocked = adoptionRefusal(root, elsewhere);
+    throw refuse("CONFLICT", `${root} holds the stack journal of "${elsewhere.journal.space}" that ${elsewhere.recordedRoot} recorded, as a copy or a moved folder keeps it${blocked ? `, and ${blocked.message}` : ""}; nothing was written`, target, blocked?.remedy ?? `adopt it with cotal space create ${elsewhere.journal.space} --adopt --root ${canonicalRoot(root)}`);
+  }
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.
   if (again && held.length === 1 && held[0] === name) return "started";
   if (held.length > 0) {
     // This root's stack journal: its space, undefined when there is none, null when it cannot be read.
     let journaled: string | null | undefined = null;
-    try { journaled = readStackJournal(root)?.journal.space; } catch { journaled = null; }
+    try { journaled = readStackJournal(root)?.journal.space; } catch { journaled = adopting && elsewhere ? elsewhere.journal.space : null; }
     // A controller stack whose registration is gone, after a refused first start or a forget, keeps
     // its trust and stack journal for this same space here. Preparing it again restores what its
     // next start needs; any other space's trust still refuses.
@@ -439,8 +462,10 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
     // or locally started registration.
     // Records copied or moved here keep naming the folder they came from as their space's root.
     const origin = held.length === 1 ? findPreparedSpace(held[0]!)?.root ?? findMesh(held[0]!)?.root : undefined;
-    if (origin !== undefined && !here(origin))
-      throw refuse("CONFLICT", `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
+    if (origin !== undefined && !here(origin)) {
+      const link = cotalDirLink(root);
+      throw refuse("CONFLICT", link !== undefined ? `${join(root, ".cotal")} is a link to ${link}, which holds the records of "${held[0]}" at ${origin}` : `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
+    }
     const stopped = held.length === 1 && journaled === undefined && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
     throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`

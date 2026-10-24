@@ -4,14 +4,14 @@
  *  and it grants no stop authority by itself: every effect still rechecks the instance records. */
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath, maintenanceLockHolder } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, serviceOperationId, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, stackAdoptionBlock, stackElsewhereRemedy, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -74,13 +74,40 @@ function invalid(root: string): never {
   throw new CommandFailure("refused", "SCHEMA_INVALID", "the stack journal has an unsupported shape; no stack membership or stopped state was inferred", { remedy: `inspect ${stackJournalPath(root)} and the service instances it names; it was not reset` });
 }
 
-/** A well-formed journal that another folder recorded: this folder was moved or copied after that
- *  stack started there. Its members and instances belong to that folder, so nothing here uses them. */
-function recordedElsewhere(root: string, recordedRoot: string, space: string): never {
-  const moved = !existsSync(recordedRoot);
-  throw new CommandFailure("refused", "CONFLICT", `this folder's stack journal was recorded at ${recordedRoot}, so this folder was ${moved ? "moved" : "copied"} from there; a controller stack runs only from the folder it started in`, {
-    target: { root, recordedRoot, space },
-    remedy: moved ? `move this folder back to ${recordedRoot}, then run cotal up there` : `use the stack from ${recordedRoot}, which holds it; this copy does not`,
+/** A well-formed journal that another folder recorded: this folder's `.cotal` links to that folder's,
+ *  or this folder was moved or copied after that stack started there. Its members and instances
+ *  belong to that folder, so nothing here uses them. The next step is the one every command there names. */
+function recordedElsewhere(root: string, recordedRoot: string, space: string, members: readonly StackMember[]): never {
+  const link = cotalDirLink(root), remedy = stackElsewhereRemedy(root, recordedRoot, space, members);
+  if (link !== undefined)
+    throw new CommandFailure("refused", "CONFLICT", `${join(root, ".cotal")} is a link to ${link}, whose stack journal was recorded at ${recordedRoot}; a controller stack runs only from the folder it started in`, { target: { root, recordedRoot, space, link }, remedy });
+  // The recorded root still holds its journal after a copy; after a move it does not, even where a
+  // running broker created empty folders at that path again.
+  const moved = !existsSync(stackJournalPath(recordedRoot));
+  throw new CommandFailure("refused", "CONFLICT", `this folder's stack journal was recorded at ${recordedRoot}, so this folder was ${moved ? "moved" : "copied"} from there; a controller stack runs only from the folder it started in`, { target: { root, recordedRoot, space }, remedy });
+}
+
+/** A journal whose bytes are not JSON, as an interrupted write or a full disk can leave it. Removing it
+ *  is the way out once no member of its stack runs, so the remedy names any running member's stop
+ *  first, from the service records of the spaces at this root. */
+function unreadable(root: string): never {
+  const path = stackJournalPath(root);
+  let running: { space: string; name: string; instanceId: string }[] | undefined;
+  try {
+    const spaces = new Set([...loadMeshes().filter((mesh) => canonicalRoot(mesh.root) === root).map((mesh) => mesh.space), ...[preparedSpaceAt(root)?.space].filter((space): space is string => space !== undefined)]);
+    running = [...spaces].flatMap((space) => [...STACK_ROLES].reverse().flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])
+      .filter((row) => observeServiceProcess(row.record.value) === "running")
+      .map((row) => ({ space, name: STACK_DEFINITION[role], instanceId: row.record.value.instanceId }))));
+  } catch {
+    running = undefined;
+  }
+  throw new CommandFailure("refused", "SCHEMA_INVALID", `the stack journal ${path} is not valid JSON, as an interrupted write or a full disk can leave it; no stack membership or stopped state was inferred`, {
+    target: { root, path },
+    remedy: running === undefined
+      ? `stop any running member of this stack with cotal service stop <name> --instance <id> --yes, manager first and broker last, then remove ${path} and run cotal up from ${root}`
+      : running.length === 0
+        ? `no member of this stack is running, so remove ${path}; the next cotal up from ${root} starts the stack again from its saved definitions`
+        : `stop its running members with ${running.map((row) => `cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes`).join(", then ")}, then remove ${path} and run cotal up from ${root}`,
   });
 }
 
@@ -108,7 +135,7 @@ function validate(input: unknown, root: string): StackJournal {
   const maintained = operation.kind === "preserve" || operation.kind === "resume";
   if (maintained !== (operation.maintenanceAttemptId !== undefined) || maintained && (operation.withAgents !== false || typeof operation.maintenanceAttemptId !== "string" || !MAINTENANCE_ATTEMPT_ID.test(operation.maintenanceAttemptId))) invalid(root);
   const broker = value.broker === undefined ? undefined : brokerInputs(value.broker, root);
-  if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string);
+  if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string, members);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
 }
@@ -135,7 +162,60 @@ export function readStackJournal(root: string): StackJournalSnapshot | undefined
   const canonical = canonicalRoot(root);
   const bytes = readLocalRecordSource(stackJournalPath(canonical), LIMIT, true);
   if (!bytes) return undefined;
-  return { journal: validate(decodeLocalJson(bytes), canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
+  let input: unknown;
+  try { input = decodeLocalJson(bytes); }
+  catch (error) { if (isCommandFailure(error)) unreadable(canonical); throw error; }
+  return { journal: validate(input, canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+/** The stack journal at `root` that another folder recorded, as a copy or a moved folder keeps it, with
+ *  that folder. Undefined when `root` has no journal or recorded it itself. */
+export function journalRecordedElsewhere(root: string): { journal: StackJournal; recordedRoot: string; sha256: string } | undefined {
+  const canonical = canonicalRoot(root);
+  const bytes = readLocalRecordSource(stackJournalPath(canonical), LIMIT, true);
+  if (!bytes) return undefined;
+  let input: unknown;
+  try { input = decodeLocalJson(bytes); }
+  catch (error) { if (isCommandFailure(error)) unreadable(canonical); throw error; }
+  const recordedRoot = (input as { root?: unknown } | null)?.root;
+  if (typeof recordedRoot !== "string" || recordedRoot === canonical) return undefined;
+  // Validated as if recorded here, so a shape refusal names this folder's journal.
+  return { journal: validate({ ...(input as object), root: canonical }, canonical), recordedRoot, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+/** Why `space create --adopt` would refuse the journal {@link journalRecordedElsewhere} found at
+ *  `root`, as the message and the next step; undefined when it would adopt it. */
+export function adoptionRefusal(root: string, found: { journal: StackJournal; recordedRoot: string }): { message: string; remedy: string } | undefined {
+  return stackAdoptionBlock(canonicalRoot(root), found.recordedRoot, found.journal.space, found.journal.members);
+}
+
+/** `space create --adopt`: rewrite, at `root`, the stack journal another folder recorded, as a copy
+ *  from another machine or a folder moved after its stack stopped keeps it, so it names this root.
+ *  It refuses as {@link stackAdoptionBlock} says. The adopted journal keeps the space, address, mode and
+ *  broker inputs, with a store that lay under the recorded root moved under this one, and records an
+ *  up refused before any member started, as a stack that never ran here. Returns the recorded root. */
+export function adoptStackJournal(root: string, space: string): string {
+  const canonical = canonicalRoot(root), path = stackJournalPath(canonical);
+  const lock = acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") });
+  try {
+    const found = journalRecordedElsewhere(canonical);
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${canonical} without --adopt` });
+    if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with cotal space create ${found.journal.space} --adopt --root ${canonical}` });
+    const block = stackAdoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
+    if (block) throw new CommandFailure("refused", "CONFLICT", `${block.message}; it was not adopted and nothing was written`, { target: { root: canonical, recordedRoot: found.recordedRoot, space }, remedy: block.remedy });
+    const under = (path: string) => { const rest = relative(found.recordedRoot, path); return rest !== "" && !rest.startsWith("..") && !isAbsolute(rest) ? join(canonical, rest) : path; };
+    const now = new Date().toISOString();
+    const next: StackJournal = {
+      schemaVersion: 1, kind: "cotal-stack-controller", root: canonical, space, server: found.journal.server, mode: found.journal.mode,
+      members: STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: null, state: "not-attempted" })),
+      ...(found.journal.broker ? { broker: { ...found.journal.broker, storeDir: under(found.journal.broker.storeDir) } } : {}),
+      operation: { id: randomUUID(), kind: "up", phase: "refused", recordedAt: now, withAgents: false },
+      updatedAt: now,
+    };
+    validate(next, canonical);
+    writeSecretFileAtomic(path, JSON.stringify(next, null, 2) + "\n");
+    return found.recordedRoot;
+  } finally { lock.release(); }
 }
 
 /** A controller-owned stack cannot be preserved in this release, so its preserve, and the backup and
@@ -274,12 +354,58 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
     // Read-only, a crash is classified as the settled `failed` record it will become.
     if (gone && !stopRetained && (["failed", "stopped"].includes(value.state) || !settle && value.process !== undefined && ["starting", "running", "unknown"].includes(value.state))) return { role, instanceId: row.name, process: "gone" };
     // Nothing was changed by this command, so its own outcome is a known refusal.
+    const route = memberStopRoute(value);
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", !stopRetained
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : resumableSignalStop(value) ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
   } finally { hold?.release(); }
+}
+
+/** The way out a refusal of `value` names: abandon the stop it retains, signal its process again, or
+ *  only inspect it. */
+function memberStopRoute(value: ServiceInstance): { kind: "abandon"; requestId: string } | { kind: "resume" } | { kind: "inspect" } {
+  const retained = retainedStopRequest(value);
+  if (retained?.publication === "published") return { kind: "abandon", requestId: retained.requestId };
+  if (abandonableSignalStop(value)) return { kind: "abandon", requestId: value.requestId };
+  return { kind: resumableSignalStop(value) ? "resume" : "inspect" };
+}
+
+/** A member that keeps `up` and `down` from settling a cut-off operation, as {@link stackOperationBlock}
+ *  reads it. */
+export interface StackOperationBlock {
+  operation: { id: string; kind: StackJournal["operation"]["kind"] };
+  definition: string;
+  instanceId: string;
+  /** Why the stack is in this state. */
+  reason: string;
+  route: { kind: "abandon"; requestId: string } | { kind: "inspect" };
+}
+
+/** What keeps `up` and `down` from settling this journal's operation, which ended with no recorded
+ *  outcome: the member their refusal names, why, and the way out it names. Read as `down --dry-run`
+ *  reads it, with nothing written. Undefined when the operation is settled or settles from its
+ *  members' processes, and when a member's retained stop may settle before they classify it, which
+ *  for a native stop only its adapter's receipts decide. */
+export function stackOperationBlock(journal: StackJournal): StackOperationBlock | undefined {
+  try { previewStackSettlement(journal); return undefined; }
+  catch (error) {
+    const target = isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" ? error.target as { definition?: unknown; instanceId?: unknown } | undefined : undefined;
+    if (typeof target?.definition !== "string" || typeof target.instanceId !== "string") throw error;
+    const row = serviceInstances(journal.space, target.definition).find((item) => item.name === target.instanceId);
+    if (!row) throw error;
+    const value = row.record.value, route = memberStopRoute(value);
+    if (retainedStopMaySettle(value) || route.kind === "resume") return undefined;
+    const operation = `the earlier ${journal.operation.kind === "down" ? "whole-stack stop" : journal.operation.kind} ${journal.operation.id}`;
+    return {
+      operation: { id: journal.operation.id, kind: journal.operation.kind },
+      definition: target.definition, instanceId: target.instanceId, route,
+      reason: route.kind === "abandon"
+        ? `${operation} asked ${target.definition} to stop and ended before it saw the process exit, and the process is gone, so up and down refuse until the stop is abandoned`
+        : `${operation} ended with no recorded outcome, and ${target.definition} is neither proven running nor proven stopped, so up and down refuse until it is inspected`,
+    };
+  }
 }
 
 /** Settle each member's retained native stop from its adapter's own receipt, under that member's

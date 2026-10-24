@@ -7,13 +7,17 @@
  * are the whole fix, so it prints without the help. A mistyped word that is near a command, leading
  * flag, subcommand or option names it.
  *
+ * A folder whose `.cotal` is a file refuses every command with `CONFLICT`, naming that file, before
+ * anything runs. A removed working folder refuses every command but help and version the same way,
+ * `up`, `down` and `backup create` included, which crashed with Node's stack trace.
+ *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
  *
  * Run: pnpm smoke:usage-format
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -113,6 +117,42 @@ if (process.platform !== "win32") {
   check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
   const version = fromRemoved(["--version"]);
   check("version still answers from a removed folder", version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
+  // A command whose own checks read the folder before it runs, such as up's, refuses the same way
+  // instead of crashing with Node's stack trace.
+  for (const args of [["up"], ["down", "--yes"], ["down", "--dry-run"], ["backup", "create", "bk"]]) {
+    const r = fromRemoved(args);
+    check(`${args.join(" ")} from a removed folder refuses the same way, with no stack trace`, usageShape(r, /this folder no longer exists/) && !/uv_cwd|\n\s+at /.test(r.stderr), shown(r));
+  }
+  const upJson = fromRemoved(["up", "--json"]);
+  const upEnvelope = upJson.stdout.startsWith("{") ? JSON.parse(upJson.stdout) : undefined;
+  check("up --json from a removed folder is a USAGE_INVALID refusal", upJson.status === 1 && upEnvelope?.outcome === "refused" && upEnvelope.error?.code === "USAGE_INVALID", shown(upJson));
+  const upHelp = fromRemoved(["up", "--help"]);
+  check("up --help still answers from a removed folder", upHelp.status === 0 && /cotal up/.test(upHelp.stdout + upHelp.stderr), shown(upHelp));
+}
+
+// A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.
+{
+  const notes = mkdtempSync(join(home, "notes-"));
+  writeFileSync(join(notes, ".cotal"), "notes\n");
+  const at = (args: string[], cwd = notes) => {
+    const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
+  const named = (r: ReturnType<typeof at>) => r.status === 2 && r.stderr.includes(`${join(notes, ".cotal")} is a file, not a directory, so it cannot hold this folder's Cotal records; the command did not run`) && r.stderr.includes("rename or move that file");
+  for (const args of [["status"], ["space", "create", "notes"], ["up"], ["send", "-c", "general", "hi"], ["ps"], ["doctor", "auth"]]) {
+    const r = at(args);
+    check(`${args.join(" ")} in a folder whose .cotal is a file refuses CONFLICT, exit 2, naming it`, named(r), shown(r));
+  }
+  const json = at(["status", "--json"]);
+  const envelope = json.stdout.startsWith("{") ? JSON.parse(json.stdout) : undefined;
+  check("with --json it is one CONFLICT refusal", json.status === 2 && envelope?.outcome === "refused" && envelope.error?.code === "CONFLICT", shown(json));
+  const rooted = at(["space", "create", "notes", "--root", notes], neutral);
+  check("--root naming that folder refuses the same way", named(rooted), shown(rooted));
+  for (const args of [["--version"], ["version"]]) {
+    const version = at(args);
+    check(`${args[0]} still answers there`, version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
+  }
+  check("the file is left as it was", readFileSync(join(notes, ".cotal"), "utf8") === "notes\n");
 }
 
 finish();

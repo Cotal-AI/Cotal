@@ -198,6 +198,7 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
 }
 
 /** Each value starts after its padded label; a value too long for the line continues under itself.
+ *  A value with a word too wide for the room beside its label starts on the line under the label.
  *  Below 48 columns each label takes a line of its own, with its value on the lines under it. */
 function renderFields(fields: Fields, style: Style, indent: string, width: number): string[] {
   if (width < 48) {
@@ -210,6 +211,8 @@ function renderFields(fields: Fields, style: Style, indent: string, width: numbe
   const start = indent.length + pad + 1;
   return fields.rows.flatMap(([name, value]) => {
     const [first, ...rest] = drawWrapped(value, style, width - start);
+    if ([first!, ...rest].some((line) => displayWidth(line) > width - start))
+      return [indent + draw({ text: `${name}:`, tone: "label" }, style).shown, ...drawWrapped(value, style, width - indent.length - 2).map((line) => indent + "  " + line)];
     return [`${indent}${drawPadded({ text: `${name}:`, tone: "label" }, style, pad)} ${first}`, ...rest.map((line) => " ".repeat(start) + line)];
   });
 }

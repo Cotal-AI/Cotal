@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
-import { spaceSegment } from "./auth-paths.js";
+import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot } from "./auth-paths.js";
 
 /**
  * The registry of meshes this machine can reach, so a `cotal spawn` from *any* directory can find
@@ -374,6 +374,15 @@ export function pruneMesh(space: string, reason: PruneReason = "gone"): boolean 
  *  for a root that no longer exists on disk. */
 export function canonicalRoot(p: string): string {
   try { return realpathSync.native(p); } catch { return resolve(p); }
+}
+
+/** When this folder holds the records of `space`, started in `recordedRoot`, and was moved away from
+ *  there: the sentence that says so and the way back. Only a folder whose stack journal names that
+ *  root was moved from it. */
+export function movedProject(space: string, recordedRoot: string): { message: string; remedy: string; target: { root: string; recordedRoot: string } } | undefined {
+  const here = findCotalRoot();
+  if (canonicalRoot(here) === canonicalRoot(recordedRoot) || stackJournalRoot(here) !== recordedRoot) return undefined;
+  return { message: `mesh "${space}" was started in ${recordedRoot}, and this folder ${here} holds its records, so this folder was moved from there`, remedy: movedRootRemedy(recordedRoot), target: { root: here, recordedRoot } };
 }
 
 /** Every registry entry recorded for THIS project root, matched {@link canonicalRoot}-wise so a
