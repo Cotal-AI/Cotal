@@ -295,6 +295,20 @@ try {
   rmSync(shared, { recursive: true, force: true });
   rmSync(decoy, { recursive: true, force: true });
 
+  // --- the broker's own ocsp folder is part of the store ----------------------------------------
+  // nats-server makes `ocsp` in its store directory on every configuration reload, as a restore's
+  // does, so `up` does not warn about it and `clean store` removes it with the store.
+  const ocspRoot = meshRoot();
+  mkdirSync(join(ocspRoot, ".cotal", "nats", "ocsp"));
+  const ocspWarnings: string[] = [];
+  console.error = (...args: unknown[]) => { ocspWarnings.push(args.join(" ")); };
+  try { warnForeignStoreEntries(join(ocspRoot, ".cotal", "nats")); }
+  finally { console.error = consoleError; }
+  const ocspRemoved = await removeLocalState(ocspRoot, { includeAuth: false });
+  check("ocsp: up does not warn about the broker's ocsp folder, and clean store removes it with the store",
+    ocspWarnings.length === 0 && ocspRemoved[0] === ".cotal/nats (JetStream store: jetstream, ocsp)" && !existsSync(join(ocspRoot, ".cotal", "nats")), { ocspWarnings, ocspRemoved });
+  rmSync(ocspRoot, { recursive: true, force: true });
+
   // --- --dry-run lists what store/all would remove and removes nothing ------------------------
   const dryRoot = meshRoot();
   writeFileSync(join(dryRoot, ".cotal", "nats", ".cotal-store-id"), `${randomUUID()}\n`);

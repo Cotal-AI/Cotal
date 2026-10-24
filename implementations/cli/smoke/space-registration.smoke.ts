@@ -572,6 +572,32 @@ if (process.platform === "linux") {
   if (selected === undefined) clearCurrent(); else setCurrent(selected);
 } else console.log("  - recorded bind host cells skipped: a controller stack needs Linux machine and boot identity");
 
+// ── up says when it selects the space it started ───────────────────────────────────────────────────────
+if (process.platform === "linux") {
+  const selected = getCurrent();
+  clearCurrent();
+  const first = join(home, "selfirst"), second = join(home, "selsecond");
+  mkdirSync(first);
+  mkdirSync(second);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  await json(["space", "create", "selfirst"], first);
+  await json(["space", "create", "selsecond"], second);
+  const sandbox = recordSmokeSandbox({ root: first, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, first);
+  check("with nothing selected, up selects the space it started and says so",
+    up.status === 0 && getCurrent() === "selfirst" && up.stdout.includes(`selected "selfirst": a command without --space targets it, except in another space's project folder`), shown(up));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
+  await run(["down", "--yes"], {}, first);
+  const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
+  check("with another space selected, up keeps it and says it stays selected outside this folder",
+    kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays selected for commands run outside this folder - \`cotal use selsecond\` to switch`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
+  assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
+  const stopped = await run(["down", "--yes"], {}, second);
+  check("and down stops it", stopped.status === 0, shown(stopped));
+  if (selected === undefined) clearCurrent(); else setCurrent(selected);
+} else console.log("  - up selection cells skipped: a controller stack needs Linux machine and boot identity");
+
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
   const before = registryFiles();
@@ -826,6 +852,15 @@ if (process.platform === "linux") {
     refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
   unlinkSync(defaultSeed);
+  // A FIFO there would block the read, so it is refused by its file type before it is opened.
+  if (process.platform !== "win32") {
+    spawnSync("mkfifo", [defaultSeed]);
+    const fifoDefault = await json(["up", "--open", "--server", server], fresh);
+    check("a default .cotal/channels.json that is a FIFO refuses naming it, without waiting on it, before a store or a registration",
+      refused(fifoDefault, 1, "USAGE_INVALID") && fifoDefault.env?.error?.message === `the channels file ${defaultSeed} is not a regular file, such as a FIFO; it was not read` &&
+        !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(fifoDefault));
+    unlinkSync(defaultSeed);
+  }
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");

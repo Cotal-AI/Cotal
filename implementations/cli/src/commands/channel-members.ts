@@ -52,6 +52,8 @@ export async function channelMembers(values: Values, channel: string, presentati
   let end: () => void = () => {};
   const ended = new Promise<void>((resolve) => { end = resolve; });
   const stop = () => { stopped = true; end(); };
+  const interrupt = () => { process.exitCode = 130; stop(); };
+  const terminate = () => { reason = "terminated"; process.exitCode = 143; stop(); };
   const emit = (type: "snapshot" | "event" | "gap" | "error" | "end", data: unknown) => {
     if (presentation === "json") writeStreamRecord(streamRecord("membership", type, target, data));
   };
@@ -127,8 +129,8 @@ export async function channelMembers(values: Values, channel: string, presentati
     last = resultOf(await ep.readMembership());
     if (values.follow) {
       streaming = true;
-      process.once("SIGINT", stop);
-      process.once("SIGTERM", stop);
+      process.once("SIGINT", interrupt);
+      process.once("SIGTERM", terminate);
       emit("snapshot", last);
       if (presentation !== "json") console.log(renderReport(membersView(last), presentation, terminalWidth(process.stdout)));
       if (last.asOf === null) emit("gap", { reason: "The membership feed has no successful poll yet." });
@@ -145,8 +147,8 @@ export async function channelMembers(values: Values, channel: string, presentati
     stopped = true;
     if (timer) clearTimeout(timer);
     if (retry) clearTimeout(retry);
-    process.off("SIGINT", stop);
-    process.off("SIGTERM", stop);
+    process.off("SIGINT", interrupt);
+    process.off("SIGTERM", terminate);
     if (refusal && presentation === "json") {
       const failure = refusal.failure();
       emit("error", { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) });

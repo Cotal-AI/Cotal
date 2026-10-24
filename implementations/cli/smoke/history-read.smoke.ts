@@ -387,7 +387,7 @@ try {
   check("a message sent while following is one event record", event && records().filter((r) => r.type === "event").map((r) => r.data.text).join() === "live one", f.lines);
   f.child.kill("SIGINT");
   const code = await f.exited;
-  check("an interrupted follow ends with an end record and exit 0", code === 0 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });
+  check("an interrupted follow ends with an end record and exit 130", code === 130 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });
   check("every follow line is one parseable stream record", f.lines.every((l) => { try { const r = JSON.parse(l); return r.schemaVersion === 1 && r.stream === "history"; } catch { return false; } }), f.lines);
 
   const fp = follow(["history", "--follow", "--plain", "--grep", "plain"]);

@@ -87,15 +87,17 @@ async function watchSession(args: ParsedArgs, resolved: { space?: string }): Pro
     try { writeSync(process.stdout.fd, "\x1b[?1049l\x1b[?25h"); } catch { /* terminal closed */ }
   };
   let leave: (() => void) | undefined;
-  const interrupt = () => leave?.();
+  // The handlers stay registered until the observer has stopped. With none of ours left, Ink's exit
+  // hook raises the signal again and the process dies before that cleanup.
+  const interrupt = () => { process.exitCode = 130; leave?.(); };
   const terminate = () => { process.exitCode = 143; leave?.(); };
   try {
     await view.start();
     writeSync(process.stdout.fd, "\x1b[?1049h");
     entered = true;
     process.once("exit", restore);
-    process.once("SIGINT", interrupt);
-    process.once("SIGTERM", terminate);
+    process.on("SIGINT", interrupt);
+    process.on("SIGTERM", terminate);
     const instance = render(createElement(WatchView, { view, initialFilter: filter, onLeave: () => leave?.() }), { exitOnCtrlC: false, maxFps: 30 });
     leave = () => instance.unmount();
     await instance.waitUntilExit();

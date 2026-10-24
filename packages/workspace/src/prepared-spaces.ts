@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { spaceSegment } from "./auth-paths.js";
 import { MeshRegistryError, canonicalRoot, homeCotalDir } from "./mesh-registry.js";
+import { prepareCotalHomeForWrite } from "./protected-records.js";
 
 /**
  * A local space `cotal space create` prepared and no `cotal up` has started: its name and root.
@@ -64,6 +65,7 @@ export function preparedSpaceAt(root: string): PreparedSpace | undefined {
 
 /** Write a prepared space: atomic, 0600, in a directory only this user can list. Returns the file. */
 export function recordPreparedSpace(p: PreparedSpace): string {
+  prepareCotalHomeForWrite();
   mkSecretDir(preparedSpacesDir());
   const file = preparedFile(p.space);
   const tmp = `${file}.${process.pid}.tmp`;

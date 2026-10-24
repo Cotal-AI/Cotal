@@ -11,6 +11,7 @@ import {
   cachedPreferences, CommandFailure, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
   resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
@@ -103,7 +104,7 @@ function sameSource(a: PersonaSource | undefined, b: PersonaSource | undefined):
 function assertCatalogWritable(dir: string): void {
   if (!existsSync(dir)) return;
   try { accessSync(dir, constants.W_OK); }
-  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${dir}\` to change its personas` }); }
+  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${shellWord(dir)}\` to change its personas` }); }
 }
 
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock. */
