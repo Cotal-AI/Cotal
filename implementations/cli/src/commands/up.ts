@@ -185,7 +185,7 @@ import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer } from "../lib/nats-bin.js";
-import { cotalPath, cotalRoot } from "../lib/paths.js";
+import { cotalPath, cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
@@ -359,6 +359,9 @@ export function upComplete(argv: string[]): CompletionResult {
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
 export function validateUpArguments(args: ParsedArgs): void {
   presentationOf(args.values);
+  // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
+  const linked = args.values.root === undefined ? linkedCotalRefusal("up") : undefined;
+  if (linked) throw linked;
   if (args.values["user-auth"] === true && args.values.open === true)
     throw new CommandFailure("refused", "USAGE_INVALID", "--user-auth and --open contradict - a user-auth space cannot run unauthenticated", { remedy: "drop --open for user auth, or drop --user-auth for an open space" });
   if (args.values.idp !== undefined && args.values["user-auth"] !== true && !args.values.file)

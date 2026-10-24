@@ -688,8 +688,13 @@ started does, so when something is found at the recorded path, the refusal says 
 before moving the folder back. When the space is prepared or registered here and
 `space create --adopt` could take the journal over instead, the refusal names that command too. A
 folder whose `.cotal` is a link to another project's `.cotal` is told that it is a link and to use
-the stack from that project. `status` there does not read the folder's boot and additive attempt
-inventories through the link and warns that it did not. `space create` in a copy whose records name
+the stack from that project. `up` and `down` there refuse `CONFLICT`, exit 2, before anything reads
+through the link, naming the link and where it leads. When it leads to another project's `.cotal`,
+they name that project; otherwise the next step is to remove the link and prepare the folder with
+`space create`. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
+naming where it leads. `status` there does not read the folder's boot and additive attempt
+inventories through the link. It warns `COTAL_DIR_LINKED`, or `COTAL_DIR_DANGLING` for a link that
+leads nowhere, with the same next step, and exits 4. `space create` in a copy whose records name
 another root says so and names that root, and in a linked folder it names the link.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,

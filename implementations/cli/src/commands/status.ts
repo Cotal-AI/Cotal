@@ -51,6 +51,7 @@ import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team
 import { preservedSourceState, restoreNextStep, maintenanceNextStep } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { journalRecordedElsewhere, readStackJournal, stackOperationBlock, STACK_DEFINITION, type StackJournal, type StackOperationBlock } from "../lib/stack-journal.js";
+import { cotalLinkHere, linkedCotalRemedy } from "../lib/paths.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
@@ -329,11 +330,15 @@ function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["b
   // A refusal with its own cause, such as a root other local accounts can write, is named.
   const because = (error: unknown) => isCommandFailure(error) ? ` (${error.message})` : "";
   const result: NonNullable<StatusResult["bootAttempts"]> = { root, state: "not-checked", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] };
+  // A `.cotal` link that leads nowhere leaves this folder no records of its own, and the walk to a
+  // root passes over it.
+  const here = cotalLinkHere();
+  if (here?.dangling) gaps.add("COTAL_DIR_DANGLING", `this folder's .cotal links to ${here.target}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with cotal space create <space> --root ${here.root}`, { root: here.root, path: here.path, link: here.target });
   // Neither inventory is read through a link; the folder it leads to reports its own.
   const link = cotalDirLink(root);
   if (link !== undefined) {
     result.state = "partial";
-    gaps.add("COTAL_DIR_LINKED", `this folder's .cotal is a link to ${link}, so its fresh boot and additive attempt inventories were not read through it`, { root, link });
+    gaps.add("COTAL_DIR_LINKED", `this folder's .cotal is a link to ${link}, so its fresh boot and additive attempt inventories were not read through it; ${linkedCotalRemedy(root, link)}`, { root, link });
     return result;
   }
   try {
