@@ -1623,8 +1623,11 @@ not a plain file name in the folder, such as one with `../` or an absolute path,
 1 MiB or is not a valid manifest has the fault `manifest-not-regular`, `manifest-too-large` or
 `manifest-invalid`. `backup restore` and `up --restore` refuse each of these `SCHEMA_INVALID` with
 the same file and fault, before they stage or change anything.
-A directory with no `manifest.json` is refused as an incomplete artifact, the kind an interrupted
-`backup create` leaves, with the fault `manifest-missing`. A path that names nothing refuses
+A directory with no `manifest.json` that holds files a `backup create` writes is refused as an
+incomplete artifact, the kind an interrupted create leaves, with the fault `manifest-missing`. A
+file, or a directory that holds neither a manifest nor such a file, is not a backup artifact and
+refuses `TARGET_NOT_FOUND` (exit 2), naming it. The folder of a create in this root that was
+interrupted before it wrote a file is still an incomplete artifact. A path that names nothing refuses
 `TARGET_NOT_FOUND` (exit 2) and says in `missing` whether its folder or the artifact is missing, as
 `backup restore` does. A full artifact of an authenticated space
 restores only into a root that still holds the trust state it was taken under, so it cannot move to
