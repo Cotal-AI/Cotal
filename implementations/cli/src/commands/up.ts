@@ -206,7 +206,7 @@ import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { checkSpaceName } from "./meshes-add.js";
-import { cleanedManifestStart } from "../lib/legacy-start.js";
+import { cleanedManifestStart, retainedOpenSpace } from "../lib/legacy-start.js";
 import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, stackUpInterruptNotice, keptOnUp, selectedOnUp, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
@@ -3898,6 +3898,9 @@ function folderSpace(): string {
         remedy: "name the space to run with `--space`",
       });
     if (named.length === 1) return named[0];
+    // A stopped open root holds no account, so its last manifest deploy names its space.
+    const deployed = preparedSpaceAt(root) ? undefined : retainedOpenSpace(root);
+    if (deployed) return deployed;
   }
   return resolveSpace(process.cwd());
 }

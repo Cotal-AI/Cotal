@@ -9,12 +9,14 @@
  *  2. Controller root without its registration. After `down` and `space forget`, `up` refuses
  *     TARGET_UNAVAILABLE (exit 2), and after `space add --force` it refuses CONFLICT (exit 2, not 3).
  *     Neither writes the stack journal, `server.conf` or a new service instance record.
+ *  3. Open legacy root deployed from a manifest. It holds no account, so after `down` its plain `up`
+ *     starts it again as the manifest's space, which its fresh team summary records, not as `main`.
  *
  * Sandboxes COTAL_HOME and both project roots. Run: pnpm smoke:legacy-root-upgrade:live
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -117,6 +119,24 @@ try {
     check("up over a manual registration refuses CONFLICT, exit 2, not an unknown outcome", manual.status === 2 && manual.env?.error?.code === "CONFLICT", shown(manual));
     check("that refusal wrote nothing either", snapshot() === before, { before, after: snapshot() });
     cli(home, "space", "forget", space, "--json");
+  }
+
+  // 3. An open root deployed from a manifest, after a normal down.
+  {
+    const space = "openmf1";
+    const root = folder(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    writeFileSync(join(root, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker: { servers: "${server}" }\nchannels:\n  general: {}\n`);
+    const first = cli(root, "up", "-f", "cotal.yaml", "--open", "--no-manager");
+    anchor(root);
+    check("an unprepared folder deploys an open manifest on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
+    const stopped = cli(root, "down");
+    check("down stops the open root and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
+    const again = cli(root, "up", "--no-manager");
+    check("plain up starts it again as the manifest's space, open, at its own address, and starts no main",
+      again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
+    const last = cli(root, "down");
+    check("down stops the open root again", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root) && !existsSync(join(root, ".cotal", "stack-controller.json"))) cli(root, "down");
