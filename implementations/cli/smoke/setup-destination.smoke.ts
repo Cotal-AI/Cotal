@@ -305,6 +305,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
+  check("...and its next step creates it in another folder with --project, or starts, selects or forgets research",
+    literal(`create "research2" in another folder with --project <dir>; for "research", which uses this folder, start it with \`cotal up\` from ${dir}, select it with \`cotal use research\`, or forget it with \`cotal space forget research\``).test(other.env?.error?.remedy ?? ""), other.env?.error);
   const moved = await json(FULL("research", project("elsewhere")));
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }

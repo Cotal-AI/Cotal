@@ -131,6 +131,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   readonly allowSubscribe?: readonly string[];
   readonly allowPublish?: readonly string[];
   readonly instanceId?: string;
+  readonly reopen: (channel: string) => string;
 }): Promise<NativeChatSession> {
   if (target.mode !== "auth" || !target.auth)
     throw new CommandFailure("refused", "UNSUPPORTED", "the static chat adapter requires a recorded static-auth target with its trust material; no other admission was attempted", { target: { space: target.space } });
@@ -208,7 +209,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     channels: [...subscribe],
   });
   // The participant listeners are installed here, before the endpoint starts.
-  const session = new NativeChatSession({ endpoint, identity, retire });
+  const session = new NativeChatSession({ endpoint, identity, retire, reopen: options.reopen });
   if (slot.expiresAt <= Date.now()) {
     const close = await session.close();
     throw new CommandFailure("failed", "OPERATION_FAILED", "the admitted session had already expired when its reply arrived, so it was closed without connecting", {

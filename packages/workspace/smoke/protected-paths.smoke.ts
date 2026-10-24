@@ -3,7 +3,8 @@
  * database proves the group is the caller's user private group, as Debian's OpenSSH does for
  * StrictModes, the account list comes only from local name services, and the entry has no
  * extended ACL. World write, a foreign owner and a symlink always refuse, a root-owned sticky
- * ancestor is accepted, and a credential file keeps its owner-only rule. The account database and
+ * ancestor is accepted, and a credential file keeps its owner-only rule. A declared adapter path in
+ * Cotal's own install, as the launcher runs it, names `cotal update` as the fix. The account database and
  * the ACL read are injected, so no case reads this machine's accounts or ACLs. A record this account
  * may not open names the folder that withholds it, and a link keeps the no-follow refusal. Only `win32`
  * selects the Windows record model; the platform is passed in, so that runs here. Broker-free.
@@ -20,6 +21,7 @@ import {
   assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
   protectedLocalDirectory, protectedLocalEntries, protectedLocalEntry, protectedPathPolicy, readLocalRecordSource, type AccountDatabase, type ProtectedPathPolicy,
 } from "../src/protected-records.js";
+import { validateServiceAdapterPaths } from "../src/service-adapter.js";
 
 if (process.platform === "win32") skipSuite("protected paths are POSIX-only");
 const counted = countedAssert(nodeAssert);
@@ -248,6 +250,41 @@ try {
   assert.match((thrown as Error).message, /must be an owned private regular file/, "a group-writable credential file names the file rule");
 } finally {
   rmSync(dir, { recursive: true, force: true });
+}
+
+// 5b. A handler in Cotal's own install, as the launcher runs it, refuses with `cotal update` as the
+//     fix, because the update removes that write. Any other path keeps its chmod. World write is used,
+//     since group write is accepted on a host that proves the user's private group.
+{
+  const base = mkdtempSync(join(tmpdir(), "cotal-launcher-install-"));
+  const install = join(base, "cotal");
+  const runtime = join(install, "runtime", "node-v0-linux-x64");
+  const prior = { launcher: process.env.COTAL_LAUNCHER, prefix: process.env.npm_config_prefix };
+  try {
+    mkdirSync(join(runtime, "bin"), { recursive: true });
+    const handler = join(runtime, "bin", "node");
+    writeFileSync(handler, "", { mode: 0o755 });
+    for (const path of [install, join(install, "runtime"), runtime]) chmodSync(path, 0o757);
+    const declaration = { abiVersion: 1, paths: { handler: "file" } } as unknown as Parameters<typeof validateServiceAdapterPaths>[0];
+    const refusal = (): CommandFailure => {
+      try { validateServiceAdapterPaths(declaration, { handler }); } catch (error) { if (error instanceof CommandFailure) return error; throw error; }
+      throw new Error("the handler was accepted");
+    };
+    delete process.env.COTAL_LAUNCHER;
+    assert.equal(refusal().remedy, `chmod o-w ${runtime} ${join(install, "runtime")} ${install}`, "outside the launcher the handler refusal keeps its chmod");
+    process.env.COTAL_LAUNCHER = "1";
+    process.env.npm_config_prefix = install;
+    const own = refusal();
+    assert.ok(own.message.endsWith(`; those folders belong to Cotal's own install at ${install}`), `under the launcher the refusal says the folders are Cotal's own install: ${own.message}`);
+    assert.match(own.remedy ?? "", /^cotal update, /, "and its Next is cotal update");
+    chmodSync(base, 0o757);
+    assert.match(refusal().remedy ?? "", /^chmod o-w /, "a gap outside the install keeps the chmod");
+  } finally {
+    if (prior.launcher === undefined) delete process.env.COTAL_LAUNCHER; else process.env.COTAL_LAUNCHER = prior.launcher;
+    if (prior.prefix === undefined) delete process.env.npm_config_prefix; else process.env.npm_config_prefix = prior.prefix;
+    chmodSync(base, 0o700);
+    rmSync(base, { recursive: true, force: true });
+  }
 }
 
 // 6. A record this account may not open is refused with the folder that withholds it, which is often

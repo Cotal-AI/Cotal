@@ -10,8 +10,10 @@
  * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
  *
  * A folder whose `.cotal` is a file refuses every command with `CONFLICT`, naming that file, before
- * anything runs. A removed working folder refuses every command but help and version the same way,
- * `up`, `down` and `backup create` included, which crashed with Node's stack trace.
+ * anything runs. A removed working folder refuses every command but help, version, docs and
+ * telemetry with its line and the `cd` remedy and no help, as a missing --yes does, `up`, `down` and
+ * `backup create` included, which crashed with Node's stack trace. Help there says the folder no
+ * longer exists.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
@@ -50,6 +52,20 @@ const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
 const parser = run(["status", "--bogus"]);
 check("control: a parser usage error has the documented shape", usageShape(parser, /Unknown option '--bogus'/), shown(parser));
 
+// A refusal points the way the command reads its words: a word that starts with "-" goes after
+// --, an option value that starts with "-" is written --name=value, a short option takes its value
+// after a space, and an option typed with a typographic dash is named with hyphens.
+const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
+check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
+const dashValue = run(["history", "--from", "-bob"]);
+check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
+const shortEquals = run(["send", "-c=general", "hello"]);
+check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
+for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
+  const r = run(["status", typed]);
+  check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
+}
+
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
 
@@ -67,6 +83,32 @@ check("help with an unknown subcommand names it and lists the command's subcomma
 
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
+
+// --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
+// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
+}
+const nearHelp = run(["space", "creat", "--help"]);
+check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
+for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+  const r = run([...args]);
+  check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
+}
+
+// A subcommand's help gives its whole usage, name argument included, and only its own options.
+for (const [args, usage, foreign] of [
+  [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
+  [["help", "channel", "show"], "cotal channel show <name> ", /--purge|--desc/],
+  [["help", "persona", "create"], "cotal persona create <name> ", /--yes/],
+  [["help", "history", "clear"], "cotal history clear ", /--grep|--follow/],
+  [["help", "meshes"], "cotal meshes ", undefined],
+  [["help", "personas"], "cotal personas ", undefined],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} prints the usage ${usage.trim()} and no other subcommand's options`, r.status === 0 && r.stdout.includes(`Usage\n  ${usage}`) && !foreign?.test(r.stdout), shown(r));
+}
 
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
 const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>
@@ -127,8 +169,10 @@ if (process.platform !== "win32") {
     const r = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh", gone, process.execPath, BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
+  // Two lines and no help: the folder is not a grammar mistake, and the remedy is the whole fix.
+  const removedShape = (r: ReturnType<typeof run>) => r.status === 1 && r.stdout === "" && r.stderr === "✗ this folder no longer exists\n  cd to an existing folder and run the command again\n";
   const removed = fromRemoved(["status"]);
-  check("a command run from a removed folder has the usage shape and says the folder is gone", usageShape(removed, /this folder no longer exists/) && /cd to an existing folder/.test(removed.stderr), shown(removed));
+  check("a command run from a removed folder says the folder is gone and to cd elsewhere, with no help", removedShape(removed), shown(removed));
   const removedJson = fromRemoved(["status", "--json"]);
   const envelope = removedJson.stdout.startsWith("{") ? JSON.parse(removedJson.stdout) : undefined;
   check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
@@ -138,13 +182,24 @@ if (process.platform !== "win32") {
   // instead of crashing with Node's stack trace.
   for (const args of [["up"], ["down", "--yes"], ["down", "--dry-run"], ["backup", "create", "bk"]]) {
     const r = fromRemoved(args);
-    check(`${args.join(" ")} from a removed folder refuses the same way, with no stack trace`, usageShape(r, /this folder no longer exists/) && !/uv_cwd|\n\s+at /.test(r.stderr), shown(r));
+    check(`${args.join(" ")} from a removed folder refuses the same way, with no stack trace`, removedShape(r), shown(r));
   }
   const upJson = fromRemoved(["up", "--json"]);
   const upEnvelope = upJson.stdout.startsWith("{") ? JSON.parse(upJson.stdout) : undefined;
   check("up --json from a removed folder is a USAGE_INVALID refusal", upJson.status === 1 && upEnvelope?.outcome === "refused" && upEnvelope.error?.code === "USAGE_INVALID", shown(upJson));
   const upHelp = fromRemoved(["up", "--help"]);
   check("up --help still answers from a removed folder", upHelp.status === 0 && /cotal up/.test(upHelp.stdout + upHelp.stderr), shown(upHelp));
+  // Help said the space or defaults could not be read, and docs and telemetry, which use no folder,
+  // refused.
+  for (const args of [["help"], []]) {
+    const r = fromRemoved(args);
+    check(`${["cotal", ...args].join(" ")} from a removed folder says the folder no longer exists, exit 0`,
+      r.status === 0 && r.stdout.startsWith("This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.\n") && !/could not be read/.test(r.stdout), shown(r));
+  }
+  const docs = fromRemoved(["docs", "--json"]);
+  check("docs runs from a removed folder", docs.status === 0 && docs.stdout.includes('"outcome":"ok"'), shown(docs));
+  const telemetry = fromRemoved(["telemetry", "--json"]);
+  check("telemetry runs from a removed folder", telemetry.status === 0 && telemetry.stdout.includes('"outcome":"ok"'), shown(telemetry));
 }
 
 // A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.

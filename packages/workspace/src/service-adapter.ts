@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { accessSync, constants, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
-import { isAbsolute } from "node:path";
+import { isAbsolute, sep } from "node:path";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { endpointToken, token } from "@cotal-ai/core";
 import type { ControllerStackView } from "./maintenance.js";
 import type { ProcessIdentityRecord } from "./pid.js";
 import { schemaErrorLocation, type ServiceDefinitionInput } from "./service-definition.js";
 import { CommandFailure } from "./output.js";
+import { launcherInstallRoot } from "./cotal-home.js";
 import { protectedCredentialReference, protectedLocalEntry } from "./protected-records.js";
 
 /** Workstation ABI only. A declaration grants no native endpoint or OS process authority. */
@@ -324,6 +325,11 @@ export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclarati
       const link = paths.find((entry) => lstatSync(entry, { throwIfNoEntry: false })?.isSymbolicLink());
       if (link) linked(link);
       const refused = paths.at(-1)!;
+      // An installer from before its 022 umask left Cotal's own install group-writable under a umask
+      // of 0002, so a path in it, such as the runtime Node, is fixed by the update that repairs it.
+      const install = launcherInstallRoot();
+      if (install && paths.every((entry) => entry === install || entry.startsWith(install + sep)))
+        throw new CommandFailure("refused", "PERMISSION_DENIED", `${refusal.message}; ${paths.length === 1 ? "that folder belongs" : "those folders belong"} to Cotal's own install at ${install}`, { target: { option: name, path, refused, paths }, remedy: "cotal update, which removes group and other write from Cotal's own install" });
       throw new CommandFailure("refused", "PERMISSION_DENIED", refusal.message, { target: { option: name, path, refused, paths }, remedy: refusal.remedy });
     };
     // A link can be repointed after this check, so only a physical path is checked and pinned.

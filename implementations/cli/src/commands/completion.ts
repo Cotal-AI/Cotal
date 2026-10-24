@@ -2,6 +2,7 @@ import { basename, dirname, isAbsolute } from "node:path";
 import {
   findCommand,
   findSubcommand,
+  oneLine,
   type Command,
   type CompletionItem,
   type CompletionResult,
@@ -9,7 +10,7 @@ import {
   type ParsedArgs,
   type Subcommand,
 } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
 import { fileCompletion, spaceCompletion } from "../lib/completion.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
@@ -40,9 +41,12 @@ import { SCRIPTS, LOAD_NOW } from "../lib/completion-scripts.js";
  */
 
 /** Wire format: one `value\tdescription` (or bare `value`) per line, then a `:directive`
- *  trailer the stub reads (`:nofiles` / `:nospace` / `:default`). */
+ *  trailer the stub reads (`:nofiles` / `:nospace` / `:default`). A candidate can come from a file
+ *  name a cloned project brings, so a value holding a control character is left out: the shell would
+ *  write it to the terminal or the command line, a newline would forge more lines, and its escaped
+ *  form names nothing. */
 function emit(items: CompletionItem[], directive: NonNullable<CompletionResult["directive"]>): void {
-  const lines = items.map((i) => (i.description ? `${i.value}\t${i.description}` : i.value));
+  const lines = items.filter((i) => oneLine(i.value) === i.value).map((i) => (i.description ? `${i.value}\t${i.description}` : i.value));
   lines.push(`:${directive}`);
   process.stdout.write(`${lines.join("\n")}\n`);
 }
@@ -111,7 +115,7 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     const cursor = context?.positionals.find((item) => item.index === argv.length - 1);
     const children = parent?.subcommands?.filter((item) => !item.hidden);
     if (cursor && children?.length) emit(children.map((item) => ({ value: item.name, description: item.summary })), "nofiles");
-    else if (context?.optionsEnded || context?.valueFlag) emit([], "nofiles");
+    else if (context?.optionsEnded || context?.valueFlag) emit([], context?.valueFlag?.completion === "files" && !word.startsWith("-") ? "default" : "nofiles");
     else emit(flags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), flags.length ? "nofiles" : "default");
     return;
   }
