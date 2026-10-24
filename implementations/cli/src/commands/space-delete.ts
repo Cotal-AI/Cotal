@@ -303,6 +303,18 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   });
   if (fingerprint(initial) !== fingerprint(refreshed))
     throw new CommandFailure("refused", "CONFLICT", "the native streams or presence identities changed since the reviewed impact; no delete request was submitted", { target: { space: name }, remedy: "inspect the new impact with space delete <name> --dry-run before confirming again" });
+  // A typed confirmation was given for the message counts it showed, so a message stored or removed
+  // while it waited refuses too.
+  if (!yes) {
+    const reviewed = new Map(initial.result.streams.map((stream) => [stream.name, stream.messages]));
+    const changed = refreshed.result.streams.filter((stream) => reviewed.get(stream.name) !== stream.messages);
+    const count = (messages: number | null | undefined) => messages === null || messages === undefined ? "an unknown number of messages" : `${messages} message${messages === 1 ? "" : "s"}`;
+    if (changed.length)
+      throw new CommandFailure("refused", "CONFLICT", `the message counts changed while the confirmation waited (${changed.map((stream) => `${stream.name} holds ${count(stream.messages)}, ${count(reviewed.get(stream.name))} when reviewed`).join("; ")}); no delete request was submitted`, {
+        target: { space: name, changed: changed.map((stream) => ({ name: stream.name, reviewed: reviewed.get(stream.name) ?? null, messages: stream.messages })) },
+        remedy: `review the new impact and confirm it with cotal space delete ${name}`,
+      });
+  }
   // A stack started while the impact was reviewed refuses here too.
   const started = liveStackRefusal(refreshed.entry, name);
   if (started) throw started;

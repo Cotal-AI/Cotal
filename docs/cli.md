@@ -2144,7 +2144,10 @@ Bare `space delete <name>` displays that impact on an interactive terminal and r
 typing the exact space name. A script supplies the exact positional name with `--yes`;
 `--json` without `--yes` refuses before a connection. After confirmation the command
 reads the broker again and refuses if the stream states, transfer names, presence
-identities, registration, trust or broker identity changed. It opens a separately
+identities, registration, trust or broker identity changed. After a typed confirmation it also
+refuses `CONFLICT`, exit 2, when a stream's message count differs from the impact it showed, as
+when a message is posted while the confirmation waits; the refusal names each changed count and
+deletes nothing. It opens a separately
 minted exact-target connection, checks each stream state again before the first delete,
 and submits one deletion at a time. A native acknowledgement is reported as deleted;
 prior absence is separate, and the receipt lists only the groups that have a name. It then checks each target's stream info and enumerates
