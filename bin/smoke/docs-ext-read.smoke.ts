@@ -1,9 +1,9 @@
 /**
  * `cotal docs [page]` and bare `cotal ext` on the structured output contract, driven through the built
- * binary in a fresh sandbox: the docs index, one page, a search and its empty result, `--refresh`
- * naming the copy it served, the usage refusals, and that the docs bundle loads only when `docs` runs;
- * the extension listing as one envelope and a plain report, and `ext root` staying a raw path that
- * refuses `--json`. Broker-free and, except `--refresh`, offline.
+ * binary in a fresh sandbox: the docs index, one page as its Markdown to a pipe, a search
+ * and its empty result, `--refresh` naming the copy it served, the usage refusals, and that the docs
+ * bundle loads only when `docs` runs; the extension listing as one envelope and a plain report, and
+ * `ext root` staying a raw path that refuses `--json`. Broker-free and, except `--refresh`, offline.
  *
  * Run: pnpm smoke:docs-ext-read
  */
@@ -71,6 +71,9 @@ let specBody = "";
   // A line of the page with no punctuation that plain writes in ASCII, so it reads the same in both.
   const asciiLine = r?.body.split("\n").find((line) => line.length > 20 && /^[\x20-\x7e]+$/.test(line));
   check("a page's slug is matched without case or .md, and the plain page says which copy it is", plain.status === 0 && lines[0] === `bundled v${VERSION}` && plain.stdout.includes("# Architecture") && plain.stdout.includes(asciiLine ?? "\u0000"), shown(plain));
+  // A page is drawn only on a terminal (the pty suite reads that); to a pipe it is its Markdown.
+  const piped = run(["docs", "cli"]);
+  check("a page read to a pipe without --plain is its Markdown", piped.status === 0 && piped.stdout.includes("\n# `cotal` CLI reference\n") && /^\|---\|---\|$/m.test(piped.stdout), shown(piped));
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));

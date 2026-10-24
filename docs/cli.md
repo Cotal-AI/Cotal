@@ -5805,13 +5805,16 @@ cotal docs --search <query> [--json | --plain]
 | `--search <query>` | none | Show the sections that best match a query, each naming its page |
 | `--refresh` | off | With a page: also try the version-pinned copy on docs.cotal.ai |
 | `--json` / `-j` | off | One JSON document |
-| `--plain` | off | The same report without color |
+| `--plain` | off | The same report without color, and a page as its Markdown |
 
 Reads the docs bundled with this installed version, offline: the same pages agents read with
 `cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Concept`, `Guide`, `Reference`,
 `Project`), each with its title; `result.pages` holds each page's slug, title, kind and summary, and
 `result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
-ignoring case and a trailing `.md`; `result.body` holds its Markdown. An unknown page is refused with
+ignoring case and a trailing `.md`; `result.body` holds its Markdown. On a terminal a page is drawn
+for reading: each heading is a title, paragraphs and lists wrap to the terminal, a table is text that
+becomes one record per row when its columns do not fit, and a code block keeps its lines. To a pipe
+or a file, and with `--plain`, the page is its Markdown. An unknown page is refused with
 `USAGE_INVALID`, naming every page.
 
 `--refresh` fetches the page from the immutable path for this version on docs.cotal.ai.
