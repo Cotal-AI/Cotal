@@ -80,7 +80,9 @@ check("help service remove lists --instance <full-id> in its usage and options",
   const [forA, forB] = [definition("sa", a), definition("sb", b)];
   check("rig: prepare sa with a service tick, prepare sb, select sa",
     run(["space", "create", "sa"], a).status === 0 && run(["service", "add", "tick", "--file", forA], a).status === 0 && run(["space", "create", "sb"], b).status === 0 && run(["use", "sa"], b).status === 0);
-  const other = run(["service", "add", "tick", "--file", forB, "--json"], b);
+  // From a folder that is no space's project, where the selection applies; in b, b's own space is the
+  // target, and the file names it.
+  const other = run(["service", "add", "tick", "--file", forB, "--json"]);
   let refusal: { error?: { code?: string; message?: string; remedy?: string } } | undefined;
   try { refusal = JSON.parse(other.stdout) as typeof refusal; } catch { refusal = undefined; }
   check("add --file for sb under sa's service name names both spaces, SCHEMA_INVALID exit 1",
