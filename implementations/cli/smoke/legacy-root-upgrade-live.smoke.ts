@@ -10,7 +10,11 @@
  *     TARGET_UNAVAILABLE (exit 2), and after `space add --force` it refuses CONFLICT (exit 2, not 3).
  *     Neither writes the stack journal, `server.conf` or a new service instance record.
  *  3. Open legacy root deployed from a manifest. It holds no account, so after `down` its plain `up`
- *     starts it again as the manifest's space, which its fresh team summary records, not as `main`.
+ *     starts it again as the manifest's space, not as `main`. With a broker configuration that names
+ *     no space, as an earlier release rendered, its fresh team summary names it. A later plain open
+ *     start of another space there names that one, and the next plain `up` starts it.
+ *  4. Open legacy root started with `up --open --space`. After `down` its plain `up` starts it again
+ *     as that space, at its own address, and starts no `main`.
  *
  * Sandboxes COTAL_HOME and both project roots. Run: pnpm smoke:legacy-root-upgrade:live
  */
@@ -132,11 +136,40 @@ try {
     check("an unprepared folder deploys an open manifest on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
     const stopped = cli(root, "down");
     check("down stops the open root and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
+    const conf = join(root, ".cotal", "server-open.conf");
+    const named = readFileSync(conf, "utf8");
+    check("the open broker configuration names its space", named.includes(`# space key: ${Buffer.from(space).toString("hex")}\n`), named);
+    writeFileSync(conf, named.replace(/^# space key: .*\n/m, ""), { mode: 0o600 });
     const again = cli(root, "up", "--no-manager");
-    check("plain up starts it again as the manifest's space, open, at its own address, and starts no main",
+    check("with a configuration that names no space, plain up starts the manifest's space, open, at its own address, and starts no main",
       again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
+    check("down stops the manifest's space", cli(root, "down").status === 0);
+    const other = "openmf2";
+    const plain = cli(root, "up", "--open", "--space", other, "--server", server, "--no-manager");
+    check("a plain open start of another space at that root starts it", plain.status === 0 && findMesh(other)?.mode === "open", shown(plain));
+    check("down stops it", cli(root, "down").status === 0);
+    const latest = cli(root, "up", "--no-manager");
+    check("plain up starts the space that last ran there, over the older manifest's summary",
+      latest.status === 0 && findMesh(other)?.server === server && findMesh(space) === undefined && latest.stdout.includes(`Mesh: ${other}`), shown(latest));
     const last = cli(root, "down");
     check("down stops the open root again", last.status === 0, shown(last));
+  }
+
+  // 4. An open root started with --space and no manifest, after a normal down.
+  {
+    const space = "openplain1";
+    const root = folder(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const first = cli(root, "up", "--open", "--space", space, "--server", server, "--no-manager");
+    anchor(root);
+    check("an unprepared folder starts an open space on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
+    const stopped = cli(root, "down");
+    check("down stops it and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
+    const again = cli(root, "up", "--no-manager");
+    check("plain up starts that space again, open, at its own address, and starts no main",
+      again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
+    const last = cli(root, "down");
+    check("down stops it again", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root) && !existsSync(join(root, ".cotal", "stack-controller.json"))) cli(root, "down");

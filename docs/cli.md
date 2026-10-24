@@ -805,8 +805,10 @@ unregistered. Plain `cotal up` there starts it again on its retained launcher, w
 store and history. Its `down` drops the registration that kept the broker address, so with no
 `--server` or `--host` it starts at the address in the broker configuration its last start rendered
 there, and in open mode when that start was open and no mode is asked for, and says so in one line.
-An open root holds no account to name its space, so one deployed with `up -f` starts again as the
-space its newest open fresh team summary names, while that configuration still serves its address.
+An open root holds no account to name its space, so the broker configuration its last start rendered
+names it, and plain `cotal up` starts that space again. A configuration an earlier release rendered
+names none, and a root it deployed with `up -f` starts again as the space its newest open fresh team
+summary names, while that configuration still serves its address.
 After `clean all` that configuration is gone. A root deployed with `up -f` then keeps only its fresh
 team summary, and plain `cotal up` refuses `CONFLICT` and names `cotal up -f <manifest>` when the
 summary names another address, mode or space. `space create` in such a folder refuses `CONFLICT`

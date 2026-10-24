@@ -206,7 +206,7 @@ import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { checkSpaceName } from "./meshes-add.js";
-import { cleanedManifestStart, retainedOpenSpace } from "../lib/legacy-start.js";
+import { cleanedManifestStart, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, stackUpInterruptNotice, keptOnUp, selectedOnUp, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
@@ -1905,7 +1905,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport, maxFileStore });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore });
   const natsArgs = [
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
@@ -3723,7 +3723,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport, maxFileStore: opts.maxFileStore });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore: opts.maxFileStore });
   // Trust preparation awaits; the pinned store is checked again before its config is handed back.
   if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
   const args = [
@@ -3883,7 +3883,8 @@ function ensureRootForSpace(space: string): void {
  *  the prepared record with a registration, so the space this root's stack journal or its locally
  *  started registration names comes next. Without it a second `up` in the same folder resolved the
  *  default space and refused its own mesh. Several names there are refused, never picked. Then the
- *  space prepared here, then the default.
+ *  space prepared here. A stopped open root with none prepared names its space in the broker
+ *  configuration its last start rendered. Then the default.
  *
  *  Only `up` asks this. `resolveSpace` also decides whether identity cleanup may attribute a root to
  *  a space (`reset-space-plan.ts`) and, through `resolveRuntimeSpace`, which space a legacy `down`
@@ -3898,7 +3899,7 @@ function folderSpace(): string {
         remedy: "name the space to run with `--space`",
       });
     if (named.length === 1) return named[0];
-    // A stopped open root holds no account, so its last manifest deploy names its space.
+    // A stopped open root holds no account, so its broker configuration names its space.
     const deployed = preparedSpaceAt(root) ? undefined : retainedOpenSpace(root);
     if (deployed) return deployed;
   }
@@ -4746,7 +4747,8 @@ function refuseMissingNamedStore(storeDir: string): void {
 }
 
 /**
- * Render and write the config for an OPEN (no-auth) broker, returning its path.
+ * Render and write the config for an OPEN (no-auth) broker, returning its path. It names `space`,
+ * because an open root holds no account that would ({@link namedOpenConfig}).
  *
  * The `authSetup` sibling for the no-auth mode. Open mode previously launched nats-server from
  * bare CLI flags and so never passed through any renderer — meaning the REQUIRED transport union
@@ -4755,11 +4757,11 @@ function refuseMissingNamedStore(storeDir: string): void {
  * mode through a renderer is what makes the union total: there is now no route to a listener that
  * does not state its transport.
  */
-function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: string; transport: BrokerTransport; maxFileStore?: number }): string {
+function writeOpenBrokerConf(storeDir: string, space: string, opts: { port: number; host: string; transport: BrokerTransport; maxFileStore?: number }): string {
   const confPath = cotalPath("server-open.conf");
   writeSecretFile(
     confPath,
-    openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, transport: opts.transport }),
+    namedOpenConfig(openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, transport: opts.transport }), space),
   );
   return confPath;
 }
