@@ -834,12 +834,17 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
   // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
   // A controller stack's broker has no legacy pidfile, so that heuristic says nothing about it.
-  let controllerStack = false, journal: StackJournal | undefined, elsewhere = false;
+  let controllerStack = false, journal: StackJournal | undefined, elsewhere = false, unusable = false;
   try { journal = readStackJournal(root)?.journal; controllerStack = journal?.space === space; }
   catch (error) {
     controllerStack = false;
-    // A journal no command can use is named with its way out; the rest of the report still stands.
-    if (isCommandFailure(error) && error.code === "SCHEMA_INVALID") gaps.add("STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+    // A journal no command can use is named with its way out, in the warnings and under Next; the
+    // rest of the report still stands.
+    if (isCommandFailure(error) && error.code === "SCHEMA_INVALID") {
+      unusable = true;
+      gaps.add("STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+      if (error.remedy) hints.push(error.remedy);
+    }
     // A journal another folder recorded, as a copy or a moved folder keeps it: clean store refuses here.
     elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
@@ -859,7 +864,8 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
-  if (storedState && !maintained) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+  // Its next step is the unusable journal's, which every stack command refuses until it is fixed.
+  if (storedState && !maintained && !unusable) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
   return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished);
 }
 
@@ -1074,6 +1080,13 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
   };
 }
 
+/** The refusal of the stack journal at `root` when it is one no command can use, as `up` and `down`
+ *  refuse it. Undefined when it reads or is absent. */
+function unusableStackJournal(root: string): CommandFailure | undefined {
+  try { readStackJournal(root); return undefined; }
+  catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
+}
+
 /** Why the broker of the stack at `root` cannot start on its store: the one its stack journal recorded,
  *  or `.cotal/nats`. */
 function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
@@ -1126,10 +1139,13 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // A start in a root whose broker store this account cannot write fails there, so its next step is
     // the store's, as `up` names it.
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
+    // A stack journal that no command can use refuses `up` there, so Next names its way out instead.
+    const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;
     // This folder's stack cut off with no recorded outcome is named under the selected space, and
     // Next names the step that finishes or settles it. One that neither blocks nor stays part way
     // settles from its members' processes when it starts.
-    if (store) hints.push(`${store.message}; ${store.remedy}`);
+    if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
+    else if (store) hints.push(`${store.message}; ${store.remedy}`);
     else if (!d.unsettled || !servedStack(folder, result)) hints.push(remedy ?? message);
     else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
     return result;
