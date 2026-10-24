@@ -4,7 +4,8 @@
  * its own one-shot credential. Covers the default, `--waiting` and `--all` filters, the rich and
  * plain reports, the managed column with no manager present and with a manager that does not answer
  * (a partial read, exit 4), a credential that may not read the roster, and `whoami` for a signer, an
- * open mesh, an unregistered `--server` (unknown, partial) and each user-auth grant state (the last
+ * open mesh, an unregistered `--server` (unknown, partial, also from the space's own folder) and each
+ * user-auth grant state (the last
  * through a stub provider, in process).
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
@@ -112,9 +113,9 @@ const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
-const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string, timeoutMs = 120_000): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string, timeoutMs = 120_000, cwd = shell): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: timeoutMs }, (err, stdout, stderr) => {
+    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout: timeoutMs }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -273,6 +274,15 @@ try {
   const denied = await run(["who", "--json", "--creds", probe, "--space", space, "--server", servers]);
   check("a credential that may not read presence is a PERMISSION_DENIED refusal, exit 2, not an empty roster", denied.status === 2 && denied.envelope?.outcome === "refused" && denied.envelope.error?.code === "PERMISSION_DENIED" && denied.envelope.result === null, shown(denied));
 
+  // ── a --creds credential that may read the roster, with the manager still on it ──────────────────
+  const reader = join(home, "reader.creds");
+  writeFileSync(reader, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
+  const credsRead = await run(["who", "--json", "--creds", reader, "--space", space, "--server", servers]);
+  check("a --creds credential is a complete read, exit 0, with the managers labelled denied and not left unread",
+    credsRead.status === 0 && credsRead.envelope?.outcome === "ok" && credsRead.envelope.completeness === "complete" && credsRead.envelope.result?.managers === "denied" &&
+    credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && !credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_UNREAD") &&
+    rowsOf(credsRead).alice?.managed === null, shown(credsRead));
+
   // ── whoami ──────────────────────────────────────────────────────────────────────────────────────
   const me = await run(["whoami", "--json"]);
   check("whoami on a signer's mesh is one complete envelope naming the signer", me.status === 0 && me.envelope?.outcome === "ok" && me.envelope.result?.identity?.kind === "space-signer" && me.envelope.result.read === "all" && me.envelope.result.dms === true, shown(me));
@@ -355,6 +365,16 @@ try {
     unprobed.status === 4 && unprobed.envelope?.completeness === "partial" && unprobedResult?.identity?.kind === "unknown" && unprobedResult.mode === null && unprobedResult.read === null && unprobedResult.post === null && unprobedResult.dms === null && unprobedResult.capabilities === null && unprobed.envelope?.warnings.some((w) => w.code === "BROKER_NOT_PROBED") === true, shown(unprobed));
   const unprobedPlain = await run(["whoami", "--server", "nats://127.0.0.1:3", "--plain"]);
   check("its report calls the identity unknown and names no access", unprobedPlain.status === 4 && /identity:\s+unknown: this address is not registered here/.test(unprobedPlain.stdout) && /read:\s+unknown/.test(unprobedPlain.stdout) && !/:\s+all$/m.test(unprobedPlain.stdout), shown(unprobedPlain));
+  // The space's own folder holds its trust, which does not reach an address the space is not
+  // registered at, so that address is unprobed the same way.
+  const trusted = await run(["whoami", "--server", "nats://127.0.0.1:3", "--json"], {}, undefined, 120_000, meshRoot);
+  check("whoami --server at an unregistered address from the space's own folder is partial, exit 4, with the identity unknown",
+    trusted.status === 4 && trusted.envelope?.completeness === "partial" && trusted.envelope.result?.identity?.kind === "unknown" && trusted.envelope.result.read === null &&
+      trusted.envelope.warnings.some((w) => w.code === "BROKER_NOT_PROBED" && w.message.includes(`is not where ${space} is registered here`)) && trusted.envelope.error?.remedy?.includes(`cotal whoami --space ${space}`) === true, shown(trusted));
+  const overridden = await run(["whoami", "--space", space, "--server", "nats://127.0.0.1:3", "--json"]);
+  check("so is --space with a --server that space is not registered at", overridden.status === 4 && overridden.envelope?.warnings.some((w) => w.code === "BROKER_NOT_PROBED") === true, shown(overridden));
+  const atRegistered = await run(["whoami", "--server", servers, "--json"], {}, undefined, 120_000, meshRoot);
+  check("control: --server at the space's registered address from its folder is complete", atRegistered.status === 0 && atRegistered.envelope?.completeness === "complete" && atRegistered.envelope.result?.identity?.kind === "space-signer", shown(atRegistered));
   const openByServer = await run(["whoami", "--server", openServer, "--json"]);
   check("whoami --server at the open mesh's registered address still reports it open", openByServer.status === 0 && openByServer.envelope?.result?.identity?.kind === "open" && openByServer.envelope.completeness === "complete", shown(openByServer));
   const noCreds = await run(["whoami", "--creds", probe, "--json"]);

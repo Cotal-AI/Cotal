@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
-  ChannelRegistryConflict, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
+  ChannelRegistryConflict, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -9,6 +9,7 @@ import {
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { batchedRead } from "../lib/transient.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { channelMembers } from "./channel-members.js";
 import { earlierMessages } from "./send.js";
@@ -109,7 +110,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const options = { servers: connection.server, space: connection.space, ...auth };
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
-    const registry = await readChannelRegistry({ ...options, directGet: !connection.bearer });
+    const registry = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, registryView);
     return;
   }
