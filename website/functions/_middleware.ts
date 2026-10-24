@@ -7,6 +7,8 @@
 // Link headers (RFC 8288) pointing agents at the machine-readable entry points.
 // Everything else passes straight through.
 
+import { httpReferences } from '../src/http-references.js';
+
 interface Env {
   ASSETS: { fetch: (input: Request | string | URL) => Promise<Response> };
 }
@@ -51,8 +53,9 @@ export const onRequest = async (context: Ctx): Promise<Response> => {
   }
 
   // The generated source is retained for agent bundles, with one public HTML reference.
-  if (slug === 'dashboard-api') {
-    url.pathname = '/api/dashboard/';
+  const reference = httpReferences.find((reference) => slug === reference.docSlug);
+  if (reference) {
+    url.pathname = `/${reference.base}/`;
     return Response.redirect(url.href, 301);
   }
 

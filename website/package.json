@@ -11,7 +11,7 @@
     "preview": "astro preview",
     "astro": "astro",
     "gen:api": "node scripts/generate-openapi-docs.mjs",
-    "test": "node --test scripts/dashboard-api.test.mjs"
+    "test": "node --test scripts/http-api.test.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.41.1",

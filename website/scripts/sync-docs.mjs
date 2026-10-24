@@ -19,7 +19,7 @@ import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
 import { PROMPT_FENCE } from '../src/prompt.js';
-import { dashboardBase, dashboardMarkdown, loadDashboardSpec } from './dashboard-api.mjs';
+import { httpReferences, referenceMarkdown, loadReferenceSpec } from './http-api.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -90,6 +90,7 @@ const groups = [
     files: [
       'docs/api-reference.md',
       'docs/dashboard-api.md',
+      'docs/auth-api.md',
       'docs/cli.md',
       'docs/mcp-tools.md',
       'docs/agent-files.md',
@@ -112,9 +113,12 @@ const groups = [
   },
 ];
 
-const dashboardSpec = loadDashboardSpec();
-if (readFileSync(join(repoRoot, 'docs/dashboard-api.md'), 'utf8') !== dashboardMarkdown(dashboardSpec))
-  throw new Error('Dashboard reference is stale; run npm --prefix website run gen:api');
+const referenceSpecs = httpReferences.map((reference) => ({ reference, spec: loadReferenceSpec(reference) }));
+const referenceSources = new Set(httpReferences.map((reference) => reference.docSource));
+for (const { reference, spec } of referenceSpecs) {
+  if (readFileSync(join(repoRoot, reference.docSource), 'utf8') !== referenceMarkdown(reference, spec))
+    throw new Error(`${reference.label} reference is stale; run npm --prefix website run gen:api`);
+}
 
 const sources = groups.flatMap((g) => g.files);
 
@@ -122,7 +126,7 @@ const sources = groups.flatMap((g) => g.files);
 // published page that shares its name.
 const knownSlugs = new Map(sources.map((rel) => [rel, slugFor(basename(rel).replace(/\.md$/, ''))]));
 // This source feeds Markdown and agent bundles; the plugin owns its HTML reference.
-knownSlugs.set('docs/dashboard-api.md', dashboardBase);
+for (const reference of httpReferences) knownSlugs.set(reference.docSource, reference.base);
 
 // The site publishes only SPEC.md and top-level docs pages, so one of these the group map
 // leaves out is drift, and every other repo file stays on GitHub.
@@ -352,9 +356,11 @@ mkdirSync(genDir, { recursive: true });
 
 // Publish the machine-readable schema at its canonical URL (/cotal.schema.json).
 mkdirSync(pubDir, { recursive: true });
-const dashboardJson = JSON.stringify(dashboardSpec, null, 2) + '\n';
-writeFileSync(join(pubDir, 'dashboard.openapi.json'), dashboardJson);
-writeFileSync(join(genDir, 'dashboard.openapi.json'), dashboardJson);
+for (const { reference, spec } of referenceSpecs) {
+  const json = JSON.stringify(spec, null, 2) + '\n';
+  writeFileSync(join(pubDir, reference.specFile), json);
+  writeFileSync(join(genDir, reference.specFile), json);
+}
 copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.schema.json'));
 
 // Publish the installer at /install.sh, which is what get.cotal.ai serves. The repo root
@@ -385,7 +391,7 @@ for (const group of groups) {
       ext = 'mdx';
     }
     writeFileSync(join(outDir, `${slug}.${ext}`), fm + imports + md);
-    if (rel !== 'docs/dashboard-api.md') items.push({ label: title, slug });
+    if (!referenceSources.has(rel)) items.push({ label: title, slug });
   }
   sidebar.push({ label: group.label, items });
 }

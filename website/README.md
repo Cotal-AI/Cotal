@@ -26,20 +26,24 @@ npm run build                    # syncs docs, then builds to dist/
 cannot read or parse that file, so run `npm run sync` before calling `npm run astro`
 directly.
 
-## Dashboard HTTP reference
+## HTTP references
 
-`starlight-openapi` renders the seven dashboard read operations from
-`implementations/web/openapi.json`. Edit that description and run `npm run gen:api`
-to update `docs/dashboard-api.md`. The build refuses stale generated Markdown.
-Wire message and presence schemas come from `spec/cotal.schema.json`.
+`starlight-openapi` renders the dashboard and public auth HTTP descriptions from
+`implementations/web/openapi.json` and `implementations/auth/openapi.json`.
+Edit a description and run `npm run gen:api` to update its generated Markdown
+source under `docs/`. The build refuses stale generated Markdown.
+Wire message and presence schemas, where used, come from `spec/cotal.schema.json`.
 
-The sync publishes the bundled contract at `/dashboard.openapi.json`. Each plugin
-page under `/api/dashboard/` has a Markdown twin. The generated Markdown source feeds the existing llms indexes and connector docs
-bundle. It is served at `/api/dashboard.md` and has no second HTML reference;
-`/dashboard-api/` redirects to `/api/dashboard/`.
+The sync publishes `/dashboard.openapi.json` and `/auth.openapi.json`. Each plugin
+page under `/api/dashboard/` and `/api/auth/` has a Markdown twin. The complete
+references are served at `/api/dashboard.md` and `/api/auth.md`. Generated sources
+also feed the existing llms indexes and connector docs bundle, without a second
+public HTML reference. Route metadata lives in `src/http-references.js`.
+
 `npm test` checks reference generation; the build checks the published artifacts.
-After building packages, run `pnpm smoke:web-openapi` from the repository root for
-HTTP and SSE conformance against a private broker.
+After building packages, run `pnpm smoke:web-openapi` and `pnpm smoke:auth-openapi`
+from the repository root for HTTP conformance against private fixtures. The web
+suite also checks SSE payloads.
 
 ## Agent-native surface
 

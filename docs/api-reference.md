@@ -77,6 +77,10 @@ The wire protocol and npm packages have separate versions. Follow the
 
 ## HTTP interfaces
 
+The [auth HTTP reference](auth-api.md) covers the public listener's token exchange,
+authority and chat-session operations, including their proof requirements.
+Public-listener access does not grant permission to perform an operation.
+
 The [dashboard HTTP reference](dashboard-api.md) covers seven read operations,
 session authentication, response schemas and live events. It is also available as
 an [interactive reference](https://docs.cotal.ai/api/dashboard/) and a

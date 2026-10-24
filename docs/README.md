@@ -98,6 +98,7 @@ For protocol implementers:
 | Doc | Answers |
 |---|---|
 | [API reference](api-reference.md) | Which interface should I use, and where is its contract? |
+| [Auth HTTP reference](auth-api.md) | Public-listener token exchange, authority and chat sessions. |
 | [Dashboard HTTP reference](dashboard-api.md) | Read operations, authentication, response schemas and live events. |
 | [CLI](cli.md) | Every `cotal` command and its flags. |
 | [MCP tool catalog](mcp-tools.md) | Every `cotal_*` tool an agent gets, with inputs and side-effects. |

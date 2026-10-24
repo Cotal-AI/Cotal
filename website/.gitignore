@@ -29,3 +29,4 @@ public/.well-known/agent-skills/*/
 
 # Bundled dashboard contract, derived from implementations/web/openapi.json and spec/.
 public/dashboard.openapi.json
+public/auth.openapi.json

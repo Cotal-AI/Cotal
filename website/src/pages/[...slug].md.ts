@@ -4,8 +4,9 @@
 import type { APIRoute, GetStaticPaths } from 'astro';
 import { getCollection } from 'astro:content';
 import { PROMPT_FENCE } from '../prompt';
-import { dashboardBase, dashboardPages } from '../../scripts/dashboard-api.mjs';
+import { httpReferences, referencePages } from '../../scripts/http-api.mjs';
 import dashboardSpec from '../generated/dashboard.openapi.json';
+import authSpec from '../generated/auth.openapi.json';
 
 const isIndex = (id: string) => id === '' || id === 'index';
 
@@ -22,15 +23,20 @@ function restorePrompt(body: string): string {
 
 export const getStaticPaths: GetStaticPaths = async () => {
   const docs = await getCollection('docs');
-  const dashboardReference = docs.find((entry) => entry.id === 'dashboard-api');
-  if (!dashboardReference) throw new Error('Missing generated dashboard Markdown');
-  return [
-    ...docs.filter((entry) => !isIndex(entry.id) && entry.id !== 'dashboard-api')
-      .map((entry) => ({ params: { slug: entry.id }, props: { entry } })),
-    ...dashboardPages(dashboardSpec).map((page) => ({
+  const specs = { dashboard: dashboardSpec, auth: authSpec };
+  const referenceSlugs = new Set(httpReferences.map((reference) => reference.docSlug));
+  const referenceRoutes = httpReferences.flatMap((reference) => {
+    const entry = docs.find((entry) => entry.id === reference.docSlug);
+    if (!entry) throw new Error(`Missing generated ${reference.id} Markdown`);
+    return referencePages(reference, specs[reference.id as keyof typeof specs]).map((page) => ({
       params: { slug: page.slug },
-      props: page.slug === dashboardBase ? { entry: dashboardReference } : { markdown: page.markdown },
-    })),
+      props: page.slug === reference.base ? { entry } : { markdown: page.markdown },
+    }));
+  });
+  return [
+    ...docs.filter((entry) => !isIndex(entry.id) && !referenceSlugs.has(entry.id))
+      .map((entry) => ({ params: { slug: entry.id }, props: { entry } })),
+    ...referenceRoutes,
   ];
 };
 
