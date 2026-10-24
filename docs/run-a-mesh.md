@@ -325,10 +325,10 @@ parts on their own, use a controller stack: a space prepared by this release wit
 `cotal space create` starts as one, and `cotal service stop <name> --space <s> --yes` stops one of
 its services. An existing legacy root keeps its own launcher, and nothing moves it in place. A named
 `cotal down <name>` stops a saved service definition, such as a controller stack's `stack-manager`
-or a `web` service, and never one legacy component. Bare `cotal down` stops the whole stack, on a
-legacy root after first stopping the space's running services through the service controller, and
+or a `web` service, and never one legacy component. Bare `cotal down` stops the whole stack and
 leaves managed agents running as unmanaged OS processes, except pty seats, which stop with the
-manager. `cotal down --with-agents` is the previous reap. If a pinned manager has no
+manager. While a saved service in the space still runs, it refuses and names the
+`cotal service stop` to run first. `cotal down --with-agents` is the previous reap. If a pinned manager has no
 spare-capability record, stop its managed agents explicitly before running that whole-stack
 command. A current manager always publishes the record, so it is absent only for an older manager,
 which may not understand the reap request.

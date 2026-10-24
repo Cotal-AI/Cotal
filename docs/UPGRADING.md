@@ -34,6 +34,19 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Service definitions record their root after 0.100.2
+
+`cotal service add` now saves each definition with the root of the space it is added in. A
+definition added in another folder, such as one a forgotten space of the same name left, refuses to
+start, restart or install there `CONFLICT`, naming that root and `cotal service remove <name>
+--space <space> --yes`. Definitions saved before the upgrade have no recorded root: they start as
+before, and `cotal service` lists them as `root not recorded`.
+
+An earlier release refuses a definition that records a root `SCHEMA_INVALID`, and with it the
+commands that read the space's definitions. Before you downgrade, remove each service this release
+added with `cotal service remove <name> --space <space> --yes`, and add it again after the
+downgrade.
+
 ## Missing $SYS credentials after 0.100.2
 
 `cotal doctor auth` reports a missing `membership-observer` or `connection-evictor` credential as a
@@ -86,6 +99,19 @@ as before. Nothing on a running mesh changes.
 - `SELECTION_NOT_FOLDER_SPACE` is reported only in a folder whose root has several spaces, none of
   them the selection.
 - `cotal up` says when it selects the space it started.
+
+## Bare down beside a running service after 0.100.2
+
+On a legacy root, bare `cotal down` refuses `LIFECYCLE_BLOCKED`, exit 2, while a saved service in
+the space still runs or cannot be verified, and stops nothing. Before, it stopped those services
+first through the service controller. A controller stack's `down` already refused this way, and
+`down --preserve-state` refuses the same way on both.
+
+- Stop each service the refusal names with
+  `cotal service stop <name> --instance <id> --space <space> --yes`, then run `cotal down` again.
+  A stopped service does not block.
+- `cotal down --dry-run` warns with that refusal. Its JSON lists the instances as `serviceChecks`,
+  where `stop-first` marks one that blocks; `serviceStops` is gone.
 
 ## Endpoint caller files after 0.99.0
 

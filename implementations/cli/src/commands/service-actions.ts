@@ -20,7 +20,7 @@ import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
-import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
+import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { stackMemberFor } from "../lib/stack-journal.js";
 import { definitionListeners, exposedPlaintext, listenerRow } from "../lib/stack-listeners.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -135,7 +135,8 @@ function interruptedStart(name: string, space: string, selected: string | undefi
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted before it confirmed the process of instance ${left.name} (observed: ${observed}); its record is kept`, { target, remedy: `inspect it with cotal service status ${name} --instance ${left.name} --space ${space}` });
 }
 
-export async function serviceAction(args: ParsedArgs, space: string, commandName = "service"): Promise<void> {
+/** `root` is the selected space's root, where a definition must have been added to launch. */
+export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service"): Promise<void> {
   const [mode, name] = args.positionals as [string, string];
   const values = args.values as { instance?: string; "new-instance"?: boolean; foreground?: boolean; "with-agents"?: boolean; "dry-run"?: boolean; yes?: boolean; tail?: string; follow?: boolean; json?: boolean };
   const presentation = presentationOf(args.values);
@@ -144,6 +145,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     const stackName = stackMemberFor(space, name);
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}${mode === "stop" ? ", or bare cotal down to stop the whole stack" : ""}` : name === "web" ? "save the dashboard explicitly with cotal service add web --preset web and its required registered root, protected credential file and read-only intent; if its provider is absent, use cotal ext add @cotal-ai/web" : mode === "stop" ? "list this space's saved definitions with cotal service" : "add a supported service definition explicitly before starting it" });
   }
+  if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {

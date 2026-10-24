@@ -5,13 +5,14 @@
  * runs `service start --foreground`, waits for the roster boot, sends SIGINT to the CLI alone and
  * requires exit 130 with the native stop recorded on the instance.
  *
- * Bare `cotal down` on that legacy root then stops the saved service through the service controller
- * before the broker: its dry run lists the running manager and changes nothing, `down
- * --preserve-state` refuses and names the running manager and its stop, an unreadable
- * service record refuses with the manager and broker still running, a real stop takes the manager
- * then the broker, and after a second `up` the stopped manager is skipped and its definition kept.
+ * Bare `cotal down` on that legacy root then refuses while the saved service runs: its dry run lists
+ * the running manager, warns with the refusal and changes nothing, `down --preserve-state` and bare
+ * `down` refuse and name the running manager and its stop, and an unreadable service record refuses
+ * with the manager and broker still running. After the named `service stop`, bare `down` skips the
+ * stopped manager, stops the broker and keeps its definition.
  *
- * Every directory is a sandbox this suite removes; `cotal down` stops the stack it started.
+ * Every directory is a sandbox this suite removes; teardown stops the manager if it still runs, then
+ * `cotal down` stops the stack it started.
  *
  * Run: pnpm smoke:manager-preset:live
  */
@@ -140,6 +141,8 @@ const started: ChildProcess[] = [];
 let stackUp = false;
 /** An unreadable instance record a cell plants; teardown removes it so the final down can run. */
 let planted: string | undefined;
+/** The background manager instance; teardown stops it if it still runs, since bare down refuses then. */
+let liveInstance: string | undefined;
 try {
   if (process.platform !== "linux") skip("the foreground manager cell", "the native manager child is Linux-only");
   else {
@@ -164,21 +167,27 @@ try {
     const row = serviceInstances(SPACE, "mgr")[0]?.record.value;
     check("the instance records the native stop the manager returned", row?.state === "stopped" && row.nativeStop?.nativeStop === "returned", row);
 
-    // ---- Bare down stops the space's services through the controller, then the stack ----------
+    // ---- Bare down refuses while the space's service runs, and skips it once stopped -------------
     const start = cotal(["service", "start", "mgr", "--space", SPACE]);
     const live = serviceInstances(SPACE, "mgr")[0];
+    liveInstance = live?.name;
     const liveState = () => live ? serviceInstanceStore(SPACE).read(live.name)?.record.value.state : undefined;
     check("service start runs the saved manager in the background", start.status === 0 && liveState() === "running", out(start));
+    const stopCommand = `cotal service stop mgr --instance ${live?.name} --space ${SPACE} --yes`;
     const preview = cotal(["down", "--dry-run", "--json"]);
-    let stops: { definition?: string; instanceId?: string; action?: string }[] = [];
-    try { stops = (JSON.parse(preview.stdout) as { result?: { serviceStops?: typeof stops } }).result?.serviceStops ?? []; } catch { /* the cell reports the output */ }
-    check("bare down --dry-run lists the running service it would stop and changes nothing",
-      preview.status === 4 && stops.length === 1 && stops[0]?.definition === "mgr" && stops[0].instanceId === live?.name && stops[0].action === "stop"
+    let checks: { definition?: string; instanceId?: string; action?: string }[] = [], warnings: { code?: string; message?: string }[] = [];
+    try {
+      const doc = JSON.parse(preview.stdout) as { result?: { serviceChecks?: typeof checks }; warnings?: typeof warnings };
+      checks = doc.result?.serviceChecks ?? []; warnings = doc.warnings ?? [];
+    } catch { /* the cell reports the output */ }
+    check("bare down --dry-run lists the running service, warns that the real stop would refuse, and changes nothing",
+      preview.status === 4 && checks.length === 1 && checks[0]?.definition === "mgr" && checks[0].instanceId === live?.name && checks[0].action === "stop-first"
+        && warnings.some((w) => w.code === "LIFECYCLE_BLOCKED" && w.message?.startsWith("the real stop would refuse: ") && w.message.includes(stopCommand))
         && liveState() === "running" && await isReachable(SERVER), out(preview));
     const preserve = cotal(["down", "--preserve-state"]);
     check("down --preserve-state refuses while the service runs, names it and its stop, and stops nothing",
       preserve.status === 2 && out(preserve).includes("LIFECYCLE_BLOCKED") && out(preserve).includes(`mgr instance ${live?.name}: running`)
-        && out(preserve).includes(`cotal service stop mgr --instance ${live?.name} --space ${SPACE} --yes`)
+        && out(preserve).includes(stopCommand)
         && liveState() === "running" && await isReachable(SERVER), out(preserve));
     planted = join(serviceInstanceStore(SPACE).directory()!, `${spaceKey("planted")}.json`);
     writeFileSync(planted, "not a record\n", { mode: 0o600 });
@@ -188,22 +197,19 @@ try {
         && liveState() === "running" && await isReachable(SERVER), out(blocked));
     rmSync(planted);
     planted = undefined;
+    const refused = cotal(["down"]);
+    check("bare down refuses while the service runs, names its stop then down, and stops nothing",
+      refused.status === 2 && out(refused).includes("LIFECYCLE_BLOCKED") && out(refused).includes(`mgr instance ${live?.name}: running`)
+        && out(refused).includes(`${stopCommand}, then run cotal down again`) && !out(refused).includes("Service stopped")
+        && liveState() === "running" && await isReachable(SERVER) && findMesh(SPACE) !== undefined, out(refused));
+    const stop = cotal(stopCommand.split(" ").slice(1));
+    check("the stop the refusal names stops the service", stop.status === 0 && liveState() === "stopped", out(stop));
     const down = cotal(["down"]);
-    const downOut = out(down);
     stackUp = down.status !== 0;
-    check("bare down stops the running service through the controller, then the broker",
-      down.status === 0 && liveState() === "stopped" && downOut.includes("Service stopped") && downOut.indexOf("Service stopped") < downOut.indexOf("✓ stopped nats-server")
-        && !(await isReachable(SERVER)) && findMesh(SPACE) === undefined, downOut);
-    check("  and keeps the saved definition", serviceDefinitionStore(SPACE).read("mgr") !== undefined);
-    const again = cotal(["up", "--detach", "--open", "--no-manager", "--space", SPACE, "--server", SERVER]);
-    stackUp = again.status === 0;
-    check("the stack starts again with the stopped service saved", stackUp, out(again));
-    const second = cotal(["down"]);
-    stackUp = second.status !== 0;
     check("bare down skips the stopped service and stops the broker",
-      second.status === 0 && out(second).includes("already stopped, skipped") && !out(second).includes("Service stopped")
-        && !out(second).includes("Service was not running") && liveState() === "stopped"
-        && serviceDefinitionStore(SPACE).read("mgr") !== undefined && !(await isReachable(SERVER)), out(second));
+      down.status === 0 && !out(down).includes("Service stopped") && !out(down).includes("Service was not running") && liveState() === "stopped"
+        && !(await isReachable(SERVER)) && findMesh(SPACE) === undefined, out(down));
+    check("  and keeps the saved definition", serviceDefinitionStore(SPACE).read("mgr") !== undefined);
   }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
@@ -211,8 +217,11 @@ try {
   for (const child of started) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   if (planted) rmSync(planted, { force: true });
   if (stackUp) {
-    // Bare down stops the saved manager, if it still runs, then the stack recorded at this root; it
-    // takes no --space.
+    if (liveInstance && serviceInstanceStore(SPACE).read(liveInstance)?.record.value.state === "running") {
+      const stop = cotal(["service", "stop", "mgr", "--instance", liveInstance, "--space", SPACE, "--yes"]);
+      check("teardown stops the background manager", stop.status === 0, out(stop));
+    }
+    // Bare down stops the stack recorded at this root; it takes no --space.
     const down = cotal(["down"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }

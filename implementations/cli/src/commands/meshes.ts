@@ -18,6 +18,7 @@ import { c, stderrLine } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { liveMeshOwner } from "./clean.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -445,16 +446,19 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
     // only a probe that throws, as it does on a multi-tenant or unreadable root. Keyed on the
     // entry's OWN space rather than one re-resolved from the root, which on a multi-tenant root can
     // name another tenant.
-    let running: string | undefined;
+    let running: string | undefined, stack = false;
     if (m.origin !== "manual" && m.origin !== "catalog") {
       try {
         running = liveMeshOwner(m.root, m.space);
+        stack = running !== undefined && readStackJournal(m.root)?.journal.space === m.space;
       } catch (e) {
         if (!v.force) throw e;
       }
     }
     if (running) {
-      stderrLine("✗ ", `"${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record${v.force ? "; --force does not drop it while the mesh runs, because `cotal down` finds the mesh by it" : ""}`, c.red);
+      // A stack's down keeps the space prepared at its root, which `space forget` removes and `rm` cannot.
+      const after = stack ? `keeps it as a prepared space there, which \`cotal space forget ${space}\` then removes` : "drops the record";
+      stderrLine("✗ ", `"${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and ${after}${v.force ? "; --force does not drop it while the mesh runs, because `cotal down` finds the mesh by it" : ""}`, c.red);
       failed = true;
       continue;
     }

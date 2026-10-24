@@ -12,7 +12,8 @@
  *    started" / "absent origin = `up`" is expected and intended.)
  *  • `add` verifies against the real broker before recording, and records nothing when that fails;
  *  • `--force` is the explicit record-without-verifying / replace escape;
- *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here.
+ *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here, saying
+ *    that on its pidfile root `cotal down` drops the record.
  *
  * Needs `nats-server` on PATH (as the rest of smoke:ci does) for the live-broker probes.
  *
@@ -1188,6 +1189,7 @@ try {
   check("rm --force refuses a mesh this machine is running, keeping its record", forcedLive.code === 1 && findMesh("live-local") !== undefined, forcedLive.out);
   check("…pointing at `cotal down` and saying why --force does not drop it",
     forcedLive.out.includes("`cotal down` there stops it") && forcedLive.out.includes("--force does not drop it while the mesh runs"), forcedLive.out);
+  check("…and, on this pidfile root, that its down drops the record", forcedLive.out.includes("`cotal down` there stops it and drops the record"), forcedLive.out);
   removeMesh("live-local");
   // …and --force must not be defeated by a probe that cannot answer. The ownership probe reads
   // the root's local process state; on a root where that read fails, the probe throws, and the

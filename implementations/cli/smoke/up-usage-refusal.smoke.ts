@@ -42,7 +42,7 @@ if (!existsSync(BIN)) {
 }
 
 interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string } }
-const { writeStackJournal } = await import("../src/lib/stack-journal.js");
+const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-up-usage-home-"));
@@ -86,6 +86,9 @@ const servers: { server: string; message: RegExp; example: string }[] = [
   { server: "nats://localhost:43131", message: /--server names the host localhost/, example: "--server nats://127.0.0.1:43131" },
   { server: "tls://broker.example:4443", message: /--server names the host broker\.example/, example: "--server tls://127.0.0.1:4443" },
   { server: "nats://127.0.0.1", message: /--server names no port/, example: "--server nats://127.0.0.1:<port>" },
+  { server: "nats://127.0.0.1:43131/path", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
+  { server: "nats://127.0.0.1:43131?a=1", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
+  { server: "nats://127.0.0.1:43131#a", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
 ];
 for (const { server, message, example } of servers) {
   const text = run(["up", "--server", server]);
@@ -184,6 +187,22 @@ try {
         && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and run cotal up again") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
         && timeWaitLegacy.status === 2 && timeWaitLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port`) && !started(unprepared), { timeWait: shown(timeWait), legacy: shown(timeWaitLegacy) });
   }
+
+  // The scheme's case and a bare trailing slash are not part of the address: a prepared root records
+  // one spelling, so a later up in the other is not refused as another address.
+  const spelled = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-spelled-")));
+  process.on("exit", () => rmSync(spelled, { recursive: true, force: true }));
+  const spelledCreated = run(["space", "create", "upusagespelled", "--root", spelled, "--json"]);
+  const upper = run(["up", "--server", `NATS://127.0.0.1:${held}/`, "--json"], spelled);
+  let recorded: string | undefined;
+  try { recorded = readStackJournal(spelled)?.journal.server; } catch { recorded = undefined; }
+  const heldBroker = new RegExp(`another process holds the stack's broker address 127\\.0\\.0\\.1:${held}`);
+  check("a prepared root records --server NATS://127.0.0.1:<port>/ as nats://127.0.0.1:<port>, refused only for the held address",
+    spelledCreated.status === 0 && upper.status === 2 && heldBroker.test(upper.envelope?.error?.message ?? "") && recorded === `nats://127.0.0.1:${held}`, { recorded, up: shown(upper) });
+  const plain = run(["up", "--server", `nats://127.0.0.1:${held}`, "--json"], spelled);
+  check("…so --server nats://127.0.0.1:<port> there is the recorded address, not refused as another one",
+    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && heldBroker.test(plain.envelope.error.message ?? "") && !/recorded at/.test(plain.envelope.error.message ?? ""), shown(plain));
+  check("…and neither started a broker", !started(spelled), readdirSync(join(spelled, ".cotal")));
 
   const now = new Date().toISOString();
   mkdirSync(join(journalRoot, ".cotal"), { mode: 0o700 });
