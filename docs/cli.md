@@ -1946,9 +1946,9 @@ A restore interrupted by SIGINT, SIGTERM or SIGHUP before it commits exits 130, 
 prints its attempt id and that recovery command. A registry-only artifact restores as registry-only whether or not
 `--restore-only registry` is passed; omitted infrastructure is always created and the exact
 post-restore stream inventory is asserted before commit intent. Ordinary `up` from a preserved cut
-resumes only the exact recorded source store, file store cap and runtime. A different `--store-dir`,
-`--max-file-store` or `--runtime` refuses `CONFLICT`, exit 2, before anything starts, naming the value
-given and the recorded one. The Next resumes with `cotal up` without that flag, then `cotal down` and
+resumes only the exact recorded source store, file store cap, runtime and broker address. A different
+`--store-dir`, `--max-file-store`, `--runtime` or `--server` refuses `CONFLICT`, exit 2, before
+anything starts, naming the value given and the recorded one. The Next resumes with `cotal up` without that flag, then `cotal down` and
 `cotal up` with it.
 
 **Admitting a seat checkpoint.** An ordinary `up` from a preserved cut admits that cut's seat
