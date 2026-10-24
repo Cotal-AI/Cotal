@@ -2186,10 +2186,10 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh. Inside a project whose root has one
 registered or prepared space other than the selection, the command targets that space, as it does
-with nothing selected, and the note under its `Mesh:` heading says the selection applies outside the
-folder. Inside a project whose root has several spaces, none of them the selection, the command
-targets the selection. Before it acts, it warns on stderr and in its JSON `warnings` with
-`SELECTION_NOT_FOLDER_SPACE`, naming the folder's spaces and `--space <space>`.
+with nothing selected, and the note under its `Mesh:` heading, a refusal's included, says the
+selection applies outside the folder. Inside a project whose root has several spaces, none of them
+the selection, the command targets the selection. Before it acts, it warns on stderr and in its JSON
+`warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming the folder's spaces and `--space <space>`.
 An empty `--space` value, such as `--space "$S"` with `S` unset, is refused with `USAGE_INVALID`,
 exit 1, by every command that takes `--space`, before anything is read or written. It never falls
 back to the selection.
