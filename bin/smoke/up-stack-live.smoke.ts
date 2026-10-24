@@ -8,7 +8,10 @@
  *  2. a real `cotal ps` is ANSWERED by the detached manager (control plane reachable, creds minted
  *     from this folder's auth — the exact "spawn --detach works right after up" promise), and with
  *     no agents it lists that manager's instance id, which `ps --on` takes. With no connector
- *     installed, an unpinned `spawn -d` is refused and names that manager and the `cotal ext add` to run.
+ *     installed, an unpinned `spawn -d` is refused and names that manager and the `cotal ext add` to run. Its
+ *     `Managed launch` plan is on stdout and only the refusal is on stderr. A `spawn -d` pinned to
+ *     that manager is refused by it, and the manager's log holds one line naming that request's
+ *     id, the persona and the reason the caller got.
  *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
  *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
@@ -218,6 +221,19 @@ try {
     unserved.status === 2 && unservedOut.includes(`no manager of yours takes unpinned launches: none has an agent application installed (manager ${listed} on host `)
       && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(unservedOut) && /Native outcome:\s+not-executed/.test(unservedOut) && /`cotal ext add [^`]+`, then restart that manager/.test(unservedOut),
     { status: unserved.status, out: unservedOut });
+  // The plan a managed launch prints is this command's report, so it goes to stdout; only the refusal is on stderr.
+  ok("its Managed launch plan is on stdout, and stderr holds the refusal without it",
+    /Managed launch\n/.test(plain(unserved.stdout)) && !/Managed launch\n/.test(plain(unserved.stderr)) && /Request refused/.test(plain(unserved.stderr)), { stdout: unserved.stdout, stderr: unserved.stderr });
+  // A launch pinned to this manager reaches it, and the manager refuses it: it has no agent application.
+  const pinnedSpawn = cli("spawn", "-d", "--on", String(listed));
+  const pinnedErr = plain(pinnedSpawn.stderr);
+  const request = /Original request:\s+([0-9a-f-]{36})/.exec(pinnedErr)?.[1];
+  const reason = /Request refused\n\s+(.+)\n/.exec(pinnedErr)?.[1];
+  ok("a spawn -d pinned to that manager is refused DEPENDENCY_UNAVAILABLE, exit 2, with its plan on stdout and its request id on stderr",
+    pinnedSpawn.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(pinnedErr) && request !== undefined && reason !== undefined && /Managed launch\n/.test(plain(pinnedSpawn.stdout)), { stdout: pinnedSpawn.stdout, stderr: pinnedErr });
+  const logged = readFileSync(record(MANAGER_LOGFILE), "utf8").split("\n").filter((line) => request !== undefined && line.includes(request));
+  ok("the manager logs one correlated refusal with the persona, native code and missing-connector reason",
+    logged.length === 1 && logged[0]!.includes(`! spawn request ${request} for persona "default" refused (failed-precondition): `) && /no connector "claude"(?: installed - add it with | - install its integration with )/.test(logged[0]!), logged);
 
   // 2b) #837: a delivery launch that LOSES the single-flight lease is not a healthy control plane.
   //     Drop the pidfile - the operator-visible shape of a lost record - while the real daemon keeps

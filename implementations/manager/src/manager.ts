@@ -61,6 +61,7 @@ import {
   managedRetirementOpId,
   mkSecretDir,
   newIdentity,
+  oneLine,
   actionContext,
   parsePrincipalKey,
   principalKey,
@@ -4047,7 +4048,7 @@ export class Manager {
       // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
       // the residual cross-owner case; opStart decides before connector resolution or grant
       // mutation. Static meshes resolve true and nothing changes.
-      spawn: (ctx) => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller))),
+      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller)))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
@@ -8933,6 +8934,17 @@ export class Manager {
       throw new EpEnvelopeError("expired", `the manager's issuance gate for ${MANAGER_ENDPOINT}/${this.managerInstanceId} is gone; a retired incarnation never commits a goal terminal (SPEC 13.1/13.6)`);
     if (observed.processEpoch !== epoch)
       throw new EpEnvelopeError("expired", `the manager's issuance gate epoch is ${observed.processEpoch} but this goal was accepted under epoch ${epoch}; a superseded incarnation never commits a goal terminal (SPEC 13.6)`);
+  }
+
+  /** A spawn's refusal reaches only its caller's terminal, so the manager also writes one line for it
+   *  to its own log, naming the request ID the caller printed, the persona and the reason. */
+  private async loggedSpawnRefusal<T>(ctx: EpServeContext, serve: () => Promise<T>): Promise<T> {
+    try { return await serve(); }
+    catch (e) {
+      const persona = (ctx.request.args as { name?: unknown } | undefined)?.name;
+      console.error(oneLine(`! spawn request ${ctx.request.id} for persona "${String(persona ?? "")}" refused (${e instanceof EpEnvelopeError ? e.code : "error"}): ${rejectionText(e)}`));
+      throw e;
+    }
   }
 
   /** Serve `spawn`/`launch` as an ACTION. Authz already ran in {@link serveGated}. The

@@ -7040,6 +7040,13 @@ placeholders beside the full identity fields. Without usable input/output termin
 `--on` launch refuses before allocation and names `-d` or a spawn in this terminal. A shell tool's
 inherited parent PTY is not enough.
 
+A managed launch prints its `Managed launch` plan on stdout before its receipt, so
+`cotal spawn <persona> -d > out.txt` keeps both, and a refusal prints on stderr. With `--json`,
+stdout holds only the envelope and the plan stays on stderr. The manager that refuses a launch
+writes one line to its own log naming the original request, the persona and the reason, so
+`cotal service logs <definition>` on its host shows why a spawn failed after the terminal is gone.
+An unpinned launch that no manager received has no such line, because no manager answered it.
+
 `--harness/-H`, `--model/-m`, `--name/-n`, `--prompt/-p` and `--cwd/-C` retain their declared
 meanings. The legacy `--agent` spelling remains accepted; using both harness spellings refuses.
 A `--file <persona-file>` launch uses this route too unless `--foreground` is given. A manifest is
