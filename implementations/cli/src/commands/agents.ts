@@ -28,7 +28,7 @@ import {
 import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { c, presenceFacts } from "../ui.js";
+import { c, presenceFacts, stderrLine } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
@@ -320,7 +320,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
-  console.error(c.red(`✗ ${seatMissRefusal(String(v.name), verb, loc)}`));
+  stderrLine("✗ ", `${seatMissRefusal(String(v.name), verb, loc)}`, c.red);
   process.exit(1);
 }
 

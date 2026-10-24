@@ -23,7 +23,7 @@ import { credsSpace, findMesh, inputDisabledByFlag, readCredsFileOrExit, refresh
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
-import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
+import { activityAge, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
 // sentence instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
@@ -114,7 +114,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     try {
       assertLifecycleToken(lifecycleUid);
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
@@ -142,7 +142,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     const recorded = (values.server ?? link?.servers) === undefined ? findMesh(space) : undefined;
     const paired = values.server ?? link?.servers ?? recorded?.server;
     if (paired === undefined) {
-      console.error(c.red(`✗ ${values.creds ? "--creds" : "--token"} needs --server <url> or a registered --space: space "${space}" is not registered here, so nothing was dialed`));
+      stderrLine("✗ ", `${values.creds ? "--creds" : "--token"} needs --server <url> or a registered --space: space "${space}" is not registered here, so nothing was dialed`, c.red);
       console.error(c.dim("  pass the broker this credential belongs to with --server <url>, or join with its link"));
       process.exit(1);
     }
@@ -151,7 +151,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     try {
       await refreshRegistrationPolicy({ space, policy: findMesh(space)?.policy });
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
       process.exit(1);
     }
     // An omitted server must still match a recorded user mesh on a non-default port, so the check
@@ -174,7 +174,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     try {
       await refreshRegistrationPolicy(target);
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
       process.exit(1);
     }
     space = target.space;

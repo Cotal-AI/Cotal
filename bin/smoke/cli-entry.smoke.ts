@@ -4,7 +4,8 @@
  * Bare `cotal`, help and version read local metadata only, and every usage error is refused before
  * any effect: no connector seed, no config write. An alias resolves to the same command as its name
  * (help, refusal and parse), and a word that only prefixes a command selects nothing. A short flag
- * parses as its long form, and a wrong-case short flag or a missing value is refused. `version --json`
+ * parses as its long form, and a wrong-case short flag or a missing value is refused. A refusal on a
+ * `✗` line escapes the control bytes of each word it quotes. `version --json`
  * writes one envelope, and a usage error under `--json` is one refusal envelope. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`.
  *
@@ -492,7 +493,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 // ── A `✗` line shows the control characters of an argument it repeats as escapes ─────────────────
 {
   const utf8 = { ...noSeed, LC_ALL: "C.UTF-8" };
-  for (const [what, args] of [["an unknown command", ["c\u001b[2J"]], ["an unknown docs page", ["docs", "d\u001b[2J"]], ["an unknown preference", ["config", "get", "k\u001b[2J"]], ["an invalid channel", ["send", "-c", "c\u001b[2J", "x"]]] as const) {
+  for (const [what, args] of [["an unknown command", ["c\u001b[2J"]], ["an unknown docs page", ["docs", "d\u001b[2J"]], ["an unknown preference", ["config", "get", "k\u001b[2J"]], ["an invalid channel", ["send", "-c", "c\u001b[2J", "x"]],
+    ["an unknown topology subcommand", ["topology", "z\u001b[2J"]], ["a missing topology manifest", ["topology", "view", "-f", "m\u001b[2J.yaml"]], ["an unknown meshes subcommand", ["meshes", "z\u001b[2J"]],
+    ["an unregistered mesh to remove", ["meshes", "rm", "a\u001b[2J"]], ["a missing teardown manifest", ["down", "-f", "d\u001b[2J.yaml", "--yes"]]] as const) {
     const r = cotal([...args], undefined, utf8);
     check(`${what} is refused on a ✗ line that shows its escape sequence escaped`,
       r.status === 1 && r.stderr.startsWith("✗ ") && r.stderr.includes("\\u001b[2J") && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(r.stdout + r.stderr), shown(r));

@@ -183,7 +183,7 @@ import {
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
-import { c } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
@@ -1638,7 +1638,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (held.mode !== "open") {
           const spaceAuth = await getSpaceAuth(workspaceSecretStore(root), held.space);
           if (!spaceAuth) {
-            console.error(c.red(`✗ mesh "${held.space}" has no trust material under ${authDir(root)} - cannot reconcile its presence/lease TTLs; restore or re-provision \`.cotal/auth\``));
+            stderrLine("✗ ", `mesh "${held.space}" has no trust material under ${authDir(root)} - cannot reconcile its presence/lease TTLs; restore or re-provision \`.cotal/auth\``, c.red);
             process.exit(1);
           }
           // Ephemeral, reconcile-only, discarded with the connection. Same enumerated `provisioner`
@@ -1656,7 +1656,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         for (const r of await reconcileSpaceTtls({ servers: server, space: held.space, creds: reconcileCreds }))
           console.log(c.dim(`  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
       } catch (e) {
-        console.error(c.red(`✗ mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`));
+        stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
       }
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
@@ -1668,7 +1668,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (held.mode === "user") {
         const auth = await getSpaceAuth(workspaceSecretStore(root), held.space);
         if (!auth) {
-          console.error(c.red(`✗ mesh "${held.space}" is user-auth but this root has no trust material under ${authDir(root)} - \`cotal down\` it, restore or re-provision \`.cotal/auth\`, then \`cotal up --user-auth\``));
+          stderrLine("✗ ", `mesh "${held.space}" is user-auth but this root has no trust material under ${authDir(root)} - \`cotal down\` it, restore or re-provision \`.cotal/auth\`, then \`cotal up --user-auth\``, c.red);
           process.exit(1);
         }
         const stateDir = userAuthStateDir(root, held.space);
@@ -1683,7 +1683,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             idpUrl: values.idp,
           });
         } catch (e) {
-          console.error(c.red(`✗ ${(e as Error).message}`));
+          stderrLine("✗ ", `${(e as Error).message}`, c.red);
           process.exit(1);
         }
         const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, publicExchange);
@@ -2935,7 +2935,7 @@ async function startUserAuthService(
     if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: cotal login --idp ${info.idp.url}`));
     return { userAuth: info, ok: true };
   } catch (e) {
-    console.error(c.red(`✗ user-auth service did not come up (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`));
+    stderrLine("✗ ", `user-auth service did not come up (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
     return { userAuth: assertUserAuthInfo(setup.prepared.publicAuth), ok: false };
   }
 }
@@ -3084,24 +3084,24 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   }
   if (opts.userAuth && declared !== "user") {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--user-auth contradicts this manifest's declared auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
-    console.error(c.red(`✗ --user-auth requires manifest broker.auth: "user" (this manifest's broker.auth is ${declaredStr}). Either set broker.auth: "user" in the manifest, or drop --user-auth.`));
+    stderrLine("✗ ", `--user-auth requires manifest broker.auth: "user" (this manifest's broker.auth is ${declaredStr}). Either set broker.auth: "user" in the manifest, or drop --user-auth.`, c.red);
     process.exit(1);
   }
   if (opts.idp && declared !== "user") {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--idp needs this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
-    console.error(c.red(`✗ --idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) - set broker.auth: "user" in the manifest, or drop --idp.`));
+    stderrLine("✗ ", `--idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) - set broker.auth: "user" in the manifest, or drop --idp.`, c.red);
     process.exit(1);
   }
   const idpProblem = opts.idp === undefined ? undefined : idpUrlProblem(opts.idp, "--idp");
   if (idpProblem) {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: prepared.manifest.space } });
-    console.error(c.red(`✗ ${idpProblem}`));
+    stderrLine("✗ ", `${idpProblem}`, c.red);
     process.exit(1);
   }
   const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
   if (serverProblems.length) {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: prepared.manifest.space } });
-    for (const problem of serverProblems) console.error(c.red(`✗ ${problem}`));
+    for (const problem of serverProblems) stderrLine("✗ ", `${problem}`, c.red);
     process.exit(1);
   }
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
@@ -3160,7 +3160,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     // command refuses is the same green-lit-a-refusal failure class.
     const dryConn = await preflightConnectors(prepared);
     if (dryConn) {
-      console.error(c.red(`✗ connector preflight failed: ${dryConn}`));
+      stderrLine("✗ ", `connector preflight failed: ${dryConn}`, c.red);
       process.exit(1);
     }
     if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
@@ -3185,10 +3185,10 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     // This folder's own mesh for the manifest's space is named as running, as a bare `up` names it,
     // with the routes that change it instead of the advice for a foreign broker.
     if (loadMeshes().some((row) => row.server === server && row.root === cotalRoot() && row.space === m.space)) {
-      console.error(c.red(`✗ mesh "${m.space}" is already running at ${brokerAddressForDisplay(server) ?? "its address"} from this folder - \`up -f\` boots a fresh mesh and does not apply a manifest to a running one; \`cotal team deploy ${file}\` adds all-new channels and agents to it, or \`cotal down\` it first, then \`cotal up -f ${file}\``));
+      stderrLine("✗ ", `mesh "${m.space}" is already running at ${brokerAddressForDisplay(server) ?? "its address"} from this folder - \`up -f\` boots a fresh mesh and does not apply a manifest to a running one; \`cotal team deploy ${file}\` adds all-new channels and agents to it, or \`cotal down\` it first, then \`cotal up -f ${file}\``, c.red);
       process.exit(1);
     }
-    console.error(c.red(`✗ ${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`));
+    stderrLine("✗ ", `${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`, c.red);
     process.exit(1);
   }
   await assertBrokerAddressFree(server, `cotal up -f ${file}`);
@@ -3196,7 +3196,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const conn = await preflightConnectors(prepared);
   if (conn) {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "connector preflight failed before the fresh boot intent; no native effect was requested", { target: { space: m.space }, remedy: conn });
-    console.error(c.red(`✗ connector preflight failed: ${conn}`));
+    stderrLine("✗ ", `connector preflight failed: ${conn}`, c.red);
     process.exit(1);
   }
   if (opts.freshTeamBoot) {
@@ -3226,7 +3226,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
       owner = await resolveAuthProvider().ownerForLogin({ store: workspaceSecretStore(cotalRoot()), dir: setup.stateDir!, space: m.space });
     } catch (e) {
       if (opts.freshTeamBoot) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh user-auth owner preparation did not confirm; trust or provider state may have changed, but no launch spec or listener was requested", { target: { space: m.space, deploymentId, root: cotalRoot() }, remedy: "inspect the retained boot intent, trust state and login before deciding another action; do not repeat an uncertain preparation" });
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
@@ -3264,7 +3264,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     ({ pid, controlPlane, authService, deliveryResponderBound } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath, maxSessions: opts.maxSessions, noManager: effectiveNoManager, quietBoot: opts.freshTeamBoot, ...(opts.storeDir ? { storeDir: opts.storeDir } : {}) }));
   } catch (e) {
     if (opts.freshTeamBoot) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh broker startup did not confirm completion after its launch spec was written; the listener or control plane may have changed state and the boot was not retried", { target: { space: m.space, deploymentId, launchSpec: specPath }, changed: [{ kind: "launch-spec-written", path: specPath }], remedy: "inspect this exact run and the recorded local listener, manager and auth state before another boot" });
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
   // Transport committed inside startMeshDetached before delivery (S5+S9).
@@ -3321,7 +3321,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     // U6: on a user mesh the agents run under the OPERATOR's identity — say whose they are.
     console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime})${owner ? ` as you (owner ${owner})` : ""} - see ${managerLogDisplayPath(m.space)}`));
   } else {
-    console.error(c.red(`✗ ${eff.agents.length} agent(s) NOT launched - the control plane did not come up (see above)`));
+    stderrLine("✗ ", `${eff.agents.length} agent(s) NOT launched - the control plane did not come up (see above)`, c.red);
   }
 
   // Loud summary: any persona-inherited access an `include` manifest dragged in, plus warnings.
@@ -4535,7 +4535,7 @@ function resolveTransport(
     try {
       recorded = readBrokerPolicy(root);
     } catch (e) {
-      console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+      stderrLine("✗ ", `${e instanceof Error ? e.message : String(e)}`, c.red);
       process.exit(1);
     }
     if (recorded?.transport.kind === "tls-required") {
@@ -4548,7 +4548,7 @@ function resolveTransport(
   // Half a pair is a mistake, never a configuration. Refusing names the missing half rather than
   // failing later inside nats-server with a message about a file the operator did not mention.
   if (!certFile || !keyFile) {
-    console.error(c.red(`✗ --tls-cert and --tls-key must be given together (missing ${certFile ? "--tls-key" : "--tls-cert"})`));
+    stderrLine("✗ ", `--tls-cert and --tls-key must be given together (missing ${certFile ? "--tls-key" : "--tls-cert"})`, c.red);
     process.exit(1);
   }
 
@@ -4643,7 +4643,7 @@ function assertServesDialHost(transport: BrokerTransport, dialHost: string | und
   try {
     validateTlsMaterial(transport, { dialHost });
   } catch (e) {
-    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    stderrLine("✗ ", `${e instanceof Error ? e.message : String(e)}`, c.red);
     process.exit(1);
   }
   return transport;
@@ -4666,7 +4666,7 @@ function adoptedTlsRequired(root: string): boolean {
   try {
     return readBrokerPolicy(root)?.transport.kind === "tls-required";
   } catch (e) {
-    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    stderrLine("✗ ", `${e instanceof Error ? e.message : String(e)}`, c.red);
     process.exit(1);
   }
 }
@@ -4685,7 +4685,7 @@ function validateRecorded(
   } catch (e) {
     // Surface the CERTIFICATE cause. A TLS failure reported as a generic startup error invites the
     // wrong remedy - operators go looking at ports and firewalls when the answer is the cert.
-    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    stderrLine("✗ ", `${e instanceof Error ? e.message : String(e)}`, c.red);
     process.exit(1);
   }
   return transport;

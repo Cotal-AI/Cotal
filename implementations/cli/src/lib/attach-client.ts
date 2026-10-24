@@ -1,7 +1,7 @@
 import type { NatsConnection } from "@nats-io/transport-node";
 import { openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame, type SessionGrant } from "@cotal-ai/core";
 import { cachedPreferences, describeLayer, parseDetachKey, resolvePreference } from "@cotal-ai/workspace";
-import { c } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 
 /**
  * The detach key — Ctrl-] (0x1d) by default, as in telnet/ssh escape conventions. The `detach-key`
@@ -267,7 +267,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
   try {
     detach = detachKey();
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
   // A caller that reconnects owns the terminal across attempts and undoes it once at the end;

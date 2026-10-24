@@ -30,7 +30,7 @@ import {
   type LocalProcessContext,
 } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
-import { c } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
@@ -132,7 +132,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     }
     const running = liveMeshProcess(root, undefined, true);
     if (running) {
-      console.error(c.red(`✗ the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``));
+      stderrLine("✗ ", `the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``, c.red);
       process.exitCode = 1;
       return;
     }
