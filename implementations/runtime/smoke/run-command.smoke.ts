@@ -689,6 +689,19 @@ let P = "";
   c("a blank --reason is refused naming --reason, with the command to run instead",
     isCommandFailure(blankReason) && blankReason.code === "USAGE_INVALID" && blankReason.message === "--reason is empty; nothing was written"
       && blankReason.remedy === `name why it is revoked: cotal run revoke ${eid} --local --by <who> --reason <text>`, blankReason);
+  // A run ID nothing admitted used to get its marker written and then a refusal citing the spec,
+  // exit 1. It is refused as not found before anything is written, so no marker exists afterwards.
+  const unadmitted = "run-0123456789abcdef0123456789abcdef";
+  const unknownRevoke = await wf(["revoke", unadmitted], { by: "smoke-operator", reason: "nothing to stop" }).then(() => undefined, (e: Error) => e);
+  const markerAfter = await (async () => {
+    const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId: unadmitted } });
+    const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    try { return await (await new Kvm(nc).open(admissionBucket(SPACE))).get(revocationKey(EP, unadmitted)); } finally { await nc.drain().catch(() => {}); }
+  })();
+  c("a revoke of a run ID nothing admitted is refused TARGET_NOT_FOUND, and no marker is written",
+    isCommandFailure(unknownRevoke) && unknownRevoke.code === "TARGET_NOT_FOUND"
+      && unknownRevoke.message === `run ${unadmitted} has no admission on endpoint ${EP}, so there is nothing to revoke; nothing was written`
+      && markerAfter === null, { refused: unknownRevoke?.message, markerAfter });
 
   reset();
   await withStderr(() => wf(["ps"])).catch(() => undefined);
@@ -787,7 +800,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 87;
+const DECLARED = 88;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
