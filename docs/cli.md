@@ -4451,7 +4451,7 @@ the registry skips the name check, and the broker's answer to the remove decides
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
-| `--replay` / `--no-replay` | none | `set`/`defaults`: replay history to new joiners, or not |
+| `--replay` / `--no-replay` | none | `set`/`defaults`: replay history to new joiners, or not. They take no value: `--replay off` is refused with the flag to use |
 | `--window <duration>` | none | `set`/`defaults`: replay window, for example `24h` |
 | `--delivery <live|durable>` | none | `set`/`defaults`: choose the live-only or durable-backstop delivery class; history retention is separate. Shell completion offers both values |
 | `--desc <text>` | none | `set`: channel description |

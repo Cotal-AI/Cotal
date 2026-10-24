@@ -69,6 +69,12 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
   if (!["list", "show", "members", "set", "defaults", "remove"].includes(action))
     throw usage("channel takes show, members, set, defaults or remove; run it bare to list saved channels");
   const named = ["show", "members", "set", "remove"].includes(action);
+  // `--replay` takes no value, so `--replay off` left `off` behind as a second channel name.
+  const stray = named ? (extra.length === 1 ? extra[0] : undefined) : rawName;
+  if ((values.replay !== undefined || values["no-replay"] !== undefined) && stray !== undefined && /^(on|off|true|false|yes|no)$/i.test(stray)) {
+    const flag = /^(off|false|no)$/i.test(stray) ? "--no-replay" : "--replay";
+    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run cotal channel ${action}${named && rawName ? ` ${rawName}` : ""} ${flag}` });
+  }
   if (extra.length || (named ? !rawName : rawName !== undefined))
     throw usage(named ? `cotal channel ${action} takes one channel name` : `cotal channel ${action} takes no channel name`);
   const name = rawName?.replace(/^#/, "");
