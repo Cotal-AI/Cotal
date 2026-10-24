@@ -485,7 +485,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("a minus-sign short flag names the short flag", cotal(["history", "general", "\u2212j"]), /"\u2212j" starts with a minus sign.*type -j with an ASCII hyphen/);
   refused("a command's own flags are what it names, wherever the word stands", cotal(["send", "-c", "general", "hallo", "\u2013json"]), /"\u2013json" starts with an en dash.*type --json/);
   const noFlag = cotal(["history", "\u2013nichts"], undefined, noSeed);
-  check("a dash word that names no flag is still the argument it reads as", noFlag.status !== 1 && !/typographic dash/.test(noFlag.stderr), shown(noFlag));
+  check("a dash word that names no flag is still the argument it reads as", !/typographic dash/.test(noFlag.stderr) && /"\u2013nichts"/.test(noFlag.stderr), shown(noFlag));
   const terminated = cotal(["send", "-c", "general", "--", "\u2013json"], undefined, noSeed);
   check("after -- a dash word that names a flag is an argument as typed", terminated.status !== 1 && !/typographic dash/.test(terminated.stderr), shown(terminated));
 }
