@@ -54,7 +54,7 @@ Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `mod
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
 `personaPermissions` (override the top-level policy). Model strings and variants pass to
 the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full id; for
-OpenCode use `provider/model` plus an optional variant (`cotal models --agent opencode`
+OpenCode use `provider/model` plus an optional variant (`cotal models --harness opencode`
 lists both). Persona file format: [agent files](agent-files.md).
 
 `cwd` is the agent's working directory on the **manager host**. A relative path resolves

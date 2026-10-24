@@ -410,7 +410,7 @@ How a spawn resolves:
   [Hermes](connect-hermes.md) · [pi](connect-pi.md).
 - **Model.** `--model` overrides the persona file's `model:` (Claude: `opus` / `sonnet` or
   a full id; OpenCode: `provider/model`). Connectors that expose a catalog report it via
-  `cotal models --agent opencode`: model ids plus available variants; pick one with
+  `cotal models --harness opencode`: model ids plus available variants; pick one with
   `--model provider/model --variant high`.
 - **Tools.** A spawned Claude Code agent gets the cotal tools plus the MCP servers the cotal
   config shares, which first-run `cotal setup` fills with your own; narrow them per spawn with
