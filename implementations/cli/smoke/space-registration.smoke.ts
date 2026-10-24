@@ -610,6 +610,17 @@ if (process.platform === "linux") {
     refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
   check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
   check("a --root that is not a directory is USAGE_INVALID", refused(await json(["space", "create", "other", "--root", join(home, "absent")]), 1, "USAGE_INVALID"));
+  // A --root through a symlink keeps its refusal, and the Next names the physical path it resolves to.
+  if (process.platform !== "win32") {
+    const physicalRoot = join(home, "physical-root");
+    mkdirSync(physicalRoot);
+    const linkedRoot = join(home, "linked-root");
+    symlinkSync(physicalRoot, linkedRoot);
+    const throughLink = await json(["space", "create", "other", "--root", linkedRoot]);
+    check("a --root through a symlink is PERMISSION_DENIED, with its physical path as the Next and nothing written",
+      refused(throughLink, 2, "PERMISSION_DENIED") && (throughLink.env?.error?.message ?? "").endsWith(`${linkedRoot} is a symbolic link`) &&
+        throughLink.env?.error?.remedy === `use the physical path ${realpathSync.native(physicalRoot)}` && !existsSync(join(physicalRoot, ".cotal")) && findPreparedSpace("other") === undefined, shown(throughLink));
+  }
   // A folder this account cannot write is refused before anything is written. Root can write anywhere.
   if (process.getuid?.() !== 0) {
     const readOnly = join(home, "read-only");
