@@ -2510,7 +2510,10 @@ without attaching. `--on <instance>` hands it to that manager and attaches this 
 agent (see [Managed launch view](#managed-launch-view)). Attaching needs usable input and output
 terminals and refuses `--json` and `--plain`, before an identity is allocated. A spawn in this
 terminal writes no structured receipt, so `--json` and `--plain` need `-d`, except with
-`--dry-run`. `--foreground` names the default and is kept for scripts. `--file` (`-f`) names a
+`--dry-run`. `--foreground` names the default and is kept for scripts. A spawn in this terminal
+checks its persona and connector before it starts the application: a missing persona is refused
+with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, both with exit 2,
+and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command.
 

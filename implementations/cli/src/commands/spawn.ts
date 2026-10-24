@@ -89,6 +89,7 @@ import {
   type ControlAuth,
   type ControlTarget,
   DEFAULT_CONNECTOR,
+  manifestExtensionNames,
   OFFICIAL_CONNECTORS,
   type MeshTarget,
   type SpaceMaterialComposition,
@@ -467,6 +468,19 @@ export function validateSpawnArguments(args: ParsedArgs): void {
  *  the hook stays root-free exactly as it was before #869. */
 export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRef[] {
   return [];
+}
+
+/** Whether the installed manifest lists a connector named `name`. An unreadable manifest answers
+ *  true, so the import's own refusal reports it. */
+function connectorListed(name: string): boolean {
+  try { return manifestExtensionNames("connector").includes(name); } catch { return true; }
+}
+
+/** The refusal for a harness with no installed connector, naming the package when it is official. */
+function missingConnector(name: string, target: object): CommandFailure {
+  const pkg = OFFICIAL_CONNECTORS[name];
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${name}" is installed`, { target,
+    remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
 }
 
 /** Comma-list flag → string[] (shared by both spawn modes). Only an absent flag is `undefined` and
@@ -933,7 +947,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // A manager runs it only with --detach or --on, and the persona then stays on the manager's
   // execution host. Every other spawn keeps the native custody path below, in this terminal.
   if (!direct) return launchManagedPersona(values, positionals, events, cliLaunchOptions);
-  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
   if (values.creds) {
@@ -1017,7 +1030,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
     } else if (code === "ENOENT" && path !== join(target.personaRoot, `${ref}.md`)) {
       // A path reference opened that one file and never read the catalog, so name the file.
-      console.error(c.red(`✗ no persona "${ref}"${fromEnv} - ${path} not found`));
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona "${ref}"${fromEnv}: ${path} was not found`, { target: { space, path }, remedy: "check the path, or name a persona from the catalog" });
     } else if (code === "ENOENT") {
       // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
       // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
@@ -1028,13 +1041,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
       const fix = defaultPersonaFix(target);
       const write = fix.cwd ? `run \`${fix.command}\` in ${fix.cwd} to write one` : `create one with \`${fix.command}\``;
-      console.error(
-        c.red(
-          ref === "default" && personaFrom === undefined
-            ? `✗ no default persona in ${where} - ${write}, name a persona: \`cotal spawn <name>\`, or pass a persona file: \`cotal spawn --file <persona.md>\``
-            : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or a persona file elsewhere with \`--file <persona.md>\``,
-        ),
-      );
+      throw ref === "default" && personaFrom === undefined
+        ? new CommandFailure("refused", "TARGET_NOT_FOUND", `no default persona in ${where}`, { target: { space, path }, remedy: `${write}, name a persona with \`cotal spawn <name>\`, or pass a persona file with \`cotal spawn --file <persona.md>\`` })
+        : new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona "${ref}"${fromEnv} in ${where}`, { target: { space, path }, remedy: "pass a catalog name, or a persona file elsewhere with `--file <persona.md>`" });
     } else {
       console.error(c.red(`✗ ${(e as Error).message}`));
     }
@@ -1107,6 +1116,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   try {
     await materializeExtension({ kind: "connector", name: agentType });
   } catch (e) {
+    if (!connectorListed(agentType)) throw missingConnector(agentType, { space, path });
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
@@ -1192,6 +1202,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), run the agent there, or add -d to launch it through one of your managers`));
     process.exit(1);
   }
+  // Said once every check above has passed, so a refusal is never read as a launch that started.
+  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
   // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. The SAME
   // retirement serves a failed provisioning or launch (rollback) and the normal foreground
