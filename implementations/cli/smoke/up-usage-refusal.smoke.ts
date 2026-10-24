@@ -8,7 +8,7 @@
  * local broker can serve, a host name included, is refused the same way in an unprepared and a
  * prepared folder, as the short classified report with an example on the port passed. In the home
  * folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing
- * there, and `down` there finds no stack to stop.
+ * there, and `down` and `down --dry-run` there find no stack.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -80,9 +80,11 @@ check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-c
 const homeUp = run(["up", "--server", "nats://127.0.0.1:1", "--json"], home);
 check("up in the home folder is one CONFLICT refusal, exit 2, naming a project folder", homeUp.status === 2 && homeUp.envelope?.error?.code === "CONFLICT" && /is your home folder/.test(homeUp.envelope.error.message ?? "") && /space create <space> --root <dir>/.test(homeUp.stdout), shown(homeUp));
 check("it wrote no persona, pidfile or store in the home's .cotal", !existsSync(join(home, ".cotal", "agents")) && !existsSync(join(home, ".cotal", "nats.pid")) && !existsSync(join(home, ".cotal", "nats")), existsSync(join(home, ".cotal")) ? readdirSync(join(home, ".cotal")) : []);
-// With no stack there, down says there is nothing to stop.
+// With no stack there, down and its preview say there is nothing to stop or preview.
 const homeDown = run(["down", "--yes"], home);
 check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop", homeDown.status === 2 && /there is no stack at this folder's root, so there is nothing to stop/.test(homeDown.stderr), shown(homeDown));
+const homePreview = run(["down", "--dry-run", "--json"], home);
+check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /nothing to preview/.test(homePreview.envelope.error.message ?? ""), shown(homePreview));
 
 finish();
 process.exit(process.exitCode ?? 0);
