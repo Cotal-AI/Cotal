@@ -6110,9 +6110,10 @@ terminal lists up to 100 records; JSON retains all readable records. Its Next co
 says inspect the stack for a fresh record or review the native scoped teardown plan for an
 additive ledger; neither row grants permission to stop anything. A fresh summary is
 not an additive ownership ledger or evidence that an agent joined, and it does not establish
-current process health. `team show <id>` identifies the recorded root and planned whole-stack
-`cotal down --space <recorded-space>` route for a fresh summary. The existing bare `down` does not use
-the whole-set impact controller. This summary is not authority to run it.
+current process health. For a fresh summary, `team show <id>` names the recorded root and offers
+`cotal down --space <space> --dry-run`, the preview of the guarded whole-stack stop, with the
+recorded space filled in. `team remove <id>` refuses a fresh boot ID with `CONFLICT` and offers the
+same stop. The summary is not authority to run it.
 
 For an additive record, `team show` prints up to 100 full recorded agent identities
 and lifecycle UIDs where the ledger has them, with the full validated ledger in JSON,

@@ -18,6 +18,8 @@
  *  G. folder `b` takes a fresh channel-only `team boot` of its own space on a second port. Its
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
  *     auth mode in words; the JSON keeps the recorded values.
+ *     Its show and its `team remove` refusal offer `cotal down --space <space> --dry-run` with the
+ *     space filled in, with no placeholder and no note that the stop is not integrated.
  *  H. a deployment ID that no record names is TARGET_NOT_FOUND, naming the ID, from `team show` and
  *     from `team remove` with and without `--dry-run`.
  *
@@ -167,6 +169,12 @@ try {
   check("team show <boot id> names its kind, state, next action and auth mode in words",
     /Kind:\s+fresh boot\n/.test(freshShow.stdout) && /Auth mode:\s+static auth\n/.test(freshShow.stdout) && /Recorded state:\s+boot returned\n/.test(freshShow.stdout) &&
       /Next action:\s+inspect the stack\n/.test(freshShow.stdout) && !/broker-boot-returned|inspect-selected-stack/.test(freshShow.stdout), freshShow.stdout);
+  check("team show <boot id> offers the stack's own down preview, with no placeholder",
+    freshShow.stdout.includes(`cotal down --space ${SPACE_B} --dry-run  Preview the guarded whole-stack stop`) && !/<recorded-space>|in this source/.test(freshShow.stdout), freshShow.stdout);
+  const removeBoot = cotal(b, "team", "remove", bootId, "--dry-run", "--json");
+  const bootRefusal = envelope(removeBoot.stdout)?.error;
+  check("team remove <boot id> refuses CONFLICT and offers cotal down with the space filled in",
+    removeBoot.status === 2 && bootRefusal?.code === "CONFLICT" && bootRefusal.remedy === `stop the booted stack with cotal down; preview that stop with cotal down --space ${SPACE_B} --dry-run`, removeBoot.out.slice(-800));
   const freshJson = envelope(cotal(b, "team", "show", bootId, "--json").stdout)?.result;
   check("its JSON keeps the recorded values", freshJson?.recordedState === "broker-boot-returned" && freshJson.nextAction === "inspect-selected-stack" && freshJson.authMode === "auth", freshJson);
   const freshList = cotal(b, "team");

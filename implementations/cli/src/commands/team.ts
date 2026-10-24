@@ -187,7 +187,7 @@ export async function team(args: ParsedArgs): Promise<void> {
           { kind: "lines", lines: [{ text: "The requested agent names are not allocated identities. A returned boot command does not prove current broker health, agent joins or retained ownership.", tone: "hint" }] },
         ] },
         ...(data.recordedState !== "broker-boot-returned" ? [{ blocks: [{ kind: "lines" as const, lines: ["The fresh boot summary did not verify every returned startup component, or predates delivery-responder observation; this record proves no current ownership."] }] }] : []),
-        { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal down --space <recorded-space> --dry-run", description: "From the recorded root, inspect local process records without a stop" }] }, { kind: "lines", lines: [`Whole-stack apply from ${data.root} remains unguarded in this source. The preview is incomplete and this summary authorizes no stop.`] }] },
+        { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal down --space ${data.space} --dry-run`, description: "Preview the guarded whole-stack stop" }] }, { kind: "lines", lines: ["The launch summary is not stop authority; stop the stack with cotal down."] }] },
       ] }));
       return;
     }
@@ -430,7 +430,7 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
     assertSummaryNotElsewhere(catalog.root, deploymentId);
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } });
   }
-  if (summary) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot summary, not an additive ownership ledger; team remove did not infer whole-stack stop authority", { target: { recordedSpace: summary.space, recordedRoot: summary.root, selectedSpace: catalog.space, deploymentId }, remedy: "from the recorded root, inspect cotal down --space <recorded-space> --dry-run; guarded bare down is not integrated in this source" });
+  if (summary) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot summary, not an additive ownership ledger; team remove did not infer whole-stack stop authority", { target: { recordedSpace: summary.space, recordedRoot: summary.root, selectedSpace: catalog.space, deploymentId }, remedy: `stop the booted stack with cotal down; preview that stop with cotal down --space ${summary.space} --dry-run` });
   let freshAttempt: ReturnType<typeof findFreshTeamAttempt>;
   try { freshAttempt = findFreshTeamAttempt(catalog.root, deploymentId); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot attempt for this ID is unreadable; it was not treated as an additive target", { target: { root: catalog.root, deploymentId } }); }
