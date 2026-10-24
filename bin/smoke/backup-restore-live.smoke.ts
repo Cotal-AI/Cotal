@@ -387,6 +387,11 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const keptPlain = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes");
       assert.ok(keptPlain.status === 1 && keptPlain.stderr.includes(`only copy of the ${leftOut} it left out, and cleanup deletes it only with --discard-history; nothing was deleted`) && !keptPlain.stderr.includes("Usage"), `${mode} the refusal names --discard-history without the command help\n${keptPlain.stderr}`);
       assert.ok(existsSync(previous), `${mode} cleanup-fallback without --discard-history keeps the previous store`);
+      // Without --force, each restore verb names the command to run with its attempt.
+      const unforced = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--discard-history");
+      assert.ok(unforced.status === 1 && unforced.stderr.includes(`cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history`), `${mode} clean restore-fallback without --force names the command with its attempt\n${unforced.stderr}`);
+      const unnamed = run("clean", "restore-attempt");
+      assert.ok(unnamed.status === 1 && unnamed.stderr.includes("cotal clean restore-attempt --attempt <id> --force"), `${mode} clean restore-attempt without --force or an attempt names --attempt <id>\n${unnamed.stderr}`);
       const keptByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
       assert.ok(keptByClean.status === 1 && keptByClean.stderr.includes(`holds the only copy of the ${leftOut} it left out; nothing was deleted`) && keptByClean.stderr.includes(`cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history`) && !keptByClean.stderr.includes("Usage"), `${mode} clean restore-fallback without --discard-history refuses, naming the flag without the command help\n${keptByClean.stdout}\n${keptByClean.stderr}`);
       assert.ok(existsSync(previous), `${mode} clean restore-fallback without --discard-history keeps the previous store`);
@@ -394,6 +399,10 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.equal(existsSync(previous), false, `${mode} --discard-history deletes the previous store`);
     }
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "fallback cleanup retires the restore journal");
+    // A repeat finds no record of the attempt, because the cleanup retired it, and says so by name.
+    const repeated = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history");
+    assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`) &&
+      repeated.stderr.includes("a completed restore-fallback retires its journal, so the restore has settled"), `${mode} a repeated clean restore-fallback says the restore settled\n${repeated.stderr}`);
   } finally {
     run("down");
     rmSync(root, { recursive: true, force: true });
