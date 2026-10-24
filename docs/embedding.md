@@ -332,6 +332,13 @@ the subject-token sanitizer. Endpoint names still use the separate DNS-label gra
 | `ensureCalloutAuth`/`loadCalloutAuth`, `ensureIssuer`/`loadIssuer`, `ensureOwnerSecret`/`loadOwnerSecret` | read/write the auth secret kinds through a `SecretStore`. Each `ensure*` writes its first value with `create`, so concurrent first calls on one space return the one value the store holds. |
 | `PLANE_CLAIM_REFUSED`, `planeClaimRefusal`, `PlaneClaimRefusal` *(type)* | every plane-claim refusal carries a `PLANE_CLAIM_REFUSED` detail, and `planeClaimRefusal(err)` reads its `reason`: `corrupt`, `live-peer`, `unknown`, `concurrent`, `fenced`, `released` or `lost`. Only `unknown`, an inconclusive liveness observation, is coded `unavailable`. A host can retry contention and stop on a corrupt row without matching message text. |
 
+`startAuthCallout` processes up to 32 connections concurrently. Its hooks must support overlapping
+calls for different connections. A slow authority check or recorder occupies one slot; other
+connections can still authenticate. Each response waits for that connection's authority checks,
+durable issuance and final expiry check. Work beyond the bound waits and can still reach the
+broker's authorization deadline. The returned `done` waits for admitted hooks when the subscription
+ends and rejects an unexpected worker failure after those hooks settle.
+
 **Seams and the wire** (all `@cotal-ai/core` unless noted)
 
 | symbol | purpose |
