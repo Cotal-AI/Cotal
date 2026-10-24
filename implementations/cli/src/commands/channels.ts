@@ -127,6 +127,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   }
   let purged: number | undefined;
   let removed = false;
+  let wrote = false;
   try {
     if (action === "remove") {
       if (values.purge) ({ purged, removed } = await clearChannel({ ...options, channel: name! }));
@@ -134,7 +135,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
       removed = (await deleteChannels({ ...options, channels: [name!] })).length > 0 || removed;
     } else {
       const file = action === "defaults" ? { defaults: patch(values) } : { channels: { [name!]: patch(values) } };
-      await seedChannelRegistry({ ...options, file });
+      wrote = await seedChannelRegistry({ ...options, file });
     }
   } catch (error) {
     // A write that kept losing the revision race to other writers saved nothing.
@@ -149,13 +150,14 @@ export async function channels(args: ParsedArgs): Promise<void> {
       purged === undefined ? "The channel change did not return a confirmed outcome. It may have been applied." : `The purge reported ${purged} messages removed, but channel metadata removal was not confirmed.`,
       { target, ...(purged === undefined ? {} : { changed: [{ kind: "channel-history", channel: name, purged }] }), remedy: "Read the channel and its history before retrying; do not assume the change failed." });
   }
-  // A channel with no saved entry and no retained message to purge is left as it was.
-  const unchanged = action === "remove" && !removed && !purged;
+  // A channel with no saved entry and no retained message to purge is left as it was, and so is an
+  // entry that already holds every value a set gives.
+  const unchanged = action === "remove" ? !removed && !purged : !wrote;
   const result = { action, name, space: connection.space, patch: action === "remove" ? null : patch(values), purged: purged ?? null, removed: action === "remove" ? removed : null };
   writeResult(presentation, { command: "channel", target, result, noOp: unchanged }, (r) => ({ sections: [
-    { title: action !== "remove" ? action === "defaults" ? "Channel defaults saved" : `Channel saved · #${name}` : removed ? `Channel removed · #${name}` : unchanged ? `Nothing removed · #${name}` : `Channel history purged · #${name}`, blocks: [
+    { title: action !== "remove" ? action === "defaults" ? unchanged ? "Channel defaults unchanged" : "Channel defaults saved" : unchanged ? `Channel unchanged · #${name}` : `Channel saved · #${name}` : removed ? `Channel removed · #${name}` : unchanged ? `Nothing removed · #${name}` : `Channel history purged · #${name}`, blocks: [
       { kind: "fields", rows: [["Space", r.space], ...(action === "remove" ? [["Metadata", removed ? "removed" : "no saved entry"], ["History", r.purged === null ? "kept" : `${r.purged} retained messages purged`]] as [string, string][] : Object.entries(r.patch!).map(savedRow))] },
-      { kind: "lines", lines: [{ text: action !== "remove" ? "Metadata does not grant read or post access. Replay controls backfill, not confidentiality." : unchanged ? `${connection.space} has no saved entry for #${name}, so nothing changed.` : "This does not stop members or revoke access. Future posts can create new retained history.", tone: "hint" }] },
+      { kind: "lines", lines: [{ text: action !== "remove" ? unchanged ? `${action === "defaults" ? "The space defaults already hold" : `#${name} already holds`} every value given, so nothing was written.` : "Metadata does not grant read or post access. Replay controls backfill, not confidentiality." : unchanged ? `${connection.space} has no saved entry for #${name}, so nothing changed.` : "This does not stop members or revoke access. Future posts can create new retained history.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
   ] }));

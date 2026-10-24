@@ -525,6 +525,10 @@ try {
     const saved = await run(["channel", "set", "general", "--no-replay", "--delivery", "durable", "--space", space, "--plain"]);
     check("a channel set receipt says replay on or off and labels the delivery class as channel show does",
       saved.status === 0 && /^\s+Replay:\s+off$/m.test(saved.stdout) && /^\s+Delivery:\s+durable$/m.test(saved.stdout) && !saved.stdout.includes("DeliveryClass") && !/Replay:\s+false/.test(saved.stdout), shown(saved));
+    // The same set again used to rewrite the entry and report it saved.
+    const [resetJson, resetPlain] = await Promise.all(["--json", "--plain"].map((format) => run(["channel", "set", "general", "--no-replay", "--delivery", "durable", "--space", space, format])));
+    check("repeating a channel set whose values already hold is a no-op that says nothing was written",
+      resetJson.status === 0 && resetJson.envelope?.outcome === "no-op" && resetPlain.stdout.includes("Channel unchanged - #general") && resetPlain.stdout.includes("#general already holds every value given, so nothing was written."), { json: shown(resetJson), plain: shown(resetPlain) });
     const removed = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing a saved channel is ok and says it removed the entry", removed.status === 0 && removed.envelope?.outcome === "ok" && removedOf(removed) === true, shown(removed));
     // history clear above left #ops with no retained message, so with its entry gone the space lacks it.

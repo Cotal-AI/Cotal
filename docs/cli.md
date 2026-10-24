@@ -4479,7 +4479,9 @@ and the read-only admin view are not.
 was read, so writers changing different fields of one channel at once all keep their change: one
 that loses the race reads the entry again and merges again. A write that keeps losing to other
 writers refuses with `CONFLICT` (exit 2) and saves nothing. Two writers setting the same field leave
-the value of whichever wrote last.
+the value of whichever wrote last. When the entry already holds every value you name, nothing is
+written: the receipt is `Channel unchanged` or `Channel defaults unchanged`, and the outcome is
+`no-op` (exit 0).
 
 With the static credential this machine records for the space, or on an open mesh, `list` reads the
 registry with one Direct Get and leaves no consumer on the broker. On a user-auth mesh your login has
