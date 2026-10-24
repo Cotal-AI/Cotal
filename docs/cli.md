@@ -2623,7 +2623,9 @@ with that refusal's reason and remedy, or it is offered, with `cotal space delet
 Next. `--json` carries the refusal as `applyBlockedBy` and as a `LIFECYCLE_BLOCKED` warning.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
-typing the exact space name. A script supplies the exact positional name with `--yes`;
+typing the exact space name. Its question, and the message under a wrong answer, wrap to the
+terminal with each continuation line under the prompt's bar. A script supplies the exact
+positional name with `--yes`;
 `--json` without `--yes` refuses before a connection. After confirmation the command
 reads the broker again and refuses if the stream states, transfer names, presence
 identities, registration, trust or broker identity changed. After a typed confirmation it also

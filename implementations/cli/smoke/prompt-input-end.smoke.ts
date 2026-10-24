@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import * as prompts from "@clack/prompts";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { untilInputEnds } from "@cotal-ai/workspace";
+import { untilInputEnds, wrapWords } from "@cotal-ai/workspace";
 import * as cliPrompts from "../src/lib/prompts.js";
 
 const { check, finish } = createSuite();
@@ -162,6 +162,28 @@ for (const keys of ["\r", "ok\r", "later\r", "maybe\r", "k\r", "l\r", "n\r", "yy
   const title = frame.filter((row) => /^[◆│] {2}/.test(row) && !/type y to confirm/.test(row)).slice(0, 3);
   check("a default-No question's title starts each continuation line under the text", title.length === 3 && title.slice(1).every((row) => /^│ {2}\S/.test(row)), frame);
   check("...and breaks it only at spaces, within the width", title.map((row) => row.slice(3)).join(" ") === message && title.every((row) => row.length <= 43), frame);
+}
+{
+  // The typed-name question wraps its title and its validation message the same way. Both used to
+  // continue at column 0, past clack's bar.
+  let drawn = "";
+  const output = Object.assign(new Writable({ write(chunk, _encoding, done) { drawn += String(chunk); done(); } }), { columns: 43 });
+  const message = "Permanently delete b541kurz on nats://127.0.0.1:25371? Type the exact space name";
+  const error = "Type b541kurz_with_a_longer_name to confirm, or cancel.";
+  const input = new PassThrough();
+  const answer = cliPrompts.text({ message, validate: (value) => value === "b541kurz" ? undefined : error, input, output });
+  await tick();
+  input.write("nope\r");
+  await tick();
+  input.write("\u0003");
+  await settle(answer);
+  input.end();
+  const rows = drawn.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n").map((row) => row.trimEnd());
+  const [first, ...rest] = wrapWords(message, 40);
+  const title = [`◆  ${first}`, ...rest.map((line) => `│  ${line}`)];
+  check("a typed-name question's title continues under its text, past clack's bar", rest.length > 0 && rows.some((_, i) => title.every((line, j) => rows[i + j] === line)), rows.slice(0, 8));
+  const shown = rows.findIndex((row) => row.startsWith("└  Type"));
+  check("...and so does its validation message, under the message", shown >= 0 && /^ {3}\S/.test(rows[shown + 1] ?? "") && `${rows[shown]!.slice(3)} ${rows[shown + 1]!.slice(3)}` === error, rows.slice(Math.max(0, shown - 1), shown + 3));
 }
 
 {

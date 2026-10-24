@@ -33,7 +33,26 @@ function titleLines(message: string, output: Writable | undefined): string {
   const columns = ((output ?? process.stdout) as { columns?: number }).columns ?? 80;
   return message.split("\n").flatMap((line) => wrapWords(line, columns - 3)).join(`\n${styleText("gray", clack.S_BAR)}  `);
 }
-export const text = (opts: TextOptions) => untilInputEnds((signal) => clack.text({ ...opts, signal }), opts.input);
+
+/** A text prompt's validation message on `output`, broken as {@link titleLines} breaks a title,
+ *  with each continuation line under the message, past clack's closing mark. */
+function errorLines(message: string | Error | undefined, output: Writable | undefined): string | Error | undefined {
+  if (typeof message !== "string") return message;
+  const columns = ((output ?? process.stdout) as { columns?: number }).columns ?? 80;
+  return wrapWords(message, columns - 3).join("\n   ");
+}
+
+/** A text question whose title and validation message wrap to the terminal under clack's bar. A
+ *  schema's message is clack's own. */
+export const text = (opts: TextOptions) => {
+  const { validate } = opts;
+  return untilInputEnds((signal) => clack.text({
+    ...opts,
+    message: titleLines(opts.message, opts.output),
+    ...(typeof validate === "function" ? { validate: (value: string | undefined) => errorLines(validate(value), opts.output) } : {}),
+    signal,
+  }), opts.input);
+};
 export const password = (opts: PasswordOptions) => untilInputEnds((signal) => clack.password({ ...opts, signal }), opts.input);
 export const select = <Value>(opts: SelectOptions<Value>) => untilInputEnds((signal) => clack.select({ ...opts, signal }), opts.input);
 export const multiselect = <Value>(opts: MultiSelectOptions<Value>) => untilInputEnds((signal) => clack.multiselect({ ...opts, signal }), opts.input);
