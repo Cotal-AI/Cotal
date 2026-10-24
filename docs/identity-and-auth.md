@@ -326,7 +326,7 @@ capability. That capability proves same-uid access to a 0600 local file and has 
 on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
 the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must
 match a fresh managed-ledger row. The public face mints two elevated views, both still gated on
-ledger scope `admin`: `channel-writer` (`cotal channels set/default`) and `channel-purger` (the
+ledger scope `admin`: `channel-writer` (`cotal channel set` and `cotal channel defaults`) and `channel-purger` (the
 dashboard's per-click channel delete). It also mints the narrowing `manager-caller` view for humans
 or managed agents. That view binds the bearer to one live registered manager instance. It adds no
 capability, except that a `spawn` holder's view may read that manager's `status`, `models` and

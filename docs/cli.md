@@ -29,10 +29,11 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the selected space, or with none selected the space prepared in the current folder, and lists common
-commands. It points a prepared space to the `cotal up` that starts it, with `--root <dir>` when the
-space is prepared in another folder and `<dir>` quoted when a shell would split it, and a machine
-with no space to `cotal setup`. Every command generates its own help, usage, and shell completion from its declared
+the selected space, or with none selected the space registered or prepared in the current folder,
+and lists common commands. It points a prepared space to the `cotal up` that starts it, with
+`--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
+split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
+or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
 command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
 itself do (exit 1), rather than print the command's help. A subcommand's help gives its whole
@@ -280,72 +281,78 @@ interrupted. Ctrl-C ends it at once: `watch` exits 130, and the other three exit
 
 ## Commands
 
-| Area | Command | Purpose |
+| Section | Command | Purpose |
 |---|---|---|
-| Set up & lifecycle | [`setup`](#setup) | Prepare a space, application and runtimes; opt into startup separately |
-| Set up & lifecycle | [`update`](#update) | Reconcile first-party extensions and check or opt into a coherent CLI upgrade |
-| Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
-| Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
-| Set up & lifecycle | [`backup`](#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
-| Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
-| Set up & lifecycle | [`reset`](#reset) | Preview or reset one stopped local store or space identity |
-| Set up & lifecycle | [`space`](#selecting-a-space) | List the spaces this machine can reach, or show one in full |
-| Set up & lifecycle | [`use`](#selecting-a-space) | Select the space commands target when none is named, or show the selection |
-| Set up & lifecycle | [`meshes`](#mesh-registry) | List, register and drop meshes; `space` replaces its listing |
-| Set up & lifecycle | [`sync`](#mesh-registry) | Refresh the signed-in account's advertised spaces |
-| Set up & lifecycle | [`status`](#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
-| Agents & personas | [`spawn`](#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
-| Agents & personas | [`models`](#models) | List connector model catalogs and variants from the manager |
-| Agents & personas | [`ps`](#managed-seats) | List managed agents and their mesh status |
-| Agents & personas | [`stop`](#managed-seats) | Ask the manager to stop a managed agent |
-| Agents & personas | [`attach`](#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
-| Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
-| Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
-| Agents & personas | [`personas`](#persona) | The legacy persona parser, kept during migration; use `persona` |
-| Agents & personas | [`manager`](#manager-maintenance) | Inspect retained local seats or repair an owned manager gate |
-| Agents & personas | [`app-identity`](#plumbing) | Plumbing: open or retire one Claude app conversation's identity on a local mesh |
-| Agents & personas | [`supervise`](#supervise) | Deprecated and hidden from help: run a manager daemon; use the `manager` service preset |
-| Agents & personas | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
-| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
-| Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
-| Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
-| Agents & personas | [`endpoint deregister`](#endpoint-deregister) | Remove the service registration of an instance whose host is gone, when the broker affirms nothing is subscribed on its rail |
-| Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
-| Messaging & watching | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
-| Messaging & watching | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
-| Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
-| Messaging & watching | [`describe` / `invoke`](#endpoint-control) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
-| Messaging & watching | [`endpoint`](#endpoint-authoring) | Save endpoint references, author contracts offline, and inspect or invoke native endpoints |
-| Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
-| Messaging & watching | [`chat`](#chat) | Open a live session under its own identity: terminal view, `--plain` lines, or `--stdio` for programs |
-| Messaging & watching | [`channel`](#channel) | Read channel metadata and observed members, or change a channel's settings |
-| Messaging & watching | [`history`](#history) | Read retained messages, or clear them |
-| Messaging & watching | [`pending`](#pending) | Inspect one DM durable's native counts and bounded candidate IDs |
-| Messaging & watching | [`watch`](#watch) | Follow authorized activity without starting, stopping or attaching agents |
-| Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
-| Messaging & watching | [Web dashboard](#web) | Browser dashboard, run as the `web` service preset (installed as the `@cotal-ai/web` extension) |
-| Extensions & misc | [`linear`](#linear) | Serve the official Linear MCP server as an endpoint agents can call (installed as the `@cotal-ai/linear` extension) |
-| Auth & meshes | [`auth`](#auth-mint) | Mint a creds file for a space (`auth mint`, static auth mode), inspect a protected handle or export an account signer |
-| Auth & meshes | [`service-endpoint`](#service-endpoint) | Decide and inspect service endpoint registrations on the space's auth service |
-| Auth & meshes | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
-| Auth & meshes | [`logout`](#login) | Revoke the IdP session and clear the cached login |
-| Auth & meshes | [`actor`](#actor) | Manage a user-auth space's actor ledger (grant / revoke / list) |
-| Auth & meshes | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
-| Auth & meshes | [`join`](#join) | Join a space as your own presence (interactive) |
-| Manifest | [`team`](#manifest-deploys) | Deploy a manifest onto a running mesh, inspect teams, or remove a deployment |
-| Manifest | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
-| Extensions & misc | [`ext`](#ext) | List, install and remove operator CLI extensions |
-| Extensions & misc | [`docs`](#docs) | Read this version's protocol and CLI docs, offline |
-| Extensions & misc | [`help`](#running-it) | List the commands, or show one command's help |
-| Extensions & misc | [`version`](#running-it) | Print this binary's version and each installed extension's |
-| Extensions & misc | [`config`](#config) | Show and set your preferences: the defaults your commands use |
-| Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
-| Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
-| Extensions & misc | [`telemetry`](#telemetry) | Show or set the anonymous usage telemetry level (`off`, `minimal`, `regular`) |
-| Extensions & misc | [`deliver`](#server-daemons) | Deprecated and hidden from help: run the delivery daemon; use the `delivery` service preset |
-| Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
-| Extensions & misc | [`feedback-intake`](#server-daemons) | Deprecated and hidden from help: run a feedback intake server; use the `feedback-intake` service preset |
-| Extensions & misc | [`auth-service`](#server-daemons) | Deprecated and hidden from help: run a user-auth space's auth service by hand; use the `auth-service` service preset |
+| Setup | [`setup`](#setup) | Prepare a space, application and runtimes; opt into startup separately |
+| Setup | [`help`](#running-it) | List the commands, or show one command's help |
+| Setup | [`version`](#running-it) | Print this binary's version and each installed extension's |
+| Setup | [`ext`](#ext) | List, install and remove operator CLI extensions |
+| Setup | [`config`](#config) | Show and set your preferences: the defaults your commands use |
+| Setup | [`telemetry`](#telemetry) | Show or set the anonymous usage telemetry level (`off`, `minimal`, `regular`) |
+| Setup | [`update`](#update) | Reconcile first-party extensions and check or opt into a coherent CLI upgrade |
+| Setup | [`completion`](#completion) | Report, print or install shell completion |
+| Setup | [`docs`](#docs) | Read this version's protocol and CLI docs, offline |
+| Mesh | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
+| Mesh | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
+| Mesh | [`backup`](#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
+| Mesh | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
+| Mesh | [`reset`](#reset) | Preview or reset one stopped local store or space identity |
+| Mesh | [`meshes`](#mesh-registry) | List, register and drop meshes; `space` replaces its listing |
+| Mesh | [`space`](#selecting-a-space) | List the spaces this machine can reach, or show one in full |
+| Mesh | [`sync`](#mesh-registry) | Refresh the signed-in account's advertised spaces |
+| Mesh | [`status`](#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
+| Mesh | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
+| Mesh | [`use`](#selecting-a-space) | Select the space commands target when none is named, or show the selection |
+| Mesh | [`join`](#join) | Join a space as your own presence (interactive) |
+| Mesh | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
+| Messaging | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
+| Messaging | [`chat`](#chat) | Open a live session under its own identity: terminal view, `--plain` lines, or `--stdio` for programs |
+| Messaging | [`channel`](#channel) | Read channel metadata and observed members, or change a channel's settings |
+| Messaging | [`history`](#history) | Read retained messages, or clear them |
+| Messaging | [`feedback`](#feedback) | Send feedback to the Cotal developers |
+| Messaging | [`pending`](#pending) | Inspect one DM durable's native counts and bounded candidate IDs |
+| Agents | [`spawn`](#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
+| Agents | [`models`](#models) | List connector model catalogs and variants from the manager |
+| Agents | [`app-identity`](#plumbing) | Plumbing for a Claude app conversation's identity on a local mesh; you never run it directly |
+| Agents | [`start`](#spawn) | Removed: `cotal start` was merged into `cotal spawn --detach` |
+| Agents | [`stop`](#managed-seats) | Ask the manager to stop a managed agent |
+| Agents | [`ps`](#managed-seats) | List managed agents and their mesh status |
+| Agents | [`attach`](#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
+| Agents | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
+| Agents | [`persona`](#persona) | List, show, edit, create, or remove local personas |
+| Agents | [`personas`](#persona) | The legacy persona parser, kept during the migration to `persona` |
+| Observe | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
+| Observe | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
+| Observe | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
+| Observe | [`describe`](#endpoint-control) | Read a native endpoint's authorized, digest-verified command contracts |
+| Observe | [`invoke`](#endpoint-control) | Invoke one native command by name, with schema validation and an attributed result receipt |
+| Observe | [`watch`](#watch) | Follow authorized activity without starting, stopping or attaching agents |
+| Observe | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
+| Manager | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
+| Manager | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
+| Manager | [`deregister-instance`](#endpoint-deregister) | Hidden from `cotal help`: the old spelling of `endpoint deregister`, which refuses and names it |
+| Manager | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
+| Manager | [`supervise`](#supervise) | Deprecated and hidden from `cotal help`: run a manager daemon; use the `manager` service preset |
+| Manager | [`manager`](#manager-maintenance) | Inspect retained local seats or repair an owned manager gate |
+| Manager | [`feedback-intake`](#server-daemons) | Deprecated and hidden from `cotal help`: run a feedback intake server; use the `feedback-intake` service preset |
+| Manager | [`deliver`](#deliver) | Deprecated and hidden from `cotal help`: run the delivery daemon; use the `delivery` service preset |
+| Manager | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
+| Manager | [`agent-bearer`](#plumbing) | Plumbing that prints a fresh bearer for a spawned user-auth agent; you never run it directly |
+| Manager | [`auth-service`](#server-daemons) | Deprecated and hidden from `cotal help`: run a user-auth space's auth service by hand; use the `auth-service` service preset |
+| Manager | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
+| Services | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
+| Identity | [`mint`](#auth-mint) | Moved: credential minting is `cotal auth mint` |
+| Identity | [`actor`](#actor) | Manage a user-auth space's actor ledger (grant / revoke / list) |
+| Identity | [`service-endpoint`](#service-endpoint) | Decide and inspect service endpoint registrations on the space's auth service |
+| Identity | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
+| Identity | [`logout`](#login) | Revoke the IdP session and clear the cached login |
+| Identity | [`auth`](#auth-mint) | Mint credentials, inspect account metadata, manage actor grants and export a protected account signer |
+| Teams | [`team`](#manifest-deploys) | Inspect teams, boot a fresh mesh from a manifest, or add its channels and agents to a running one |
+| Endpoints | [`endpoint`](#endpoint-authoring) | Save endpoint references, author contracts offline, inspect or invoke native endpoints, and deregister a departed instance |
+
+The table has one row per command `cotal help --all` lists, under the section it lists it in.
+Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](#linear) command, and
+`@cotal-ai/web` adds the [web dashboard](#web) as a service preset.
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered
 together under [Manifest deploys](#manifest-deploys).
@@ -560,7 +567,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--space <s>` | the folder's space | Space name, at most 64 characters; a longer one refuses `USAGE_INVALID` before anything is written |
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f`. A path that is a link refuses `USAGE_INVALID`, naming the directory it points to |
-| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108864 (64 MiB), which the space's membership bucket reserves; a smaller value refuses `USAGE_INVALID` before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Not accepted with `-f` |
+| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108865: the space's membership bucket reserves 67108864 (64 MiB), and nats-server creates each of the other streams only while one more byte is free. A smaller value refuses `USAGE_INVALID`, naming 67108865, before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry. `up` reads the file once, so a pipe or a FIFO such as `--channels <(…)` works. A default `.cotal/channels.json` that is not a regular file, such as a FIFO, refuses `USAGE_INVALID` the same way |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
@@ -577,7 +584,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--service-endpoints` | off | With `--user-auth`: the auth service also hosts service endpoints: the public registration door and the authenticated host route that `cotal service-endpoint` drives |
 | `--detach` | on | Run in the background, which is also the no-flag default |
 | `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd/launchd unit supervises `up` itself. Cannot combine with `--detach` |
-| `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS. Cotal's own clients, `up` included, check the certificate against Node's trusted CAs and the address they dial. For a self-signed certificate or a local CA, set `NODE_EXTRA_CA_CERTS` to that certificate or CA file (PEM) for `cotal up` and every other `cotal` command of the space; the stack's delivery daemon and manager inherit it from `up`. The stack's address is `tls://`, so every dial checks the certificate against the address it names: an address `up` chooses, the default or the one a stopped folder last ran at, becomes `tls://`, and the `TLS: serving` line of the receipt names it. A `--server nats://` with `--tls-cert` refuses `USAGE_INVALID` before anything starts and names the `tls://` form, and so does `up -f` whose manifest `broker.servers` names a `nats://` address. When this client refuses the certificate in the handshake, `up` stops the broker, records nothing and fails `OPERATION_FAILED`, naming the native error and the step to take |
+| `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS. Cotal's own clients, `up` included, check the certificate against Node's trusted CAs and the address they dial. For a self-signed certificate or a local CA, set `NODE_EXTRA_CA_CERTS` to that certificate or CA file (PEM) for `cotal up` and every other `cotal` command of the space; the stack's delivery daemon and manager inherit it from `up`. The stack's address is `tls://`, so every dial checks the certificate against the address it names: an address `up` chooses, the default or the one a stopped folder last ran at, becomes `tls://`, and the `TLS: serving` line of the receipt names it. A root prepared with `cotal space create`, or one whose stack the service controller owns, has no route that serves TLS: there `--tls-cert`, `--tls-key` or a `tls://` `--server` refuses `UNSUPPORTED`, exit 2, before anything starts. On a prepared root that refusal names `cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>` with a `tls://` address in the manifest's `broker.servers`, which serves TLS there. Elsewhere a `--server nats://` with `--tls-cert` refuses `USAGE_INVALID` before anything starts and names the `tls://` form, and so does `up -f` whose manifest `broker.servers` names a `nats://` address. When this client refuses the certificate in the handshake, `up` stops the broker, records nothing and fails `OPERATION_FAILED`, naming the native error and the step to take |
 | `--tls-key <path>` | none | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
 | `--file <cotal.yaml>`, `-f` | none | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing. Without `-f` it refuses `USAGE_INVALID` before anything starts or is written. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
@@ -749,7 +756,7 @@ the broker, initializes native streams, then starts delivery and the optional ma
 prepares an unauthenticated broker and streams, then the optional manager; it creates no delivery
 service or credential. Each member reports its own readiness; the result does not prove agent or
 task readiness. A prepared root never starts the legacy launcher: an option the controller stack has
-no route for, such as `--tls-cert`, refuses `UNSUPPORTED`, exit 2, before anything starts, as it
+no route for, such as `--tls-cert` or a `tls://` `--server`, refuses `UNSUPPORTED`, exit 2, before anything starts, as it
 does on a root whose stack the controller already owns. `--rotate-sys` on a first start refuses the
 same way, because a first start mints the space's `$SYS` creds. The refusal names each option, and
 names `cotal up -f <cotal.yaml>` when the manifest route takes them all.
@@ -2656,7 +2663,7 @@ error. Only an absent directory is an empty registry. The folder of prepared spa
 reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its place is named as
 `<path> is a file, not a folder`, with the step that moves it aside. A record in it that does not parse
 or is not a prepared space record refuses only a command about the space its file is named for, such
-as `use <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
+as `use <space>`, and names `cotal space forget <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
 file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
 `meshes.unreadable` and exits 4. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
@@ -4795,6 +4802,11 @@ mesh the way `send` does, under the same one-shot identity, and says on stderr w
 is registered, unregistered, or could not be read. The space's native policy decides whether a send
 is allowed, and nothing creates registry metadata.
 
+When the channel's replay is on, the session holds its retained messages in the replay window in
+its inbox. The inbox keeps at most 500 unread messages, so a channel that holds more replays only
+its newest 500 and the oldest are dropped. `cotal history <channel> --limit <n>` reads further
+back. `channel show` names the bound in its `Chat replay` row.
+
 The terminal view needs a terminal for input and output; without one, `chat` refuses and names
 `--plain` and `--stdio`. `--plain` is the line flow, with a separate confirmation for each send,
 and it writes its punctuation in ASCII as every plain report does.
@@ -6797,6 +6809,10 @@ relevant retained additive IDs and unreadable paths. The legacy bare `down`,
 `down --preserve-state`, fresh `team boot` and `reset store` refuse unsettled
 intents and unremoved agent/channel receipts before effects. A complete matched
 static agent-retirement receipt releases only its original deployment's blocker.
+A bare `up` of a stopped controller stack starts it again over a returned channel-only deployment
+made on that stack, and keeps the deployment's records and cards as they are. Any other retained
+deployment, such as an unsettled attempt or an agent deployment, still refuses the start with
+`LIFECYCLE_BLOCKED`, and its Next names `cotal team show <id>` for each one.
 This is a known-blocker guard,
 not complete broker ownership. The service records belong to the workstation's selected-space store,
 not necessarily this boot root; their recorded
@@ -6944,7 +6960,10 @@ current alias holders. No channel, broker, service or remote account is removed.
 `team remove <full-deployment-id>` also removes the registry cards of a returned channel-only
 deployment, with `--dry-run` for a read-only preview and `--yes` for scripted apply. It pins the
 original receipt, root, broker, auth mode and TLS requirement, and refuses changed card revisions,
-conflicting retained ownership or unreadable records. The preview discloses delivery and replay
+conflicting retained ownership or unreadable records. A changed card refuses `CONFLICT` naming
+each changed card. With no registration for the space, as after the stack's `cotal down`, the
+refusal names `cotal up` in the deployment's root, which registers the stack again, and then the
+same `team remove`. The preview discloses delivery and replay
 fallback to space defaults and removal of description/instructions. A derived membership feed is
 display-only and never authorizes or blocks this metadata change.
 

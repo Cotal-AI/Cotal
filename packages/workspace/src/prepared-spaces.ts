@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, renameSync, rmSync, statSync, type Stats } f
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { spaceFromSegment, spaceSegment } from "./auth-paths.js";
 import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError } from "./mesh-registry.js";
-import { recordOperationWarning } from "./output.js";
+import { recordOperationWarning, type OutputWarning } from "./output.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 
 /**
@@ -48,8 +48,10 @@ export function readPreparedSpaces(): { spaces: PreparedSpace[]; unusable: MeshR
     // folder above it that is not one fails the stat too, and is the read failure below.
     let stat: Stats | undefined;
     try { stat = code === "ENOTDIR" ? statSync(dir) : undefined; } catch { stat = undefined; }
-    if (stat)
-      throw new MeshRegistryError(dir, stat.isFile() ? `${dir} is a file, not a folder` : `${dir} is not a folder`, { cause: e, remedy: `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space` });
+    if (stat) {
+      const summary = stat.isFile() ? `${dir} is a file, not a folder` : `${dir} is not a folder`;
+      throw new MeshRegistryError(dir, summary, { cause: e, summary, remedy: `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space` });
+    }
     throw new MeshRegistryError(dir, `the prepared spaces folder ${dir} could not be read: ${(e as Error).message}`, { cause: e });
   }
   const spaces: PreparedSpace[] = [], unusable: MeshRegistryError[] = [];
@@ -80,13 +82,24 @@ const removeStep = (file: string): string => {
   return space === undefined ? "remove it" : `remove it with \`cotal space forget ${space}\``;
 };
 
-function warnSkipped(e: MeshRegistryError): void {
-  recordOperationWarning({
+/** The warning a prepared record that cannot be read is skipped with, naming its file and the step
+ *  that removes it. */
+export function preparedRecordSkipped(e: MeshRegistryError): OutputWarning {
+  return {
     code: "PREPARED_RECORD_SKIPPED",
     target: { file: e.file, space: preparedRecordSpace(e.file) ?? null },
     message: `${e.message.slice(0, -` - ${removeStep(e.file)}`.length)}, so it is skipped; ${removeStep(e.file)}`,
-  });
+  };
 }
+
+function warnSkipped(e: MeshRegistryError): void {
+  recordOperationWarning(preparedRecordSkipped(e));
+}
+
+/** The refusal of a command about the space a damaged record was written for names the file and the
+ *  forget that removes it, and repeats nothing the file holds. */
+const unusableRecord = (file: string, problem: string, cause?: unknown): MeshRegistryError =>
+  new MeshRegistryError(file, `${file} ${problem} - ${removeStep(file)}`, { cause, summary: `${file} is not a usable prepared space record`, remedy: removeStep(file) });
 
 function readPreparedFile(file: string): PreparedSpace | undefined {
   let doc: Partial<PreparedSpace>;
@@ -94,10 +107,10 @@ function readPreparedFile(file: string): PreparedSpace | undefined {
     doc = JSON.parse(readFileSync(file, "utf8")) as Partial<PreparedSpace>;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new MeshRegistryError(file, `${file} does not parse as a prepared space record (${(e as Error).message}) - ${removeStep(file)}`, { cause: e });
+    throw unusableRecord(file, `does not parse as a prepared space record (${(e as Error).message})`, e);
   }
   if (typeof doc.space !== "string" || typeof doc.root !== "string" || !isAbsolute(doc.root) || typeof doc.ts !== "string" || preparedRecordSpace(file) !== doc.space)
-    throw new MeshRegistryError(file, `${file} is not a usable prepared space record - ${removeStep(file)}`);
+    throw unusableRecord(file, "is not a usable prepared space record");
   return { space: doc.space, root: doc.root, ts: doc.ts };
 }
 

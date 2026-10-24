@@ -62,6 +62,7 @@ import {
   probeWebReadiness,
   readCurrent,
   readMeshRegistry,
+  preparedRecordSkipped,
   readPreparedSpaces,
   readRenewalRecord,
   renderWorkspaceError,
@@ -1012,7 +1013,12 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
   let currentPrepared = false;
   try {
     const prepared = readPreparedSpaces();
-    for (const e of prepared.unusable) unread(e.file, e.message);
+    // Named with the warning a command that skips it gives, so a run that also skipped it says it once.
+    for (const e of prepared.unusable) {
+      const skipped = preparedRecordSkipped(e);
+      unreadable.push({ file: e.file, error: e.message });
+      gaps.add(skipped.code, skipped.message, skipped.target);
+    }
     currentPrepared = current !== null && !entries.some((m) => m.space === current) && prepared.spaces.some((p) => p.space === current);
   } catch (e) {
     if (!isMeshRegistryError(e)) throw e;
