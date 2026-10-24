@@ -7,7 +7,8 @@
  *     pid files written, processes alive, the delivery-aware marker bound to the manager pid.
  *  2. a real `cotal ps` is ANSWERED by the detached manager (control plane reachable, creds minted
  *     from this folder's auth — the exact "spawn --detach works right after up" promise), and with
- *     no agents it lists that manager's instance id, which `ps --on` takes.
+ *     no agents it lists that manager's instance id, which `ps --on` takes. With no connector
+ *     installed, an unpinned `spawn -d` is refused and names the `cotal ext add` to run.
  *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
  *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
@@ -195,6 +196,14 @@ try {
   const pinned = listed ? cli("ps", "--on", listed) : undefined;
   ok("with no agents, ps lists the answering manager's instance id, and ps --on takes it",
     listed !== undefined && census?.length === 1 && census[0]?.instanceId === listed && pinned?.status === 0 && plain(pinned.stdout).includes(`instance: ${listed}`), { stdout: last.stdout, census, pinned: pinned?.stdout ?? pinned?.stderr });
+  // No connector is installed, so the manager leaves the class queue and the broker answers an
+  // unpinned launch with no responders: a refusal that says why and what to add, never an unknown.
+  const unserved = cli("spawn", "-d");
+  const unservedOut = plain(unserved.stdout + unserved.stderr);
+  ok("an unpinned spawn -d with no agent application refuses TARGET_UNAVAILABLE, exit 2, naming the cotal ext add",
+    unserved.status === 2 && /no manager of yours takes unpinned launches: none has an agent application installed/.test(unservedOut)
+      && /Code:\s+TARGET_UNAVAILABLE/.test(unservedOut) && /Native outcome:\s+not-executed/.test(unservedOut) && /`cotal ext add [^`]+`, then restart that manager/.test(unservedOut),
+    { status: unserved.status, out: unservedOut });
 
   // 2b) #837: a delivery launch that LOSES the single-flight lease is not a healthy control plane.
   //     Drop the pidfile - the operator-visible shape of a lost record - while the real daemon keeps
@@ -336,6 +345,13 @@ try {
   const maintenanceFiles = ["journal.json", "resume.json", "prepare-intent.json", "commit-intent.json"].filter((name) => existsSync(join(root, ".cotal", "maintenance", "v1", name)));
   ok("that refusal stopped nothing: delivery and the broker still run, and no maintenance journal or intent was written",
     alive(boDeliveryPid) && await portOpen() && maintenanceFiles.length === 0, { boDeliveryPid, maintenanceFiles });
+  const spawnStarted = Date.now();
+  const noManagerSpawn = cli("spawn", "-d");
+  const noManagerSpawnOut = plain(noManagerSpawn.stdout + noManagerSpawn.stderr);
+  ok("a broker-only spawn -d refuses TARGET_UNAVAILABLE, exit 2, before sending and naming bare cotal up",
+    noManagerSpawn.status === 2 && /no manager is running for this space to launch an agent/.test(noManagerSpawnOut) && /Code:\s+TARGET_UNAVAILABLE/.test(noManagerSpawnOut)
+      && /start the stack's manager with bare cotal up/.test(noManagerSpawnOut) && Date.now() - spawnStarted < 9_000,
+    { status: noManagerSpawn.status, ms: Date.now() - spawnStarted, out: noManagerSpawnOut });
   const brokerOnlyDown = cli("down");
   ok("broker-only down exits 0", brokerOnlyDown.status === 0, brokerOnlyDown.stdout + brokerOnlyDown.stderr);
   let boDead = false;

@@ -2510,7 +2510,10 @@ without attaching. `--on <instance>` hands it to that manager and attaches this 
 agent (see [Managed launch view](#managed-launch-view)). Attaching needs usable input and output
 terminals and refuses `--json` and `--plain`, before an identity is allocated. A spawn in this
 terminal writes no structured receipt, so `--json` and `--plain` need `-d`, except with
-`--dry-run`. `--foreground` names the default and is kept for scripts. `--file` (`-f`) names a
+`--dry-run`. `--foreground` names the default and is kept for scripts. A spawn in this terminal
+checks its persona and connector before it starts the application: a missing persona is refused
+with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, both with exit 2,
+and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command.
 
@@ -3076,14 +3079,17 @@ a paired caller file takes no instance pin.
 
 ```bash
 cotal ps [--json | --plain] [--on <instance>] [--wide] [--slots] [--space <s>]
-cotal stop --name <n> [--on <instance>] [--space <s>]
-cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
+cotal stop <name> [--force] [--on <instance>] [--space <s>]
+cotal stop --self [--force]
+cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
-| `--name <n>` | none | Managed agent to stop / attach (required) |
+| `<name>` / `--name <n>` | none | Managed agent to stop or attach, named positionally or with `--name`. `stop` needs one unless `--self` is given. `attach` without one lists your agents to choose from on a terminal, and refuses `USAGE_INVALID` where it cannot ask |
+| `--self` (`stop`) | off | Stop only the verified managed seat running this command (see [Stopping an agent](#stopping-an-agent)) |
+| `--force` (`stop`) | off | Request the native hard despawn (`graceful:false`); it does not bypass authority |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. On a user-auth mesh it also takes a manager's name, its host, or the `<host>/<runtime>` an unnamed manager shows as (its runtime alone when its presence names no host), when only one of your live managers matches it; otherwise it refuses as `TARGET_AMBIGUOUS` or `TARGET_NOT_FOUND`, lists your live managers and gives the command again on each. On a static or open mesh a manager's presence does not carry its instance id, so a name is refused as `USAGE_INVALID` and the Next asks for the instance id. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
 | `--wide` (`ps`) | off | Print each seat as a labeled record that adds the operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
 | `--json` / `-j` (`ps`) | off | One JSON document (see below). Mutually exclusive with `--wide` and `--plain` |
@@ -3102,7 +3108,8 @@ entry, is the route that does.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
-header.
+header. With no agents its Next is `cotal spawn`, or `cotal setup` when no agent application is set
+up here, as `status` reports it.
 
 The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
 one envelope whose `result` is:
@@ -3524,7 +3531,8 @@ select it explicitly. A missing provider or app fails loudly; there is no fallba
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
 (`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
-unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A partial
+unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
+on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
 inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
 
@@ -6281,8 +6289,13 @@ accepting instance ID does not confer an instance route or cause another launch.
 follower verifies the returned fact against the original caller and goal. A launch the manager
 refuses before its first effect, such as a missing persona file or connector, carries
 `not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason, which
-names the file it looked for. A failure after the manager reserved the name or wrote a launch file
-keeps its native outcome, and the CLI never reclassifies it from its message.
+names the file it looked for. An unpinned launch that no manager received is refused with
+`TARGET_UNAVAILABLE` and exit 2. With no manager running, the CLI says so before it sends and
+names bare `cotal up`. When every live manager reports `classSpawn: false`, it says none has an
+agent application installed and names the `cotal ext add` that adds one. A manager reads its
+applications when it starts, so restart it after adding one. A failure after the manager reserved
+the name or wrote a launch file keeps its native outcome, and the CLI never reclassifies it from
+its message.
 
 
 ### Stopping an agent

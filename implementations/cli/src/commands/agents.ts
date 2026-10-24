@@ -34,6 +34,7 @@ import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { runningStackManagerPid, stackManagerAbsent } from "../lib/stack-journal.js";
+import { connectorHarnesses } from "../lib/status.js";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -560,8 +561,10 @@ export interface PsResult {
 }
 
 /** `rowsOf` is each answered instance's rows as the census received them, so a row that names no
- *  instance of its own is still listed under the manager that returned it. */
-function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map()): Report {
+ *  instance of its own is still listed under the manager that returned it. `noApplication` is
+ *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
+ *  the one `status` gives. */
+function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -575,7 +578,7 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
     { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
       { command: "cotal attach <name>", description: "Return to an agent's terminal" },
       { command: "cotal stop <name>", description: "Stop one agent" },
-    ] : [{ command: "cotal spawn", description: "Launch your default agent" }] }] },
+    ] : [noApplication ? { command: "cotal setup", description: "Set up an agent application" } : { command: "cotal spawn", description: "Launch your default agent" }] }] },
   ] };
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
   // shorter and this is precisely where it becomes the one way to address a manager. Silent and
@@ -596,6 +599,12 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
   };
 }
 
+/** Whether no connector is installed here, as `status` reports "Agent applications: not set up".
+ *  An inventory that cannot be read says nothing, so the Next stays the launch. */
+function noApplicationHere(): boolean {
+  try { return connectorHarnesses().length === 0; } catch { return false; }
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   // #651 presentations: --wide is a human layout and --json the document that already carries every
@@ -611,7 +620,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
   const census = await readSeats(v, command, await managerPin(v, "cotal ps"));
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf);
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere());
   writeResult(
     presentation,
     {
