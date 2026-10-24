@@ -17,6 +17,7 @@ import {
   isConnectRefusal,
   isSeededCommand,
   isWorkspaceTargetError,
+  localeIsUtf8,
   operationWarnings,
   outputDeclarationProblems,
   renderReport,
@@ -126,9 +127,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // whole fix. A file the command cannot use is reported like one that does not exist, and a refused
   // flag value names its corrected value, so it gets the classified report.
   if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
-    stderrLine("✗ ", failure.message, c.red);
-    if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
-    if (!(failure instanceof ConfirmationRequired) && !(failure instanceof MissingFlags)) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+    usageRefusal(failure, plain, failure instanceof ConfirmationRequired || failure instanceof MissingFlags ? undefined : cmd);
     debugStacks(failure);
     process.exit(1);
   }
@@ -279,16 +278,30 @@ export interface RunCliOptions {
   extensions?: boolean;
 }
 
-/** A usage error, rendered as one red line plus the command's help when there is one. Exit 1. */
-function usageExit(message: string, cmd?: Command, json = false): never {
+/** A usage refusal on stderr, then `cmd`'s help when one is given. Plain output and a locale without
+ *  UTF-8 have no refusal mark, so there the refusal is the classified report, which names its outcome
+ *  in words. */
+function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command): void {
+  const report = plain || !localeIsUtf8();
+  if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+  else {
+    stderrLine("✗ ", failure.message, c.red);
+    if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
+  }
+  if (!cmd) return;
+  if (report) console.error("");
+  printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+}
+
+/** A usage error, written by {@link usageRefusal} with the command's help when there is one. Exit 1. */
+function usageExit(message: string, cmd?: Command, json = false, plain = false): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
   if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
-  stderrLine("✗ ", message, c.red);
-  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+  usageRefusal(new CommandFailure("refused", "USAGE_INVALID", message), plain, cmd);
   process.exit(1);
 }
 
@@ -297,17 +310,18 @@ function usageExit(message: string, cmd?: Command, json = false): never {
  *  starting with a '-' …" tail is dropped. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const json = asksForJson(cmd, rest);
+  const plain = rest.includes("--plain");
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, plain);
     throw e;
   }
   const first = parsed.positionals[0];
   // History also accepts a root channel positional; only its reserved clear token is a mode.
   if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
-    usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd, json);
+    usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd, json, plain);
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
@@ -320,7 +334,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     cmd.validate?.(canonical);
   } catch (error) {
     if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true);
-    if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json);
+    if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain);
     throw error;
   }
   return canonical;
@@ -555,7 +569,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true);
     // A refused manager selection among several live managers becomes the choice: each manager
     // and the command again with `--on` for it.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
