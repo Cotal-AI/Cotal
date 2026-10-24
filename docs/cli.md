@@ -1396,7 +1396,7 @@ cotal clean restore-fallback --attempt <id> --force [--discard-history]
 | `--force` | none | Required: destructive, no prompting |
 | `--dry-run` | off | `store`/`all`: list what would be removed and remove nothing; needs no `--force` |
 | `--attempt <id>` | none | `restore-attempt`: exact stale pre-commit attempt; `restore-fallback`: matching healthy committed restore |
-| `--discard-history` | off | `restore-fallback`: also delete a registry-only restore's old store, the only copy of the history it left out |
+| `--discard-history` | off | `restore-fallback`: also delete an old store that holds the only copy of the history or workflow runs the restore left out |
 
 One configurable cleanup verb; every target requires `--force`, except a `--dry-run` of `store` or `all`.
 
@@ -1448,7 +1448,8 @@ stopped, the clean runs. After a healthy committed restore,
 `restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
 completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a
-registry restore it also requires `--discard-history`, as `backup cleanup-fallback` does. After an
+restore that left history or workflow runs out it also requires `--discard-history`, as
+`backup cleanup-fallback` does. After an
 `--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
@@ -1679,9 +1680,11 @@ started is proven gone or the claim's deadline has passed. Commit intent forbids
 removes only its unchanged retained old-store identity; it never removes the restored target.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
-starts a new backup cycle. A registry restore leaves every other stream out, so its old store holds
-the only copy of that history. Its `--dry-run` warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`, and the
-cleanup refuses `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
+starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
+and workflow runs included, and a full restore of an artifact with no workflow runs leaves the runs
+out, so its old store holds the only copy of them. Its `--dry-run` warns with
+`HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, and the cleanup refuses
+`USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 That refusal names the flag and does not print the command help.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
@@ -1689,8 +1692,8 @@ the native lock, preserves unknown outcomes and never retries a deletion. No liv
 or process kill is supplied.
 A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
 interrupted create's `backup-<uuid>`, as described above. `cotal status` shows the attempt a root
-holds under Maintenance, with its state and next step. For a registry restore that step includes
-`--discard-history`. A refusal for the wrong state names the next step
+holds under Maintenance, with its state and next step. For a restore that left history or workflow
+runs out that step includes `--discard-history`. A refusal for the wrong state names the next step
 for the recorded one. A completed `cleanup-fallback` retires the journal, so a repeated cleanup
 refuses with `TARGET_NOT_FOUND` and says the root holds no restore attempt.
 
@@ -1711,8 +1714,8 @@ active journal was written. Its `seatResume` field says whether retained seats w
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
 confirm that any seat joined. Its `restored` and `recreatedEmpty` fields name the streams the
 restore brought back and the ones it recreated empty. A registry restore brings back channel settings only, so chat and DM
-history start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
-names the store the restore set aside, which holds the only copy of that history. Its next step says
+history and workflow runs start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
+names the store the restore set aside, which holds the only copy of them. Its next step says
 that `backup cleanup-fallback` deletes that store only with `--discard-history`.
 `up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
@@ -1725,13 +1728,14 @@ artifact (`artifact`) is missing. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
-gives the cleanup step that retires it, with `--discard-history` for a registry restore. Unlike the other
+gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
+workflow runs out. Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
 Two commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses
 `LIFECYCLE_BLOCKED` (exit 2) and stops nothing: a new cut begins only after the restore journal is
 retired, so it names the attempt and `backup cleanup-fallback` as the next step, with
-`--discard-history` after a registry restore. `team boot`
+`--discard-history` after a restore that left history or workflow runs out. `team boot`
 resumes only a stopped stack whose manager never launched, and a restored stack's manager already
 ran, so start it with bare `cotal up` instead.
 
@@ -1756,8 +1760,11 @@ cut with the runs. A user-mode full backup holds no workflow run store, because 
 lifecycle heads name credential rows in the auth store, which a backup does not carry; its restore
 recreates the run stores empty and says so. An artifact in the earlier `cotal-space-backup/v1`
 format still restores; it holds no workflow run, so the run stores come back empty and the restore
-says so. Each restore lists what
-it restored and what it recreated empty. Artifacts are exclusively created `0700`;
+says so. `backup create` says so too when its artifact holds no runs, as a registry or user-mode
+artifact does. After a restore that left the runs out, the store it set aside holds their only copy:
+its receipt says so with a `RUNS_NOT_RESTORED` warning that names that store, and
+`backup cleanup-fallback` deletes it only with `--discard-history`, as for a registry restore. Each
+restore lists what it restored and what it recreated empty. Artifacts are exclusively created `0700`;
 snapshot/checkpoint files and
 the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
 directory is trusted operator input: hashes detect corruption, not malicious rewriting. So

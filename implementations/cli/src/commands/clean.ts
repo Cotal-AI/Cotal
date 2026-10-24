@@ -28,6 +28,7 @@ import {
   workspaceSecretStore,
   type LocalProcess,
   type LocalProcessContext,
+  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
@@ -104,11 +105,13 @@ export async function clean(args: ParsedArgs): Promise<void> {
     if (!values.attempt) throw new Error("clean restore-fallback requires --attempt <id>");
     const lock = acquireMaintenanceLock(root);
     try {
-      // A registry restore's old store holds the only copy of the history it left out.
+      // A restore that left something out set its old store aside as the only copy of it.
       const journal = readMaintenanceJournal(root);
-      const onlyCopy = journal?.state === "active" && journal.restore.attemptId === values.attempt && journal.restore.selection === "registry" && !journal.restore.cleanup ? journal.restore.previousSource?.identity.path : undefined;
+      const active = journal?.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
+      const leftOut = active ? restoreLeftOut(active) : undefined;
+      const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
       if (onlyCopy && !values["discard-history"])
-        throw new CommandFailure("refused", "USAGE_INVALID", `${values.attempt} was a registry-only restore, so the previous store at ${onlyCopy} holds the only copy of the chat and DM history it left out; nothing was deleted`, { remedy: `keep that store, or delete it and that history with cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history` });
+        throw new CommandFailure("refused", "USAGE_INVALID", `${values.attempt} ${active?.restore.selection === "registry" ? "was a registry-only restore" : "restored an artifact that held no workflow runs"}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out; nothing was deleted`, { remedy: `keep that store, or delete it and the ${leftOut} it holds with cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history` });
       const record = cleanupRestoreFallback(lock, values.attempt, { discardHistory: values["discard-history"] === true });
       console.log(c.green(record.restore.method === "disaster" ? `✓ retired restore ${record.restore.attemptId}; it replaced a missing source, so no old store was removed` : `✓ removed retained source for restore ${record.restore.attemptId}`));
     } finally {

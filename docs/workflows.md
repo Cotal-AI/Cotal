@@ -199,7 +199,9 @@ The recorded pins are preserved.
 mesh, which holds each run's journal, records and admission. A run that waited at a checkpoint or a
 timer when the backup was made is back after a full restore, and the manager takes it over as after
 a restart. What the run did after the backup is not in its record. A user-mode backup, and one made
-before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)).
+before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)). After a
+restore from one of them, or a registry-only restore, the store the restore set aside holds the only
+copy of the runs, and `cotal backup cleanup-fallback` deletes it only with `--discard-history`.
 
 ## From an agent session
 
