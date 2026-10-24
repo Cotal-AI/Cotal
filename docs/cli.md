@@ -4113,7 +4113,11 @@ or completion. A direct send to an agent the roster shows offline also warns on 
 `CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
 and lists the space's registered channels, so a mistyped name stands out. It reads that count as
 `cotal history` lists channels. Its native space policy still controls publication and no registry
-metadata is created. Metadata or a count it cannot read stays not checked. A message over the broker's message limit, envelope included, refuses
+metadata is created. Metadata or a count it cannot read stays not checked. A role send is stored
+whether or not anyone holds the role. When no present participant holds it, the send warns
+`ROLE_NOT_HELD`: the message waits on that role's queue until one takes it, and the warning names the
+closest role a present participant holds, or lists the roles present when none is close. A roster
+that is not current within two seconds adds no warning. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
 only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
 its refusal names the limit alone. A channel post the broker

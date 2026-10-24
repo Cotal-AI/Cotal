@@ -52,7 +52,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 66;
+const EXPECTED = 68;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -265,6 +265,15 @@ try {
   check("`cotal send -t` outside a seat exits 0", dm.code === 0, dm.stderr);
   check("`cotal send -c` outside a seat exits 0", msg.code === 0, msg.stderr);
   check("`cotal send -r` outside a seat exits 0", ask.code === 0, ask.stderr);
+  // A role send is stored whether or not anyone holds the role, so a mistyped role used to pass with
+  // no word. bob holds reviewer here.
+  const [typo, unheld] = await Promise.all([["reviewr", "--json"], ["planner"]].map((rest) => run(["send", "-r", ...rest, "x"])));
+  check("a role send no present participant holds is stored with ROLE_NOT_HELD naming the closest held role; a held role gets none",
+    typo!.code === 0 && typo!.stdout.includes('"code":"ROLE_NOT_HELD"') && typo!.stdout.includes('"nearest":"reviewer"') && typo!.stdout.includes("Did you mean reviewer?")
+      && !ask.stderr.includes("No present participant holds role"), { typo, ask: ask.stderr });
+  check("a role with no close held role lists the roles present instead",
+    unheld!.code === 0 && unheld!.stderr.includes("No present participant holds role planner; the message waits on that role's queue until one takes it.")
+      && /Present participants hold [^.]*reviewer/.test(unheld!.stderr) && !unheld!.stderr.includes("Did you mean"), unheld);
   check(
     "the `send -t` receipt to a live recipient reports a stored sequence and unconfirmed delivery, never delivered",
     /Stored sequence:\s+\d+/.test(dm.stdout) && /Delivery:\s+not confirmed/.test(dm.stdout) && !dm.stdout.includes("delivered"),

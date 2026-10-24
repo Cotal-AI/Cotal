@@ -245,6 +245,44 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with cotal who --all --space ${space}, then use one name or full identity` });
 }
 
+/** How long a role send waits for the presence snapshot before it says nothing about holders. */
+const ROSTER_MS = 2_000;
+
+/** A role send is stored whether or not anyone holds the role, so a mistyped role used to pass with
+ *  no word. Warn when no present participant holds it, naming the closest role one does hold, or the
+ *  roles present when none is close. A roster that is not current proves nothing, so it says nothing. */
+async function unheldRole(ep: Awaited<ReturnType<typeof openTransient>>["ep"], role: string, target: { space: string }): Promise<OutputWarning | undefined> {
+  await ep.waitForPresenceSnapshot(ROSTER_MS);
+  if (ep.presenceView().state !== "current") return undefined;
+  const held = [...new Set(ep.getRoster().flatMap((p) => p.status !== "offline" && p.card.role ? [p.card.role] : []))].sort();
+  if (held.includes(role)) return undefined;
+  const nearest = closestRole(role, held);
+  const hint = nearest !== undefined ? `Did you mean ${nearest}? It is the closest role a present participant holds.`
+    : held.length ? `Present participants hold ${held.join(", ")}.` : "No participant is present.";
+  return { code: "ROLE_NOT_HELD", target: { ...target, heldRoles: held, nearest: nearest ?? null }, message: `No present participant holds role ${role}; the message waits on that role's queue until one takes it. ${hint}` };
+}
+
+/** The held role within a third of `role`'s length in edits (at least one), the closest first. */
+function closestRole(role: string, held: readonly string[]): string | undefined {
+  const limit = Math.max(1, Math.floor(role.length / 3));
+  let best: { name: string; edits: number } | undefined;
+  for (const name of held) {
+    const edits = editDistance(role.toLowerCase(), name.toLowerCase());
+    if (edits <= limit && (best === undefined || edits < best.edits)) best = { name, edits };
+  }
+  return best?.name;
+}
+
+function editDistance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length]!;
+}
+
 /** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
 function payloadRefused(error: unknown): boolean {
   for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
@@ -372,6 +410,8 @@ export async function send(args: ParsedArgs): Promise<void> {
       } else if (input.mode === "ask") {
         const { msg, ack } = await ep.anycastAttributed(input.target, text);
         messageId = msg.id; sequence = ack.seq;
+        const unheld = await unheldRole(ep, input.target, target);
+        if (unheld) warnings.push(unheld);
       } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(bytes);
