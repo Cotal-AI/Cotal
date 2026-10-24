@@ -8,7 +8,11 @@
  * under both spellings and say that actor grants need a user-auth space, grant and revoke before
  * they ask for a subject or the ACL flags; nothing is written. A
  * user-auth space lists its row under both spellings, with its role, label and parent in the table
- * and in `--json`, which `actor list` takes as `auth grants` does. Bare `cotal auth` fills its Next lines
+ * and in `--json`, which `actor list` takes as `auth grants` does. With `--sub`, both list only the rows
+ * of the owner that IdP subject derives to, titled with the subject and that owner, and an empty
+ * `--sub` is a value refusal. `actor label` changes only an interactive row's label and keeps its
+ * lifecycle and grant time; it refuses a missing row, a managed agent's row, and a static space. Bare
+ * `cotal auth` fills its Next lines
  * with the named or resolved space. `auth retire` refuses UNSUPPORTED there too, and its help and
  * refusal name the lever that works, rotating the space identity. Broker-free; the mesh registry and
  * the prepared spaces are private to this run.
@@ -22,7 +26,7 @@ import { join } from "node:path";
 import { createSpaceAuth, mintLifecycleUid, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { authDir, exitCode, findCotalRoot, hasUserAuthState, isCommandFailure, recordMesh, recordPreparedSpace, saveSpaceAuth, userAuthStateDir, workspaceSecretStore, type CommandFailure } from "@cotal-ai/workspace";
-import { deriveOwnerForIdpSubject, ensureOwnerSecret, ensurePinnedIdp, grantActor } from "../src/index.js";
+import { deriveOwnerForIdpSubject, ensureOwnerSecret, ensurePinnedIdp, findInteractiveActor, findManagedActor, grantActor, grantManagedActor, newActorToken } from "../src/index.js";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -143,6 +147,58 @@ try {
       { actor: "rev", role: "reviewer", label: "Code reviewer", parent: `${owner}.cli` },
     ], "actor list --json carries each row's role, label and parent");
     assert.deepEqual(actorItems.result, (JSON.parse(authJson.out) as { result: unknown }).result, "actor list --json and auth grants --json list the same rows");
+
+    // `--sub` lists one IdP subject's rows. The ledger keeps no subject, so the subject derives to its
+    // owner as a grant does, and another owner's row is left out.
+    const otherOwner = deriveOwnerForIdpSubject(secret, issuer, "other-human");
+    grantActor(dir, { owner: otherOwner, actor: "cli", scope: ["spawn"], allowSubscribe: [">"], allowPublish: [">"] });
+    for (const [name, cmd, verb] of [["actor list", actorCommand, "list"], ["auth grants", authCommand, "grants"]] as const) {
+      const plain = flat((await run(cmd, root, { space, sub: "target-human" }, [verb])).out);
+      assert.ok(plain.includes(`Rows for target-human (owner ${owner})`), `${name} --sub is titled with the subject and its owner: ${plain}`);
+      assert.ok(plain.includes(`${owner}.cli`) && plain.includes(`${owner}.rev`) && !plain.includes(otherOwner), `${name} --sub lists only that subject's rows: ${plain}`);
+    }
+    type SubjectEnvelope = { target: unknown; result: { subject?: string; owner?: string; items: { owner: string; actor: string }[] } };
+    const bySubject = JSON.parse((await run(actorCommand, root, { space, sub: "target-human", json: true }, ["list"])).out) as SubjectEnvelope;
+    const bySubjectAuth = JSON.parse((await run(authCommand, root, { space, sub: "target-human", json: true }, ["grants"])).out) as SubjectEnvelope;
+    assert.deepEqual(bySubject.target, { space, owner }, "actor list --sub --json names the owner in its target");
+    assert.deepEqual([bySubject.result.subject, bySubject.result.owner], ["target-human", owner], "actor list --sub --json carries the subject and its owner");
+    assert.deepEqual(bySubject.result.items.map((item) => `${item.owner}.${item.actor}`), [`${owner}.cli`, `${owner}.rev`], "actor list --sub --json lists only that subject's rows");
+    assert.deepEqual(bySubject.result, bySubjectAuth.result, "actor list --sub and auth grants --sub list the same rows");
+    const everyRow = JSON.parse((await run(actorCommand, root, { space, json: true }, ["list"])).out) as SubjectEnvelope;
+    assert.ok(everyRow.result.items.some((item) => item.owner === otherOwner) && everyRow.result.subject === undefined, "control: without --sub every owner's rows are listed");
+    const nobody = flat((await run(actorCommand, root, { space, sub: "nobody-human" }, ["list"])).out);
+    assert.ok(nobody.includes(`Rows for nobody-human (owner ${deriveOwnerForIdpSubject(secret, issuer, "nobody-human")})`) && nobody.includes("No rows for this owner"), `a subject with no rows lists none: ${nobody}`);
+    const empty = await run(actorCommand, root, { space, sub: "" }, ["list"]);
+    assert.deepEqual([empty.failure?.code, empty.failure?.selfContained, empty.out], ["USAGE_INVALID", true, ""], "an empty --sub is a value refusal that lists nothing");
+
+    // `actor label` changes only the label. The lifecycle, the grant time and every grant field stay,
+    // so a bearer issued under the row keeps working.
+    const beforeLabel = findInteractiveActor(dir, owner, "rev")!;
+    const relabel = await run(actorCommand, root, { space, owner, json: true }, ["label", "rev", "Lead reviewer"]);
+    assert.equal(relabel.failure, undefined, `actor label succeeds: ${relabel.failure?.message}`);
+    assert.deepEqual(findInteractiveActor(dir, owner, "rev"), { ...beforeLabel, label: "Lead reviewer" }, "actor label changes only the label, keeping the lifecycle and grant time");
+    const labelled = JSON.parse(relabel.out) as { target: unknown; result: { kind: string; grant: { label: string | null }; previousLabel: string | null } };
+    assert.deepEqual([labelled.target, labelled.result.kind, labelled.result.grant.label, labelled.result.previousLabel], [{ space, owner, actor: "rev" }, "actor-label", "Lead reviewer", "Code reviewer"], "the label receipt names the row, its new label and the earlier one");
+    const bySubLabel = flat((await run(actorCommand, root, { space, sub: "target-human" }, ["label", "cli", "Target laptop"])).out);
+    assert.ok(bySubLabel.includes("Actor label stored") && bySubLabel.includes("Earlier label: none") && bySubLabel.includes("Lifecycle: kept"), `actor label --sub finds the row as a grant does: ${bySubLabel}`);
+    assert.equal(findInteractiveActor(dir, owner, "cli")?.label, "Target laptop", "actor label --sub wrote the label");
+    const absent = await run(actorCommand, root, { space, owner }, ["label", "nobody", "x"]);
+    assert.equal(absent.failure?.code, "TARGET_NOT_FOUND", `actor label of an actor with no row refuses TARGET_NOT_FOUND: ${absent.failure?.message}`);
+    grantManagedActor(dir, { custody: { kind: "foreground" }, owner, actor: "worker", scope: [], parent: `${owner}.cli`, allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid() });
+    const managed = await run(actorCommand, root, { space, owner }, ["label", "worker", "x"]);
+    assert.equal(managed.failure?.code, "UNSUPPORTED", `actor label of a managed agent refuses UNSUPPORTED: ${managed.failure?.message}`);
+    assert.equal(findManagedActor(dir, owner, "worker")?.label, undefined, "a managed agent's row is not relabelled");
+    for (const [words, values, why] of [
+      [["label", "rev"], { space, owner }, "no label"],
+      [["label", "rev", ""], { space, owner }, "an empty label"],
+      [["label", "rev", "a", "b"], { space, owner }, "two labels"],
+      [["label", "rev", "x"], { space }, "no --sub or --owner"],
+      [["label", "rev", "x"], { space, owner, role: "lead" }, "a grant field"],
+    ] as const) {
+      const refused = await run(actorCommand, root, values, [...words]);
+      assert.equal(refused.failure?.code, "USAGE_INVALID", `actor label with ${why} is a usage refusal: ${refused.failure?.message}`);
+    }
+    assert.equal(findInteractiveActor(dir, owner, "rev")?.label, "Lead reviewer", "a refused label writes nothing");
   }
 
   // 4. A registered static space has no user-auth ledger anywhere: list, grant and revoke refuse
@@ -177,6 +233,8 @@ try {
       assert.equal(actor.failure?.code, "UNSUPPORTED", `actor ${verb} with no --sub on a static space refuses UNSUPPORTED before asking for one: ${actor.failure?.message ?? actor.out}`);
       assert.deepEqual(refusal(actor.failure), refusal(auth.failure), `actor ${verb} and auth ${verb} with no --sub refuse alike on a static space`);
     }
+    const staticLabel = await run(actorCommand, root, { space, sub: "someone" }, ["label", "alice", "x"]);
+    assert.equal(staticLabel.failure?.message, `space "${space}" is a static-credential space and has no user-auth ledger; no label was written`, "actor label on a static space refuses UNSUPPORTED and says nothing was written");
     assert.equal(hasUserAuthState(root, space, { readOnly: true }), false, "no user-auth state was written on the static space");
     const named = flat((await run(authCommand, base, { space, plain: true }, [])).out);
     assert.ok(named.includes(`cotal whoami --space ${space}`) && named.includes(`cotal auth grants --space ${space}`), `bare auth --space fills its Next lines: ${named}`);

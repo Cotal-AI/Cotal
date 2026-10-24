@@ -5876,13 +5876,14 @@ account's discovered registry entries. See
 cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--role <r>] [--label <l>] [--json|--plain]
 cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>] [--json|--plain]
 cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--json|--plain]
-cotal actor list [--json|--plain]
+cotal actor label <actor> (--sub <IdP subject> | --owner <u_…>) <label> [--json|--plain]
+cotal actor list [--sub <IdP subject>] [--json|--plain]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | the resolved mesh | Space whose ledger to manage |
-| `--sub <subject>` | none | The IdP subject (shown by `cotal login`) the actor belongs to |
+| `--sub <subject>` | none | The IdP subject (shown by `cotal login`) the actor belongs to. With `list`, only that subject's rows are listed |
 | `--owner <u_…>` | none | The derived owner token (alternative to `--sub`) |
 | `--full` | off | Fill each ACL flag left off with its wide default; without it, `grant` refuses unless all three are named |
 | `--scope <a,b>` | `spawn,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `run` = may start workflow runs; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it). Any other name is refused |
@@ -5894,7 +5895,17 @@ cotal actor list [--json|--plain]
 | `--json`, `-j`, `--plain` | off | Print one JSON document or line-oriented text, as `auth grants`, `auth grant` and `auth revoke` do |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
-`cotal help actor` lists `grant`, `revoke` and `list`, and shell completion offers them.
+The ledger stores no IdP subject. `actor list --sub <subject>` and `auth grants --sub <subject>`
+derive the subject's owner as `grant --sub` does, with this root's owner secret and IdP pin, and list
+that owner's rows, interactive and managed-agent alike. The report is titled
+`Rows for <subject> (owner <u_…>)`, and JSON adds `subject` and `owner` to its result and names the
+owner in its target. A subject with no rows lists none. An empty `--sub` refuses `USAGE_INVALID`.
+`actor label <actor> <label>` sets only an interactive row's label. The label is outside the
+authorization digest, so the row keeps its lifecycle, grant time, capabilities and channels, and a
+bearer issued under it keeps working. The receipt names the earlier label, and JSON carries it as
+`previousLabel`. An actor with no row refuses `TARGET_NOT_FOUND`, and a managed agent's row refuses
+`UNSUPPORTED`. Neither writes anything.
+`cotal help actor` lists `grant`, `revoke`, `label` and `list`, and shell completion offers them.
 `actor list`, `grant` and `revoke` resolve their space and root as `auth grants`, `auth grant` and
 `auth revoke` do, and refuse the same way. With no space to resolve they refuse with a next step,
 such as `cotal up`, rather than assume one, and a root that does not hold the space's user-auth
