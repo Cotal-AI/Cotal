@@ -75,7 +75,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { acquireMaintenanceLock, agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, releaseMaintenanceLock, stopReservationPath } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, isCommandFailure, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, releaseMaintenanceLock, stopReservationPath } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -642,10 +642,16 @@ try {
   const killDownAt = async (root: string, space: string, definition: string): Promise<string | undefined> => {
     assertSmokeSandboxDown(anchors.get(root), ["down", "--yes", "--json"], { cwd: root, env });
     const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes", "--json"], { cwd: root, env, stdio: "ignore" });
-    const stopping = () => serviceInstances(space, definition)[0]?.record.value;
+    // The down rewrites the record while this loop reads it, and a read that sees the file change
+    // refuses rather than return a torn record, so that read observes nothing and the loop reads again.
+    const read = () => {
+      try { return serviceInstances(space, definition)[0]?.record.value; }
+      catch (error) { if (isCommandFailure(error) && error.message === "the local record source changed while it was read") return undefined; throw error; }
+    };
     const end = Date.now() + 120_000;
-    while (Date.now() < end && child.exitCode === null && stopping()?.state !== "stopping") await sleep(2);
-    const request = stopping()?.state === "stopping" ? stopping()!.requestId : undefined;
+    let seen = read();
+    while (Date.now() < end && child.exitCode === null && seen?.state !== "stopping") { await sleep(2); seen = read(); }
+    const request = seen?.state === "stopping" ? seen.requestId : undefined;
     child.kill("SIGKILL");
     await exited(child);
     return request;
