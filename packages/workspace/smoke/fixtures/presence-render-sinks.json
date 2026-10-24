@@ -4301,7 +4301,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": "outside this folder\" : \"\"}`, \"waiting\")] });\n  return { title:",
+      "anchor": "de this folder\" : \"\"}`, \"waiting\")] });\n  return { title:",
       "class": "non-render/control",
       "rationale": "Status brokers section: \"waiting\" is the color tone for an unrecorded selected space, not presence."
     },
