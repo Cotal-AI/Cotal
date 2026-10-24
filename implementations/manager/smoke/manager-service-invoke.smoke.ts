@@ -15,7 +15,8 @@
  *     closureDigest MATCHES the registered declaration.
  *  2. invoke "status" (untargeted, void) returns the typed ManagerStatus.
  *  3. invoke "spawn" (the 16-field launch) boots a REAL agent; the recompiled input contract
- *     gates a bad field pre-publish (the caller's own closed schema, fetched not hand-written).
+ *     gates a bad field pre-publish (the caller's own closed schema, fetched not hand-written), and
+ *     a spawn the manager refuses at accept arrives under the manager's own code.
  *  4. invoke targeted "despawn" (owner mode) tears the agent down; a targeted command invoked
  *     without a target, and an untargeted one WITH a target, both refuse at the generic layer.
  *  5. a command OUTSIDE the caller's describe VIEW is not in the resolved surface (not-found).
@@ -64,6 +65,8 @@ const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 for (const n of ["w1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+// Invalid frontmatter: the manager refuses this persona with bad-request (step 3).
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "broken.md"), "---\nname: [broken\n---\n");
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
@@ -175,6 +178,12 @@ try {
   try { await invokeCommand(nc, space, service, "spawn", { name: "w1", bogus: 1 }, { currentEpoch }); }
   catch (e) { badCode = e instanceof EpEnvelopeError ? e.code : (e as Error).message; }
   check("a bad spawn field is bad-request at the FETCHED-then-recompiled input contract (not a hand-written schema)", badCode === "bad-request", badCode);
+  // #3561: a spawn the manager refuses at accept arrives under the manager's own code. The
+  // persona refusal is bad-request; it used to be served as failed-precondition.
+  const rBroken = await invokeCommand(nc, space, service, "spawn", { name: "broken", events: false }, { currentEpoch });
+  check("a spawn refused at accept keeps the manager's own code and stays not-executed",
+    rBroken.reply.ok === false && rBroken.reply.error?.code === "bad-request" && rBroken.reply.error.outcome === "not-executed"
+    && rBroken.reply.error.message.includes("invalid native frontmatter"), rBroken.reply);
   // P2 item 2: spawn is an ACTION - invoke returns the acceptance floor (before the agent is live).
   const rSpawn = await invokeCommand(nc, space, service, "spawn", { name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false }, { currentEpoch, deadlineMs: 30_000 });
   const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string; fingerprint?: string; readinessDeadlineMs?: number };

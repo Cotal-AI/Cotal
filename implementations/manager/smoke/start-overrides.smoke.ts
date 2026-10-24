@@ -28,7 +28,7 @@ import { firstFreeName } from "@cotal-ai/core";
  *  convention silently pins it. Derived, this follows the scheme wherever it goes. */
 const NUM_SEP = firstFreeName("a", (n) => n === "a").slice(1, 2);
 const autoNumbered = (base: string) => new RegExp(`^${base}(${NUM_SEP}\\d+)?$`);
-import { principalKey, registry, DEV_OWNER, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle, type MeshLaunchAgent } from "@cotal-ai/core";
+import { principalKey, registry, DEV_OWNER, lifecycleBlocked, lifecycleBlockedFrom, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle, type MeshLaunchAgent } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -270,6 +270,24 @@ const j = (v: unknown) => JSON.stringify(v);
     if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
     else process.env.COTAL_DEFAULT_AGENT = prev;
   }
+}
+
+// 11 — #3561: a refusal thrown as an envelope after the reserve keeps its code on the reply, beside
+// the details and rendered text #873 kept. The envelope is the activation saga's retired-gate refusal.
+{
+  let thrown: unknown;
+  registry.register({ ...recCon, name: "smoke-refuses", buildLaunch: () => { throw thrown; } });
+  const refusedWith = (e: unknown) => {
+    thrown = e;
+    return mgr.startAgent({ name: "plain", agent: "smoke-refuses", events: false });
+  };
+  const burned = await refusedWith(lifecycleBlocked("permission-denied", "uid u1 has a terminally retired issuance gate; a burned uid never re-activates",
+    { blockedOp: "activation", gateState: "retired", opId: "a".repeat(26) }));
+  check("a thrown envelope's code rides the reply", burned.ok === false && burned.code === "permission-denied", burned);
+  check("...beside its lifecycle details and rendered text",
+    lifecycleBlockedFrom(burned)?.gateState === "retired" && /blockedOp=activation/.test(burned.error ?? ""), burned);
+  const plain = await refusedWith(new Error("the launch threw"));
+  check("a plain Error has no code to keep", plain.ok === false && plain.code === undefined && plain.error === "the launch threw", plain);
 }
 
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");

@@ -186,6 +186,7 @@ import {
   epeSubject,
   submissionFingerprint,
   EpEnvelopeError,
+  controlReplyFromThrown,
   lifecycleBlocked,
   lifecycleBlockedFrom,
   renderLifecycleBlocked,
@@ -363,6 +364,13 @@ function caughtEnvelope(e: unknown): EpEnvelopeError | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The code a failed {@link ControlReply} is served under. Only the responder knows a refusal's
+ *  code, so a reply that carries one keeps it; a hand-built reply without one is
+ *  `failed-precondition`. */
+function replyCode(r: ControlReply): EpErrorCode {
+  return (r.code ?? "failed-precondition") as EpErrorCode;
 }
 
 /** The failed terminal a post-accept fallback commits for `error` and `source`'s optional details.
@@ -3922,11 +3930,11 @@ export class Manager {
   private managerServiceDefs(): EpCommandDef[] {
     const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
-    // A ctl-core failure reply becomes the §13.3 structured error the serve boundary publishes.
-    // The data half of a failure reply (e.g. a degraded resume result) rides the error MESSAGE
-    // only — the action model gives failures a typed channel.
+    // A ctl-core failure reply becomes the §13.3 structured error the serve boundary publishes,
+    // under the reply's own code. The data half of a failure reply (e.g. a degraded resume result)
+    // rides the error MESSAGE only — the action model gives failures a typed channel.
     const unwrap = (r: ControlReply): unknown => {
-      if (!r.ok) throw new EpEnvelopeError("failed-precondition", r.error ?? "the operation failed");
+      if (!r.ok) throw new EpEnvelopeError(replyCode(r), r.error ?? "the operation failed");
       return r.data;
     };
     // The admin-family serve gate: every `manager.admin`-class
@@ -6795,14 +6803,14 @@ export class Manager {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.
       // A lifecycle-blocked envelope already named the barrier; keep its details on the ControlReply
-      // so follow/CLI/cotal_spawn do not collapse it to a generic string (#873). An extension can throw
+      // so follow/CLI/cotal_spawn do not collapse it to a generic string (#873), and keep its code so
+      // a caller keying on it sees the code the refusal was thrown with. An extension can throw
       // any value, and an envelope's `message` is only typed as a string, so the refusal text always
       // comes from rejectionText; telling an envelope apart is guarded because a thrown Proxy can
       // throw from `instanceof` or from its own fields.
       const error = rejectionText(e);
       try {
-        if (e instanceof EpEnvelopeError)
-          return { ok: false, error: renderLifecycleBlocked(error, e), ...(e.details ? { details: e.details } : {}) };
+        if (e instanceof EpEnvelopeError) return controlReplyFromThrown(e, error);
       } catch { /* not a readable envelope */ }
       return { ok: false, error };
     } finally {
@@ -9130,7 +9138,7 @@ export class Manager {
       // outcome unknown.
       if (acceptance === undefined) {
         const details = reply.details;
-        rejectAccept(new EpEnvelopeError(undone ?? "failed-precondition", reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
+        rejectAccept(new EpEnvelopeError(undone ?? replyCode(reply), reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
         return;
       }
       // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`
