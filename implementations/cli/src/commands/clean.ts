@@ -158,12 +158,12 @@ export async function clean(args: ParsedArgs): Promise<void> {
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
     console.log(c.dim(`dry run - nothing was removed; cotal clean ${target}${values["store-dir"] ? ` --store-dir ${values["store-dir"]}` : ""} --force removes these`));
-    if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes"));
+    if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;
   }
   for (const path of removed) console.log(c.green(`✓ removed ${path}`));
   if (target === "all") console.log(c.dim("a fresh space identity is minted on the next `cotal up`"));
-  if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Take a new full backup after the next `cotal up`"));
+  if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
 }
 
 /** The live-purge half, shared with the `cotal history clear` alias. Resolves the running mesh (from

@@ -1410,8 +1410,10 @@ One configurable cleanup verb; every target requires `--force`, except a `--dry-
   registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
   `cotal up` then refuses and names `cotal up -f <manifest>` when the deployment ran at another
   address, mode or space. A full backup is bound to the space trust it was taken under, so full
-  backups taken before `clean all` no longer restore into this root. Its dry run and its receipt
-  say so when it removes that trust; take a new full backup after the next `cotal up`.
+  backups taken before `clean all` no longer restore into this root. Only the registry of such a
+  backup still restores, with `backup restore <dir> --only registry`, and chat and DM history start
+  empty. Its dry run and its receipt say so when it removes that trust; take a new full backup after
+  the next `cotal up`.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
 running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). On a
@@ -1886,7 +1888,8 @@ full restores commit to the validated operator, system-account, data-account, an
 chain in addition to the static/user authority fingerprint. Because the system account is part of that
 commitment, a [`cotal up --rotate-sys`](#up) makes every full artifact taken before it unrestorable
 against this root: take a fresh full backup after each rotation. [`cotal clean all`](#clean) removes
-the space trust itself, so it does the same. The composed commitment is revalidated
+the space trust itself, so it does the same. Such an artifact still restores its registry with
+`--only registry`, and chat and DM history start empty. The composed commitment is revalidated
 immediately before store mutation and never includes secret seeds. Restore never creates fresh auth.
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
@@ -4917,7 +4920,9 @@ is refused with the literal namespace replacement.
 A minted credential cannot be revoked on its own, and `auth retire` refuses. It stays valid until it
 expires, and one minted with `--no-expiry` until the space identity rotates: `cotal down`, then
 `cotal reset space <space>` (or `cotal clean all --force` from the root when `down` left no
-registration), then `cotal up`. That stops every credential the space issued.
+registration), then `cotal up`. That stops every credential the space issued. It also stops every
+earlier full backup of the space from restoring into this root: only its registry restores, and
+chat and DM history start empty (see [Backups](#backups)).
 
 ### Endpoint caller credentials
 
@@ -7091,7 +7096,8 @@ endpoint accepts retirement only from the requester's own current serve identity
 CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
 loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal
 names the lever that works, rotating the space identity, which stops every credential the space issued
-(see [auth mint](#auth-mint)).
+(see [auth mint](#auth-mint)). The rotation also leaves earlier full backups of the space restoring
+only their registry.
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
 refuses with `UNSUPPORTED` because its conferring-handle redemption path is not exposed. It does
