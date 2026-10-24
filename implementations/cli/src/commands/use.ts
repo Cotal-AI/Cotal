@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { clearCurrent, CommandFailure, findMesh, findPreparedSpace, folderSpaceOverSelection, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, readCurrent, setCurrent, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { boundedValue, clearCurrent, CommandFailure, findMesh, findPreparedSpace, folderSpaceOverSelection, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, readCurrent, setCurrent, SHOWN_VALUE_MAX, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
 
 export const useFlags = [
   { name: "clear", type: "boolean", description: "clear the selection, so a command targets its folder's space again" },
@@ -51,7 +51,7 @@ export async function use(args: ParsedArgs): Promise<void> {
     // No target, so the refusal is not headed with a space that does not exist. Clearing is a step only
     // while something is selected.
     const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)])].sort();
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered or prepared here${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${boundedValue(name, SHOWN_VALUE_MAX)}" is registered or prepared here${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
       remedy: `see the registered and prepared spaces with \`cotal space\`${previous === null ? "" : ", or clear the selection with `cotal use --clear`"}`,
     });
   }

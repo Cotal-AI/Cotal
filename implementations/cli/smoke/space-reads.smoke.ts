@@ -156,6 +156,17 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   run(["use", "alpha"]);
   const kept = json(["use", "none"]);
   check("with a space selected, an unknown name's refusal names --clear", kept.status === 2 && /cotal use --clear/.test(kept.env?.error?.remedy ?? "") && getCurrent() === "alpha", shown(kept));
+  // A name of any length is looked up whole. The refusal repeats its first 128 characters and its
+  // length, so one over-long argument does not print a line as long as itself.
+  const long = "x".repeat(100_000);
+  const longName = json(["use", long]);
+  check("an over-long unregistered name is refused with its first 128 characters and its length, and the selection is kept",
+    longName.status === 2 && longName.env?.error?.code === "TARGET_NOT_FOUND" && (longName.env.error.message as string).startsWith(`no space named "${"x".repeat(128)}… (100000 characters)" is registered or prepared here; known spaces: alpha, beta`) && longName.stdout.length < 1_000 && getCurrent() === "alpha", shown(longName));
+  check("its target is what a short name's refusal carries", JSON.stringify(longName.env?.target) === JSON.stringify(kept.env?.target), { long: longName.env?.target, short: kept.env?.target });
+  const longText = run(["use", long]);
+  check("its text refusal repeats the name the same way", longText.status === 2 && longText.stderr.includes(`no space named "${"x".repeat(128)}… (100000 characters)"`) && longText.stderr.length < 1_000, shown(longText));
+  const edge = json(["use", "w".repeat(128)]);
+  check("control: a 128-character unregistered name is repeated whole", edge.status === 2 && (edge.env?.error?.message as string).startsWith(`no space named "${"w".repeat(128)}" is registered`) && !/characters\)/.test(edge.stdout), shown(edge));
 }
 
 // ── show ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -209,6 +220,33 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("a command run under that selection refuses with TARGET_NOT_FOUND rather than reaching another space", who.status === 2 && who.env?.error?.code === "TARGET_NOT_FOUND" && /the selected space "ghost" is not registered here/.test(who.env.error.message), shown(who));
   const whoHuman = run(["who"]);
   check("the refusal tells how to select a registered space", whoHuman.status === 2 && whoHuman.stdout === "" && /select one with `cotal use <name>`/.test(whoHuman.stderr), shown(whoHuman));
+}
+
+// ── An over-long space name ──────────────────────────────────────────────────────────────────────────
+{
+  // The name is looked up whole; what a refusal or report repeats is its first 128 characters and its
+  // length.
+  const previous = getCurrent();
+  const long = "x".repeat(100_000);
+  const shownLong = `"${"x".repeat(128)}… (100000 characters)"`;
+  const short = json(["who", "--space", "nope"]);
+  const who = json(["who", "--space", long]);
+  check("an over-long --space is refused with its first 128 characters and its length", who.status === 2 && who.env?.error?.code === "TARGET_NOT_FOUND" && who.env.error.message === `no space named ${shownLong} is registered here` && who.stdout.length < 1_000, shown(who));
+  check("its target is what a short name's refusal carries", JSON.stringify(who.env?.target) === JSON.stringify(short.env?.target), { long: who.env?.target, short: short.env?.target });
+  const whoText = run(["who", "--space", long]);
+  check("its text refusal repeats the name the same way", whoText.status === 2 && whoText.stderr.includes(`no space named ${shownLong}`) && whoText.stderr.length < 1_000, shown(whoText));
+  const status = json(["status", "--space", long]);
+  check("status --space reports the over-long name the same way", status.status === 0 && status.env?.result?.selected?.message === `no space named ${shownLong} is registered here` && status.stdout.length < 10_000, shown(status));
+  const statusText = run(["status", "--space", long]);
+  check("its text report has no line longer than a few hundred characters", statusText.status === 0 && statusText.stdout.includes(`no space named ${shownLong}`) && Math.max(...statusText.stdout.split("\n").map((l) => l.length)) < 400, shown(statusText));
+  setCurrent(long);
+  const selected = json(["who"]);
+  check("a selected over-long name is repeated the same way", selected.status === 2 && selected.env?.error?.message === `the selected space ${shownLong} is not registered here`, shown(selected));
+  check("the selection itself is kept whole", getCurrent() === long);
+  const edge = json(["who", "--space", "w".repeat(128)]);
+  check("control: a 128-character --space is repeated whole", edge.status === 2 && edge.env?.error?.message === `no space named "${"w".repeat(128)}" is registered here`, shown(edge));
+  if (previous === undefined) clearCurrent();
+  else setCurrent(previous);
 }
 
 // ── help and completion ──────────────────────────────────────────────────────────────────────────────
