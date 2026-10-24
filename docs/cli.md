@@ -4137,11 +4137,13 @@ The recipient grammar is checked before connector installation or target prepara
 and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
 `name one concrete channel, without wildcards`, and a channel or role name outside the grammar is
 refused with the rule it breaks.
-A direct target resolves by its full identity or an unambiguous name. A name that no participant
+A direct target resolves by its full identity or an unambiguous name. Names match without regard
+to case, so `bob`, `Bob` and `BOB` are one name, and a participant whose name another shares in any
+case is reached by its full identity. A name that no participant
 can carry, such as one holding `\` or longer than 128 characters, is refused with the name rule
 before any presence lookup. A name collision refuses
-with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, each with its kind
-(`agent`, `endpoint` or `chat session`) and the local time its process started, and a target that is not
+with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, each with its display
+name, its kind (`agent`, `endpoint` or `chat session`) and the local time its process started, and a target that is not
 present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
 agent for you.
 

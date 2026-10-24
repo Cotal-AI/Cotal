@@ -17,6 +17,7 @@ import {
   CotalEndpoint,
   type FlagSpec,
   type FlagValues,
+  type PeerCandidate,
   type Presence,
   type CompletionResult,
   type ParsedArgs,
@@ -241,12 +242,13 @@ function sharedNameRemedy(use: "to" | "mention", identities: readonly string[]):
     : `a mention carries the name, so it cannot single one of them out; send to one with --to <full identity> instead: ${identities.join(", ")}`;
 }
 
-/** A full identity with what tells it apart from another of the same name: its kind and, when its
- *  presence reports one, the local time its process started. */
-function identityLabel(id: string, p: Presence | undefined): string {
-  if (!p) return id;
+/** A full identity with what tells it apart from another of the same name: its display name, whose
+ *  case may differ, its kind and, when its presence reports one, the local time its process started. */
+function identityLabel(candidate: PeerCandidate, p: Presence | undefined): string {
+  const name = JSON.stringify(candidate.name);
+  if (!p) return `${candidate.id} (${name})`;
   const kind = p.card.meta?.sessionKind === "chat" ? "chat session" : p.card.kind ?? "endpoint";
-  return `${id} (${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
+  return `${candidate.id} (${name}, ${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
 }
 
 async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention"): Promise<Presence> {
@@ -258,7 +260,7 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
     } catch (error) {
       if (!(error instanceof AmbiguousPeerError)) throw error;
       const roster = ep.getRoster();
-      throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name", { target: { space, name, candidates: error.candidates }, remedy: sharedNameRemedy(use, error.candidates.map((candidate) => identityLabel(candidate.id, roster.find((p) => p.card.id === candidate.id)))) });
+      throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name", { target: { space, name, candidates: error.candidates }, remedy: sharedNameRemedy(use, error.candidates.map((candidate) => identityLabel(candidate, roster.find((p) => p.card.id === candidate.id)))) });
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
