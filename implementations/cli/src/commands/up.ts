@@ -213,6 +213,7 @@ import { checkSpaceName } from "./meshes-add.js";
 import { cleanedManifestStart, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
   bindReaches,
+  canonicalServer,
   controllerStackApplies,
   recheckExistingStore,
   requestedStackMode,
@@ -732,6 +733,9 @@ export async function upCommand(args: ParsedArgs): Promise<void> {
 export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
   // One `up`, its re-entries included, reads each channels file once (see `channelsReads`).
   if (!channelsReads.getStore()) return channelsReads.run(new Map(), () => up(args, inheritedLock, freshTeamBoot, restoreSink));
+  // A --server is recorded and compared in one spelling, the scheme in lower case with no bare
+  // trailing slash. A manifest boot checks its own override against broker.servers.
+  if (typeof args.values.server === "string" && !args.values.file) args = { ...args, values: { ...args.values, server: canonicalServer(args.values.server) } };
   // A re-entry owns its inherited lock even if mode validation refuses before runUp adopts it.
   let adopted = false;
   try {

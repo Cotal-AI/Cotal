@@ -187,6 +187,15 @@ const TLS_INPUTS: readonly string[] = ["tls-cert", "tls-key", "server tls://"];
 
 const namesTlsServer = (values: ParsedArgs["values"]): boolean => typeof values.server === "string" && /^tls:\/\//i.test(values.server);
 
+/** A `--server` broker URL as `up` records and compares it: the scheme in lower case, with no bare
+ *  trailing `/`. Any other value comes back as given, for the address checks to refuse. */
+export function canonicalServer(server: string): string {
+  let url: URL;
+  try { url = new URL(server); } catch { return server; }
+  if ((url.protocol !== "nats:" && url.protocol !== "tls:") || url.username || url.password || url.search || url.hash || (url.pathname !== "" && url.pathname !== "/") || server.includes(",")) return server;
+  return `${url.protocol}//${url.host}`;
+}
+
 /** Whether an `up` invocation asks for a TLS broker. */
 export function requestsTls(values: ParsedArgs["values"]): boolean {
   return values["tls-cert"] !== undefined || values["tls-key"] !== undefined || namesTlsServer(values);
@@ -572,7 +581,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const recordedTarget = { root, space, recorded: { space: previous?.journal.space, server: previous?.journal.server }, requested: { space, server: request.server } };
   if (previous && previous.journal.space !== space)
     throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded for space ${previous.journal.space}, and this up asked for ${space}; it was not rebound`, { target: recordedTarget, remedy: `run bare cotal up from ${root} to start ${previous.journal.space}` });
-  if (previous && previous.journal.server !== request.server)
+  if (previous && canonicalServer(previous.journal.server) !== canonicalServer(request.server))
     throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded at ${previous.journal.server}, and this up asked for ${request.server}; a recorded stack is not moved to another address`, { target: recordedTarget, remedy: `run bare cotal up from ${root} to start it at ${previous.journal.server}` });
   // The broker service's own address rules run before anything is written, so an address it would
   // refuse never becomes this root's recorded broker address.
