@@ -16,6 +16,9 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 
 type Docs = typeof import("@cotal-ai/connector-core/docs");
 
+/** Every page name `docs <page>` reads. */
+const pageSlugs = (d: Docs): string[] => ["spec", "lang", "schema", ...d.docsIndex().pages.map((p) => p.slug)];
+
 interface DocsIndexResult extends ReturnType<Docs["docsIndex"]> {
   readonly kind: "docs-index";
 }
@@ -35,16 +38,6 @@ interface DocsSearchResult {
   readonly version: string;
   readonly query: string;
   readonly hits: readonly { readonly slug: string; readonly page: string; readonly heading: string; readonly text: string }[];
-}
-
-/** Every page name `docs <page>` reads. */
-const pageSlugs = (d: Docs): string[] => ["spec", "lang", "schema", ...d.docsIndex().pages.map((p) => p.slug)];
-
-/** The page names for the one positional; `--search` takes free text. */
-async function docsComplete(argv: string[]): Promise<CompletionResult> {
-  const words = argv.filter((word, index) => !word.startsWith("-") && argv[index - 1] !== "--search");
-  if (argv[argv.length - 2] === "--search" || words.length !== 1) return { items: [], directive: "nofiles" };
-  return { items: pageSlugs(await import("@cotal-ai/connector-core/docs")).map((value) => ({ value })), directive: "nofiles" };
 }
 
 async function docs(args: ParsedArgs): Promise<void> {

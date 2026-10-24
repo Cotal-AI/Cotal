@@ -191,7 +191,7 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
-import { cleanedManifestStart, retainedLegacyBroker } from "../lib/legacy-start.js";
+import { cleanedManifestStart } from "../lib/legacy-start.js";
 import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, stackUpInterruptNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";

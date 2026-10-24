@@ -3,7 +3,6 @@ import { CotalEndpoint, chatWildcard, type CompletionResult, type FlagSpec, type
 import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
 import { completingFlagValue } from "../lib/completion.js";
 import { connectOrExit, connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
-import { completingFlagValue } from "../lib/completion.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
 
