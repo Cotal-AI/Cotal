@@ -180,8 +180,19 @@ export interface StackUpResult {
  *  the space's system account new. */
 const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "tls-cert", "tls-key"] as const;
 
+/** The inputs that ask for a TLS broker, which the controller stack does not serve: the certificate
+ *  pair, and a `--server` that names a `tls://` address. */
+const TLS_INPUTS: readonly string[] = ["tls-cert", "tls-key", "server tls://"];
+
+const namesTlsServer = (values: ParsedArgs["values"]): boolean => typeof values.server === "string" && /^tls:\/\//i.test(values.server);
+
+/** Whether an `up` invocation asks for a TLS broker. */
+export function requestsTls(values: ParsedArgs["values"]): boolean {
+  return values["tls-cert"] !== undefined || values["tls-key"] !== undefined || namesTlsServer(values);
+}
+
 /** Of those, the ones `up -f <cotal.yaml>` takes on a prepared root. */
-const MANIFEST_ROUTE: readonly string[] = ["dry-run", "tls-cert", "tls-key"];
+const MANIFEST_ROUTE: readonly string[] = ["dry-run", ...TLS_INPUTS];
 
 /** The refusal of startup options the controller stack has no route for, before anything starts.
  *  A prepared root that has not run a stack yet is also offered the manifest route. */
@@ -192,9 +203,16 @@ function controllerUnsupported(root: string, options: readonly string[], prepare
   const rotation = prepared && options.includes("rotate-sys") ? "; a first start mints the space's $SYS creds, so there is nothing to rotate" : "";
   return new CommandFailure("refused", "UNSUPPORTED", `${prepared ? "this root is prepared for a controller-owned stack" : "this root's stack is owned by the service controller"}, which has no route for ${named}; nothing was started through the legacy launcher`, {
     target: { root, options },
-    remedy: manifest ? `run cotal up without ${named}, or start the space from a manifest with cotal up -f <cotal.yaml>, which takes ${flags.length === 1 ? "it" : "them"}` : `run cotal up without ${named}${rotation}`,
+    remedy: manifest && options.some((name) => TLS_INPUTS.includes(name))
+      ? `run cotal up without ${named} to serve plaintext, or serve TLS from a manifest whose broker.servers names a tls:// address, with cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>`
+      : manifest ? `run cotal up without ${named}, or start the space from a manifest with cotal up -f <cotal.yaml>, which takes ${flags.length === 1 ? "it" : "them"}` : `run cotal up without ${named}${rotation}`,
   });
 }
+
+/** The smallest JetStream file store cap a stack starts on: the bytes the space's membership bucket
+ *  reserves, plus one. nats-server creates a stream with no byte limit only while at least one byte
+ *  of the cap is unreserved, so a cap equal to the reservation fails every later stream with 10047. */
+export const MIN_FILE_STORE = MEMBERSHIP_MAX_BYTES + 1;
 
 /** Any account record, readable or not, means the root carries static trust an open stack would bypass. */
 function holdsBrokerAccount(root: string): boolean {
@@ -228,7 +246,8 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   const canonical = canonicalRoot(root);
   const recorded = readStackJournal(canonical);
   const requested = requestedStackMode(values);
-  const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => values[name] !== undefined && values[name] !== false);
+  const unsupported: string[] = CONTROLLER_UNSUPPORTED.filter((name) => values[name] !== undefined && values[name] !== false);
+  if (namesTlsServer(values)) unsupported.push("server tls://");
   if (recorded) {
     const refused = unsupported.filter((name) => name !== "rotate-sys");
     if (refused.length) throw controllerUnsupported(canonical, refused, false);
@@ -831,7 +850,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // JetStream answers 10047, insufficient storage resources, when the file store cannot hold a
       // stream's reservation; the broker logs nothing about it.
       const noStorage = error instanceof JetStreamApiError && error.code === 10047;
-      const storeRemedy = `with at least ${MEMBERSHIP_MAX_BYTES} bytes, which the space's membership bucket reserves, plus room for messages`;
+      const storeRemedy = `with at least ${MIN_FILE_STORE} bytes, the least the space's streams start on, plus room for messages`;
       throw new CommandFailure("failed", "OPERATION_FAILED", `the broker this command started could not create the space's streams${unserved.outOfFiles ? ", because it ran out of open files" : noStorage ? `, because its JetStream file store${brokerCap !== undefined ? ` cap (--max-file-store ${brokerCap})` : ""} has too little room for them` : ""}, so it was stopped again; nothing of the stack runs`, {
         target: { root, space, operation: journal.operation.id, members: journal.members, ...(unserved.log ? { brokerLog: unserved.log } : {}) },
         changed: [instanceProjection(unserved.stopped)],

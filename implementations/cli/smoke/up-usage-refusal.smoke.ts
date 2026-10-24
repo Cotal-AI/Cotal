@@ -2,8 +2,8 @@
  * `cotal up` refuses an invalid flag value or combination as usage, exit 1, before anything runs.
  * `--max-sessions 0`, `--max-sessions abc` and an unknown `--restore-only` value used to exit 3,
  * "Outcome unconfirmed", which tells a script the run may have had an effect. `--dry-run` without
- * `-f` used to start a real stack. A `--max-file-store` below the 64 MiB the space's membership
- * bucket reserves is refused the same way.
+ * `-f` used to start a real stack. A `--max-file-store` below 67108865, one byte more than the 64 MiB
+ * the space's membership bucket reserves, is refused the same way.
  *
  * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
  * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
@@ -63,8 +63,9 @@ const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--max-sessions", "0"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-sessions", "abc"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-file-store", "0"], message: /--max-file-store must be a positive integer/ },
-  { args: ["--max-file-store", "1"], message: /--max-file-store 1 is below 67108864 bytes \(64 MiB\), which the space's membership bucket reserves/ },
-  { args: ["--max-file-store", "50000000"], message: /--max-file-store 50000000 is below 67108864 bytes/ },
+  { args: ["--max-file-store", "1"], message: /--max-file-store 1 is below 67108865 bytes, the least the space's streams start on: its membership bucket reserves 67108864 bytes/ },
+  { args: ["--max-file-store", "50000000"], message: /--max-file-store 50000000 is below 67108865 bytes/ },
+  { args: ["--max-file-store", "67108864"], message: /--max-file-store 67108864 is below 67108865 bytes/ },
   { args: ["--restore", join(folder, "nonexistent"), "--restore-only", "full"], message: /--restore-only takes registry/ },
   { args: ["--restore-only", "registry"], message: /require --restore/ },
   // Without -f there is no plan to print, and the launch used to start a real stack.
@@ -136,7 +137,13 @@ try {
     rotate.status === 2 && rotate.envelope?.outcome === "refused" && rotate.envelope.error?.code === "UNSUPPORTED"
       && /prepared for a controller-owned stack, which has no route for --rotate-sys/.test(rotate.envelope.error.message ?? "") && /run cotal up without --rotate-sys; a first start mints the space's \$SYS creds/.test(rotate.envelope.error.remedy ?? ""), shown(rotate));
   const tls = run(["up", "--server", `tls://127.0.0.1:${held}`, "--tls-cert", join(prepared, "c.pem"), "--tls-key", join(prepared, "k.pem"), "--json"], prepared);
-  check("…and names both TLS options and the -f route", tls.status === 2 && tls.envelope?.error?.code === "UNSUPPORTED" && /no route for --tls-cert and --tls-key/.test(tls.envelope.error.message ?? "") && /cotal up -f <cotal\.yaml>, which takes them/.test(tls.envelope.error.remedy ?? ""), shown(tls));
+  const tlsRoute = /serve TLS from a manifest whose broker\.servers names a tls:\/\/ address, with cotal up -f <cotal\.yaml> --tls-cert <cert\.pem> --tls-key <key\.pem>/;
+  check("…and names both TLS options, the tls:// address and the -f route that serves TLS", tls.status === 2 && tls.envelope?.error?.code === "UNSUPPORTED" && /no route for --tls-cert, --tls-key and --server tls:\/\//.test(tls.envelope.error.message ?? "") && tlsRoute.test(tls.envelope.error.remedy ?? ""), shown(tls));
+  // Each TLS form refuses the same way first, so no refusal sends it to another form that refuses too.
+  const plainTls = run(["up", "--server", `nats://127.0.0.1:${held}`, "--tls-cert", join(prepared, "c.pem"), "--tls-key", join(prepared, "k.pem"), "--json"], prepared);
+  check("…a nats:// address with the TLS pair refuses that way, not by naming tls://", plainTls.status === 2 && plainTls.envelope?.error?.code === "UNSUPPORTED" && /no route for --tls-cert and --tls-key/.test(plainTls.envelope.error.message ?? "") && tlsRoute.test(plainTls.envelope.error.remedy ?? ""), shown(plainTls));
+  const bareTls = run(["up", "--server", `tls://127.0.0.1:${held}`, "--json"], prepared);
+  check("…and a tls:// address alone refuses that way, not by asking for --tls-cert", bareTls.status === 2 && bareTls.envelope?.error?.code === "UNSUPPORTED" && /no route for --server tls:\/\//.test(bareTls.envelope.error.message ?? "") && tlsRoute.test(bareTls.envelope.error.remedy ?? ""), shown(bareTls));
   check("…without starting the legacy launcher or the controller stack", !started(prepared) && !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
 
   const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);

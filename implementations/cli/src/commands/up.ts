@@ -215,10 +215,12 @@ import {
   controllerStackApplies,
   recheckExistingStore,
   requestedStackMode,
+  requestsTls,
   stackUp,
   stackUpForegroundNotice,
   stackUpInterruptNotice,
   keptOnUp,
+  MIN_FILE_STORE,
   selectedOnUp,
   type ExistingStorePin,
   type StackUpNative,
@@ -412,6 +414,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem.problem}; nothing was started or written`, { remedy: hostProblem.remedy });
   const spaceTooLong = typeof args.values.space === "string" ? spaceNameTooLong(args.values.space) : undefined;
   if (spaceTooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${spaceTooLong}; nothing was started or written`, { remedy: `choose a space name of at most ${SPACE_NAME_MAX} characters` });
+  // A prepared or controller-owned root has no route that serves TLS, so any TLS input refuses here,
+  // once and naming the route that does, before the checks below send it from one TLS form to another.
+  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot();
+  if (!args.values.file && requestsTls(args.values) && !readMaintenanceJournal(tlsRoot)) controllerStackApplies(tlsRoot, (args.values.space as string | undefined) ?? folderSpace(), args.values);
   // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
   // checks the certificate against the address it names.
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
@@ -4472,12 +4478,12 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
   return true;
 }
 
-/** `--max-file-store`, refused below the bytes the space's membership bucket reserves from the
- *  broker's file store: a smaller cap cannot create the space's streams. */
+/** `--max-file-store`, refused below {@link MIN_FILE_STORE}: a smaller cap cannot create the
+ *  space's streams. */
 function parseMaxFileStore(raw: string | undefined): number | undefined {
   const cap = parsePositiveIntegerFlag("--max-file-store", raw);
-  if (cap !== undefined && cap < MEMBERSHIP_MAX_BYTES)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB), which the space's membership bucket reserves from the broker's file store; nothing was started`, { remedy: `pass --max-file-store ${MEMBERSHIP_MAX_BYTES} or more, leaving room for messages, or omit it` });
+  if (cap !== undefined && cap < MIN_FILE_STORE)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MIN_FILE_STORE} bytes, the least the space's streams start on: its membership bucket reserves ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB) of the broker's file store, and nats-server needs one more byte free to create the others; nothing was started`, { remedy: `pass --max-file-store ${MIN_FILE_STORE} or more, leaving room for messages, or omit it` });
   return cap;
 }
 
