@@ -713,6 +713,20 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`team check names ${label} by file, line and reason`,
       r.status === 1 && located.every((part) => r.stderr.includes(part)) && r.stderr.includes("fix each named problem and run team check again") && !r.stderr.includes("SECRETPERSONA42"), shown(r));
   }
+  // `persona` takes a path: a bare name is refused with that rule, and with the path of the catalog
+  // persona of that name when the project has one.
+  const bare = (catalog: boolean) => (home: string) => {
+    files(`${head}agents:\n  rev: p20\nchannels:\n  ops:\n    subscribe: [rev]\n`)(home);
+    if (!catalog) return;
+    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", ".cotal", "agents", "p20.md"), "---\nname: p20\n---\nReview.\n");
+  };
+  const cataloged = cotal(["team", "check", "m.yaml"], bare(true), noSeed);
+  check("team check of a bare persona name says persona takes a path and names the catalog persona's",
+    cataloged.status === 1 && cataloged.stderr.includes("m.yaml:6:8: persona file not found: ") && cataloged.stderr.includes("`persona` takes a path to a persona file, relative to the manifest, so the catalog persona p20 is ./.cotal/agents/p20.md (at agents.rev)"), shown(cataloged));
+  const uncataloged = cotal(["team", "check", "m.yaml"], bare(false), noSeed);
+  check("with no catalog persona of that name it says only that persona takes a path",
+    uncataloged.status === 1 && uncataloged.stderr.includes("`persona` takes a path to a persona file, relative to the manifest (at agents.rev)") && !uncataloged.stderr.includes("catalog persona"), shown(uncataloged));
   const missing = cotal(["team", "check", "nosuch.yaml"], files(cases[0]![1]), noSeed);
   check("team check of a manifest that does not exist names it as not found",
     missing.status === 2 && missing.stderr.includes("TARGET_NOT_FOUND") && /the team manifest \S*nosuch\.yaml was not found/.test(missing.stderr), shown(missing));

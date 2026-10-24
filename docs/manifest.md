@@ -58,6 +58,11 @@ the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full 
 OpenCode use `provider/model` plus an optional variant (`cotal models --harness opencode`
 lists both). Persona file format: [agent files](agent-files.md).
 
+`persona` takes a path to a persona file, relative to the manifest. It does not take a catalog
+name: the catalog persona `p20` of a manifest at the project root is `./.cotal/agents/p20.md`. A
+bare name that names no file is refused with that rule, and with the catalog persona's path when
+the project has one.
+
 `cwd` is the agent's working directory on the **manager host**. A relative path resolves
 against the manager workspace, matching `cotal spawn --cwd`; an absolute path is used
 as supplied. Omitting it keeps the manager workspace as the default. It is never resolved
