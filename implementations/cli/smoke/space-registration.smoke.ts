@@ -822,6 +822,12 @@ if (process.platform === "linux") {
   const bare = await json(["up", "--detach", "--no-manager"], fresh);
   check("a second bare up in the same root runs the same space and is a no-op",
     bare.status === 0 && bare.env?.outcome === "no-op" && bare.env.result.space === "demo" && bare.env.result.server === server && findMesh("demo")?.root === fresh, shown(bare));
+  // The receipt's Next runs as printed: down stops only the stack of the folder it runs in.
+  check("up in its root offers a bare cotal up and cotal down as its Next",
+    /^ +cotal up +Add the manager to this stack$/m.test(up.stdout) && /^ +cotal down +Stop every recorded member$/m.test(up.stdout), shown(up));
+  const remote = await run(["up", "--detach", "--no-manager", "--root", fresh], {}, elsewhere);
+  check("up --root from another folder says where cotal down runs and offers cotal up --root",
+    remote.status === 0 && remote.stdout.includes(`cotal down`) && remote.stdout.includes(`Stop every recorded member; run it from ${fresh}`) && remote.stdout.includes(`cotal up --root ${fresh}`), shown(remote));
   // Two locally started registrations for one root give a bare up no single space to run.
   recordMesh({ space: "twin", server, root: fresh, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const twin = await json(["up", "--detach", "--no-manager"], fresh);
