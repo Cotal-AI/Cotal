@@ -443,6 +443,18 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`team check names ${label} by file, line and reason`,
       r.status === 1 && located.every((part) => r.stderr.includes(part)) && r.stderr.includes("fix each named problem and run team check again") && !r.stderr.includes("SECRETPERSONA42"), shown(r));
   }
+  // `space:` takes only a name `space create` takes, so the check and both dry runs refuse any other
+  // with the reason, before a later step fails on it. A dead broker address keeps any probe local.
+  const named = (space: string) => `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: nats://127.0.0.1:9\nchannels: {}\n`;
+  const notName = "is not a space name: a space name is 1 to 200 letters, digits, underscores or hyphens";
+  for (const args of [["team", "check", "m.yaml"], ["team", "boot", "m.yaml", "--dry-run"], ["up", "-f", "m.yaml", "--dry-run"]]) {
+    const r = cotal(args, files(named('"bad name"')), noSeed);
+    check(`${args.join(" ")} refuses a space name that space create refuses, naming it`, r.status === 1 && r.stderr.includes(`m.yaml:3:8: space "bad name" ${notName}`), shown(r));
+  }
+  const escaped = cotal(["team", "check", "m.yaml"], files(named('"e\\u001b]0;X\\u0007c"')), noSeed);
+  check("team check shows a space name with control characters escaped", escaped.status === 1 && escaped.stderr.includes(`space "e\\u001b]0;X\\u0007c" ${notName}`) && !/[\u0000-\u0009\u000b-\u001f]/u.test(escaped.stdout + escaped.stderr), shown(escaped));
+  const lead = cotal(["team", "check", "m.yaml"], files(named('"-lead"')), noSeed);
+  check("team check resolves a name space create takes, such as -lead", lead.status === 0 && lead.stdout.includes("Team manifest resolved"), shown(lead));
 }
 
 // ── Unknown words, prefixes, uninstalled seeded commands ──────────────────────────────────────────
