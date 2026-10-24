@@ -5661,6 +5661,9 @@ of the stream closes it, as `| head` does, the observer stops the same way.
 Execution, Mesh and Last reported activity. JSON has `identity`, `execution`, `mesh`
 and `activity` fields; missing optional observations are null with source annotations.
 `--on <manager-instance>` restricts the read. It takes no `--all` or `--components`.
+`cotal status manager`, or an answering manager's instance id, names the manager itself, which runs no
+row of its own: it refuses `TARGET_NOT_FOUND` like any unknown name, and its Next says the manager is
+answering and points to `cotal status` and `cotal endpoint describe manager`.
 A requested model is not provider-confirmed. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager
 row marks a roster observation exact only when its principal and lifecycle UID
