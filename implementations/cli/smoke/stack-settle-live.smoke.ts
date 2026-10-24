@@ -7,7 +7,9 @@
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
  *  2. Broker crash after start. The `up` that adds the manager and `service status` list the broker's
- *     client and websocket listeners and the manager's console; a wildcard configuration lists them
+ *     client and websocket listeners and the manager's console, and `status` lists the members by
+ *     definition. With the space's service instance folder unwritable, `down --yes` and `up` refuse
+ *     naming it and stop nothing; a wildcard configuration lists them
  *     on every interface and names the plaintext ones. `service add` refuses a broker `--server`
  *     that is no broker address, by preset or `--file`, quoting it unless it may hold a credential, and
  *     starting such a definition saved earlier names its `server` option. The next `up` restarts the broker from its
@@ -237,6 +239,11 @@ try {
     check("down --yes settles the earlier operation and stops the live broker", stopped.status === 0 && Boolean(stopped.env?.warnings?.some((warning) => warning.code === "OPERATION_SETTLED")) && (broker === null || !alive(broker)), shown(stopped));
     const again = cli(root, "down", "--yes", "--json");
     check("a second down --yes is a no-op", again.status === 0 && again.env?.outcome === "no-op", shown(again));
+    for (const [flag, name] of [["--open", "open"], ["--user-auth", "user auth"]] as const) {
+      const pinned = cli(root, "up", flag, "--no-manager", "--json");
+      check(`up ${flag} on the stopped static-auth root refuses CONFLICT, exit 2, and names another folder for ${name}`,
+        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run cotal space create <space>, then cotal up ${flag}, in another folder`)), shown(pinned));
+    }
 
     // A bare up adds the manager, so the restart keeps --no-manager for the ps refusal.
     const restarted = cli(root, "up", "--no-manager", "--json");
@@ -251,6 +258,25 @@ try {
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
+    // The rows followed the store's order, by random instance ID, so they moved whenever a member
+    // started under a new one.
+    const statusInstances = (cli(root, "status", "--json").env?.result?.services as { instances?: { definition: string; instanceId: string }[] } | undefined)?.instances ?? [];
+    check("status lists the stack's instances by definition, then instance",
+      JSON.stringify(statusInstances.map((row) => row.definition)) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]), statusInstances);
+    // A service record folder this account cannot write left every member running after an unknown
+    // first stop, and failed up with no cause. Both refuse before any effect now, naming it.
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const instancesDir = join(home, "services", Buffer.from(space).toString("hex"), "instances");
+      chmodSync(instancesDir, 0o500);
+      try {
+        const stop = cli(root, "down", "--yes", "--json");
+        const running = ["stack-broker", "stack-delivery", "stack-manager"].every((definition) => { const pid = pidOf(space, definition); return pid !== null && alive(pid); });
+        check("down --yes with an unwritable instances folder refuses PERMISSION_DENIED, exit 2, naming it and chmod, and stops nothing",
+          stop.status === 2 && stop.env?.error?.code === "PERMISSION_DENIED" && stop.env.error.message.includes(instancesDir) && Boolean(stop.env.error.remedy?.includes(`chmod u+w ${instancesDir}`)) && running, shown(stop));
+        const start = cli(root, "up", "--json");
+        check("up with it refuses the same way", start.status === 2 && start.env?.error?.code === "PERMISSION_DENIED" && Boolean(start.env.error.remedy?.includes(`chmod u+w ${instancesDir}`)), shown(start));
+      } finally { chmodSync(instancesDir, 0o700); }
+    }
     // The receipt and service status name every listener the stack opened: the broker's client and
     // websocket listeners and the manager's console, here all on loopback.
     type Listed = Parameters<typeof exposedPlaintext>[0];

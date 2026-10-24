@@ -19,7 +19,9 @@
  *     and the process exits within a bounded time.
  *
  * Sandboxes COTAL_HOME + a temp project root; tears down via `cotal down` + own-pid SIGTERM only —
- * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH.
+ * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH. On a host
+ * other stacks share, set COTAL_SMOKE_SHARED_HOST=1: the default-port cells then skip rather than
+ * start an open broker on a free :4222.
  * Run: pnpm smoke:up-stack:live
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
@@ -129,19 +131,27 @@ try {
 
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
-  // broker, leave it alone; otherwise start a sandbox occupant and tear it down below.
-  if (!(await portOpenAt(4222))) {
-    const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
-    ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
-    startedOccupant = true;
+  // broker, leave it alone; otherwise start a sandbox occupant and tear it down below. The default
+  // address is fixed, so that occupant is an open broker on :4222 that any client on the host can
+  // join while it runs. COTAL_SMOKE_SHARED_HOST=1 says other stacks share this host, so a free :4222
+  // skips these cells instead.
+  const defaultFree = !(await portOpenAt(4222));
+  if (defaultFree && process.env.COTAL_SMOKE_SHARED_HOST === "1") {
+    console.log("  - skipped: the default-port collision cells, because COTAL_SMOKE_SHARED_HOST=1 and :4222 is free, so they would start an open broker there");
+  } else {
+    if (defaultFree) {
+      const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
+      ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
+      startedOccupant = true;
+    }
+    const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
+    ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
+    const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
+    ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
+    ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
+    cliIn(autoRoot, "down");
+    if (startedOccupant) cliIn(occupantRoot, "down");
   }
-  const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
-  ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
-  const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
-  ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
-  ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
-  cliIn(autoRoot, "down");
-  if (startedOccupant) cliIn(occupantRoot, "down");
 
   // The warning needs a real invocation id, 32 hex characters, and the unit's MainPID equal to the
   // up process. up runs systemctl as its own direct child, so the fake's $PPID is that pid.
@@ -152,7 +162,7 @@ try {
   const warned = cliInEnv(warningRoot, {
     INVOCATION_ID: invocationId,
     PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-  }, "up", "--detach", "--open", "--space", "warning");
+  }, "up", "--detach", "--open", "--space", "warning", "--server", `nats://127.0.0.1:${await freePort()}`);
   const warnedOutput = plain(warned.stdout + warned.stderr);
   ok("up --detach keeps starting under the false-green unit shape", warned.status === 0, warnedOutput);
   ok("up --detach warns about the exact systemd unit", warnedOutput.includes("cotal-warning.service is Type=oneshot with RemainAfterExit=yes"), warnedOutput);

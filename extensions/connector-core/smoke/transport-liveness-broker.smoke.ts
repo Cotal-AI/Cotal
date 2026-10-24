@@ -584,8 +584,8 @@ try {
   );
 
   // #636 / #2055: PRESENCE WRITES FROM ONE AGENT LAND IN CALL ORDER. The cells above drive
-  // endpoint.publishPresence directly, which says nothing about MeshAgent: setStatus is two or
-  // three awaited puts (an entering-working condition clear, then setActivity, then setStatus)
+  // endpoint.publishPresence directly, which says nothing about MeshAgent: setStatus is one or
+  // two awaited puts (an entering-working condition clear, then the status and activity in one)
   // and every connector fires it without awaiting, so two overlapping calls interleave their puts
   // and the record that lands last is whichever call's last put finished last — measured at a
   // driven turn's end as working, idle, working (#2055). The stimulus is the same held-put kv
@@ -600,9 +600,9 @@ try {
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
   const orderingEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
-  const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void; record: string }> = [];
   const liveOrderingKv = orderingEp.kv;
-  orderingEp.kv = { put: () => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject })) };
+  orderingEp.kv = { put: (_key: string, record: string) => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject, record })) };
   const takeOrdering = async () => { await until(() => heldOrdering.length > 0, 10_000); return heldOrdering.shift()!; };
   // Settle every put that arrives until none has arrived for 300ms, polling the array directly.
   // A racing takeOrdering() call left running past its own 300ms loss would keep polling in the
@@ -638,9 +638,7 @@ try {
   const orderA = orderingAgent!.setStatus("working", "").catch(() => {});
   const clearPut = await takeOrdering(); // entering working clears the condition first
   clearPut.resolve();
-  const activityPut = await takeOrdering(); // setActivity("")
-  activityPut.resolve();
-  const statusPut = await takeOrdering(); // setStatus("working") — HELD
+  const statusPut = await takeOrdering(); // setStatus("working", "") — HELD
   const orderB = orderingAgent!.setStatus("idle").catch(() => {});
   // Give an unserialized idle write every chance to land its put while the working call's last
   // put is still held: this is the window the fix must keep empty.
@@ -657,6 +655,13 @@ try {
     !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.status === "idle",
     { idleStartedWhileHeld, agentStatus: orderingAgent!.status, epStatus: orderingEp.status },
   );
+  // A status with an activity is one put: a peer never reads the new activity beside the old status.
+  const statusRecord = JSON.parse(statusPut.record) as { status?: string; activity?: string };
+  check(
+    "a status write with an activity is one presence put carrying both",
+    statusRecord.status === "working" && statusRecord.activity === "",
+    { status: statusRecord.status, activity: statusRecord.activity },
+  );
 
   // Cell (b): a status write's put is held open when stop() is called. Departure is ordered
   // behind writes already in flight (#636): the offline put must not start until the held put
@@ -664,17 +669,15 @@ try {
   // the held put settles the offline put arrives, is settled, and only then does stop() return.
   await quietOrdering();
   const orderC = orderingAgent!.setStatus("waiting", "ordered departure").catch(() => {});
-  const heldPut = await takeOrdering(); // setActivity("ordered departure") — held
+  const heldPut = await takeOrdering(); // setStatus("waiting", "ordered departure") — held
   const stopPromise = orderingAgent!.stop().catch(() => {});
   // Give stop()'s offline publish every chance to start while the write already in flight is
   // still held: this is the window the fix must keep empty.
   await sleep(150);
   const offlineStartedWhileHeld = heldOrdering.length > 0;
   heldPut.resolve();
-  // Two more puts are owed after this (orderC's own second put, and the offline publish), in
-  // whichever order the tree under test produces — a defect-under-test can legitimately deliver
-  // them in either order, so drain until both calls have settled rather than assuming which put
-  // is which.
+  // The offline publish is owed after this, and a defect-under-test can deliver puts in any
+  // order, so drain until both calls have settled rather than assuming which put is which.
   const departureDone = { v: false };
   void Promise.all([orderC, stopPromise]).then(() => { departureDone.v = true; });
   await drainUntil(departureDone);
@@ -794,7 +797,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 27;
+const EXPECTED_CELLS = 28;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

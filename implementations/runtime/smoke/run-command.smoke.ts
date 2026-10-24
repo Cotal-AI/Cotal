@@ -28,7 +28,7 @@ import {
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
   revokeRunAdmission,
 } from "@cotal-ai/core";
-import { authDir, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -736,9 +736,24 @@ let P = "";
   } finally { process.exit = origExit; }
 }
 
+// ── 13) a hosted verb with a raw --creds file is refused by code, naming the run without it ────
+{
+  // A raw credential connects, but it carries no endpoint-caller triple for the manager call, and
+  // the hosted route cannot mint one from it.
+  const credsFile = join(root, "observer.creds");
+  writeFileSync(credsFile, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  for (const positionals of [["journal", "run-0"], ["answer", "run-0", "/checkpoint:x#0"], ["ps"]]) {
+    reset();
+    const got = await wf(positionals, { local: undefined, creds: credsFile, ...(positionals[0] === "answer" ? { value: '"y"' } : {}) }).then(() => undefined, (e: Error) => e);
+    c(`hosted run ${positionals[0]} with a raw --creds file is refused UNSUPPORTED, exit 2, naming the run without --creds`,
+      isCommandFailure(got) && got.code === "UNSUPPORTED" && exitCode(got.outcome, got.code) === 2 && /no endpoint-caller triple/.test(got.message) && got.remedy?.startsWith("run it again without --creds") === true,
+      got instanceof Error ? got.message : got);
+  }
+}
+
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 75;
+const DECLARED = 78;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

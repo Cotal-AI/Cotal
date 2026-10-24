@@ -39,11 +39,15 @@
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
  * registered runner), never a hand-built ParsedArgs. It runs in a child, because the kernel writes a
  * refusal straight to the stderr descriptor and exits.
- * OS-assigned loopback port; needs `nats-server` on PATH.
+ * OS-assigned loopback port; needs `nats-server` on PATH. No cell dials the default broker address,
+ * 127.0.0.1:4222: a root with no registration resolves to it, and on a shared host another broker can
+ * be listening there and accept a provisioning attempt. The cell that mints from such a root names a
+ * port this suite holds instead.
  * Run: pnpm smoke:mint-provision:auth
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
+import { createServer, type AddressInfo } from "node:net";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -392,9 +396,10 @@ try {
     // under B's key from A's folder would silently move the authority `cotal mint` takes from the
     // folder it runs in.
     //
-    // mint resolves like spawn and personas now, so a BARE `--provision` names no other mesh and
-    // stays local to A: it signs with A's own authority, reaches A's own default server and stops at
-    // its preflight. Resolving B instead would be the cross-root conflict below, naming B. The
+    // mint resolves like spawn and personas now, so a `--provision` that names no mesh stays local
+    // to A: it signs with A's own authority and stops at the preflight of the broker it dials. A's
+    // own default server is 127.0.0.1:4222, which this suite does not own, so the cell names a port
+    // it holds: a listener that closes every connection, so the preflight is refused there. Resolving B instead would be the cross-root conflict below, naming B. The
     // operator never named B, and spawn from A would not reach B either. Naming the two roots is the
     // job of the case where the operator DOES name it, which is asserted separately below. Both
     // directions must mint nothing.
@@ -406,11 +411,15 @@ try {
     saveSpaceAuth(authDir(rootB), await createSpaceAuth(SAME));
     recordMesh({ space: SAME, server: "nats://127.0.0.1:1", root: rootB, mode: "auth", ts: new Date().toISOString(), origin: "manual" });
     cleanup.push(() => { rmSync(rootA, { recursive: true, force: true }); rmSync(rootB, { recursive: true, force: true }); });
+    const holder = createServer((socket) => socket.destroy());
+    await new Promise<void>((resolve) => holder.listen(0, "127.0.0.1", resolve));
+    const held = `nats://127.0.0.1:${(holder.address() as AddressInfo).port}`;
     process.chdir(rootA);
     const out3 = join(rootA, "same.creds");
-    const r3 = await runMint(["x", "--profile", "agent", "--provision", "--out", out3]);
+    const r3 = await runMint(["x", "--profile", "agent", "--provision", "--server", held, "--out", out3]);
     process.chdir(root);
-    check("bare --provision from an unrecorded root stays local and is refused at its own broker's preflight",
+    await new Promise<void>((resolve) => holder.close(() => resolve()));
+    check("--provision naming no mesh, from an unrecorded root, stays local and is refused at the preflight of the broker it dials",
       r3.code === 2 && /provisioning preflight/.test(r3.out) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
     check("  and mints nothing", !existsSync(out3));
     check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);

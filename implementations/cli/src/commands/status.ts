@@ -497,7 +497,10 @@ function readOwnedServices(selected: Selected, gaps: Gaps): OwnedServiceStatus {
     const causeCode = isCommandFailure(error) ? error.code : "TARGET_UNAVAILABLE";
     gaps.add("SERVICE_DEFINITIONS_UNAVAILABLE", `the selected space's owned service definitions could not be read (${causeCode}); no empty inventory or repair was inferred`, { space, causeCode });
   }
-  try { result.instances = serviceInstances(space).map(instanceProjection); }
+  // By definition, then instance, as the definitions are listed: the store orders them by their
+  // random instance IDs, so the rows changed order whenever a member started under a new one.
+  const byName = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  try { result.instances = serviceInstances(space).map(instanceProjection).sort((a, b) => byName(a.definition, b.definition) || byName(a.instanceId, b.instanceId)); }
   catch (error) {
     const causeCode = isCommandFailure(error) ? error.code : "TARGET_UNAVAILABLE";
     gaps.add("SERVICE_INSTANCES_UNAVAILABLE", `the selected space's owned service instance observations could not be established (${causeCode}); no stopped, empty or serving state was inferred`, { space, causeCode });
@@ -1041,6 +1044,14 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       gaps.add("MESH_REGISTRY_UNREADABLE", e.message, { file: e.file });
       hints.push(e.message);
       return { resolved: false, code: "registry-unreadable", message: e.message };
+    }
+    // `up` and `down` refuse a root whose `.cotal` is a link, so the step that would start it there is
+    // the one their refusal names.
+    const unstarted = e instanceof UnregisteredRoot ? e.root : isWorkspaceTargetError(e) && e.code === "not-started" ? e.details.root : undefined;
+    const link = unstarted === undefined ? undefined : cotalDirLink(unstarted);
+    if (unstarted !== undefined && link !== undefined) {
+      hints.push(linkedCotalRemedy(unstarted, link));
+      return { resolved: false, code: e instanceof UnregisteredRoot ? "unregistered-root" : "not-started", message: `${join(unstarted, ".cotal")} is a link to ${link}, and a stack runs only from a folder whose .cotal is its own directory, so \`${cmd} up\` and \`${cmd} down\` refuse it there` };
     }
     if (e instanceof UnregisteredRoot) {
       const message = `no space is registered or prepared here for ${e.root}`;
@@ -1634,7 +1645,7 @@ function ownedServicesOverview(services: OwnedServiceStatus | undefined): Sectio
   if (services.instances?.length) blocks.push({ kind: "table", columns: [{ key: "service", label: "Service" }, { key: "instance", label: "Full instance" }, { key: "host", label: "Execution host" }, { key: "process", label: "Process observation" }, { key: "readiness", label: "Recorded readiness" }, { key: "supervisor", label: "Supervisor record" }], rows: services.instances.slice(0, 100).map((row) => ({
     service: row.definition, instance: row.instanceId, host: row.executionHost,
     process: stateCell(row.observedProcess.replaceAll("-", " "), row.observedProcess === "running" ? "ok" : row.observedProcess === "unreadable" || row.observedProcess === "unresolved-launch" || row.observedProcess === "foreign-host" ? "waiting" : "hint"),
-    readiness: cell(`${row.readinessObservation.replaceAll("-", " ")} · ${row.readinessAsOf}`, "hint"),
+    readiness: cell(`${row.startInterrupted ? "start interrupted" : row.readinessObservation.replaceAll("-", " ")} · ${row.readinessAsOf}`, "hint"),
     supervisor: row.supervisorRecord.mechanism === "none-recorded" ? "not assigned here" : `${row.supervisorRecord.mechanism} · ${row.supervisorRecord.fileObservation}; OS state not checked`,
   })) });
   if (services.instances && services.instances.length > 100) blocks.push({ kind: "lines", lines: [cell(`${services.instances.length - 100} instance rows omitted; --json retains the complete readable inventory.`, "hint")] });

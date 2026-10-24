@@ -165,10 +165,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const mark = (rail?: string) => [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", ...(rail !== undefined ? { rail } : {}) }];
   const legacy = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep rail", mark("ep")));
   c("legacy rail: the question and the --local remedy stand (one rail, and nothing answered on it)",
-    legacy.startsWith("no manager answered on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
+    legacy.startsWith("the manager registered for this space did not answer on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
   const v1 = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail", mark("ep.v1")));
   c("versioned rail: the refusal names ep.v1 and states what the silence does not establish",
-    v1.startsWith("no manager answered on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
+    v1.startsWith("the manager registered for this space did not answer on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
     && v1.includes("does not tell no manager running apart from one older than ep.v1"), v1);
   c("versioned rail: neither the false question nor the --local remedy that follows from it is printed",
     !v1.includes("is a manager running for this mesh?") && !v1.includes("--local"), v1);
@@ -311,6 +311,28 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     c(`a hosted start refuses a source file that ${says} the same way, before any connect`, isCommandFailure(started) && started.code === "SCHEMA_INVALID" && started.message.includes(says), started);
   }
   rmSync(dir, { recursive: true, force: true });
+}
+
+// An open checkpoint with a `to` shows beside its question whom it escalates to, and once it has
+// escalated, until when that attempt is open. The escalation's attempt is armed with `proceed`.
+{
+  const detail = (journal: object[]) => {
+    const out: string[] = [];
+    const log = console.log, error = console.error;
+    console.log = console.error = (...args: unknown[]) => { out.push(args.map(String).join(" ")); };
+    try { printRunDetail("s", { runId: "run-1", endpoint: "manager", status: { state: "running" }, journal } as unknown as RunStatusView, {}); }
+    finally { console.log = log; console.error = error; }
+    return out.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  };
+  const open = (name: string, more: object) => ({ n: 1, kind: "step", step: `/checkpoint:${name}#0`, effect: "checkpoint", name, state: "pending", outcome: "pending", startedAt: 0, asks: `${name}?`, ...more });
+  const shown = detail([
+    open("first", { addressee: "dana", deadlineAt: 0, onExpiry: "escalate" }),
+    open("second", { addressee: "erik", deadlineAt: Date.UTC(2026, 9, 24, 6, 0, 0), onExpiry: "proceed" }),
+    open("third", { onExpiry: "fail" }),
+  ]);
+  c("an open checkpoint names whom it escalates to, and an escalated one its addressee and deadline",
+    /Step\s+Request\s+Escalation/.test(shown) && /first\?\s+to dana if it expires/.test(shown) && shown.includes("second?  escalated to erik, open until 2026-10-24T06:00:00.000Z"), shown);
+  c("with no checkpoint addressed, the table has no Escalation column", !detail([open("third", { onExpiry: "fail" })]).includes("Escalation"));
 }
 
 restore();
