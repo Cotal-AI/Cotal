@@ -5075,9 +5075,11 @@ channel the identity may read. The channel may be written as `#general`, and a n
 `>` is refused with `name one concrete channel, without wildcards` before connecting. A channel with
 no retained messages and no saved entry warns `CHANNEL_NOT_FOUND`, names the channels that hold
 messages, and reports no replay policy for it. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
-filter that window on this machine. They do not search the whole stream. `result.window` says how
-many messages were read, whether older retained messages exist that the window did not reach, and
-whether the window goes back to `--since`. The report names the local time and the ISO instant a
+filter that window on this machine. They do not search the whole stream, and with older retained
+messages behind the window the report says that `--from` and `--grep` searched only the messages
+read. At `--limit 1000`, the most it reads, the report says older retained messages are not shown and
+names no larger limit. `result.window` says how many messages were read, whether older retained
+messages exist that the window did not reach, and whether the window goes back to `--since`. The report names the local time and the ISO instant a
 time `--since` resolved to, or the chat stream sequence a bare number was read as. A four-digit
 number from 1900 to 2099 is still a sequence, and the report says to write a date in full. A bare
 number past the chat stream's newest sequence names no message, so it is a `USAGE_INVALID` refusal
