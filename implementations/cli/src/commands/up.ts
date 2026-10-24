@@ -174,6 +174,7 @@ import {
   connectUserControlOrThrow,
   userViewAuth,
   recordOperationSpace,
+  recordOperationWarning,
   retainSystemSigningSeed,
   SPACE_NAME_MAX,
   spaceNameTooLong,
@@ -213,6 +214,8 @@ import {
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
 import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { serviceDefinitionStore } from "../lib/service-definitions.js";
+import { MissingFlags } from "../lib/missing-flags.js";
 import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
@@ -1211,7 +1214,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (!values.file && controllerStackApplies(meshRoot, values.space ?? folderSpace(), values)) {
     const stackSpace = values.space ?? folderSpace();
     recordOperationSpace(stackSpace);
-    const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
+    const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? unrecordedStackServer(meshRoot, stackSpace, values.host);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
     // A foreground up holds a stack only one terminal holds. Over a stack that already runs without
@@ -2033,6 +2036,22 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   } finally {
     releaseStartupLock();
   }
+}
+
+/** The address of a prepared stack that neither a journal nor a registration records, as after a
+ *  damaged journal was removed once `down` had dropped the registration. Its saved broker definition
+ *  names it. With none, a root that holds this space's trust or a store from an earlier start refuses
+ *  rather than start at the default address; only a fresh prepared root starts there. */
+function unrecordedStackServer(root: string, space: string, host: string | undefined): string {
+  const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
+  const saved = launch?.type === "adapter" && typeof launch.options.server === "string" ? launch.options.server : undefined;
+  if (saved !== undefined) {
+    recordOperationWarning({ code: "STACK_ADDRESS_RECOVERED", target: { root, space, server: saved }, message: `no stack journal or registration records this stack's address, so it starts at ${saved}, the address its saved broker definition names` });
+    return host ? reconcileHostAndServer(host, undefined, "--host", "--server", saved) : saved;
+  }
+  if (listSpaceAccounts(authDir(root)).includes(space) || existsSync(join(root, ".cotal", "nats")))
+    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "run cotal up --server <url> with the address it ran at", { root, space });
+  return host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER;
 }
 
 /** A start over the broker a committed restore left running here. `up -f` boots a fresh mesh, so its

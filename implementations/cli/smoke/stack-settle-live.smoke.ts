@@ -26,6 +26,9 @@
  *     its store relative to the root, so it does not create the old path again; `send` and `up` from
  *     the renamed folder name the move and the way back, and after the move back `down` stops it.
  *     Stopped and moved again, `up`, `send`, `history` and `status` there all name moving it back.
+ *     With its journal removed after `down`, as the way out of a damaged one says, `up` starts at the
+ *     address its saved broker definition names and warns; with no definition either, it refuses and
+ *     asks for `--server`.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -340,6 +343,36 @@ try {
     const fixed = cli(root, "up", "--no-manager", "--max-file-store", "134217728", "--json");
     track(space);
     check("up with a new cap on the stopped broker records it and starts", fixed.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { broker: { maxFileStore?: number } }).broker.maxFileStore === 134217728, shown(fixed));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3e. A journal removed after `down` dropped the registration, as the way out of a damaged one
+  // says. The saved broker definition names the address; with none, a root that ran refuses.
+  {
+    const space = "unjournaled";
+    const root = prepare(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const first = cli(root, "up", "--server", server, "--no-manager", "--json");
+    track(space);
+    check("up --no-manager starts the stack to unjournal", first.status === 0, shown(first));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    const journalPath = join(root, ".cotal", "stack-controller.json");
+    rmSync(journalPath);
+    const recovered = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    check("bare up with no journal or registration starts at the address its saved broker definition names, and warns STACK_ADDRESS_RECOVERED",
+      recovered.status === 0 && readStackJournal(root)?.journal.server === server && Boolean(recovered.env?.warnings?.some((warning) => warning.code === "STACK_ADDRESS_RECOVERED")), shown(recovered));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    rmSync(journalPath);
+    const records = join(home, "services", Buffer.from(space).toString("hex"));
+    for (const row of serviceInstances(space, "stack-broker")) rmSync(join(records, "instances", `${Buffer.from(row.record.value.instanceId).toString("hex")}.json`));
+    rmSync(join(records, "definitions", `${Buffer.from("stack-broker").toString("hex")}.json`));
+    const refused = cli(root, "up", "--no-manager", "--json");
+    check("with no saved broker definition either, bare up refuses USAGE_INVALID, exit 1, and asks for --server",
+      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "run cotal up --server <url> with the address it ran at" && !existsSync(journalPath), shown(refused));
+    const named = cli(root, "up", "--server", server, "--no-manager", "--json");
+    track(space);
+    check("up --server with that address starts it", named.status === 0, shown(named));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
