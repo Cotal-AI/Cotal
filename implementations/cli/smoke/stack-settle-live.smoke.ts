@@ -10,7 +10,8 @@
  *     on every interface and names the plaintext ones. The next `up` restarts the broker from its
  *     records. After a manager crash, the next `up` relaunches the manager over the pidfile the
  *     killed process left. Once delivery is killed, `status` reads its ready row as stale instead of
- *     bound.
+ *     bound. The `down --yes` that stops it prints one receipt: the mesh once, the members in stop
+ *     order with their results, and `cotal up` as the next step.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
  *     launches nothing; once the port is free the same `up` starts. A second space whose first `up`
  *     finds that stack's broker answering refuses CONFLICT naming the address and that space, with a
@@ -109,7 +110,7 @@ const roots: string[] = [];
 const owned = new Set<number>();
 
 type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string } };
-type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stderr: string; env?: Envelope };
+type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
@@ -117,7 +118,7 @@ const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
-  return { status: run.status, signal: run.signal, ms: Date.now() - began, stderr: run.stderr, env: parsed };
+  return { status: run.status, signal: run.signal, ms: Date.now() - began, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
 const cli = (cwd: string, ...args: string[]): Run => cliAs(env, cwd, ...args);
 /** `cli` without blocking this process, so a watcher in it can act while the command runs. */
@@ -133,7 +134,7 @@ const cliAsync = (cwd: string, ...args: string[]): Promise<Run> => {
     clearTimeout(timer);
     let parsed: Envelope | undefined;
     try { parsed = JSON.parse(stdout) as Envelope; } catch { parsed = undefined; }
-    done({ status, signal, ms: Date.now() - began, stderr, env: parsed });
+    done({ status, signal, ms: Date.now() - began, stdout, stderr, env: parsed });
   }));
 };
 const shown = (run: Run) => ({ status: run.status, signal: run.signal, ms: run.ms, outcome: run.env?.outcome, error: run.env?.error, stderr: run.stderr.slice(-1500) });
@@ -255,8 +256,15 @@ try {
     await until(() => gone(space, "stack-delivery"), 10_000);
     const deadResponder = responder();
     check("status reads the live daemon's ready row as bound and a killed daemon's as stale", killedDelivery !== null && liveResponder === "bound" && deadResponder === "stale", { killedDelivery, liveResponder, deadResponder });
-    const finalDown = cli(root, "down", "--yes", "--json");
+    const finalDown = cli(root, "down", "--yes", "--plain");
     check("down --yes stops the repaired stack", finalDown.status === 0 && (replacement === null || !alive(replacement)), shown(finalDown));
+    // The receipt names the mesh once, lists the members in the stop order with their results, and
+    // ends with one Next; --yes prints no plan, impact or broker scope ahead of it.
+    const rows = finalDown.stdout.split("\n").filter((line) => /^ {2}(manager|delivery|broker) /.test(line)).map((line) => line.trim().split(/\s+/));
+    check("down --yes prints one receipt: the mesh once, members in stop order with results, and cotal up as the Next",
+      finalDown.stdout.startsWith(`Mesh: ${space}\n`) && finalDown.stdout.split("Mesh: ").length === 2 && !/stop plan|stop impact|stop scope/.test(finalDown.stdout)
+        && JSON.stringify(rows.map((row) => [row[0], row.slice(2).join(" ")])) === JSON.stringify([["manager", "stopped"], ["delivery", "already stopped"], ["broker", "stopped"]])
+        && finalDown.stdout.trimEnd().endsWith("Next\n  cotal up  Start the stack again from its journal and saved definitions"), finalDown.stdout);
   }
 
   // 3. A busy port on the first up (B2-02).
