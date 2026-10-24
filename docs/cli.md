@@ -1242,7 +1242,8 @@ is checked again after its dependants stop. A failure stops the sequence and pre
 unattempted members. A member stopped by signal that has not exited 15 seconds after SIGTERM gets
 SIGKILL. Its row then reads `stopped with SIGKILL`, and a `STOP_ESCALATED` warning names its pid.
 Only a complete confirmed stop removes the delivery credential and local registration. When the
-delivery daemon was already gone, its credential stays: that daemon never released its lease, and
+delivery daemon was already gone or had to be killed, its credential stays: that daemon never
+released its lease, and
 the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
 The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
 definitions and the journal remain for the next `up`, and the space stays prepared at its root. A

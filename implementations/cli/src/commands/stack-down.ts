@@ -469,13 +469,13 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (!failure) {
     // Shared cleanup only after the whole recorded set is confirmed stopped. An open stack never
     // had a delivery credential, so none is removed or claimed removed. Each step is idempotent.
-    // A delivery daemon that was already gone never released shard 0, and its credential is how
-    // the next up recognises that row as this folder's dead daemon's and waits it out, so it stays
-    // until that up replaces it.
+    // A delivery daemon that was already gone, or that had to be killed, never released shard 0, and
+    // its credential is how the next up recognises that row as this folder's dead daemon's and waits
+    // it out, so it stays until that up replaces it.
     try {
       if (journal.mode !== "open") {
         const store = workspaceSecretStore(root), key = deliveryCredsKey(journal.space, { injected: false, root });
-        if (journal.members.find((row) => row.role === "delivery")?.state === "already-stopped") deliveryCredentialKept = await store.get(key) !== undefined;
+        if (journal.members.find((row) => row.role === "delivery")?.state === "already-stopped" || killed.some((row) => row.role === "delivery")) deliveryCredentialKept = await store.get(key) !== undefined;
         else await store.delete(key);
       }
       // The stopped stack stays a prepared local space at its own root, so the next bare up

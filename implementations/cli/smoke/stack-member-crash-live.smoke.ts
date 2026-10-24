@@ -28,7 +28,8 @@
  *     once the process ends, `down` removes it.
  *  7. Started again with its delivery member stopped with SIGSTOP, as a hang, `down --yes` sends
  *     SIGKILL once 15 seconds pass after SIGTERM, and a `STOP_ESCALATED` warning names the member
- *     and its pid.
+ *     and its pid. It keeps the delivery credential, since that daemon never released its lease, so
+ *     an `up` right after waits the lease out and starts the stack.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the members its own `up` started and the process it started itself. Needs `nats-server` on PATH.
@@ -223,6 +224,11 @@ try {
   const escalated = doc(killed)?.warnings?.find((w) => w.code === "STOP_ESCALATED");
   check("down --yes stops a hung delivery member with SIGKILL and names it in a STOP_ESCALATED warning",
     killed.status === 0 && escalated?.message === `the delivery member, pid ${frozen}, did not exit within 15 s of SIGTERM, so it was stopped with SIGKILL` && !alive(frozen), killed.out);
+  check("...and keeps the delivery credential, as for a daemon already gone", (doc(killed)?.result as { cleanup?: string } | undefined)?.cleanup === "registration-removed-delivery-credential-kept", killed.out);
+  const waited = cli("up");
+  check("up right after waits out the killed daemon's lease and starts the stack", waited.status === 0, waited.out);
+  const final = cli("down", "--yes");
+  check("down --yes stops it", final.status === 0, final.out);
 } finally {
   if (hung !== undefined && alive(hung)) process.kill(hung, "SIGKILL");
   if (other?.pid !== undefined && alive(other.pid)) other.kill("SIGKILL");
