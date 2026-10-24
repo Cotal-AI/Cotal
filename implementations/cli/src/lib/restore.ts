@@ -763,7 +763,7 @@ function claimedNextStep(root: string, claim: MaintenanceClaim): string {
  *  shows it and a command that refuses over that journal names it. */
 export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null } {
   const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
-  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, journal.restore.selection)
+  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, restoreLeftOut(journal))
     : journal.state === "ready" ? readyNextStep(root, journal.source)
     : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
   return { attemptId, next };

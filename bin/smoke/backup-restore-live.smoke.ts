@@ -328,6 +328,10 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const previous = active.restore.previousSource?.identity.path;
       assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of them. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
     } else assert.doesNotMatch(restored.stdout, /history start empty/);
+    // `status` names the same cleanup for the attempt it shows under Maintenance.
+    const status = run("status", "--space", space);
+    const statusNext = status.stdout.split("\n").find((line) => line.includes(`cotal backup cleanup-fallback ${active.restore.attemptId}`)) ?? "";
+    assert.ok(statusNext !== "" && statusNext.includes("--discard-history") === (restoreArtifact === registryArtifact), `${mode} status names the cleanup that retires the restore\n${status.stdout}`);
     must("down", run("down"));
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the
