@@ -16,12 +16,17 @@ import type { ToolResult } from "./tool-specs.js";
 
 export { DOCS_VERSION } from "./docs-bundle.generated.js";
 
+/** The categories the docs index lists pages under, in its order. */
+export const DOCS_CATEGORIES = ["Start here", "Guide", "Concept", "Reference", "Project"] as const;
+export type DocsCategory = (typeof DOCS_CATEGORIES)[number];
+
 export interface DocsPage {
   /** URL-ish key, e.g. "architecture". Also the argument an agent passes as `page`. */
   slug: string;
   title: string;
-  /** The page's classification line, e.g. "Concept (informative)" or "Reference"; "" if none. */
-  kind: string;
+  /** The category the page's classification line names. The spec and lang are `normative`, and the
+   *  schema is `reference`. */
+  kind: DocsCategory | "normative" | "reference";
   /** One-line summary for the index. */
   summary: string;
   /** Full Markdown. */
@@ -313,13 +318,14 @@ export async function readDocsPage(page: string, opts: { refresh?: boolean } = {
   return { version, page: { ...found, body: remote.body }, source: "docs.cotal.ai", refresh: "served" };
 }
 
-/** The bundled docs' version, their normative sources and their pages, for an index. */
+/** The bundled docs' version, their normative sources and their pages, for an index, the pages in
+ *  the order of their categories. */
 export function docsIndex(): { version: string; sources: { slug: string; title: string }[]; pages: Omit<DocsPage, "body">[] } {
   const b = bundle();
   return {
     version: b.version,
     sources: [{ slug: "spec", title: b.spec.title }, { slug: "lang", title: b.lang.title }, { slug: "schema", title: b.schema.title }],
-    pages: b.pages.map(({ slug, title, kind, summary }) => ({ slug, title, kind, summary })),
+    pages: b.pages.map(({ slug, title, kind, summary }) => ({ slug, title, kind, summary })).sort((x, y) => DOCS_CATEGORIES.indexOf(x.kind as DocsCategory) - DOCS_CATEGORIES.indexOf(y.kind as DocsCategory)),
   };
 }
 

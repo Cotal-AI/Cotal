@@ -64,12 +64,16 @@ function titleOf(md, slug) {
   return m[1].trim();
 }
 
-/** The classification line every page opens with — `> **Concept** (informative) · …` →
- *  "Concept (informative)". "" when a page has no such line. */
-function kindOf(md) {
-  const m = md.match(/^>\s*(.+?)\s*$/m);
-  if (!m) return "";
-  return m[1].split("·")[0].replace(/\*\*/g, "").replace(/[[\]]/g, "").trim();
+/** The categories a page's classification line can name, as `DocsCategory` in connector-core's
+ *  docs.ts lists them. */
+const CATEGORIES = ["Start here", "Guide", "Concept", "Reference", "Project"];
+
+/** The category the classification line every page opens with names — `> **Concept** (informative)
+ *  · …` → "Concept". Fail loud on a page without one, so the index lists no page under no heading. */
+function kindOf(md, slug) {
+  const kind = md.match(/^>\s*\*\*([^*]+)\*\*/m)?.[1].trim();
+  if (!CATEGORIES.includes(kind)) throw new Error(`gen:docsbundle: ${slug}.md opens with no classification line naming one of ${CATEGORIES.join(", ")}`);
+  return kind;
 }
 
 /** One-line summary: the first real content paragraph, flattened to a single sentence-ish
@@ -115,7 +119,7 @@ const pages = files.map((f) => {
   const slug = basename(f, ".md").toLowerCase();
   const body = readFileSync(join(docsDir, f), "utf8");
   if (!body.trim()) throw new Error(`gen:docsbundle: docs/${f} is empty`);
-  return { slug, title: titleOf(body, slug), kind: kindOf(body), summary: summaryOf(body, slug), body };
+  return { slug, title: titleOf(body, slug), kind: kindOf(body, slug), summary: summaryOf(body, slug), body };
 });
 
 const specBody = readFileSync(join(repoRoot, "SPEC.md"), "utf8");

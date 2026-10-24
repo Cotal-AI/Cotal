@@ -71,15 +71,12 @@ async function docs(args: ParsedArgs): Promise<void> {
   writeResult(presentation, { command: "docs", target: null, result }, indexView);
 }
 
-/** A page's category, the leading words of its kind ("Concept (informative)", "Reference: ..."). */
-const category = (kind: string): string => kind.match(/^[^:(]+/)?.[0].trim() || kind;
-
 function indexView(r: DocsIndexResult): Report {
   const columns = [{ key: "slug", label: "PAGE" }, { key: "title", label: "TITLE" }];
   const table = (pages: readonly { slug: string; title: string }[]) =>
     ({ kind: "table" as const, columns, rows: pages.map((p) => ({ slug: { text: p.slug, tone: "command" as const }, title: p.title })) });
   const groups = new Map<string, DocsIndexResult["pages"][number][]>();
-  for (const p of r.pages) groups.set(category(p.kind), [...(groups.get(category(p.kind)) ?? []), p]);
+  for (const p of r.pages) groups.set(p.kind, [...(groups.get(p.kind) ?? []), p]);
   return {
     sections: [
       { title: `Cotal v${r.version} documentation`, blocks: [{ kind: "lines", lines: [{ text: "Bundled with this installed version and readable offline.", tone: "hint" }] }] },
