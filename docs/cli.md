@@ -621,11 +621,13 @@ path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and
 existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
 writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
 is written. A path still to create needs its nearest existing directory to be writable by this
-account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. A non-empty
-directory is accepted, since it may hold an existing store. When it holds anything besides a
+account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. On `up`, a
+non-empty directory is accepted, since it may hold an existing store. When it holds anything besides a
 store's `jetstream` directory, its `.cotal-store-id` marker and the `ocsp` folder nats-server makes
 there when it reloads its configuration, `up` warns and names those entries,
-because `clean store` and `reset store` refuse such a directory. A control
+because `clean store` and `reset store` refuse such a directory. A restore creates its store
+directory itself, so `up --restore` and `backup restore` refuse a path that already exists, empty or
+not, other than the preserved store, with `USAGE_INVALID` (exit 1) and restore nothing. A control
 directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
 other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
 with credentials and records, or with another root's store, and `reset store` could not remove it.
