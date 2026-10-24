@@ -71,7 +71,7 @@ try {
   check("`meshes add` exits non-zero for a public address", pub.code === 1, pub);
   // Pinned to the CLASSIFIER'S OWN WORDS. A softer `|refused` arm would also match a literal
   // "connection refused", i.e. the fence being absent, which is the thing this must detect.
-  check("  it names the address problem, not a connection failure", /cannot protect/i.test(pub.out), pub.out);
+  check("  it names the address problem, not a connection failure", /is a public address, .* so the connection must require TLS/.test(pub.out), pub.out);
   check("  it records nothing", findMesh("hostile") === undefined);
   check("  and it refused WITHOUT dialing (returned fast)", Date.now() - started < 2_000, Date.now() - started);
 
@@ -93,7 +93,7 @@ try {
   // should. A fence that refused everything would produce the same message as the cases above,
   // and this is the assertion that catches it.
   const loopback = await add("localmesh", "nats://127.0.0.1:14899");
-  check("a loopback literal is NOT refused by the dial policy", !/cannot protect/i.test(loopback.out), loopback.out);
+  check("a loopback literal is NOT refused by the dial policy", !/cannot protect|must require TLS/i.test(loopback.out), loopback.out);
   // Scored by throw-site count before trusting it: "unreachable" matches 68 places in the source,
   // so a disjunction including it would ride on that arm and accept almost any refusal. Pinned to
   // the registration path's own sentence instead — the assertion is only as strong as its weakest
@@ -118,7 +118,7 @@ try {
   // a gate step that only ends when something kills it, which is the false-green shape. The probe
   // now releases that socket (core #389), this file exits on its own again, and the probe is back.
   const overlay = await add("boxmesh", "nats://100.64.0.1:14899", { "allow-unencrypted-overlay": true });
-  check("with the flag it is NOT refused by the dial policy", !/cannot protect/i.test(overlay.out), overlay.out);
+  check("with the flag it is NOT refused by the dial policy", !/cannot protect|must require TLS/i.test(overlay.out), overlay.out);
   check("  the warning is printed, not swallowed", /tunnel is down|carrier-grade NAT/i.test(overlay.out), overlay.out);
   check("  it says the rule will tighten", /become a refusal/i.test(overlay.out), overlay.out);
   // The address is accepted by the POLICY and then fails on the broker, which is the split this
