@@ -493,6 +493,16 @@ export async function mintControlInstrument(
   return { creds, epCaller: { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller };
 }
 
+/** The space {@link connectOrThrow} connects `flags` to, read from local records only, with no probe
+ *  and no dial. Undefined when those records name no single space, which connecting then reports. A
+ *  command reads it before it connects, so a refusal of its own input still names the mesh. */
+export function connectSpace(flags: ConnectFlags): string | undefined {
+  if (flags.creds) return flags.space ?? DEFAULT_SPACE;
+  if (flags.server && flags.space && !findMesh(flags.space)) return flags.space;
+  try { return resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }).space; }
+  catch { return undefined; }
+}
+
 /**
  * Resolve where a mesh-touching command connects + with what creds, THROWING {@link ConnectRefusal}
  * on every refusal instead of ending the process. {@link connectOrExit} is this plus the printing

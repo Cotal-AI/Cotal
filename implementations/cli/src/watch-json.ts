@@ -2,7 +2,7 @@ import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { oneLine, renderReport, streamRecord, terminalWidth, writeStreamRecord } from "@cotal-ai/workspace";
 import { feedLine, isFeedView, matchesWatchFilter, observedText, watchReport, type WatchFilter } from "./watch-data.js";
 import { MeshView, type FeedEntry, type MeshSnapshot } from "./view/mesh-view.js";
-import { ownStdoutErrors } from "./lib/stdout-owner.js";
+import { outputFailed, ownStdoutErrors } from "./lib/stdout-owner.js";
 
 const WINDOW = 300;
 
@@ -31,12 +31,12 @@ export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubjec
       else if (type === "snapshot" && currentSnapshot && !isFeedView(filter)) {
         const report = renderReport({ ...watchReport(currentSnapshot, filter), space }, "plain", terminalWidth(process.stdout));
         if (report !== lastReport) { lastReport = report; console.log(report); }
-      } else if (type === "event" && data && typeof data === "object" && "row" in data) console.log(oneLine(`[${space}] ${feedLine(data.row as FeedEntry)}`));
+      } else if (type === "event" && data && typeof data === "object" && "row" in data) console.log(oneLine(`[${space}] ${feedLine(data.row as FeedEntry & { omittedCodeUnits?: number })}`));
       else if (type === "gap" || type === "error") {
         const message = data && typeof data === "object" && ("reason" in data || "message" in data) ? String("reason" in data ? data.reason : "message" in data ? data.message : "") : "observation incomplete";
         console.error(oneLine(`[${space}] Observer ${type}: ${message}`));
       } else if (type === "end") console.error(oneLine(`[${space}] Observer ended. No agent stop request was sent.`));
-    } catch { outputClosed(); }
+    } catch (error) { outputFailed(error as NodeJS.ErrnoException); outputClosed(); }
   };
   const presence = (rows: readonly Presence[]) => rows.map((row) => ({ id: row.card.id, name: row.card.name, role: row.card.role ?? null, kind: row.card.kind, reportedStatus: row.status, activity: row.activity ?? null, heartbeatAt: row.ts }));
   const changed = (snapshot: MeshSnapshot) => {
