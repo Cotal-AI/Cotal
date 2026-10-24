@@ -540,9 +540,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     }
     return;
   }
-  // Before any ordinary dispatch outcome can exit, take the spawn handoff and ensure no child
-  // inherits its variable. The unit entry refuses such a handoff without consuming its file.
-  takeManagedHandoffCustody(process.env);
+  // Before any ordinary dispatch outcome can exit, a spawn takes its handoff, and no command lets a
+  // child inherit the variable. The unit entry refuses such a handoff without consuming its file.
+  takeManagedHandoffCustody(process.env, findCommand(registry.all<Command>("command"), argv[0])?.name === "spawn");
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
   // The global spellings of help and version are the `help` and `version` commands.
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");

@@ -1049,8 +1049,8 @@ accept no internal `resolved` field that could bypass the config refusal.
 The runtime creates one provider resource under `managedRuntimeKey(target)`, writes the handoff into
 it as one 0600 file and the persona beside it, and runs the stock bootstrap there:
 `cotal spawn --config <persona-file> --space <space> --name <actor> --expect-owner <owner> --expect-lifecycle-uid <uid>`
-with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds that argv. The
-`cotal` entry reads the file into memory, deletes it and drops the variable before it parses flags,
+with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds that argv.
+`cotal spawn` reads the file into memory, deletes it and drops the variable before it parses flags,
 prints help or loads extensions, so every outcome, a refusal of its own flags included, leaves no
 file. It refuses before any broker connection or exchange request when the
 space, owner, actor, or lifecycle UID differ from the expected values, and then runs the

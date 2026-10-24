@@ -109,7 +109,7 @@ import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
 import { attachSeat } from "./agents.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
-import { claimManagedHandoff, holdsManagedHandoff } from "../managed-handoff.js";
+import { claimManagedHandoff, holdsManagedHandoff, managedHandoffRefusal } from "../managed-handoff.js";
 import {
   checkDialPolicy,
   checkEnforcement,
@@ -405,6 +405,8 @@ export const spawnFlags = [
 /** Check the public mode and spelling before catalog preparation or identity allocation. */
 export function validateSpawnArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof spawnFlags>;
+  const handoffRefusal = managedHandoffRefusal();
+  if (handoffRefusal) throw handoffRefusal;
   presentationOf(values);
   // `runCli` has already taken the handoff into custody and deleted its variable.
   const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
