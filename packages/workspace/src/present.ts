@@ -1,7 +1,10 @@
-import stringWidth from "string-width";
 import { c } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
 import { CommandFailure, exitCode, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
+
+// Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
+export { displayWidth, terminalWidth, wrapWords };
 
 /**
  * The terminal presentation every command surface shares: one view model of a finished report,
@@ -89,12 +92,6 @@ const tones: Record<Tone, (s: string) => string> = {
   title: c.bold,
 };
 
-/** The columns `text` occupies on a terminal: grapheme clusters, wide East Asian and emoji
- *  characters as two, combining marks and zero-width characters as none, ANSI sequences as none. */
-export function displayWidth(text: string): number {
-  return stringWidth(text);
-}
-
 /** Punctuation as plain writes it, wherever it appears, so a plain report is ASCII apart from
  *  other characters of the content itself, such as the letters of a name. */
 const PLAIN_PUNCTUATION: Readonly<Record<string, string>> = { "·": "-", "…": "...", "→": "->", "↳": "->", "—": "-", "–": "-" };
@@ -131,25 +128,6 @@ function draw(cell: Cell, style: Style): { shown: string; width: number } {
   if (typeof cell === "string" || style === "plain") return { shown: text, width: displayWidth(text) };
   const marked = cell.mark && marks(style) ? `${oneLine(cell.mark)} ${text}` : text;
   return { shown: cell.tone ? tones[cell.tone](marked) : marked, width: displayWidth(marked) };
-}
-
-/** `text` in lines of at most `width` display columns, broken at spaces, or only between the given
- *  words. A word wider than `width` keeps a line of its own, so an identity, path or command is never
- *  split. Below 20 columns, and when the output is not a terminal, nothing is wrapped. */
-export function wrapWords(text: string | readonly string[], width: number): string[] {
-  const words = typeof text === "string" ? text.split(" ") : text;
-  if (!(width >= 20) || displayWidth(words.join(" ")) <= width) return [words.join(" ")];
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const next = line ? `${line} ${word}` : word;
-    if (line && displayWidth(next) > width) {
-      lines.push(line);
-      line = word;
-    } else line = next;
-  }
-  lines.push(line);
-  return lines;
 }
 
 /** A cell drawn in lines that fit `width` columns, each line toned on its own. A continuation line
@@ -198,6 +176,7 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
 }
 
 /** Each value starts after its padded label; a value too long for the line continues under itself.
+ *  A value with a word too wide for the room beside its label starts on the line under the label.
  *  Below 48 columns each label takes a line of its own, with its value on the lines under it. */
 function renderFields(fields: Fields, style: Style, indent: string, width: number): string[] {
   if (width < 48) {
@@ -210,6 +189,8 @@ function renderFields(fields: Fields, style: Style, indent: string, width: numbe
   const start = indent.length + pad + 1;
   return fields.rows.flatMap(([name, value]) => {
     const [first, ...rest] = drawWrapped(value, style, width - start);
+    if ([first!, ...rest].some((line) => displayWidth(line) > width - start))
+      return [indent + draw({ text: `${name}:`, tone: "label" }, style).shown, ...drawWrapped(value, style, width - indent.length - 2).map((line) => indent + "  " + line)];
     return [`${indent}${drawPadded({ text: `${name}:`, tone: "label" }, style, pad)} ${first}`, ...rest.map((line) => " ".repeat(start) + line)];
   });
 }
@@ -249,11 +230,6 @@ export function renderReport(report: Report, style: Style, width = Number.POSITI
     }
   }
   return out.join("\n");
-}
-
-/** The columns a stream can show: its terminal's width, or unbounded when it is not a terminal. */
-export function terminalWidth(stream: { readonly isTTY?: boolean; readonly columns?: number }): number {
-  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;
 }
 
 /** The presentation `--json` and `--plain` ask for. Both at once is a usage error. */

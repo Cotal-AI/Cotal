@@ -49,7 +49,7 @@
     {
       "name": "a per-space write of a user-only key is accepted",
       "file": "packages/workspace/src/preferences.ts",
-      "find": "    if (!spec.perSpace) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `${key} has no per-space value; set it for the user`);\n",
+      "find": "    if (!spec.perSpace) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `${key} has no per-space value; set it for the user`, { remedy: \"run it again without --space\" });\n",
       "replace": "",
       "expectRed": "refused: color saved for one space",
       "cell": "refused: color saved for one space",

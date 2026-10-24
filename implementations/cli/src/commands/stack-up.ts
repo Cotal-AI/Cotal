@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
-import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
+import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MEMBERSHIP_MAX_BYTES, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getCurrent, getSpaceAuth, hasUserAuthState,
   homeCotalDir, isCommandFailure, loadMeshes, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
@@ -142,8 +142,25 @@ export interface StackUpResult {
 }
 
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. A
- *  recorded stack takes `rotate-sys` on a stopped start; a first start keeps the retained path. */
+ *  recorded stack takes `rotate-sys` on a stopped start; a first start refuses it, because it mints
+ *  the space's system account new. */
 const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "tls-cert", "tls-key"] as const;
+
+/** Of those, the ones `up -f <cotal.yaml>` takes on a prepared root. */
+const MANIFEST_ROUTE: readonly string[] = ["dry-run", "tls-cert", "tls-key"];
+
+/** The refusal of startup options the controller stack has no route for, before anything starts.
+ *  A prepared root that has not run a stack yet is also offered the manifest route. */
+function controllerUnsupported(root: string, options: readonly string[], prepared: boolean): CommandFailure {
+  const flags = options.map((name) => `--${name}`);
+  const named = flags.length === 1 ? flags[0]! : `${flags.slice(0, -1).join(", ")} and ${flags.at(-1)!}`;
+  const manifest = prepared && options.every((name) => MANIFEST_ROUTE.includes(name));
+  const rotation = prepared && options.includes("rotate-sys") ? "; a first start mints the space's $SYS creds, so there is nothing to rotate" : "";
+  return new CommandFailure("refused", "UNSUPPORTED", `${prepared ? "this root is prepared for a controller-owned stack" : "this root's stack is owned by the service controller"}, which has no route for ${named}; nothing was started through the legacy launcher`, {
+    target: { root, options },
+    remedy: manifest ? `run cotal up without ${named}, or start the space from a manifest with cotal up -f <cotal.yaml>, which takes ${flags.length === 1 ? "it" : "them"}` : `run cotal up without ${named}${rotation}`,
+  });
+}
 
 /** Any account record, readable or not, means the root carries static trust an open stack would bypass. */
 function holdsBrokerAccount(root: string): boolean {
@@ -157,8 +174,8 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
 }
 
 /** A root takes the controller route when it already has a stack journal, or when it is a fresh,
- *  prepared root with nothing legacy, maintenance or team-owned retained under it and the
- *  invocation names only controller-supported inputs. A static-auth request needs an `up`
+ *  prepared root with nothing legacy, maintenance or team-owned retained under it. On either, an
+ *  input the controller has no route for refuses `UNSUPPORTED`. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
  *  its native auth service. Anything else keeps the retained path. */
@@ -166,15 +183,14 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   const canonical = canonicalRoot(root);
   const recorded = readStackJournal(canonical);
   const requested = requestedStackMode(values);
-  const unsupportedNow = (name: string) => values[name] !== undefined && values[name] !== false && (CONTROLLER_UNSUPPORTED as readonly string[]).includes(name);
+  const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => values[name] !== undefined && values[name] !== false);
   if (recorded) {
-    const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => name !== "rotate-sys" && unsupportedNow(name));
-    if (unsupported.length) throw new CommandFailure("refused", "UNSUPPORTED", "this root's stack is owned by the service controller; the requested startup option has no controller-owned route and was not applied through the legacy launcher", { target: { root: canonical, options: unsupported } });
+    const refused = unsupported.filter((name) => name !== "rotate-sys");
+    if (refused.length) throw controllerUnsupported(canonical, refused, false);
     if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${recorded.journal.mode === "open" ? "open" : recorded.journal.mode === "user" ? "user auth" : "static auth"}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: "run bare cotal up to keep the recorded mode" });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
     return true;
   }
-  if (CONTROLLER_UNSUPPORTED.some(unsupportedNow)) return false;
   const wanted: StackMode = requested ?? "auth";
   if (canonical === canonicalRoot(homedir()) || wanted !== "user" && hasUserAuthState(canonical, space, { readOnly: true })) return false;
   if (wanted === "open" && holdsBrokerAccount(canonical)) return false;
@@ -186,6 +202,9 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   if (!registered && (!prepared || canonicalRoot(prepared.root) !== canonical)) return false;
   if (readMaintenanceJournal(canonical)) return false;
   if (existsSync(join(canonical, ".cotal", "nats.pid")) || liveMeshProcesses(canonical, space).length) return false;
+  // A prepared root never falls through to the legacy launcher, so an option the controller stack
+  // has no route for refuses here as it does on a root whose stack the controller owns.
+  if (unsupported.length) throw controllerUnsupported(canonical, unsupported, true);
   return true;
 }
 
@@ -341,14 +360,18 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         remedy: `${brokerRuns ? `stop its broker with cotal down --yes from ${root}, then ` : ""}run cotal up --host ${new URL(previous!.journal.server).hostname} from ${root}`,
       });
   }
-  const recordedBroker = strayHost !== undefined ? { ...recordedInputs!, host: request.host } : recordedInputs;
+  // The cap is fixed while the broker runs. A stopped broker starts again with an explicit new cap,
+  // which replaces the recorded one, as after a cap too small for the space's streams.
+  const newCap = recordedInputs !== undefined && request.maxFileStore !== undefined && request.maxFileStore !== recordedInputs.maxFileStore;
+  const capReplaced = newCap && !serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
+  const recordedBroker = recordedInputs && { ...recordedInputs, ...(strayHost !== undefined ? { host: request.host } : {}), ...(capReplaced ? { maxFileStore: request.maxFileStore } : {}) };
   const changedInputs = recordedBroker ? [
     request.storeDir !== undefined && resolve(request.storeDir) !== recordedBroker.storeDir ? `--store-dir ${resolve(request.storeDir)} (recorded: ${recordedBroker.storeDir})` : undefined,
     request.maxFileStore !== undefined && request.maxFileStore !== recordedBroker.maxFileStore ? `--max-file-store ${request.maxFileStore} (recorded: ${recordedBroker.maxFileStore ?? "none"})` : undefined,
     request.host !== undefined && request.host !== recordedBroker.host ? `--host ${request.host} (recorded: ${recordedBroker.host ?? "none"})` : undefined,
   ].filter((input) => input !== undefined) : [];
   if (changedInputs.length)
-    throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run bare cotal up from ${root} to start it with its recorded inputs` });
+    throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run bare cotal up from ${root} to start it with its recorded inputs${newCap ? `; a new --max-file-store applies once the broker is stopped with cotal down --yes` : ""}` });
   // A journal written before broker inputs were recorded cannot tell which store, cap or bind host
   // its stopped broker used: `cotal down` removed the registration that held them, and broker
   // preparation would otherwise fall back to the default `.cotal/nats` store with no cap. Such a
@@ -650,13 +673,21 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
       settle("failed");
       const nativeCause = error instanceof JetStreamApiError && Number.isSafeInteger(error.code) ? { code: String(error.code) } : undefined;
-      throw new CommandFailure("failed", "OPERATION_FAILED", `the broker this command started could not create the space's streams${unserved.outOfFiles ? ", because it ran out of open files" : ""}, so it was stopped again; nothing of the stack runs`, {
+      // JetStream answers 10047, insufficient storage resources, when the file store cannot hold a
+      // stream's reservation; the broker logs nothing about it.
+      const noStorage = error instanceof JetStreamApiError && error.code === 10047;
+      const storeRemedy = `with at least ${MEMBERSHIP_MAX_BYTES} bytes, which the space's membership bucket reserves, plus room for messages`;
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the broker this command started could not create the space's streams${unserved.outOfFiles ? ", because it ran out of open files" : noStorage ? `, because its JetStream file store${brokerCap !== undefined ? ` cap (--max-file-store ${brokerCap})` : ""} has too little room for them` : ""}, so it was stopped again; nothing of the stack runs`, {
         target: { root, space, operation: journal.operation.id, members: journal.members, ...(unserved.log ? { brokerLog: unserved.log } : {}) },
         changed: [instanceProjection(unserved.stopped)],
         ...(nativeCause ? { native: nativeCause } : {}),
         remedy: unserved.outOfFiles
           ? `raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up again from ${root}`
-          : `fix what the broker's log${unserved.log ? ` at ${unserved.log}` : ""} names, then run cotal up again from ${root}`,
+          : noStorage
+            ? brokerCap !== undefined
+              ? `run cotal up --max-file-store <bytes> from ${root} ${storeRemedy}`
+              : `free space on the filesystem that holds ${brokerStore ?? join(root, ".cotal", "nats")}, or run cotal up --max-file-store <bytes> from ${root} ${storeRemedy}`
+            : `fix what the broker's log${unserved.log ? ` at ${unserved.log}` : ""} names, then run cotal up again from ${root}`,
       });
     }
     const failure = isCommandFailure(error) ? error : undefined;
@@ -672,10 +703,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         ? { code: String(error.code), ...(Number.isSafeInteger(error.status) && error.status >= 400 && error.status < 600 ? { detail: { status: error.status } } : {}) }
         : undefined;
     // The member's own sentence and remedy are what a reader can act on, such as a busy broker port.
-    const cause = pending && failure ? ` (${pending.role}: ${failure.message})` : "";
+    // A member that could not connect to a broker which ran out of open files names only that; the
+    // broker's log names the cause, and a running broker keeps the limit it started with.
+    const starved = pending && failure && pending.role !== "broker" ? brokerOutOfFilesLog(space) : undefined;
+    const cause = pending && failure ? ` (${pending.role}: ${failure.message}${starved !== undefined ? `; the broker's log${starved ? ` at ${starved}` : ""} records that it ran out of open files` : ""})` : "";
     // A refusal or failure with no member started or reused leaves nothing of the stack running.
     const none = !uncertain && !journal.members.some((row) => row.state === "started" || row.state === "reused");
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with cotal down --yes from ${root}, raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up there again` : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });
@@ -711,12 +745,30 @@ async function stopUnservedBroker(space: string, definition: ServiceDefinitionSn
   }
 }
 
+/** This space's broker log when its tail records that the broker ran out of open files, or null when
+ *  that log has no path. Undefined when it records no such thing or cannot be read. */
+function brokerOutOfFilesLog(space: string): string | null | undefined {
+  try {
+    const rows = serviceInstances(space, STACK_DEFINITION.broker);
+    if (rows.length !== 1) return undefined;
+    const log = readServiceLog(space, rows[0]!.name, 200);
+    return log.lines.some((line) => /too many open files/i.test(line)) ? log.path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The member table and evidence text a caller embeds in its own receipt. */
 export function stackMembersView(journal: StackJournal, title: string): Report {
   return membersView(journal, title);
 }
 
-export function stackUpForegroundNotice(presentation: ReturnType<typeof presentationOf>, space: string): void {
+/** The notice a foreground `up` prints before it blocks. With `takeover`, the stack already runs, started
+ *  by a background `up` or a foreground one that has exited, and this terminal takes its lifetime over. */
+export function stackUpForegroundNotice(presentation: ReturnType<typeof presentationOf>, space: string, takeover = false): void {
   if (presentation === "json") return;
-  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: ["This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare cotal down, including its manager impact review. Terminal loss or an external kill is not a confirmed stop."] }] }] }, presentation, terminalWidth(process.stdout)));
+  const holds = takeover
+    ? "This stack is already running, and this terminal now takes over its lifetime. Ctrl-C or SIGTERM here stops the whole stack, though another command started it, with the same guarded whole-stack stop as bare cotal down, including its manager impact review."
+    : "This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare cotal down, including its manager impact review.";
+  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: [`${holds} Terminal loss or an external kill is not a confirmed stop.`] }] }] }, presentation, terminalWidth(process.stdout)));
 }

@@ -6,10 +6,12 @@
  * record it writes and for leaving the selection as it was. An open space must be one the broker
  * serves, so the open broker serves the names that are added and refuses one it does not. A forget
  * removes the space's per-space preferences with it, refuses on a preferences file it cannot read,
- * and is partial when it cannot remove them. On Linux, a space started as a controller
+ * and is partial when it cannot remove them, naming the chmod first when other accounts can write
+ * their folder. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
  * whose members this home has no record of, with a live manager, stands for a stack running under
- * another Cotal home: create, down and status there name that home. A stopped stack whose broker
+ * another Cotal home: create, down and status there name that home. A folder path with a control
+ * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
@@ -405,11 +407,11 @@ setCurrent("keep");
   const setUp: number[] = [];
   // These are open spaces, so the open broker serves them before they are added.
   const { setupSpaceStreams } = await import("@cotal-ai/core");
-  for (const space of ["withprefs", "shownprefs", "badprefs", "lockedprefs"]) await setupSpaceStreams({ servers: LIVE, space });
-  for (const name of ["withprefs", "shownprefs", "badprefs", "lockedprefs"]) setUp.push((await json(["space", "add", name, "--server", LIVE, "--root", root])).status ?? -1);
-  for (const [name, key, value] of [["withprefs", "persona", "rev"], ["withprefs", "harness", "opencode"], ["shownprefs", "persona", "rev"], ["badprefs", "persona", "rev"], ["lockedprefs", "persona", "rev"]])
+  for (const space of ["withprefs", "shownprefs", "badprefs", "lockedprefs", "exposedprefs"]) await setupSpaceStreams({ servers: LIVE, space });
+  for (const name of ["withprefs", "shownprefs", "badprefs", "lockedprefs", "exposedprefs"]) setUp.push((await json(["space", "add", name, "--server", LIVE, "--root", root])).status ?? -1);
+  for (const [name, key, value] of [["withprefs", "persona", "rev"], ["withprefs", "harness", "opencode"], ["shownprefs", "persona", "rev"], ["badprefs", "persona", "rev"], ["lockedprefs", "persona", "rev"], ["exposedprefs", "persona", "rev"]])
     setUp.push((await json(["config", "set", key!, value!, "--space", name!])).status ?? -1);
-  check("four spaces are added and their preferences saved", setUp.every((status) => status === 0), setUp);
+  check("five spaces are added and their preferences saved", setUp.every((status) => status === 0), setUp);
   const withPrefs = await json(["space", "forget", "withprefs"]);
   check("forget removes the space's preferences, lists each key and value, and keeps another space's",
     withPrefs.status === 0 && JSON.stringify(withPrefs.env?.result.removedPreferences) === JSON.stringify({ persona: "rev", harness: "opencode" }) && saved().withprefs === undefined && saved().shownprefs?.persona === "rev", shown(withPrefs));
@@ -428,6 +430,13 @@ setCurrent("keep");
     check("preferences that cannot be removed leave the forget partial, exit 4, naming config unset",
       locked.status === 4 && locked.env?.outcome === "partial" && findMesh("lockedprefs") === undefined && saved().lockedprefs?.persona === "rev" &&
         (locked.env?.error?.remedy ?? "").includes("cotal config unset <key> --space lockedprefs"), shown(locked));
+    // A folder other accounts can write refuses the removal, and the remedy protects it first.
+    chmodSync(prefsDir, 0o757);
+    const exposed = await json(["space", "forget", "exposedprefs"]);
+    chmodSync(prefsDir, 0o700);
+    check("preferences in a folder other accounts can write are kept, and the partial's remedy starts with its chmod",
+      exposed.status === 4 && exposed.env?.outcome === "partial" && findMesh("exposedprefs") === undefined && saved().exposedprefs?.persona === "rev" &&
+        (exposed.env?.error?.remedy ?? "").startsWith(`chmod o-w ${prefsDir}; then see them with`), shown(exposed));
   }
 }
 
@@ -627,6 +636,24 @@ if (process.platform === "linux") {
   const linked = await json(["space", "create", "other", "--root", dangling]);
   check("a .cotal linking to a missing folder is TARGET_NOT_FOUND, exit 2, naming the link and its target",
     refused(linked, 2, "TARGET_NOT_FOUND") && linked.env?.error?.message === `${join(dangling, ".cotal")} links to ${join(home, "nowhere")}, which does not exist; nothing was written` && !existsSync(join(home, "nowhere")) && findPreparedSpace("other") === undefined, shown(linked));
+  // A folder whose path holds a control character could be prepared but never started, and a
+  // bidirectional formatting mark can show one path as another, so create and up refuse both before
+  // anything is written.
+  // Outside the home folder, whose .cotal up would otherwise refuse to inherit first.
+  const { oneLine } = await import("@cotal-ai/core");
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-odd-")));
+  for (const [label, name] of [["a tab", "tab\tfolder"], ["a newline", "line\nfolder"], ["an escape character", "esc\u001bfolder"], ["a delete character", "del\u007ffolder"], ["the bidirectional formatting mark U+202E", "rlo\u202efolder"]]) {
+    const odd = join(outside, name);
+    mkdirSync(odd);
+    const created = await json(["space", "create", "oddpath", "--root", odd]);
+    check(`a --root whose path holds ${label} is USAGE_INVALID, exit 1, naming it, with nothing written`,
+      refused(created, 1, "USAGE_INVALID") && (created.env?.error?.message ?? "") === `the folder path ${oneLine(odd)} contains ${label}, and a project path may hold neither control characters nor bidirectional formatting marks; nothing was written` && !existsSync(join(odd, ".cotal")) && findPreparedSpace("oddpath") === undefined, shown(created));
+    const up = await json(["up", "--server", DEAD], odd);
+    check(`up in that folder is USAGE_INVALID, exit 1, and writes no stack journal`,
+      refused(up, 1, "USAGE_INVALID") && (up.env?.error?.message ?? "").startsWith(`the folder path ${oneLine(odd)} contains ${label}`) && !existsSync(join(odd, ".cotal")), shown(up));
+    rmSync(odd, { recursive: true, force: true });
+  }
+  rmSync(outside, { recursive: true, force: true });
   // A prepared folder that is moved keeps none of its space, so a bare up there would start the
   // default. With that space selected and its recorded folder gone, up refuses and names the step.
   {

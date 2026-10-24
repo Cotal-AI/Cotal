@@ -230,6 +230,14 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   rmSync(dir, { recursive: true, force: true });
 }
 
+// A source file that cannot be read is refused with the path to check.
+{
+  const missing = join(tmpdir(), `run-source-missing-${process.pid}.cotal.js`);
+  reset();
+  const refused = await runWorkflow({ values: {}, positionals: ["validate", missing], raw: [] }).then(() => undefined, (e: Error) => e);
+  c("validate refuses a file it cannot read, TARGET_NOT_FOUND, with a remedy naming the path", isCommandFailure(refused) && refused.code === "TARGET_NOT_FOUND" && refused.detail().remedy === `check that ${missing} exists and this account can read it`, refused);
+}
+
 // A source file that is empty or not UTF-8 is refused by validate and by a hosted start alike,
 // before anything is checked or sent. Validate used to pass an empty file that start then broke on,
 // and Latin-1 text used to be stored with U+FFFD in place of its bytes.

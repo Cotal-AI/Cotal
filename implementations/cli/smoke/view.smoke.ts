@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../src/view/mesh-view.js";
 import { runLog } from "../src/render.js";
-import { watchReport } from "../src/watch-data.js";
+import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
 import {
   chatSubject,
   unicastSubject,
@@ -117,6 +117,23 @@ check(
 check("signals.waiting surfaces the blocked agent", s.signals.waiting.length === 1 && s.signals.waiting[0].card.name === "bob");
 const watchRoster = renderReport(watchReport(s, "roster"), "plain", 200).split("\n");
 check("the watch roster names a working agent's progress as unknown", watchRoster.some((line) => /\balice\b.*working - progress unknown/.test(line)) && !watchRoster.some((line) => /\bbob\b.*progress unknown/.test(line)));
+{
+  // A message past the row bound is cut, and the line says how much it lost and which read shows it whole.
+  const long = `${"x".repeat(200_000)}END-MARK`;
+  const from = { id: ids.alice, name: "alice" };
+  const post = { id: "long", ts: Date.now(), from, delivery: "multicast" as const, channel: "general", text: long };
+  const cut = observedText(long);
+  const lost = long.length - WATCH_TEXT_LIMIT;
+  const marker = (line: string) => line.match(/ \[(\d+) text code units not shown(.*)\]$/);
+  const whole = marker(feedLine(post));
+  const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
+  const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
+  check("a watch line cut at the row bound names the code units not shown and the history read that shows it whole",
+    whole?.[1] === String(lost) && whole[2] === "; cotal history general shows it whole" && !feedLine(post).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; cotal history general shows it whole");
+  check("a cut direct message points at cotal history --dms", dm?.[1] === String(lost) && dm[2] === "; cotal history --dms shows it whole");
+  check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" })) === null);
+}
 
 const aliceDm = s.signals.dms.find((p) => p.name === "alice");
 check("DM roll-up: alice has 2 conversations (bob, carol)", aliceDm?.conversations.length === 2);

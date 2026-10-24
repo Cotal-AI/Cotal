@@ -8,7 +8,7 @@ import {
   type AgentDef,
 } from "@cotal-ai/core";
 import {
-  cachedPreferences, CommandFailure, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes,
+  cachedPreferences, CommandFailure, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
   resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 
@@ -45,6 +45,8 @@ function catalogAt(root: string, space: string): PersonaCatalog {
     if (!statSync(root).isDirectory()) throw new Error("not a directory");
     return { root: realpathSync(root), space };
   } catch {
+    const moved = movedProject(space, root);
+    if (moved) throw new CommandFailure("refused", "CONFLICT", moved.message, { target: moved.target, remedy: moved.remedy });
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected persona catalog root is unavailable");
   }
 }
@@ -78,7 +80,7 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
 
 export function requirePersonaSource(path: string): PersonaSource {
   const source = readPersonaSource(path);
-  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`);
+  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: "see the personas here with `cotal persona`" });
   return source;
 }
 

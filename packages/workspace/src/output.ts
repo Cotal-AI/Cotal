@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { FlagSpec, OutputMode } from "@cotal-ai/core";
+import { terminalWidth, wrapWords } from "./text-wrap.js";
 
 /**
  * The structured output contract every command surface shares: one version 1 envelope per finite
@@ -193,7 +194,9 @@ export function recordOperationWarning(warning: OutputWarning): void {
   const scope = operationScope.getStore();
   if (!scope || scope.warnings?.some((w) => w.code === warning.code && w.message === warning.message)) return;
   (scope.warnings ??= []).push(warning);
-  process.stderr.write(`! ${warning.message}\n`);
+  // Wrapped to the terminal like the report it precedes, each continuation line under the text.
+  const lines = wrapWords(warning.message, terminalWidth(process.stderr) - 2);
+  process.stderr.write(`${lines.map((line, i) => `${i === 0 ? "!" : " "} ${line}`).join("\n")}\n`);
 }
 
 /** The warnings this command run recorded so far, none outside {@link runOperation}. */

@@ -79,10 +79,16 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       // and `up` there refuses until `space create` prepares the journal's space at that root again. A
       // stack running under another Cotal home names the home in use, because `up` there refuses. A
       // root whose last start configured a broker names that broker, and `up` there starts it again.
+      // A folder moved from a prepared space's missing root, or holding a journal another folder
+      // recorded, names the next step `up` and `down` name there.
       if (d.space !== undefined) return d.rootMissing
-        ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
+        ? d.stackRemedy !== undefined
+          ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
+          : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
         : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
+      if (d.home === undefined && d.recordedRoot !== undefined && d.stackRemedy !== undefined)
+        return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);
       if (d.lastRun) return parts(`the mesh in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
         ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${d.root}\`, then start it with \`cotal up\` there`)
