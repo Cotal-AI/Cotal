@@ -886,10 +886,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const status = localProcessOwnerStatus(journal.listenerProof.processOwner);
         if (status === "unknown")
           throw new Error(`restore attempt ${journal.restore.attemptId} active listener ownership is ambiguous; refusing ordinary startup`);
-        if (status === "alive") {
-          recoveredRestore = rehydratePreparedRestore(root, journal);
-          pendingRestores.set(recoveredRestore.attemptId, recoveredRestore);
-        }
+        // The restore committed and its broker runs, so there is nothing to hand off or adopt.
+        if (status === "alive") throw restoredBrokerRuns(root, journal.restore.attemptId, journal.listenerProof.processOwner.pid);
       } else if (journal?.state === "ready") {
         const source = preservedSourceState(root, journal.source);
         if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run cotal up");
@@ -2037,6 +2035,15 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   }
 }
 
+/** A start over the broker a committed restore left running here. `up -f` boots a fresh mesh, so its
+ *  way out also retires the restore. */
+function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string): CommandFailure {
+  return new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${pid}), and a new start does not run beside it; nothing was started`, {
+    target: { root, attempt, pid },
+    remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${attempt} --yes, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
+  });
+}
+
 /** `manifest` is the `up -f` file, which boots a fresh mesh and so needs the restore retired first. */
 function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: string): void {
   const maintenance = readMaintenanceJournal(root);
@@ -2048,11 +2055,7 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: str
     if (!maintenance.listenerProof)
       throw new Error(`restore attempt ${attempt} is active without a bound listener proof`);
     const status = localProcessOwnerStatus(maintenance.listenerProof.processOwner);
-    if (status === "alive")
-      throw new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${maintenance.listenerProof.processOwner.pid}), and a new start does not run beside it; nothing was started`, {
-        target: { root, attempt, pid: maintenance.listenerProof.processOwner.pid },
-        remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with ${retire}, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
-      });
+    if (status === "alive") throw restoredBrokerRuns(root, attempt, maintenance.listenerProof.processOwner.pid, manifest);
     if (status !== "dead")
       throw new Error(`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`);
     // `up -f` boots a fresh mesh, so the restore it would start over is retired first.
