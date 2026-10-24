@@ -1,3 +1,4 @@
+import { readAuthResponseJson } from "./response-json.js";
 import { authServiceFlags } from "./daemon-flags.js";
 import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-host-client.js";
 /**
@@ -90,7 +91,8 @@ async function retireInteractiveActorLifecycle(
       throw notRun("DEPENDENCY_UNAVAILABLE", `the auth service at ${service.url} refused the connection`, "restart the stack with `cotal up`, then retry");
     throw mayHaveRun(`its lifecycle retirement request failed (${error instanceof Error ? error.message : String(error)})`);
   }
-  const body = await response.json().catch(() => ({})) as { error?: string; outcome?: unknown; retired?: unknown; lifecycleUid?: unknown; alreadyRetired?: unknown };
+  const body = await readAuthResponseJson(response, `the auth service's lifecycle retirement endpoint at ${service.url}${INTERACTIVE_RETIRE_PATH}`)
+    .catch((error: unknown) => { throw mayHaveRun(error instanceof Error ? error.message : String(error)); }) as { error?: string; outcome?: unknown; retired?: unknown; lifecycleUid?: unknown; alreadyRetired?: unknown };
   if (!response.ok) {
     const answer = body.error ?? `HTTP ${response.status}`;
     // Only the service knows whether the retirement began, and an error without its outcome may
@@ -585,10 +587,10 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
     if (res.status >= 300 && res.status < 400)
       throw new Error(`agent-bearer: the pinned exchange answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so an HTTPS pin cannot walk the actor token onto plaintext or another host`);
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      const body = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { error?: string };
       throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
     }
-    const out = (await res.json().catch(() => ({}))) as { token?: string };
+    const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };
     if (typeof out.token !== "string" || !out.token)
       throw new Error("agent-bearer: the auth service's exchange returned no token - its build may be stale; restart it with `cotal up`");
     health("ok");

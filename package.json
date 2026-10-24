@@ -645,6 +645,7 @@
     "smoke:auth-owner-token": "tsx implementations/auth/smoke/owner-token.smoke.ts",
     "smoke:auth-issuer": "tsx implementations/auth/smoke/issuer.smoke.ts",
     "smoke:auth-idp-bridge": "tsx implementations/auth/smoke/idp-bridge.smoke.ts",
+    "smoke:auth-response-json": "tsx implementations/auth/smoke/auth-response-json.smoke.ts",
     "smoke:auth-login": "tsx implementations/auth/smoke/login.smoke.ts",
     "smoke:login-unreachable": "tsx implementations/auth/smoke/login-unreachable.smoke.ts",
     "smoke:actor-target": "tsx implementations/auth/smoke/actor-target.smoke.ts",
