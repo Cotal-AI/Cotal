@@ -3107,8 +3107,8 @@ interface ExchangePolicy {
   /** Record a refused exchange against this face's budget (for `peer`). */
   recordFailure(ctx: Pick<HandlerCtx, "failures">, peer: string): void;
   /** Public face only: rolling window of authenticated manager-selection refusals for `key`
-   *  (`${principal}:pinned` or `${principal}:unpinned`). Absent on loopback, where selection
-   *  refusals stay in the shared `failures` window. */
+   *  (`${principal}:pinned` or `${principal}:unpinned`). Absent on loopback, which keeps its
+   *  existing refusal classification and shared probing window. */
   selectionWindow?(key: string): number[];
 }
 
@@ -3445,8 +3445,9 @@ function refuseCapability(res: ServerResponse, ctx: Pick<HandlerCtx, "badCaps">,
 
 /** Public-face authenticated manager-selection (#3959): called ONLY after the caller's
  *  credential (IdP JWT or actor secret) and ledger actor grant have verified. On loopback
- *  (`policy.selectionWindow === undefined`), selection runs directly inside the caller's try so
- *  any refusal records into `ctx.failures` and is masked by the loopback 429 as before. On the
+ *  (`policy.selectionWindow === undefined`), selection runs directly inside the caller's try and
+ *  keeps its existing refusal classification: unpinned selection misses do not spend the probing
+ *  budget. On the
  *  public face, each verified principal has two selection-refusal windows keyed by principal and
  *  request class (`pinned` when `requested !== undefined`, `unpinned` when `requested === undefined`,
  *  never by the requested instance id): each class checks its own window BEFORE
@@ -3487,8 +3488,8 @@ async function selectExchangeManagerInstance(
 
 /** The exchange body, shared by every face; `policy` says how this face proves and attributes the
  *  caller, and whether authenticated manager-selection refusals use the public face's two
- *  per-principal class windows (`pinned` and `unpinned`) or the loopback face's shared
- *  refused-exchange window. */
+ *  per-principal class windows (`pinned` and `unpinned`) or the loopback face's existing
+ *  refusal classification. */
 async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   // Browser exclusion: a cross-site page CAN reach loopback, but its requests carry `Origin`

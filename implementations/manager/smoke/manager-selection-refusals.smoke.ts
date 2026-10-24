@@ -86,7 +86,9 @@ function check(label: string, ok: boolean, detail?: unknown): void {
     console.log(`  ✓ ${label}`);
   } else {
     fail++;
-    console.error(`  ✗ FAIL: ${label}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ""}`);
+    const safe = detail === undefined ? "" : JSON.stringify(detail, (key, value) =>
+      /^(token|idpToken|actorToken|password|cap|seed|secret)$/i.test(key) ? "[redacted]" : value);
+    console.error(`  ✗ FAIL: ${label}${safe ? ` — ${safe}` : ""}`);
   }
 }
 
@@ -526,7 +528,6 @@ try {
     "S1.1 pinned human exchange mints 200 scoped to manager A",
     pinnedHuman.status === 200 &&
       pinnedHuman.body.owner === owner &&
-      pinnedHuman.body.managerInstanceId === stateA.instanceId &&
       pinnedHumanValidated?.act.view === "manager-caller" &&
       pinnedHumanValidated?.act.managerInstanceId === stateA.instanceId,
     { status: pinnedHuman.status, body: pinnedHuman.body, validated: pinnedHumanValidated },
@@ -549,7 +550,6 @@ try {
     "S1.2 pinned agent exchange mints 200 scoped to manager B",
     pinnedAgent.status === 200 &&
       pinnedAgent.body.owner === owner &&
-      pinnedAgent.body.managerInstanceId === stateB.instanceId &&
       pinnedAgentValidated?.act.view === "manager-caller" &&
       pinnedAgentValidated?.act.managerInstanceId === stateB.instanceId,
     { status: pinnedAgent.status, body: pinnedAgent.body, validated: pinnedAgentValidated },
@@ -781,7 +781,10 @@ try {
   );
   check(
     "S5.3 a valid pinned exchange from the throttled peer still mints 200",
-    validFromThrottledPeer.status === 200 && validFromThrottledPeer.body.managerInstanceId === stateA.instanceId,
+    validFromThrottledPeer.status === 200 && typeof validFromThrottledPeer.body.token === "string" &&
+      (await validateUserToken(validFromThrottledPeer.body.token, {
+        key: verifyPublicKey, issuer: spaceIssuer(space), audience: space,
+      })).act.managerInstanceId === stateA.instanceId,
     validFromThrottledPeer,
   );
 
@@ -796,7 +799,7 @@ try {
     selectionFromThrottledPeer,
   );
 
-  // Loopback face (F2): selection refusals still record into ctx.failures and are masked by the loopback 429 at 30/min.
+  // Loopback keeps main's unpinned selection-refusal classification outside its probing budget.
   const loopbackHeaders = { authorization: `Bearer ${info.cap}` };
   let loopback401 = 0;
   for (let i = 0; i < 30; i++) {
@@ -813,10 +816,10 @@ try {
     loopbackHeaders,
   );
   check(
-    "S5.5 loopback selection refusals spend the loopback budget and are masked at the limit (30x 401 then 429), leaving the public face untouched",
+    "S5.5 loopback unpinned selection refusals preserve their actionable reason beyond the probing limit",
     loopback401 === 30 &&
-      loopback31.status === 429 &&
-      loopback31.body.error === "too many refused exchanges - wait a minute and retry",
+      loopback31.status === 401 &&
+      loopback31.body.error === expectedHumanAmbiguous,
     { loopback401, loopback31 },
   );
 
@@ -998,7 +1001,10 @@ try {
       unpinned31.body.error === expectedSelectionThrottled &&
       pinnedWhileUnpinnedFull.status === 200 &&
       pinnedWhileUnpinnedFull.body.owner === ownerC &&
-      pinnedWhileUnpinnedFull.body.managerInstanceId === stateC1.instanceId,
+      typeof pinnedWhileUnpinnedFull.body.token === "string" &&
+      (await validateUserToken(pinnedWhileUnpinnedFull.body.token, {
+        key: verifyPublicKey, issuer: spaceIssuer(space), audience: space,
+      })).act.managerInstanceId === stateC1.instanceId,
     { unpinned30, unpinned31, pinnedWhileUnpinnedFull: { status: pinnedWhileUnpinnedFull.status, error: pinnedWhileUnpinnedFull.body.error } },
   );
 

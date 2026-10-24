@@ -958,8 +958,8 @@ principal and request class (`pinned` when the request names `managerInstanceId`
 it does not, never by the requested instance id): each class counts only its own selection
 refusals and, once its window is full, refuses requests of that class (including ones that would
 have succeeded) with 429 and that class's remedy before running manager selection, while leaving
-the other class open. The loopback exchange face keeps selection refusals in its shared
-refused-exchange window.
+the other class open. On the loopback face, an authenticated unpinned refusal caused by no live
+manager or ambiguous candidates returns its own reason without spending the shared probing budget.
 A trusted host composition MAY instead select its genuine local Manager up front for an unpinned
 interactive human exchange. It MUST apply the same native local identity, open gate, serve principal,
 registration revision and epoch checks, and MUST refuse an absent, unreadable or noncandidate local

@@ -369,8 +369,9 @@ to the caller for `pinned`) until the window drains. Those principal-class windo
 1024-key LRU of the same kind as the peer buckets: because one principal owns both its `pinned` and
 `unpinned` class keys, rotating 512 other verified principals (1024 keys, where each principal
 requires its own verified credential and ledger grant, and one owner's managed agent rows count as
-separate `${owner}.${actor}` principals) can evict an earlier full window and reopen it. On the loopback face, selection refusals still record into the
-shared loopback refused-exchange window and are masked at `30/min`.
+separate `${owner}.${actor}` principals) can evict an earlier full window and reopen it. On the
+loopback face, an authenticated unpinned refusal caused by no live manager or ambiguous candidates
+keeps its actionable reason without spending the shared probing budget.
 
 ### Enrollment redeem
 
