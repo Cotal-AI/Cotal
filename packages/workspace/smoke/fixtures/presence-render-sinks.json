@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 650,
+    "total": 651,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 546
+    "non-render/control": 547
   },
   "renderers": [
     {
@@ -3895,9 +3895,16 @@
     {
       "path": "implementations/cli/src/commands/service-registry.ts",
       "kind": "status-token",
-      "anchor": ": \"not checked\"), tone: \"waiting\" } };\n      }) } : { kin",
+      "anchor": ": \"not checked\"), tone: \"waiting\" }, added: row.rootMatch",
       "class": "non-render/control",
       "rationale": "Service registry table: \"waiting\" is the color tone for an unchecked service readiness, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/service-registry.ts",
+      "kind": "status-token",
+      "anchor": "ot not recorded\", tone: \"waiting\" } };\n      }) } : { kin",
+      "class": "non-render/control",
+      "rationale": "Service registry table: \"waiting\" is the color tone for a definition whose root is not recorded, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/service-registry.ts",

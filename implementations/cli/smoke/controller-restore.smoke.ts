@@ -319,7 +319,7 @@ console.log("a restart refuses before any stop when its start would be refused")
   const id = refusedBrokerInstance(f.space);
   const before = serviceInstanceStore(f.space).read(id)!.record.value;
   let refusal: unknown;
-  try { await serviceAction({ positionals: ["restart", "stack-broker"], values: { yes: true, json: true } } as unknown as ParsedArgs, f.space); } catch (error) { refusal = error; }
+  try { await serviceAction({ positionals: ["restart", "stack-broker"], values: { yes: true, json: true } } as unknown as ParsedArgs, f.space, f.root); } catch (error) { refusal = error; }
   await check("a broker restart under a pre-commit restore refuses before its stop", isCommandFailure(refusal) && refusal.code === "LIFECYCLE_BLOCKED" && refusal.message.includes("nothing was stopped"));
   const after = serviceInstanceStore(f.space).read(id)!.record.value;
   await check("the broker instance record is unchanged", after.launchRequestId === before.launchRequestId && after.state === before.state && after.updatedAt === before.updatedAt);

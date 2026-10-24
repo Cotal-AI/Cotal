@@ -34,6 +34,19 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Service definitions record their root after 0.100.2
+
+`cotal service add` now saves each definition with the root of the space it is added in. A
+definition added in another folder, such as one a forgotten space of the same name left, refuses to
+start, restart or install there `CONFLICT`, naming that root and `cotal service remove <name>
+--space <space> --yes`. Definitions saved before the upgrade have no recorded root: they start as
+before, and `cotal service` lists them as `root not recorded`.
+
+An earlier release refuses a definition that records a root `SCHEMA_INVALID`, and with it the
+commands that read the space's definitions. Before you downgrade, remove each service this release
+added with `cotal service remove <name> --space <space> --yes`, and add it again after the
+downgrade.
+
 ## Missing $SYS credentials after 0.100.2
 
 `cotal doctor auth` reports a missing `membership-observer` or `connection-evictor` credential as a
