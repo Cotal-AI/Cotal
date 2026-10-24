@@ -4,7 +4,8 @@
  * print a framed "Request refused … Code: USAGE_INVALID" block with no help; `clean` printed a bare
  * `usage:` line or a lowercase "refusing to clean store without --force"; and `help service nosuch`
  * refused without listing the subcommands. A missing `--yes` is the exception: its refusal and remedy
- * are the whole fix, so it prints without the help.
+ * are the whole fix, so it prints without the help. A mistyped word that is near a command, leading
+ * flag, subcommand or option names it.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
@@ -77,6 +78,23 @@ for (const [args, message, remedy] of [
   const r = run([...args], project);
   check(`${args.join(" ")} without --yes prints its refusal and remedy without the help`, confirmShape(r, message, remedy), shown(r));
 }
+
+// A mistyped command, leading flag, subcommand or option names the nearest one; a word near nothing
+// keeps the plain line.
+for (const [args, message] of [
+  [["stauts"], /unknown command: stauts - did you mean status\? Or run `cotal help` to list commands/],
+  [["help", "stauts"], /unknown command: stauts - did you mean status\?/],
+  [["--jsno"], /unknown command: --jsno - did you mean --json\?/],
+  [["--verison"], /unknown command: --verison - did you mean --version\?/],
+  [["persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\? Or run `cotal help persona`/],
+  [["help", "persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\?/],
+  [["status", "--jsno"], /Unknown option '--jsno' - did you mean --json\?/],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));
+}
+const far = run(["frobnicate"]);
+check("control: a word near nothing gets no suggestion", far.status === 1 && /unknown command: frobnicate - run `cotal help` to list commands/.test(far.stderr) && !/did you mean/.test(far.stderr), shown(far));
 
 const json = run(["clean", "--json"]);
 check("control: a command without JSON output still refuses --json as an unknown option", json.status === 1 && /Unknown option '--json'/.test(json.stderr), shown(json));

@@ -38,7 +38,9 @@ version flag.
 Some commands have short aliases, listed in `cotal help --all`: `sp` (spawn), `a` (attach),
 `s` (status), `r` (run), `x` (ext), `h` (history), `cfg` (config) and `p` (persona). Subcommands can have their own, such as
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
-subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. A command, alias,
+subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
+unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. A command, alias,
 or extension command that would claim a word another one already claims is refused when it
 registers or installs.
 

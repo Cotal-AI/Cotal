@@ -50,6 +50,7 @@ import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
+import { didYouMean, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
 /** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
@@ -65,6 +66,14 @@ function takeGlobalFlag(word: string): boolean {
   else if (word === "--no-input") disableInput();
   else return false;
   return true;
+}
+
+/** Node's unknown-option error, trimmed to its first sentence, with the nearest of `cmd`'s flags. */
+function parseErrorMessage(cmd: Command, e: Error): string {
+  const message = e.message.split(".")[0]!;
+  const option = (e as { code?: string }).code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? /^Unknown option '(--[^']+)'/.exec(message)?.[1] : undefined;
+  const hint = option ? didYouMean(option, [...(cmd.flags ?? []).map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
+  return hint ? `${message} - ${hint}` : message;
 }
 
 /** `words` without the global flags before any `--`, each applied. */
@@ -296,13 +305,13 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
+    if (isArgError(e)) usageExit(parseErrorMessage(cmd, e as Error), cmd, json);
     throw e;
   }
   const first = parsed.positionals[0];
   // History also accepts a root channel positional; only its reserved clear token is a mode.
   if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
-    usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd, json);
+    usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json);
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
@@ -462,7 +471,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
   // unknown word is a usage error.
   const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
-  if (!cmd && !awaitingSeed) usageExit(`unknown command: ${word} - run \`cotal help\` to list commands`);
+  if (!cmd && !awaitingSeed) usageExit(unknownCommandMessage(commands, word));
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
@@ -482,7 +491,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     }
     commands = surface();
     cmd = findCommand(commands, word);
-    if (!cmd) usageExit(`unknown command: ${word} - run \`cotal help\` to list commands`);
+    if (!cmd) usageExit(unknownCommandMessage(commands, word));
     rest = ownWords(cmd, words);
     arm();
   }
