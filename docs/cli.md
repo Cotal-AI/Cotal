@@ -2783,7 +2783,9 @@ A space that never started still reads as prepared but not started. When the sto
 a file store cap below 67108865, the least the space's streams start on, the selected space shows it
 in a `Store cap` row, and Next names `cotal up --max-file-store 67108865` or more instead, because a
 bare `up` would fail on that cap. `--json` carries the cap as `selected.storeCap`, and
-`meshes.currentStopped` says whether the selection is such a stopped stack.
+`meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
+or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
+selection reads as prepared but not started, and the selected space names that operation.
 
 Owned services use the saved controller definitions and instance records for the selected space.
 Instances are listed by definition name, then instance ID, in the text and in

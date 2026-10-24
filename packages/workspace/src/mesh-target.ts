@@ -399,8 +399,9 @@ export function stoppedStack(root: string, space: string): MeshTargetErrorDetail
 }
 
 /** The last whole-stack `up` or `down` that `root`'s own stack journal records for `space` with no
- *  outcome, as one cut off before it recorded one leaves it. */
-function unsettledStackOperation(root: string, space: string): "up" | "down" | undefined {
+ *  outcome, as one cut off before it recorded one leaves it. Such a stack is not stopped, whatever
+ *  members it launched. */
+export function unsettledStackOperation(root: string, space: string): "up" | "down" | undefined {
   try {
     const path = stackJournalPath(root), file = lstatSync(path);
     if (!file.isFile() || file.size > 64 * 1024) return undefined;
