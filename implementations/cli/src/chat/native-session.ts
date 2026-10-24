@@ -105,6 +105,7 @@ export function resolveDmTarget(
   rosterState: PresenceView["state"],
   engine: ParticipantEngine,
   selfPrincipal: string,
+  selfName?: string,
 ): { readonly id: string; readonly name: string } | Refused {
   if (typeof to !== "string" || parsePrincipalKey(to)) {
     const principal = typeof to === "string" ? to : to.principal;
@@ -123,10 +124,19 @@ export function resolveDmTarget(
   const named = new Map<string, { id: string; name: string }>();
   if (peer) named.set(peer.card.id, { id: peer.card.id, name: peer.card.name });
   for (const sender of engine.sendersNamed(to)) if (!named.has(sender.id)) named.set(sender.id, sender);
-  if (named.size > 1)
-    return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${[...named.keys()].join(", ")}); use the full principal` };
+  if (named.size > 1) {
+    const ids = [...named.keys()];
+    // Each one-shot `cotal send` signs with its own principal and exits once it has sent, so a
+    // reply by its name can reach none of them.
+    const present = new Set(roster.filter((p) => p.status !== "offline").map((p) => p.card.id));
+    if (rosterState === "current" && !ids.some((id) => present.has(id)))
+      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot cotal send commands, which exit once they have sent; answer one message with /reply, or over --stdio with to set to its from.id and replyTo to its id` };
+    return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${ids.join(", ")}); use the full principal` };
+  }
   const only = [...named.values()][0];
   if (only) return only;
+  if (selfName !== undefined && to.trim().toLowerCase() === selfName.trim().toLowerCase())
+    return refusedUsage(`"${to}" is this session's own name; a direct message needs another participant`);
   if (rosterState !== "current") return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: `cannot verify "${to}": the roster is ${rosterState}` };
   return { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${to}" in this space` };
 }
@@ -222,13 +232,13 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async resolveDm(to: DmTarget): Promise<Result<{ readonly id: string; readonly name: string }>> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal);
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal, this.inputs.identity.label);
     return "outcome" in recipient ? recipient : { outcome: "ok", value: recipient };
   }
 
   async dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal);
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal, this.inputs.identity.label);
     if ("outcome" in recipient) return recipient;
     const recipientStatusAtSend: PresenceStatus | "unrostered" = ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {

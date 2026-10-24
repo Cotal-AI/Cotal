@@ -53,7 +53,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // The command kernel's local entries (2026-10): `help [command…] [--all]` and `version`.
   help: { flags: ["all:boolean"], positionals: true },
   version: { flags: ["json:boolean:j"], positionals: false },
-  completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  completion: { flags: ["force:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // `config` (2026-10): personal preferences, read through or written to your defaults or one space;
   // `--verbose` also shows the shadowed values.
   config: { flags: ["json:boolean:j", "plain:boolean", "space:string:s", "user:boolean", "verbose:boolean:v"], positionals: true },
@@ -253,12 +253,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Account metadata, actor grants (the actor ledger's flags), credential mint (`--endpoint` mints an
   // endpoint caller), signer export and `retire --yes`, which refuses until its native path exists.
   // `--full` (2026-10): a grant takes the wide ACL defaults only when asked; without it the grant
-  // must name --scope, --allow-subscribe and --allow-publish.
+  // must name --scope, --allow-subscribe and --allow-publish. `--no-expiry` (2026-10): `auth mint`
+  // issues a credential with no expiry only when asked, and records the request; the default is 24 h.
   auth: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
       "expires-in:string", "force:boolean", "full:boolean", "identity:string", "json:boolean:j", "label:string",
-      "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
+      "no-expiry:boolean", "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
       "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
     ],
     positionals: true,
@@ -409,8 +410,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   mint: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
-      "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "out:string", "plain:boolean",
-      "profile:string", "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
+      "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "no-expiry:boolean", "out:string",
+      "plain:boolean", "profile:string", "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
     ],
     positionals: true,
   },

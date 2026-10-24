@@ -17,7 +17,6 @@ export const modelsFlags = [
 export function modelsComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, modelsFlags);
   if (flag?.name === "harness") return { items: extensionNames("connector").map((name) => ({ value: name })), directive: "nofiles" };
-  if (flag?.name === "creds") return { items: [], directive: "default" };
   return { items: [], directive: "nofiles" };
 }
 

@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
-  ChannelRegistryConflict, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
+  ChannelRegistryConflict, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -9,6 +9,7 @@ import {
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { batchedRead } from "../lib/transient.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { channelMembers } from "./channel-members.js";
 import { earlierMessages } from "./send.js";
@@ -37,9 +38,8 @@ export function channelComplete(argv: string[]): CompletionResult {
   const last = argv.at(-1) ?? "";
   if (completingFlagValue(argv, channelFlags)?.name === "delivery" || last.startsWith("--delivery="))
     return { items: ["live", "durable"].map((value) => ({ value: last.startsWith("--delivery=") ? `--delivery=${value}` : value })), directive: "nofiles" };
-  // Only --creds takes a file; a URL, a window, a description and instructions do not.
-  const flag = completingFlagValue(argv, channelFlags);
-  if (flag) return { items: [], directive: flag.name === "creds" ? "default" : "nofiles" };
+  // A URL, a window, a description and instructions take no file; the dispatcher completes --creds.
+  if (completingFlagValue(argv, channelFlags)) return { items: [], directive: "nofiles" };
   const positionals = positionalsForCompletion(argv, channelFlags);
   if (positionals.length <= 1 && !last.startsWith("-")) return { items: ["show", "members", "set", "defaults", "remove"].map((value) => ({ value })), directive: "nofiles" };
   // A named action takes a channel: the ones the target space's personas declare, as `send -c` offers.
@@ -110,7 +110,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const options = { servers: connection.server, space: connection.space, ...auth };
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
-    const registry = await readChannelRegistry({ ...options, directGet: !connection.bearer });
+    const registry = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, registryView);
     return;
   }

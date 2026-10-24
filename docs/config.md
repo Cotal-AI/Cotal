@@ -167,7 +167,9 @@ The file is private to its owner and versioned:
 `revision` counts the writes. A write holds a lock, refuses with `CONFLICT` if the file changed after
 the command read it, and replaces the file atomically, so two writers never lose an edit. A file that
 does not validate (not JSON, a newer `schemaVersion`, an unknown key or an invalid value) stops every
-command except help and shell completion, with an error that names the file and the problem.
+command that could act on a default, with an error that names the file and the problem. Help, shell
+completion, `version` and `docs` use no preference and still run. `status` reports the file as a part
+it could not read, exit 4, and gives the fix as its next step.
 Nothing resets it: fix or remove the file. A `preferences.json` that is a symbolic link stops them the
 same way with `PERMISSION_DENIED` (exit 2), naming the file it points to: `editor` runs as a shell
 command, so the file is neither read through the link nor replaced by `cotal config set`.
