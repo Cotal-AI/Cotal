@@ -388,6 +388,8 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const personas = s.run(["__complete", "spawn", "--space", "prep", ""]);
   check("spawn offers a prepared space's personas, as persona show does", created.status === 0 && persona.status === 0 && /^alpha$/m.test(shown2.stdout) && /^alpha$/m.test(personas.stdout),
     { created: shown(created), persona: shown(persona), show: shown(shown2), spawn: shown(personas) });
+}
+
 // ── A modified owned integration names its way out ──────────────────────────────────────────────────
 {
   const s = sandbox();
