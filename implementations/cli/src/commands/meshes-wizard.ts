@@ -62,7 +62,7 @@ export interface WizardIO {
   confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean>;
 }
 
-/** What Ctrl-C or Esc in a guided registration says: nothing is written until the last question. */
+/** What a cancel says. Nothing is written before the last confirmation, so a cancel changed nothing. */
 const CANCELLED = "Cancelled. Nothing was registered.";
 
 /** The real terminal, via clack. Cancellation (Ctrl-C / Esc) exits here rather than returning a
@@ -428,8 +428,9 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     ].join("\n"),
     brand("About to record"),
   );
-  // Replacing a record is never the default answer.
-  const go = await io.confirm({ message: "Register this mesh?", initialValue: !(replace && findMesh(space)) });
+  // Replacing a record is the one write here that loses something, so Enter must not do it: it takes
+  // a typed yes, and Enter keeps No.
+  const go = await io.confirm({ message: replace ? `Replace the record for "${space}"?` : "Register this mesh?", ...(replace ? { initialValue: false } : {}) });
   if (!go) return cancelled(io, "Nothing was registered.");
 
   // The guided consent is PERSISTED, exactly as the flag form persists it. Asking the operator and
@@ -485,7 +486,7 @@ async function askRoot(io: WizardIO, cwd: string, defaultTo: string | undefined)
   }
 }
 
-function cancelled(io: WizardIO, message = "Cancelled."): false {
+function cancelled(io: WizardIO, message = CANCELLED): false {
   io.cancel(message);
   return false;
 }

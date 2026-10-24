@@ -319,4 +319,59 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion script offers the shells", ["bash", "zsh", "fish", "powershell"].every((shell) => new RegExp(`^${shell}$`, "m").test(shells.stdout)), shown(shells));
 }
 
+// ── Values the CLI knows locally ──────────────────────────────────────────────────────────────────
+{
+  const s = sandbox();
+  const prepared = join(s.home, "cc"), registered = join(s.home, "rr");
+  mkdirSync(prepared, { mode: 0o700 });
+  mkdirSync(registered, { mode: 0o700 });
+  // A prepared space, and a space registered by hand with no broker check, holding a persona that declares `review`.
+  const setup = [
+    s.run(["space", "create", "cc", "--root", prepared]),
+    s.run(["space", "add", "rr", "--server", "nats://127.0.0.1:9", "--mode", "open", "--root", registered, "--force", "--yes"]),
+    s.run(["persona", "create", "beta", "--prompt", "x", "--subscribe", "review", "--space", "rr"]),
+  ];
+  check("fixture: a prepared space, a registered one and its persona", setup.every((r) => r.status === 0), setup.map(shown));
+  const offered = (words: string[]) => {
+    const r = s.run(["__complete", ...words, ""]);
+    const lines = r.stdout.split("\n").filter(Boolean);
+    return { ...r, values: lines.filter((line) => !line.startsWith(":")).map((line) => line.split("\t")[0]!), directive: lines.at(-1) };
+  };
+  const exactly = (r: ReturnType<typeof offered>, values: string[]) => r.status === 0 && r.directive === ":nofiles" && [...r.values].sort().join(" ") === [...values].sort().join(" ");
+  for (const words of [["config"], ["config", "get"], ["config", "set"], ["status"], ["up"], ["down"], ["watch"], ["history"], ["send"], ["team", "boot"]]) {
+    const r = offered([...words, "--space"]);
+    check(`${words.join(" ")} --space offers the spaces registered or prepared here`, exactly(r, ["cc", "rr"]), shown(r));
+  }
+  const short = offered(["status", "-s"]);
+  check("-s offers them too", exactly(short, ["cc", "rr"]), shown(short));
+  const subs = offered(["config"]);
+  check("config offers get, set and unset", exactly(subs, ["get", "set", "unset"]), shown(subs));
+  for (const sub of ["get", "set", "unset"]) {
+    const keys = offered(["config", sub]);
+    check(`config ${sub} offers the keys`, exactly(keys, ["harness", "persona", "detach-key", "color", "editor"]), shown(keys));
+  }
+  const colors = offered(["config", "set", "color"]);
+  check("config set color offers the values it accepts", exactly(colors, ["auto", "always", "never"]), shown(colors));
+  const harnesses = offered(["config", "set", "harness"]);
+  check("config set harness offers the known harnesses", harnesses.status === 0 && ["claude", "opencode"].every((name) => harnesses.values.includes(name)), shown(harnesses));
+  const pages = offered(["docs"]);
+  check("docs offers the pages, the spec among them", pages.status === 0 && pages.directive === ":nofiles" && ["architecture", "cli", "spec", "lang", "schema"].every((page) => pages.values.includes(page)), shown(pages));
+  const afterPage = offered(["docs", "architecture"]);
+  check("docs offers nothing after a page", exactly(afterPage, []), shown(afterPage));
+  const views = offered(["watch", "--view"]);
+  check("watch --view offers its views", exactly(views, ["feed", "events", "messages", "roster", "channels", "waiting", "dms", "topology"]), shown(views));
+  const modes = offered(["space", "add", "x", "--mode"]);
+  check("space add --mode offers its modes", exactly(modes, ["auth", "open", "user"]), shown(modes));
+  const history = offered(["history", "--space", "rr"]);
+  check("history offers clear and the channels the space's personas declare", exactly(history, ["clear", "review"]), shown(history));
+  const channel = offered(["channel", "remove", "--space", "rr"]);
+  check("channel remove offers those channels", exactly(channel, ["review"]), shown(channel));
+  // A path lets the shell complete file names; any other value does not.
+  for (const [words, directive] of [[["space", "add", "x", "--root"], ":default"], [["space", "add", "x", "--file"], ":default"], [["channel", "set", "ops", "--creds"], ":default"],
+    [["channel", "set", "ops", "--window"], ":nofiles"], [["channel", "set", "ops", "--desc"], ":nofiles"], [["channel", "set", "ops", "--instructions"], ":nofiles"]] as const) {
+    const r = offered([...words]);
+    check(`${words.join(" ")} ${directive === ":default" ? "offers file names" : "offers no file names"}`, r.status === 0 && r.values.length === 0 && r.directive === directive, shown(r));
+  }
+}
+
 finish();

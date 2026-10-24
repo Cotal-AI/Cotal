@@ -2,13 +2,14 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { ArtifactFileFault, createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.js";
+import { ArtifactFileFault, createArtifactWriter, inspectBackupArtifact, stageArtifact } from "../src/lib/backup-artifact.js";
 import { backupRead } from "../src/commands/backup-read.js";
 import { down } from "../src/commands/down.js";
+import { clean } from "../src/commands/clean.js";
 import { backup, backupComplete, chunkQueue, isStoppedKvWatcher } from "../src/commands/backup.js";
 import { upComplete } from "../src/commands/up.js";
 import { createAttemptClone, ensurePrivateAttemptsDir } from "../src/lib/isolated-broker.js";
@@ -16,7 +17,7 @@ import { isManagerCommitResult, isManagerFinalizeResult, movedFolderRefusal, pre
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, rotateSystemAccount, taskStream } from "@cotal-ai/core";
-import { acquireMaintenanceLock, authDir, beginMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, beginMaintenanceCut, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -57,6 +58,22 @@ try {
   const staged = stageArtifact(destination, stagingParent);
   assert.deepEqual(readFileSync(join(staged.directory, "stream-a.snap")), Buffer.from([1, 2, 3]));
   staged.cleanup();
+  // Hashes cannot show a consistent rewrite, so verify and staging refuse an artifact another local
+  // account could write, name each such path, and leave no staging directory behind.
+  if (process.platform !== "win32") {
+    const directory = realpathSync(destination);
+    const manifestPath = join(directory, "manifest.json");
+    chmodSync(directory, 0o702);
+    chmodSync(manifestPath, 0o602);
+    const exposed = (error: unknown) => isCommandFailure(error) && error.code === "PERMISSION_DENIED"
+      && error.message === `the backup artifact is not protected against other local writers: ${directory} and ${manifestPath} are writable by every local account`
+      && error.remedy === `chmod o-w ${directory} ${manifestPath}`;
+    assert.throws(() => backupRead({ positionals: ["verify", directory], values: {}, raw: [] }), exposed, "verify refuses an artifact others can write");
+    assert.throws(() => stageArtifact(directory, stagingParent), exposed, "staging refuses an artifact others can write");
+    assert.deepEqual(readdirSync(stagingParent), [], "a refused staging leaves no staging directory");
+    chmodSync(directory, 0o700);
+    chmodSync(manifestPath, 0o600);
+  }
 
   writeFileSync(join(destination, "extra"), "x");
   assert.throws(() => stageArtifact(destination, stagingParent), (error: unknown) => error instanceof ArtifactFileFault && error.file === "extra" && error.fault === "undeclared");
@@ -64,7 +81,7 @@ try {
   writeFileSync(join(destination, "stream-a.snap"), "changed");
   assert.throws(() => stageArtifact(destination, stagingParent), (error: unknown) => error instanceof ArtifactFileFault && error.file === "stream-a.snap" && error.fault === "mismatch");
   // `backup verify` names the failing file and its fault, so an operator knows which copy is damaged.
-  const verifyFault = (file: string, fault: string, text: RegExp) => (error: unknown) => {
+  const verifyFault = (file: string | null, fault: string, text: RegExp) => (error: unknown) => {
     const target = isCommandFailure(error) ? error.target as { file?: unknown; fault?: unknown } : undefined;
     return isCommandFailure(error) && error.code === "SCHEMA_INVALID" && text.test(error.message) && target?.file === file && target.fault === fault;
   };
@@ -83,18 +100,67 @@ try {
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(partial)], values: {}, raw: [] }), (error: unknown) =>
     isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`
       && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").includes("cotal backup recover <attempt> --yes"));
+  // A path that names nothing says whether its folder or the artifact is missing, as restore does.
+  for (const [mode, path, missing] of [["verify", join(root, "no-such-folder", "artifact"), "folder"], ["inspect", join(root, "no-such-artifact"), "artifact"]] as const)
+    assert.throws(() => backupRead({ positionals: [mode, path], values: {}, raw: [] }), (error: unknown) =>
+      isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.outcome === "refused" && (error.target as { missing?: unknown }).missing === missing
+        && error.message.endsWith("; nothing was checked") && error.message.includes(missing === "folder" ? `there is no folder ${join(root, "no-such-folder")}` : "holds no backup artifact no-such-artifact"), `${mode} names the missing ${missing}`);
   writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
+  // A path through a linked folder names the artifact create published there, and verify reads it at
+  // its real path, as restore stages it.
+  const linkParent = mkdtempSync(join(tmpdir(), "cotal-backup-cli-link-"));
+  try {
+    symlinkSync(realpathSync(root), join(linkParent, "via"));
+    const throughLink = inspectBackupArtifact(join(linkParent, "via", "artifact"), true);
+    assert.equal(throughLink.directory, realpathSync(destination), "verify through a linked folder reads the artifact at its real path");
+    assert.equal(throughLink.integrity, "matched-declared-sizes-and-sha256", "and its files match");
+  } finally { rmSync(linkParent, { recursive: true, force: true }); }
   const traversing = JSON.parse(originalManifest) as { checkpoints: string };
   traversing.checkpoints = "../checkpoints.json";
   writeFileSync(join(destination, "manifest.json"), `${JSON.stringify(traversing)}\n`);
-  assert.throws(() => stageArtifact(destination, stagingParent), /invalid backup artifact file name/);
+  // Verify and staging name the same fault for each artifact that cannot be restored, and never
+  // print a declared name that is not a plain file name.
+  const verify = () => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] });
+  const stageFault = (file: string | null, fault: string) => (error: unknown) => error instanceof ArtifactFileFault && error.file === file && error.fault === fault;
+  assert.throws(() => stageArtifact(destination, stagingParent), stageFault(null, "invalid-name"));
+  assert.throws(verify, verifyFault(null, "invalid-name", /^backup manifest declares a file name that is not a plain name in the artifact folder.*; the name was not printed/), "verify names a traversing file name as its fault");
+  writeFileSync(join(destination, "manifest.json"), `${"[".repeat(100_000)}${"]".repeat(100_000)}`);
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /^backup artifact manifest\.json is not a valid cotal-space-backup\/v1 manifest: it is not a JSON object/), "verify names a deeply nested manifest as invalid");
+  const inventory = (edit: (manifest: { space: string; files: { path: string }[]; streams: { stream: string }[] }) => void) => {
+    const manifest = JSON.parse(originalManifest) as { space: string; files: { path: string }[]; streams: { stream: string }[] };
+    edit(manifest);
+    writeFileSync(join(destination, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+  };
+  inventory((manifest) => manifest.files.push({ ...manifest.files[0]! }));
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /: it declares a file more than once;/), "verify names a duplicate file record");
+  assert.throws(() => stageArtifact(destination, stagingParent), stageFault("manifest.json", "manifest-invalid"));
+  inventory((manifest) => { manifest.streams[0]!.stream = "CHAT_other"; });
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /: its stream records do not match its snapshot files;/), "verify names a stream record that matches no snapshot");
+  inventory((manifest) => { manifest.space = "s".repeat(300); });
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /: it names an invalid space;/), "verify names an invalid space");
+  assert.throws(() => stageArtifact(destination, stagingParent), stageFault("manifest.json", "manifest-invalid"));
+  writeFileSync(join(destination, "manifest.json"), " ".repeat(1024 * 1024 + 1));
+  assert.throws(verify, verifyFault("manifest.json", "manifest-too-large", /larger than its 1 MiB limit/), "verify names an oversized manifest and its limit");
   writeFileSync(join(destination, "manifest.json"), originalManifest);
   if (process.platform !== "win32") {
+    const outsideManifest = join(root, "outside-manifest.json");
+    writeFileSync(outsideManifest, originalManifest);
+    rmSync(join(destination, "manifest.json"));
+    symlinkSync(outsideManifest, join(destination, "manifest.json"));
+    assert.throws(verify, verifyFault("manifest.json", "manifest-not-regular", /manifest\.json is not a regular file/), "verify names a linked manifest");
+    assert.throws(() => stageArtifact(destination, stagingParent), stageFault("manifest.json", "manifest-not-regular"));
+    rmSync(join(destination, "manifest.json"));
+    writeFileSync(join(destination, "manifest.json"), originalManifest);
     const external = join(root, "external.snap");
     writeFileSync(external, Buffer.from([1, 2, 3]));
     rmSync(join(destination, "stream-a.snap"));
     symlinkSync(external, join(destination, "stream-a.snap"));
-    assert.throws(() => stageArtifact(destination, stagingParent), /not a real file/);
+    assert.throws(() => stageArtifact(destination, stagingParent), stageFault("stream-a.snap", "not-regular"));
+    assert.throws(verify, verifyFault("stream-a.snap", "not-regular", /^backup artifact file stream-a\.snap is not a regular file/), "verify names a linked snapshot");
+    // A FIFO is refused before it is opened, so verify does not wait for a writer.
+    rmSync(join(destination, "stream-a.snap"));
+    execFileSync("mkfifo", [join(destination, "stream-a.snap")]);
+    assert.throws(verify, verifyFault("stream-a.snap", "not-regular", /stream-a\.snap is not a regular file/), "verify names a FIFO snapshot");
     rmSync(join(destination, "stream-a.snap"));
     writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
 
@@ -357,6 +423,30 @@ try {
     process.chdir(previousCwd);
     if (previousHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = previousHome;
+  }
+
+  // `clean store` and `clean all` refuse a root that holds a preserved cut. `backup recover` and
+  // `cleanup-fallback` take no preserve- id, so the refusal names the step status shows for the cut.
+  {
+    const cleanRoot = join(root, "clean-root"), cleanStore = join(cleanRoot, ".cotal", "nats"), server = "nats://127.0.0.1:43247";
+    mkdirSync(cleanStore, { recursive: true });
+    const lock = acquireMaintenanceLock(cleanRoot);
+    try {
+      const resume = writeMaintenanceResumeDocument(lock, { version: 1, inventory: { agents: [] }, launch: { runtime: "pty" } });
+      beginMaintenanceCut(lock, { attemptId: "preserve-clean", space: "clean", mode: "open", sourcePath: cleanStore, resume, launch: { server } });
+      const managerCommit = { operation: "commitPreservation" as const, attemptId: "preserve-clean", state: "preserved" as const };
+      recordPreservationManagerCommit(lock, managerCommit);
+      completeMaintenanceCut(lock, { attemptId: "preserve-clean", observedAt: new Date().toISOString(), managerCommit, stopped: { manager: true, broker: true, localProcesses: true }, listener: { endpoint: server, unreachable: true } });
+    } finally { releaseMaintenanceLock(lock); }
+    process.chdir(cleanRoot);
+    try {
+      for (const target of ["store", "all"])
+        await assert.rejects(clean({ positionals: [target], values: { force: true }, raw: [] }), (error: unknown) =>
+          isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message === `clean ${target} is refused while this root holds maintenance attempt preserve-clean (state ready); nothing was removed`
+            && / or resume with bare .*up; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force again$/.test(error.remedy ?? ""),
+        `clean ${target} on a preserved cut names the step status shows for it`);
+      assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
+    } finally { process.chdir(previousCwd); }
   }
 
   // A preserved store is found where its journal recorded it, moved with its folder, or missing.

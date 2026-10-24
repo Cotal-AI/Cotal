@@ -21,7 +21,9 @@ import {
   type Report,
   type Section,
 } from "@cotal-ai/workspace";
+import { completingFlagValue } from "../lib/completion.js";
 import { registryFailure } from "../lib/registry-errors.js";
+import { SPACE_MODES } from "./meshes-add.js";
 import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
 
@@ -296,8 +298,12 @@ function spaceView(s: SpaceDetail): Report {
   return { sections: [{ title: `Space · ${s.space}`, blocks: [{ kind: "fields", rows: fields }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
 }
 
-/** Argument completion: the subcommand, then registered names. */
+/** Argument completion: the subcommand, then registered names, the modes `--mode` takes, and a path
+ *  for `--root` and `--file`. */
 export function spaceComplete(argv: string[]): CompletionResult {
+  const flag = completingFlagValue(argv, spaceFlags);
+  if (flag?.name === "mode") return { items: SPACE_MODES.map((value) => ({ value })), directive: "nofiles" };
+  if (flag?.name === "root" || flag?.name === "file") return { items: [], directive: "default" };
   if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }, { value: "delete" }], directive: "nofiles" };
   if ((argv[0] === "show" || argv[0] === "forget") && argv.length === 2)
     return { items: [...loadMeshes().map((m) => ({ value: m.space })), ...loadPreparedSpaces().map((p) => ({ value: p.space }))], directive: "nofiles" };

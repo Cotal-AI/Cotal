@@ -264,6 +264,11 @@ try {
     const ps = await call("run-ps");
     const row = (ps.data as RunListRowT[] | undefined)?.find((x) => x.runId === pureId);
     c("run-ps lists it on the manager endpoint as completed", row?.endpoint === "manager" && row.state === "completed", ps.data);
+    const resumed = await call("run-resume", { runId: pureId });
+    const after = await status(pureId);
+    c("run-resume of the completed run is failed-precondition, and no new activation is recorded",
+      resumed.ok === false && resumed.error?.code === "failed-precondition" && String(resumed.error.message).includes("is already completed")
+        && after?.status?.epoch === 1 && after.journal.length === done!.journal.length, { error: resumed.error, status: after?.status });
   }
 
   console.log("A2b. a wait on a channel outside the ceiling fails, and run-status says why");
@@ -507,6 +512,24 @@ try {
       holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: () => undefined,
     });
     const code = (e: unknown) => (e as { code?: string })?.code;
+    // A refusal at the admission cap gives the slot back. The parked run is the subject while no host
+    // drives it: a resume claims its slot and reads its record before any drive, which is exactly
+    // where the cap refuses. A finished run is refused before that, so a second host stands in now,
+    // marked reconciled by hand so it takes nothing back and capped by hand, and nothing is driven.
+    const capped = new RunHosting({
+      space: spaceA, servers: brokerA.servers, endpoint: "manager", instanceId: mintLifecycleUid(),
+      holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: () => undefined,
+    });
+    const gate = capped as unknown as { launching: Map<symbol, string | undefined>; reconciled: boolean };
+    gate.reconciled = true;
+    for (let i = 0; i < 8; i++) gate.launching.set(Symbol(`held-${i}`), `run-held${i}`);
+    const first = await capped.resume({ runId }).then(() => undefined, (e: unknown) => e);
+    const second = await capped.resume({ runId }).then(() => undefined, (e: unknown) => e);
+    c("a resume refused at the admission cap is resource-exhausted and gives its slot back: the next attempt is refused the same way, never as a conflict on a run nobody is driving",
+      code(first) === "resource-exhausted" && code(second) === "resource-exhausted" && capped.liveCount === 0, { first: code(first), second: code(second), live: capped.liveCount });
+    c("and the refusal is not-executed and names the runs holding the launch slots",
+      (first as { outcome?: string })?.outcome === "not-executed" && /\(run-held0, run-held1, .*run-held7\); nothing was written/.test(String((first as Error)?.message)), (first as Error)?.message);
+    await capped.stop();
     // The boot gate refuses before any admission is read, so the served context here only needs
     // the shape: the issued caller on the versioned rail, as the manager's dispatcher hands it in.
     const served: EpServeContextT = {
@@ -530,21 +553,6 @@ try {
     c("an answer through the host lands", typeof (answered as { answerId?: unknown })?.answerId === "string", answered);
     const done = await until(async () => { const v = await hosting.status({ runId }).catch(() => undefined); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and the run completes there", stateOf(done) === "completed", done?.status);
-    // A refusal at the admission cap gives the slot back. The completed run is the subject: a
-    // resume claims its slot and reads its record before any drive, which is exactly where the
-    // cap refuses, so nothing is driven and the only question is what the refusal leaves behind.
-    const gate = hosting as unknown as { launching: number };
-    const launchingBefore = gate.launching;
-    gate.launching = 1_000_000;
-    let first: unknown, second: unknown;
-    try {
-      first = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
-      second = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
-    } finally {
-      gate.launching = launchingBefore;
-    }
-    c("a resume refused at the admission cap is resource-exhausted and gives its slot back: the next attempt is refused the same way, never as a conflict on a run nobody is driving",
-      code(first) === "resource-exhausted" && code(second) === "resource-exhausted" && hosting.liveCount === 0, { first: code(first), second: code(second), live: hosting.liveCount });
     // Revocation through the host (SPEC 14.8): the marker is written under a per-run admitter and a
     // hosted resume refuses by name, before any slot is spent on a drive.
     await hosting.revoke(runId, "operator", "withdrawn after review");
@@ -753,7 +761,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 73;
+const EXPECTED_CELLS = 75;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

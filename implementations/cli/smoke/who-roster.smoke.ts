@@ -47,7 +47,7 @@ if (!existsSync(BIN)) {
 const { check, finish } = createSuite();
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-type Row = { name: string; kind: string; status: string; activity: string | null; condition: { code: string } | null; harness: string | null; model: string | null; host: string | null; managed: boolean | null; attention: string | null };
+type Row = { name: string; kind: string; sessionKind?: string | null; status: string; activity: string | null; condition: { code: string } | null; harness: string | null; model: string | null; host: string | null; managed: boolean | null; attention: string | null };
 type Envelope = {
   outcome: string;
   completeness: string;
@@ -253,6 +253,20 @@ try {
   check("the warning names the unread census and every agent's managed is unknown", unread.envelope?.warnings.some((w) => w.code === "MANAGERS_UNREAD") === true && unread.envelope.result?.managers === "unread" && Object.values(rowsOf(unread)).every((r) => r.managed === null), { warnings: unread.envelope?.warnings, managers: unread.envelope?.result?.managers });
   const unreadPlain = await run(["who", "--plain"]);
   check("the report still prints, with managed shown as unknown", unreadPlain.status === 4 && /alice\/builder\s+working.*unknown/.test(unreadPlain.stdout) && /MANAGERS_UNREAD|could not ask the managers/.test(unreadPlain.stderr), shown(unreadPlain));
+
+  // ── a chat session: a person drives it, so it is listed with its kind and is not infrastructure ──
+  // The manager above still does not answer, so each read is partial and hides the logger and the manager.
+  const dana = await join_("dana", { kind: "endpoint", meta: { sessionKind: "chat" } });
+  await dana.setStatus("waiting");
+  await wait(1_000);
+  const chat = await run(["who", "--json"]);
+  check("a chat session is listed with its session kind, and only the infrastructure endpoints are hidden",
+    chat.status === 4 && rowsOf(chat).dana?.kind === "endpoint" && rowsOf(chat).dana?.sessionKind === "chat" && rowsOf(chat).dana?.managed === null && rowsOf(chat).alice?.sessionKind === null && chat.envelope?.result?.hidden === 2, { dana: rowsOf(chat).dana, hidden: chat.envelope?.result?.hidden });
+  const chatWaiting = await run(["who", "--waiting", "--json"]);
+  check("--waiting keeps a waiting chat session", Object.keys(rowsOf(chatWaiting)).sort().join() === "bob,carol,dana", Object.keys(rowsOf(chatWaiting)));
+  const chatPlain = await run(["who", "--plain"]);
+  check("the plain report adds the Kind column, naming the chat session and each agent's kind",
+    /^ {2}Agent\s+Kind\s+State/m.test(chatPlain.stdout) && /dana\s+chat session\s+waiting/.test(chatPlain.stdout) && /alice\/builder\s+agent\s+working/.test(chatPlain.stdout) && /2 infrastructure endpoints are not listed/.test(chatPlain.stdout), shown(chatPlain));
 
   // ── a credential that may not read the roster ───────────────────────────────────────────────────
   const probe = join(home, "probe.creds");

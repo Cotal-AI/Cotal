@@ -5,7 +5,7 @@ import {
   type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, jsonFlag, loadMeshes, plainFlag, presentationOf, targetFlags, writeResult,
+  CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
@@ -15,6 +15,8 @@ import { channelMembers } from "./channel-members.js";
 import { earlierMessages } from "./send.js";
 import { deniedWrite } from "../lib/denied-write.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { listDeclaredChannels } from "../lib/personas.js";
+import { declaredFrom } from "./send.js";
 
 export const channelFlags = [
   ...targetFlags, jsonFlag, plainFlag,
@@ -36,13 +38,14 @@ export function channelComplete(argv: string[]): CompletionResult {
   const last = argv.at(-1) ?? "";
   if (completingFlagValue(argv, channelFlags)?.name === "delivery" || last.startsWith("--delivery="))
     return { items: ["live", "durable"].map((value) => ({ value: last.startsWith("--delivery=") ? `--delivery=${value}` : value })), directive: "nofiles" };
-  if (completingFlagValue(argv, channelFlags)?.name === "space") {
-    try { return { items: loadMeshes().map((mesh) => ({ value: mesh.space })), directive: "nofiles" }; }
-    catch { return { items: [], directive: "nofiles" }; }
-  }
-  if (completingFlagValue(argv, channelFlags)) return { items: [], directive: "default" };
+  // Only --creds takes a file; a URL, a window, a description and instructions do not.
+  const flag = completingFlagValue(argv, channelFlags);
+  if (flag) return { items: [], directive: flag.name === "creds" ? "default" : "nofiles" };
   const positionals = positionalsForCompletion(argv, channelFlags);
   if (positionals.length <= 1 && !last.startsWith("-")) return { items: ["show", "members", "set", "defaults", "remove"].map((value) => ({ value })), directive: "nofiles" };
+  // A named action takes a channel: the ones the target space's personas declare, as `send -c` offers.
+  if (positionals.length === 2 && ["show", "members", "set", "remove"].includes(positionals[0]!) && !last.startsWith("-"))
+    return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value })), directive: "nofiles" };
   return { items: channelFlags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), directive: "nofiles" };
 }
 

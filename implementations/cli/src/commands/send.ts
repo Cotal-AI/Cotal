@@ -2,8 +2,10 @@ import { hostname, userInfo } from "node:os";
 import { readFileSync } from "node:fs";
 import {
   resolvePeer,
+  assertValidName,
   assertValidRole,
   isPublishPermissionDenied,
+  parsePrincipalKey,
   resolveAuthProvider,
   effectiveDeliveryClass,
   effectiveReplay,
@@ -17,14 +19,16 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
+import { brokerStoreWrite } from "../lib/broker-store-health.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { UnusableFile } from "../lib/unusable-file.js";
 
 /**
  * One explicit --to, --channel or --role chooses the native delivery mode. The command
@@ -81,8 +85,12 @@ export function sendArguments(args: ParsedArgs): SendInput {
   const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
   // A remedy reruns the destination the caller gave.
   const flag = destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t";
-  const again = (body: string) => `run cotal send ${destination.target.trim() ? `${flag} ${shellWord(destination.target)}` : "-t <agent>"} ${body}`;
-  if (!destination.target.trim() || args.positionals.length > 1 || bodies !== 1 || values.file === "")
+  if (!destination.target.trim()) {
+    const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
+    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `run cotal send ${flag} <${what}> "<message>"` });
+  }
+  const again = (body: string) => `run cotal send ${flag} ${shellWord(destination.target)} ${body}`;
+  if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
   if (args.positionals[0] === "-")
@@ -95,9 +103,12 @@ export function sendArguments(args: ParsedArgs): SendInput {
       const problem = concreteChannelProblem(destination.target);
       if (problem) throw new Error(problem);
     } else if (destination.mode === "ask") assertValidRole(destination.target);
-    else if (/[\/\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("not an agent address");
+    else if (/[\/\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("use an agent name or full instance id, not a roster label");
+    // No participant can carry a name the endpoint refuses, so it is refused before the presence wait.
+    // The lookup trims the name, and an instance id is not held to the name rule.
+    else if (!parsePrincipalKey(destination.target)) assertValidName(destination.target.trim());
   } catch (error) {
-    throw new CommandFailure("refused", "USAGE_INVALID", destination.mode === "dm" ? "use an agent name or full instance id, not a roster label" : (error as Error).message);
+    throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
   }
   if (values["reply-to"] !== undefined && (destination.mode !== "dm" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");
@@ -113,17 +124,22 @@ function bodyOf(input: SendInput, values: Values): string {
   if (input.source === "argument") return input.text!;
   if (input.source === "stdin" && process.stdin.isTTY)
     throw new CommandFailure("refused", "USAGE_INVALID", "pipe the message to --stdin, or use a quoted body or --file");
+  const file = input.source === "file" ? values.file! : undefined;
   let bytes: Buffer;
-  try { bytes = readFileSync(input.source === "file" ? values.file! : 0); }
+  try { bytes = readFileSync(file ?? 0); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    throw new CommandFailure("refused", code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : code === "ENOENT" ? "TARGET_NOT_FOUND" : "USAGE_INVALID",
-      input.source === "file" ? `the message file ${JSON.stringify(values.file)} could not be read` : "the message on stdin could not be read",
-      input.source === "file" ? { target: { file: values.file } } : {});
+    if (file === undefined) throw new CommandFailure("refused", "USAGE_INVALID", "the message on stdin could not be read");
+    if (code === "EACCES" || code === "EPERM" || code === "ENOENT")
+      throw new CommandFailure("refused", code === "ENOENT" ? "TARGET_NOT_FOUND" : "PERMISSION_DENIED", `the message file ${JSON.stringify(file)} could not be read`, { target: { file } });
+    throw new UnusableFile(`the message file ${JSON.stringify(file)} ${code === "EISDIR" ? "is a directory; --file reads one file" : `could not be read (${code ?? "no error code"})`}`, file);
   }
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
-  catch { throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8"); }
+  catch {
+    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, file);
+    throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8");
+  }
   if (!text.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
   return text;
 }
@@ -277,6 +293,10 @@ export async function send(args: ParsedArgs): Promise<void> {
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge();
       if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered);
+      // A broker sends nothing back for a stream it cannot write, so its own log here may name why.
+      const store = connection.root ? brokerStoreWrite(connection.root, space) : undefined;
+      if (store?.state === "write-failed")
+        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `Free space on the disk that holds ${store.path ?? "the broker's store"}, then restart the broker with cotal down and cotal up before sending again.` });
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "No storage acknowledgement was established. The message may have been stored; it was not retried.", { target, remedy: "Inspect the destination before sending again. The native publisher did not return a message identifier." });
     }
     receipt = { kind: "send", messageId, sequence, destination: peer?.card.id ?? input.target, sender: { principal: ep.card.id, kind: ep.card.kind }, stored: true, delivery: null, acceptance: null, completion: null, replyListener: false, replyTo: values["reply-to"] ?? null, bodySource: input.source, mentions: [...new Set(mentions)], channelPolicy: policy };
@@ -297,7 +317,6 @@ export async function send(args: ParsedArgs): Promise<void> {
 export function sendComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, sendFlags);
   if (flag?.name === "creds" || flag?.name === "file") return { items: [], directive: "default" };
-  if (flag?.name === "space") return { items: loadMeshes().map((mesh) => ({ value: mesh.space })), directive: "nofiles" };
   if (flag?.name === "channel") return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "role") return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };

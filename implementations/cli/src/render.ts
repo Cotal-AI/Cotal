@@ -1,5 +1,6 @@
 import { oneLine, peerLabel, presenceText, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
-import { localeIsUtf8, plainPunctuation } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, localeIsUtf8, plainPunctuation, type ConnectRefusal, type Connection } from "@cotal-ai/workspace";
+import { credentialEnded } from "./lib/connect.js";
 import { MeshView, type FeedEntry } from "./view/mesh-view.js";
 import { activityAge, c, color256, presenceDetail, statusBadge } from "./ui.js";
 
@@ -59,13 +60,42 @@ function presenceLine(ev: PresenceEvent, ascii: boolean): string {
  *  park until SIGINT. MeshView owns the endpoint lifecycle and all the normalization; this just
  *  prints presence changes and each classified+coalesced feed entry as it lands. `plain`, and a
  *  locale whose character set is not UTF-8, write the lines as plain does: no status marks, and the
- *  punctuation in ASCII wherever it appears. */
-export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: string, plain = false): Promise<void> {
+ *  punctuation in ASCII wherever it appears. While the connection is down one line says so; when it
+ *  drops and the credential of `conn` can no longer connect, the log ends by throwing that
+ *  credential's refusal. */
+export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: string, plain = false, conn?: Connection): Promise<void> {
   const ascii = plain || !localeIsUtf8();
   const print = (line: string): void => console.log(ascii ? plainPunctuation(line) : line);
   const view = new MeshView(ep, tapSubject ? { tapSubject } : {});
-  ep.on("error", (e: Error) => console.error(c.red("! " + oneLine(e.message))));
-  view.on("warning", (e: Error) => console.error(c.yellow("! " + oneLine(e.message))));
+  let refused!: (refusal: ConnectRefusal) => void;
+  let failed!: (error: unknown) => void;
+  const ending = new Promise<ConnectRefusal>((resolve, reject) => { refused = resolve; failed = reject; });
+  let checking: Promise<boolean> | undefined;
+  /** Whether the credential has ended the log; one check runs at a time. */
+  const check = (): Promise<boolean> => checking ??= (conn === undefined ? Promise.resolve(false) : credentialEnded(conn).then(
+    (refusal) => { if (refusal) refused(refusal); return refusal !== undefined; },
+    (error: unknown) => { failed(error); return true; },
+  )).finally(() => { checking = undefined; });
+  // A failure is shown once the check finds the credential still usable, and not while the
+  // connection is down, which one line reports instead.
+  let outage = false;
+  const report = (line: string) => void check().then((ended) => { if (!ended && !outage) console.error(line); });
+  ep.on("error", (e: Error) => report(c.red("! " + oneLine(e.message))));
+  // The socket edge drops at once, while the client still reconnects on its own, and the
+  // connection only once that gives up; either one starts the outage, and either one coming back ends it.
+  const edge = ({ connected }: { connected: boolean }) => {
+    if (connected) {
+      if (outage) console.error(c.dim("the connection was re-established; messages sent while it was down are not shown"));
+      outage = false;
+      return;
+    }
+    if (outage) return void check();
+    outage = true;
+    void check().then((ended) => { if (!ended && outage) console.error(c.yellow(`! the connection to ${(conn && brokerAddressForDisplay(conn.server)) ?? "the broker"} was lost; re-establishing it`)); });
+  };
+  ep.on("transport", edge);
+  ep.on("connection", edge);
+  view.on("warning", (e: Error) => report(c.yellow("! " + oneLine(e.message))));
   view.on("presence", (ev) => print(presenceLine(ev as PresenceEvent, ascii)));
   view.on("entry", (e) => print(feedLine(e as FeedEntry, ascii)));
   await view.start();
@@ -76,5 +106,7 @@ export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: stri
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
-  await new Promise<void>(() => {});
+  const refusal = await ending;
+  await view.stop();
+  throw refusal.failure();
 }

@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { registry } from "@cotal-ai/core";
+import { registry, unansweredRequest } from "@cotal-ai/core";
 import {
   CommandFailure, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, armManagerShutdownIntent,
   assertManagerName, assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
@@ -42,7 +42,15 @@ export function maintenanceAdmits(root: string, server: string, context: Service
 
 async function prepareStop(context: ServiceAdapterStopContext): Promise<ServiceAdapterStopPlan> {
   if (context.preserved && context.withAgents) throw new CommandFailure("refused", "USAGE_INVALID", "a preserved-exit stop retains agents; --with-agents cannot be combined with it");
-  const observation = await observeManagerService(context);
+  let observation: Awaited<ReturnType<typeof observeManagerService>>;
+  try { observation = await observeManagerService(context); }
+  catch (error) {
+    // A manager that does not answer cannot report its stop impact, so no stop is submitted. Its
+    // process is the operator's to end, and a stop run after that finds it gone.
+    if (!unansweredRequest(error)) throw error;
+    const pid = context.process.pid;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the manager process ${pid} is running but did not answer its endpoint (${(error as Error).message}); no stop was submitted`, { target: { space: context.space, instanceId: context.instanceId, pid }, remedy: `if it stays unresponsive, end that process with kill -KILL ${pid}; the same command then finds it gone and goes on` });
+  }
   if (!observation) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the exact native manager has no complete attributed startup observation; no stop was submitted");
   const registration = observation.registration;
   // An attributed status names the binding the manager holds and must equal the request. An open

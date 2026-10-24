@@ -20,6 +20,7 @@ export interface WhoRow {
   readonly id: string;
   readonly role: string | null;
   readonly kind: string;
+  readonly sessionKind: string | null;
   readonly status: Presence["status"];
   readonly condition: PresenceCondition | null;
   readonly activity: string | null;
@@ -49,6 +50,8 @@ const metaText = (p: Presence, key: string): string | null => {
   return typeof value === "string" && value ? value : null;
 };
 const isManager = (p: Presence): boolean => p.card.kind === "endpoint" && p.card.role === "manager" && p.status !== "offline";
+/** A chat session is an endpoint a person drives, so it is listed with the agents and is not infrastructure. */
+const isChatSession = (p: Presence): boolean => metaText(p, "sessionKind") === "chat";
 
 /** What one manager census says about each seat, matched on the seat's incarnation. A seat a manager
  *  listed is managed. Only a census where every registered instance answered can say a seat is not:
@@ -151,7 +154,7 @@ export async function who(args: ParsedArgs): Promise<void> {
 
   const counts = new Map<string, number>();
   for (const p of roster) counts.set(p.card.name.toLowerCase(), (counts.get(p.card.name.toLowerCase()) ?? 0) + 1);
-  const listed = roster.filter((p) => v.all || p.card.kind !== "endpoint");
+  const listed = roster.filter((p) => v.all || p.card.kind !== "endpoint" || isChatSession(p));
   const items = listed
     .filter((p) => !v.waiting || p.status === "waiting" || p.condition !== undefined)
     .map((p): WhoRow => ({
@@ -159,6 +162,7 @@ export async function who(args: ParsedArgs): Promise<void> {
       id: p.card.id,
       role: p.card.role ?? null,
       kind: p.card.kind ?? "endpoint",
+      sessionKind: metaText(p, "sessionKind"),
       status: p.status,
       condition: p.condition ?? null,
       activity: p.activity ?? null,
@@ -196,7 +200,7 @@ function whoView(r: WhoResult, space: string, all: boolean, duplicate: (name: st
   const byId = new Map(roster.map((p) => [p.card.id, p]));
   const columns: Column[] = [
     { key: "name", label: "Agent" },
-    ...(all ? [{ key: "kind", label: "Kind" }] : []),
+    ...(all || r.items.some((row) => row.sessionKind === "chat") ? [{ key: "kind", label: "Kind" }] : []),
     { key: "status", label: "State" },
     { key: "attention", label: "Attention" },
     { key: "harness", label: "Application" },
@@ -212,7 +216,7 @@ function whoView(r: WhoResult, space: string, all: boolean, duplicate: (name: st
     const label = p && isManager(p) ? `manager ${peerLabel({ name: managerLabel(p) })}` : peerLabel({ name: row.name, ...(row.role ? { role: row.role } : {}) });
     return {
       name: duplicate(row.name) ? `${label} [${row.id}]` : label,
-      kind: row.kind,
+      kind: row.sessionKind === "chat" ? "chat session" : row.kind,
       status: { text: `${row.status === "working" ? "working · progress unknown" : row.status}${facts.condition}`, tone: STATUS_TONE[row.status], mark: STATUS_MARK[row.status] },
       attention: row.attention ?? "-",
       harness: row.harness ?? "-",

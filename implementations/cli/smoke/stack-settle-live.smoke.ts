@@ -75,7 +75,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, releaseMaintenanceLock, stopReservationPath } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -257,6 +257,12 @@ try {
     check("down of that never-started stack stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
     const reset = cli(second, "reset", "space", other, "--dry-run", "--json");
     check("reset space finds nothing to reset there and names cotal up", reset.status === 2 && reset.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(reset.env.error.remedy?.includes("cotal up")), shown(reset));
+    // A space with neither a registration nor a stopped stack, as a legacy root's down leaves one, is
+    // cleared with clean from its root, and each reset names its own clean route.
+    for (const [kind, clean] of [["space", "cotal clean all --force"], ["store", "cotal clean store --force"]] as const) {
+      const unregistered = cli(second, "reset", kind, "neverregistered", "--dry-run", "--json");
+      check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run ${clean} from that root`)), shown(unregistered));
+    }
     const movedPort = await freePort();
     const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
     track(other);
@@ -367,6 +373,17 @@ try {
     const afterCrash = cli(root, "reset", "store", space, "--dry-run", "--json");
     const verdict = afterCrash.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
     check("reset store --dry-run after crashes and down --yes offers the apply", afterCrash.status === 0 && verdict?.offered === true, shown(afterCrash));
+    // A reset that finds the root's maintenance lock held, as by an `up` started at the same time,
+    // names the holder's pid as whole-stack commands do, and removes nothing.
+    const held = acquireMaintenanceLock(root);
+    try {
+      for (const verb of ["store", "space"]) {
+        const raced = cli(root, "reset", verb, space, "--yes", "--json");
+        check(`reset ${verb} refuses a held maintenance lock by its holder's pid`, raced.status === 2 && raced.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(raced.env.error.message.includes(`(pid ${process.pid})`)) && raced.env.target?.holderPid === process.pid, shown(raced));
+      }
+    } finally { releaseMaintenanceLock(held); }
+    const stillOffered = cli(root, "reset", "store", space, "--dry-run", "--json");
+    check("...and those refusals removed nothing", stillOffered.status === 0 && (stillOffered.env?.result?.applyVerdict as { offered?: boolean } | undefined)?.offered === true, shown(stillOffered));
     // The killed daemon never released shard 0. That down kept its credential, so the repair up
     // recognises the row as the dead daemon's, waits out its TTL and starts delivery.
     check("down --yes after a delivery crash keeps the delivery credential", settled.env?.result?.cleanup === "registration-removed-delivery-credential-kept", settled.env?.result?.cleanup);

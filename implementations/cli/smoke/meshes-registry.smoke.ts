@@ -1325,6 +1325,8 @@ try {
   const seededOut = await addWizard({ server: LIVE, root, allowUnencryptedOverlay: true } as never, root, seededSafe.io as never);
   check("a pre-seeded acceptance does not attach itself to a loopback registration",
     seededOut === true && findMesh("seeded-safe")?.unencryptedOverlay === undefined, findMesh("seeded-safe"));
+  const newAsk = seededSafe.asked.find((a) => a.kind === "confirm");
+  check("a new record's last question keeps its default", newAsk?.message === "Register this mesh?" && newAsk.initialValue === undefined, seededSafe.asked);
   removeMesh("seeded-safe");
 
   // 1. A name that came in on the command line must still hit the clash gate.
@@ -1338,11 +1340,12 @@ try {
   // replacement defaults to No.
   const clashAsk = clash.asked.find((a) => a.kind === "select" && a.message.includes("already registered"));
   check("…offering another name first, ahead of replacing", clashAsk?.options?.[0] === "rename" && clashAsk.options.includes("replace"), clashAsk);
-  const replaceAsked = driver(["replace", false]);
-  const replaceAskedOut = await addWizard({ space: "taken", server: LIVE }, root, replaceAsked.io as never);
-  const replaceConfirm = replaceAsked.asked.find((a) => a.kind === "confirm" && a.message === "Register this mesh?");
-  check("a chosen replacement still asks, defaulting to No", replaceAskedOut === false && replaceConfirm?.initialValue === false, replaceAsked.asked);
-  check("…and declining it writes nothing", findMesh("taken")?.ts === new Date(0).toISOString(), findMesh("taken"));
+  // Taking Replace and passing the checks, the last question is the one Enter must not answer yes.
+  const replaceKept = driver(["replace", false]);
+  const replaceKeptOut = await addWizard({ space: "taken", server: LIVE, root }, root, replaceKept.io as never);
+  const replaceAsk = replaceKept.asked.find((a) => a.kind === "confirm");
+  check("replacing a record asks a default-No question naming it, and No writes nothing",
+    replaceKeptOut === false && replaceAsk?.message === 'Replace the record for "taken"?' && replaceAsk.initialValue === false && findMesh("taken")?.ts === new Date(0).toISOString(), { asked: replaceKept.asked, record: findMesh("taken") });
   removeMesh("taken"); // this block's fixture; later cases assert on an empty registry
   // A registration this machine started is never offered for replacement, even under --force: it is
   // how `cotal down` finds that stack.

@@ -5,7 +5,6 @@ import {
   divergentCwdAnchor,
   isWorkspaceTargetError,
   jsonFlag,
-  loadMeshes,
   oneLine,
   renderReport,
   terminalWidth,
@@ -34,7 +33,7 @@ import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, r
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
-import { stackManagerAbsent } from "../lib/stack-journal.js";
+import { runningStackManagerPid, stackManagerAbsent } from "../lib/stack-journal.js";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -77,7 +76,6 @@ export const inputFlags = [
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, attachFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "creds") return { items: [], directive: "default" };
   if (flag?.name === "name") return { items: [], directive: "nofiles" };
   if (argv.length <= 1)
@@ -571,8 +569,10 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
     : result.kind === "slots" ? slotBlocks(rows as SlotRow[])
     : seatBlocks(rows as AgentRow[], wide);
   // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
+  // Its instance id is still shown, with or without agents, because it is what `--on` takes.
   if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) return { sections: [
     { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
+    ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId]] }] })),
     { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
       { command: "cotal attach <name>", description: "Return to an agent's terminal" },
       { command: "cotal stop <name>", description: "Stop one agent" },
@@ -749,6 +749,10 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   // that still lists that manager after its process died: no manager answered the read.
   if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined && stackManagerAbsent(t.root, t.space))
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  // A stack manager whose process runs but does not answer, as a hung one, is named with the way out.
+  const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
+  if (!scatter.ok && silentPid !== undefined)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare cotal up starts the manager again` });
   if (!scatter.ok) throw readFailure(scatter, target);
   // Stable ordering: reachable instances first, then by instance id.
   const instances = [...scatter.instances].sort(

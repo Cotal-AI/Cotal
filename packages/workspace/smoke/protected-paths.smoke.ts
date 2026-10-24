@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
 import {
   assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
-  protectedLocalDirectory, protectedLocalEntry, protectedPathPolicy, type AccountDatabase, type ProtectedPathPolicy,
+  protectedLocalDirectory, protectedLocalEntries, protectedLocalEntry, protectedPathPolicy, type AccountDatabase, type ProtectedPathPolicy,
 } from "../src/protected-records.js";
 
 if (process.platform === "win32") skipSuite("protected paths are POSIX-only");
@@ -208,6 +208,16 @@ try {
   refused(() => protectedLocalEntry(binary, "the declared adapter path binary", local),
     `the declared adapter path binary is not protected against other local writers: ${binary}, ${inner} and ${grouped} are group-writable and the private-group proof is unavailable: getent is not installed`,
     `chmod g-w ${shellPath(binary)} ${shellPath(inner)} ${shellPath(grouped)}`, "a real group-writable file in group-writable folders");
+  // A directory and the named entries in it are read with its folders, as a backup artifact is, so
+  // one refusal names the directory, each unsafe entry and each unsafe folder above it.
+  const artifact = join(inner, "artifact");
+  mkdirSync(artifact);
+  chmodSync(artifact, 0o770);
+  for (const name of ["manifest.json", "safe.snap"]) writeFileSync(join(artifact, name), "", { mode: 0o600 });
+  chmodSync(join(artifact, "manifest.json"), 0o660);
+  refused(() => protectedLocalEntries(artifact, ["manifest.json", "safe.snap"], "the backup artifact", local),
+    `the backup artifact is not protected against other local writers: ${artifact}, ${join(artifact, "manifest.json")}, ${inner} and ${grouped} are group-writable and the private-group proof is unavailable: getent is not installed`,
+    `chmod g-w ${shellPath(artifact)} ${shellPath(join(artifact, "manifest.json"))} ${shellPath(inner)} ${shellPath(grouped)}`, "a group-writable directory and entry in group-writable folders");
   const mixed = join(open, "inner");
   mkdirSync(mixed);
   chmodSync(mixed, 0o770);

@@ -6,7 +6,8 @@
  *  1. `up --detach` (auth default) brings up ALL THREE: nats-server, delivery daemon, manager —
  *     pid files written, processes alive, the delivery-aware marker bound to the manager pid.
  *  2. a real `cotal ps` is ANSWERED by the detached manager (control plane reachable, creds minted
- *     from this folder's auth — the exact "spawn --detach works right after up" promise).
+ *     from this folder's auth — the exact "spawn --detach works right after up" promise), and with
+ *     no agents it lists that manager's instance id, which `ps --on` takes.
  *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
  *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
@@ -188,6 +189,12 @@ try {
     if (!answered) await sleep(2000);
   }
   ok("cotal ps is answered by the detached manager", answered, last);
+  // With no agents, `ps` still lists the manager that answered by the instance id `--on` takes.
+  const listed = /^Manager\n\s+instance:\s+([a-z0-9]{26,32})$/m.exec(plain(last.stdout))?.[1];
+  const census = (() => { try { return (JSON.parse(cli("ps", "--json").stdout) as { result?: { managers?: { instanceId: string }[] } }).result?.managers; } catch { return undefined; } })();
+  const pinned = listed ? cli("ps", "--on", listed) : undefined;
+  ok("with no agents, ps lists the answering manager's instance id, and ps --on takes it",
+    listed !== undefined && census?.length === 1 && census[0]?.instanceId === listed && pinned?.status === 0 && plain(pinned.stdout).includes(`instance: ${listed}`), { stdout: last.stdout, census, pinned: pinned?.stdout ?? pinned?.stderr });
 
   // 2b) #837: a delivery launch that LOSES the single-flight lease is not a healthy control plane.
   //     Drop the pidfile - the operator-visible shape of a lost record - while the real daemon keeps

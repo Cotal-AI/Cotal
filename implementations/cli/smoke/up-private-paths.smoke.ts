@@ -7,7 +7,8 @@
  * for a bare open root. It reads the modes that preparation left on `.cotal`, the broker store, the
  * auth directory and the broker configuration, and runs the broker preset's own path check over the
  * root and configuration it would launch. It then makes the configuration and `.cotal`
- * world-writable and checks that each refusal names the option, the path and its mode, that a later
+ * world-writable and checks that each refusal names the option and the path once, with its reason and
+ * chmod, that a later
  * preparation tightens the configuration again, that a re-prepare refuses a symlink planted at
  * server.conf and leaves its target alone, and that the text failure report prints a wrapped
  * cause's detail on one line. It also opens the detached broker log through `openBrokerLog`, the
@@ -83,9 +84,10 @@ try {
 
     chmodSync(prepared.confPath, 0o666);
     const file = refusal({ root: prepared.root, config: prepared.confPath });
-    check("a world-writable configuration refuses and names the option, the path and its mode",
+    check("a world-writable configuration refuses and names the option, the path once with its reason, and its chmod",
       isCommandFailure(file) && file.code === "PERMISSION_DENIED" && file.message.includes("adapter path config ")
-        && file.message.includes(`${prepared.confPath} is a file`) && file.message.includes("mode 0666"), file);
+        && file.message.includes(`${prepared.confPath} is writable by every local account`) && file.message.split(prepared.confPath).length === 2
+        && file.remedy === `chmod o-w ${prepared.confPath}`, file);
     await prepare("private-auth", false);
     check("a later preparation tightens the existing configuration to 0600", mode(prepared.confPath) === 0o600, octal(mode(prepared.confPath)));
 
@@ -106,9 +108,9 @@ try {
 
     chmodSync(control, 0o777);
     const ancestor = refusal({ config: prepared.confPath });
-    check("a world-writable .cotal refuses and names that directory instead of the configuration",
-      isCommandFailure(ancestor) && ancestor.code === "PERMISSION_DENIED" && ancestor.message.includes(`${control} is a directory`)
-        && ancestor.message.includes("mode 0777"), ancestor);
+    check("a world-writable .cotal refuses and names that directory once, instead of the configuration",
+      isCommandFailure(ancestor) && ancestor.code === "PERMISSION_DENIED" && ancestor.message.includes(`${control} is writable by every local account`)
+        && ancestor.message.split(`${control} is`).length === 2 && !ancestor.message.includes(prepared.confPath) && ancestor.remedy === `chmod o-w ${control}`, ancestor);
     chmodSync(control, 0o700);
   }
 

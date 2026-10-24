@@ -175,13 +175,17 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
   return good(root);
 }
 
+/** The modes `space add --mode` takes. */
+export const SPACE_MODES = ["auth", "open", "user"] as const;
+const isSpaceMode = (value: string): value is (typeof SPACE_MODES)[number] => (SPACE_MODES as readonly string[]).includes(value);
+
 /** The recorded auth mode: what the operator said, or what `--root` proves. A root holding this
  *  space's account record means auth; anything else is an open broker. `--mode user` is permitted
  *  IFF the pinned trust was SUPPLIED (`userTrustSupplied`) — the old blanket refusal reasoned
  *  that IdP pins must be established, never guessed, and supplying them (a bundle exported where
  *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. */
 export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined, userTrustSupplied = false): Check<MeshEntry["mode"]> {
-  if (flag !== undefined && flag !== "auth" && flag !== "open" && flag !== "user")
+  if (flag !== undefined && !isSpaceMode(flag))
     return bad(`✗ --mode must be auth, open or user (got "${flag}")`, "USAGE_INVALID");
   if (flag === "user" && !userTrustSupplied)
     return bad(`✗ --mode user needs its pinned trust SUPPLIED, never guessed - a user-auth space carries IdP pins (issuer, audience, login URL) established where the mesh runs. Pass --user-auth-file <bundle.json> exported there, or --from <https://…/.well-known/cotal-mesh> to fetch, review and confirm them`, "USAGE_INVALID");
