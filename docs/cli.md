@@ -4706,7 +4706,8 @@ has `space`, `mode` (`open`, `static` or `user`), `principal` (`<owner>.<actor>`
 `label`, the `allowSubscribe` and `allowPublish` ceilings, and `expiresAt` in epoch milliseconds
 when the session has a set end. A roster's `view` is `current`, `unpopulated` or `stale`, and its
 `rows` are complete only when it is `current`. A row has `id`, `name`, `kind` and `status`, and
-`role`, `activity` and `sessionKind` when they are set.
+`role`, `activity` and `sessionKind` when they are set. A `status` request with an `activity` sets
+both in one presence write, so a peer gets one `updated` record carrying both.
 
 A `result` record has `type`, `id` and `outcome`. With `ok` or `stored` it carries `result`, which
 is `null` when the request returns nothing. With `refused`, `unknown` or `failed` it carries `error`

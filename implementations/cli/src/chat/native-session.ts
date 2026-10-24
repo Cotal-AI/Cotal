@@ -272,10 +272,7 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   setStatus(status: "idle" | "working" | "waiting", activity?: string): Promise<Result<void>> {
-    return this.call(async () => {
-      if (activity !== undefined) await this.inputs.endpoint.setActivity(activity);
-      await this.inputs.endpoint.setStatus(status);
-    });
+    return this.call(() => this.inputs.endpoint.setStatus(status, activity));
   }
 
   setAttention(mode: "open" | "dnd" | "focus"): Promise<Result<void>> {
