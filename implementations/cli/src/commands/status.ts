@@ -1755,7 +1755,7 @@ function nextActions(r: StatusResult): Section {
       const absent = spaceStreamsAbsent(r.selected.space, r.selected.spaceStreams.root ?? undefined, stack ?? undefined);
       extra.push(`${absent.message}; ${absent.remedy}`);
     }
-  } else if (own && r.selected.resolved && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable"))
+  } else if (own && r.selected.resolved && r.store?.state !== "full" && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable"))
     items.unshift({ command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: "Restart this stack's stopped members from its recorded inputs" });
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
@@ -1784,9 +1784,22 @@ function nextActions(r: StatusResult): Section {
       );
     else items.unshift({ command: `${cmd} down`, description: `${first}; then ${cmd} up starts the broker again with the history it kept` });
   }
-  // The broker refuses every write while the store is over its cap, so sends store nothing.
-  if (r.store?.state === "full" && r.selected.resolved)
-    items.unshift({ command: `${cmd} history clear --space ${r.selected.space} --yes`, description: `Make room in the full store: this purges the space's channel history; --dms also purges its direct messages` });
+  // The broker refuses every write while the store is over its cap, so sends store nothing, and a
+  // stopped member starts again only once there is room. Making room purges the space's channel
+  // history. Raising the cap keeps it but needs the broker restarted, so the manager's own process is
+  // ended first where it runs, as a full store refuses its stop. These are the routes up and down name.
+  if (r.store?.state === "full" && r.selected.resolved) {
+    const { space, root } = r.selected;
+    const manager = r.stackManager;
+    items.unshift(
+      { command: `${cmd} history clear --space ${space} --yes`, description: `Make room in the full store: this purges the space's channel history; --dms also purges its direct messages` },
+      ...(own && memberGone ? [{ command: `${cmd} up --root ${shellWord(root)}`, description: "Then restart this stack's stopped members from its recorded inputs" }] : []),
+      ...(manager ? [{ command: `kill -TERM ${manager.pid}`, description: "Or keep that history: end the manager on this host, as a full store refuses its stop; it stops its agents by its default policy" }] : []),
+      // `down` stops only the stack of the folder it runs in.
+      { command: `${cmd} down --yes`, description: `${manager ? "Then stop the other members" : "Or keep that history: stop the stack"}${own ? "" : `; run it in ${root}`}` },
+      { command: own ? `${cmd} up --max-file-store <bytes>` : `${cmd} up --root ${shellWord(root)} --max-file-store <bytes>`, description: "Then start it again with a larger cap; the store keeps the history" },
+    );
+  }
   return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 

@@ -342,7 +342,8 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
 
 // A service instance record of a prepared space cut short, as an interrupted write leaves it, is named
 // with its path and the move that sets it aside, and left as it is. Status warns about it and gives
-// that step under Next, in place of `cotal up`.
+// that step under Next, in place of `cotal up`. Any other saved record cut short keeps the plain
+// refusal, with no step to move it.
 {
   const prepared = realpathSync(mkdtempSync(join(home, "records-")));
   check("rig: prepare sr there", run(["space", "create", "sr", "--json"], prepared).status === 0);
@@ -371,6 +372,21 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const moved = run(["service", "--space", "sr", "--json"], prepared);
   check("moved aside as the step says, service reads the space again", moved.status === 0 && moved.envelope?.outcome === "ok", shown(moved));
   check("…and status no longer warns about it", !(run(["status", "--json"], prepared).envelope?.warnings ?? []).some((w) => w.code === "SERVICE_INSTANCES_UNAVAILABLE"));
+  // Any other saved record cut short keeps the plain refusal and no step: an install, uninstall or
+  // unit-action attempt, or a supervisor receipt, can be what holds a native step back.
+  // `service` reads the attempts; down's census reads the receipts, and carries the refusal as its cause.
+  for (const [family, args] of [["install-intents", ["service", "--space", "sr"]], ["uninstall-intents", ["service", "--space", "sr"]], ["unit-actions", ["service", "--space", "sr"]], ["supervisors", ["down", "--dry-run"]]] as const) {
+    const dir = join(home, ".cotal", "services", Buffer.from("sr").toString("hex"), family);
+    const record = join(dir, `${Buffer.from(randomUUID()).toString("hex")}.json`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(record, cut, { mode: 0o600 });
+    const r = run([...args, "--json"], prepared);
+    const error = r.envelope?.error as { code?: string; message?: string; remedy?: string; cause?: { detail?: string } } | undefined;
+    check(`a cut ${family} record refuses ${args[0]} SCHEMA_INVALID with the plain refusal and no step to move it`,
+      r.status === 1 && error?.code === "SCHEMA_INVALID" && (error.cause?.detail ?? error.message) === "local record input is not valid UTF-8 JSON; document contents are not echoed" && !(error.remedy ?? "").includes("mv ") && !`${r.stdout}${r.stderr}`.includes(record), shown(r));
+    check(`…and the ${family} record is left as it was`, readFileSync(record).equals(cut));
+    rmSync(record);
+  }
   check("rig: forget sr", run(["space", "forget", "sr", "--json"], prepared).status === 0);
 }
 
