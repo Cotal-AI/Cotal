@@ -3015,7 +3015,8 @@ persona file against the working directory. A missing
 persona is refused in one line with the catalog directory or the file that was checked, and the
 line names `--file <persona.md>` for a persona file elsewhere. A missing `default` persona also
 names the command that writes one: `cotal up` in the root of a space this machine started, or
-`cotal persona create default` for any other space. When a managed launch on a
+`cotal persona create default` for any other space. `--dry-run` refuses a missing persona with
+the same text, as `TARGET_NOT_FOUND` (exit 2). When a managed launch on a
 user-auth mesh is refused because the chosen manager's catalog has no `default`, the Next gives the
 spawn again with `--on` for each of your other live managers whose catalog lists one. The launch flags
 override the file. On a user-auth mesh the

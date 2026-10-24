@@ -2,8 +2,8 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { agentFilePath, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, presentationOf, resolveAgentType, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
-import { callerHarness, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, resolveAgentType, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
+import { callerHarness, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import type { spawnFlags } from "./spawn.js";
 
 type Values = FlagValues<typeof spawnFlags>;
@@ -16,13 +16,15 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   let broker: string | null = null;
   let targetMode: string | null = null;
   let assumed = false;
+  // Where a missing persona was looked for. A space that is not started is a local root `up` starts.
+  let site: PersonaSite;
   try {
     const selected = resolveMeshTarget(process.cwd(), { space: values.space, server: values.server, readOnly: true });
-    root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; assumed = selected.namesNoSpace === true;
+    root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; assumed = selected.namesNoSpace === true; site = selected;
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && error.details.root && error.details.space) { root = error.details.root; space = error.details.space; }
-    else if (error.code === "unknown-space" && values["enrollment-file"] && values.file && values.space && token(values.space) === values.space) { root = process.cwd(); space = values.space; }
+    if (error.code === "not-started" && error.details.root && error.details.space) { root = error.details.root; space = error.details.space; site = { root, space, personaRoot: personaDir(root), origin: "up" }; }
+    else if (error.code === "unknown-space" && values["enrollment-file"] && values.file && values.space && token(values.space) === values.space) { root = process.cwd(); space = values.space; site = { root, space, personaRoot: personaDir(root) }; }
     else throw new CommandFailure("refused", targetErrorCode(error.code), "the preview target could not be resolved without changing the catalog; no different space was selected");
   }
   recordOperationSpace(space);
@@ -41,7 +43,14 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   const path = values["enrollment-file"] && values.config ? resolve(values.config) : agentFilePath(root, ref);
   let definition: AgentDef;
   try { definition = loadLaunchPersonaFile(path); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local launch persona could not be read and validated; no contents were echoed and nothing was allocated", { target: { ...target, path }, remedy: "use a native persona file; a Mesh manifest belongs to cotal team deploy <file>" }); }
+  catch (error) {
+    // A missing persona is refused as the launch refuses it, naming where it was looked for.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      const missing = missingPersona(site, ref, from, path);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { ...target, path }, ...(missing.remedy ? { remedy: missing.remedy } : {}) });
+    }
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the local launch persona could not be read and validated; no contents were echoed and nothing was allocated", { target: { ...target, path }, remedy: "use a native persona file; a Mesh manifest belongs to cotal team deploy <file>" });
+  }
   let cwd: string;
   try { cwd = realpathSync(values.cwd ? resolve(values.cwd) : process.cwd()); if (!statSync(cwd).isDirectory()) throw new Error(); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the direct launch's local working directory is unavailable; no directory was created"); }
