@@ -5,12 +5,8 @@ import {
   type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-<<<<<<< HEAD
-  CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult,
-=======
   ConfirmationRequired,
-  CommandFailure, jsonFlag, loadMeshes, plainFlag, presentationOf, targetFlags, writeResult,
->>>>>>> 6f9f38485 (fix(cli): refuse a missing --yes in two lines, as down does)
+  CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
