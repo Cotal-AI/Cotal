@@ -29,6 +29,7 @@ import {
   type LocalProcess,
   type LocalProcessContext,
   restoreLeftOut,
+  userAuthSpacesOnDisk,
 } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
@@ -47,6 +48,14 @@ const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt
 /** How a removed trust record is labeled. A full backup is bound to the trust it was taken under,
  *  so once that trust is removed it no longer restores into this root. */
 const SPACE_TRUST = "(space trust)";
+/** How a removed user-auth state directory is labeled. It holds the space's pinned IdP and its
+ *  actor ledger, so the next start names the IdP again and every actor is granted again. */
+const USER_AUTH_TRUST = "(IdP trust and actor ledger)";
+
+/** What removing a user-auth space's IdP trust and actor ledger leaves the next start to do. */
+export function userAuthTrustNote(done: boolean): string {
+  return `${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs cotal up --user-auth --idp <auth base URL>, and each actor needs cotal actor grant again.`;
+}
 type Target = (typeof TARGETS)[number];
 
 /** `cotal clean <history|store|all>` - one configurable cleanup verb.
@@ -162,14 +171,17 @@ export async function clean(args: ParsedArgs): Promise<void> {
     return;
   }
   const trustRemoved = removed.some((path) => path.endsWith(SPACE_TRUST));
+  const userAuthRemoved = removed.some((path) => path.endsWith(USER_AUTH_TRUST));
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
     console.log(c.dim(`dry run - nothing was removed; cotal clean ${target}${values["store-dir"] ? ` --store-dir ${values["store-dir"]}` : ""} --force removes these`));
+    if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need cotal up --user-auth --idp <auth base URL>, and each actor cotal actor grant again"));
     if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;
   }
   for (const path of removed) console.log(c.green(`✓ removed ${path}`));
-  if (target === "all") console.log(c.dim("a fresh space identity is minted on the next `cotal up`"));
+  if (target === "all") console.log(c.dim(`a fresh space identity is minted on the next \`cotal up${userAuthRemoved ? " --user-auth --idp <auth base URL>" : ""}\``));
+  if (userAuthRemoved) console.error(c.yellow("! this clean removed the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs cotal up --user-auth --idp <auth base URL>, and each actor needs cotal actor grant again"));
   if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
 }
 
@@ -350,6 +362,8 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
   }
   if (opts.includeAuth) {
     const targets = localIdentityCleanupTargets(root, space);
+    // Read before the provider's deprovision below removes any of their pins.
+    const userAuthDirs = new Set(userAuthSpacesOnDisk(targets.auth).map(spaceSegment));
     // ---- the seam deletes, before ANY raw identity removal (see the doc above) ----
     const secrets = opts.identity?.store ?? workspaceSecretStore(root);
     const failures: string[] = [];
@@ -459,7 +473,7 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     const trustRecord = (entry: string) => entry === "auth.json" || entry === "broker.json" || (entry.startsWith("account.") && entry.endsWith(".json"));
     if (existsSync(authDirPath))
       for (const entry of readdirSync(authDirPath))
-        if (!trustRecord(entry)) rm(join(authDirPath, entry), `.cotal/auth/${entry}`);
+        if (!trustRecord(entry)) rm(join(authDirPath, entry), `.cotal/auth/${entry}${userAuthDirs.has(entry) ? ` ${USER_AUTH_TRUST}` : ""}`);
     // The trust records — the space-NAMER last among them — die ABSOLUTELY LAST, as a single
     // authoritative op: the store delete is real for a non-FS store, and on the FS composition it
     // removes the same files.

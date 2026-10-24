@@ -19,6 +19,8 @@
  *      (`up --open` on the user mesh) is refused loudly.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
+ *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
+ *      actor ledger they remove and what a later `up` needs; a bare `up` then refuses as they say.
  *
  * COTAL_HOME is sandboxed; kills only what it starts. Needs nats-server on PATH.
  * Run: pnpm smoke:user-auth-launch:live   (pnpm build first — the subprocesses run built dist)
@@ -641,6 +643,33 @@ try {
     openReup.out,
   );
 
+  // ---------- G. a reset names the IdP trust and the actor ledger it removes ----------
+  console.log("G) clean all and reset space name the IdP trust and the actor ledger they remove");
+  const userAuthDir = `.cotal/auth/${spaceSegment(SPACE)} (IdP trust and actor ledger)`;
+  const cleanPreview = await cotal(["clean", "all", "--dry-run"]);
+  check("clean all --dry-run names the IdP trust and the actor ledger, and what a later up needs",
+    cleanPreview.status === 0 && cleanPreview.out.includes(`would remove ${userAuthDir}`) && cleanPreview.out.includes("every actor grant would be lost") && cleanPreview.out.includes("cotal up --user-auth --idp <auth base URL>"), cleanPreview.out);
+  const cleaned = await cotal(["clean", "all", "--force"]);
+  check("…and its receipt names them the same way",
+    cleaned.status === 0 && cleaned.out.includes(`removed ${userAuthDir}`) && cleaned.out.includes("every actor grant is lost") && cleaned.out.includes("minted on the next `cotal up --user-auth --idp <auth base URL>`"), cleaned.out);
+  const STACK = `${SPACE}-stack`;
+  const created = await cotal(["space", "create", STACK]);
+  check("space create prepares a controller stack in the cleaned root", created.status === 0, created.out);
+  // No login exists for this space, so the manager is not attempted and up reports a known partial.
+  const stackUp = await cotal(["up", "--user-auth", "--idp", base, "--server", SERVER]);
+  check("the controller stack starts with user auth", stackUp.status === 0 || stackUp.status === 4, stackUp.out);
+  const stackDown = await cotal(["down", "--yes"]);
+  check("down --yes stops the controller stack", stackDown.status === 0, stackDown.out);
+  const resetPreview = await cotal(["reset", "space", STACK, "--dry-run"]);
+  check("reset space --dry-run names the IdP trust and the actor ledger, and what a later up needs",
+    resetPreview.status === 0 && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs cotal up --user-auth --idp <auth base URL>") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
+  const reset = await cotal(["reset", "space", STACK, "--yes"]);
+  check("…and its receipt names them the same way",
+    reset.status === 0 && plain(reset.out).includes(`.cotal/auth/${spaceSegment(STACK)} (IdP trust and actor ledger)`) && plain(reset.out).includes("Removed the IdP trust and the actor ledger of this user-auth space") && !reset.out.includes("A later up creates a new local identity"), reset.out);
+  const bareUp = await cotal(["up"]);
+  check("a bare up then refuses and names --user-auth --idp, as the reset said",
+    bareUp.status === 1 && bareUp.out.includes("needs the IdP it trusts") && bareUp.out.includes("cotal up --user-auth --idp <auth base URL>"), bareUp.out);
+
   console.log(`\nUSER-AUTH LAUNCH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
@@ -650,6 +679,7 @@ try {
 } finally {
   try { await witnessNc?.close(); } catch { /* */ }
   await cotal(["down"], { timeoutMs: 30_000 }); // idempotent — kills by ITS OWN pid files only
+  await cotal(["down", "--yes"], { timeoutMs: 30_000 }); // the controller stack of G, if it is still up
   idpSrv.close();
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });

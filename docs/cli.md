@@ -1419,7 +1419,10 @@ One configurable cleanup verb; every target requires `--force`, except a `--dry-
   backups taken before `clean all` no longer restore into this root. Only the registry of such a
   backup still restores, with `backup restore <dir> --only registry`, and chat and DM history start
   empty. Its dry run and its receipt say so when it removes that trust; take a new full backup after
-  the next `cotal up`.
+  the next `cotal up`. On a user-auth space it also removes the space's IdP trust and its actor
+  ledger, so every actor grant is lost. Its dry run and its receipt say so, and a later `up` then
+  needs `cotal up --user-auth --idp <auth base URL>` and each actor granted again with
+  `cotal actor grant`.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
 running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). On a
@@ -1464,7 +1467,8 @@ cotal reset space <space> [--dry-run] [-y|--yes] [--json|--plain]
 Both routes select a space this machine started. A space with a locally started registration is
 selected by it. A controller stack that a completed `down` stopped has no registration; its
 prepared record and stack journal at the same root name its broker address, store and mode, and a
-reset keeps both, so a later `up` starts it again. A stack none of whose members ever started has
+reset keeps both, so a later `up` starts it again. After `reset space` of a user-auth space, that
+`up` needs `--user-auth --idp <auth base URL>`, as described below. A stack none of whose members ever started has
 no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
@@ -1535,7 +1539,10 @@ entries.
 `reset space <space>` adds local identity cleanup through the existing native
 clean-all operation. This route currently requires Linux, a space selected as above and a
 plain-NATS loopback listener. It removes a locally started registration; a stopped controller stack
-keeps its prepared record and stack journal. TLS-first, remote, shared-root
+keeps its prepared record and stack journal. On a user-auth space it also removes the IdP trust and
+the actor ledger, so every actor grant is lost. The preview and the receipt say so on their own
+line: a later `up` needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs
+`cotal actor grant` again. TLS-first, remote, shared-root
 and non-Linux targets refuse. It applies the same maintenance, deployment and
 process-custody guards as store reset. It does not stop a process to become
 eligible.
