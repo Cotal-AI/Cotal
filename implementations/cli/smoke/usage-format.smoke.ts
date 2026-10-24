@@ -10,8 +10,9 @@
  * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
  *
  * A folder whose `.cotal` is a file refuses every command with `CONFLICT`, naming that file, before
- * anything runs. A removed working folder refuses every command but help and version the same way,
- * `up`, `down` and `backup create` included, which crashed with Node's stack trace.
+ * anything runs. A removed working folder refuses every command but help and version with its line
+ * and the `cd` remedy and no help, as a missing --yes does, `up`, `down` and `backup create` included,
+ * which crashed with Node's stack trace.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
@@ -127,8 +128,10 @@ if (process.platform !== "win32") {
     const r = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh", gone, process.execPath, BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
+  // Two lines and no help: the folder is not a grammar mistake, and the remedy is the whole fix.
+  const removedShape = (r: ReturnType<typeof run>) => r.status === 1 && r.stdout === "" && r.stderr === "✗ this folder no longer exists\n  cd to an existing folder and run the command again\n";
   const removed = fromRemoved(["status"]);
-  check("a command run from a removed folder has the usage shape and says the folder is gone", usageShape(removed, /this folder no longer exists/) && /cd to an existing folder/.test(removed.stderr), shown(removed));
+  check("a command run from a removed folder says the folder is gone and to cd elsewhere, with no help", removedShape(removed), shown(removed));
   const removedJson = fromRemoved(["status", "--json"]);
   const envelope = removedJson.stdout.startsWith("{") ? JSON.parse(removedJson.stdout) : undefined;
   check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
@@ -138,7 +141,7 @@ if (process.platform !== "win32") {
   // instead of crashing with Node's stack trace.
   for (const args of [["up"], ["down", "--yes"], ["down", "--dry-run"], ["backup", "create", "bk"]]) {
     const r = fromRemoved(args);
-    check(`${args.join(" ")} from a removed folder refuses the same way, with no stack trace`, usageShape(r, /this folder no longer exists/) && !/uv_cwd|\n\s+at /.test(r.stderr), shown(r));
+    check(`${args.join(" ")} from a removed folder refuses the same way, with no stack trace`, removedShape(r), shown(r));
   }
   const upJson = fromRemoved(["up", "--json"]);
   const upEnvelope = upJson.stdout.startsWith("{") ? JSON.parse(upJson.stdout) : undefined;

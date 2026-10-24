@@ -723,7 +723,7 @@
     {
       "path": "implementations/cli/src/commands/up.ts",
       "kind": "derived-output",
-      "anchor": "`restore attempt ${maintenance.restore.attemptId} active listener ownership is ${status}; refusing ordinary startup`",
+      "anchor": "`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
