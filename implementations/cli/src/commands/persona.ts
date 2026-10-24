@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
 import { assertValidChannel, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
+  ConfirmationRequired,
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   writeResult, type Presentation, type Report,
   recordOperationSpace,
@@ -85,7 +86,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (sub === "remove") {
     const expected = requirePersonaSource(path);
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw usage(`removing '${name}' at ${path} requires --yes without an interactive terminal`);
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`removing '${name}' at ${path} requires --yes without an interactive terminal`, { remedy: `confirm with cotal persona remove ${name} --yes` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`Remove '${name}' at ${path}?\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
