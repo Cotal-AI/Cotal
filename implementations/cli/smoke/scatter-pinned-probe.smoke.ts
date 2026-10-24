@@ -274,7 +274,7 @@ try {
   let refusal: { error?: { code?: string; message?: string }; warnings?: { code: string; message: string }[] } | undefined;
   try { refusal = JSON.parse(unpinned.stdout); } catch { /* reported below */ }
   check("an unpinned spawn skips the corpse without waiting out its 10 s describe, names it in a warning and gives the reason the live manager reports",
-    spawnMs < 10_000 && unpinned.status === 2 && refusal?.error?.code === "TARGET_UNAVAILABLE" && refusal.error.message === "no manager of yours takes unpinned launches: none that answered has an agent application installed; nothing was launched"
+    spawnMs < 10_000 && unpinned.status === 2 && refusal?.error?.code === "DEPENDENCY_UNAVAILABLE" && refusal.error.message?.startsWith(`no manager of yours takes unpinned launches: none that answered has an agent application installed (manager ${IID_LIVE} on host `) && refusal.error.message.endsWith("); nothing was launched")
       && Boolean(refusal.warnings?.some((w) => w.code === "MANAGER_SILENT" && w.message.startsWith(`manager ${IID_CORPSE} was skipped: its registration is stale`))),
     { spawnMs, status: unpinned.status, out: unpinned.stdout.slice(0, 900), err: unpinned.stderr.slice(-600) });
 
