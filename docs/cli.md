@@ -714,6 +714,11 @@ instance are published the same way. A file Cotal writes in place under `~/.cota
 project's `.cotal`, such as a generated configuration, a credential, a process marker, a persona,
 a seat record or one of those logs, is never written through a symlink.
 
+Every command that takes `--store-dir` refuses an empty value `USAGE_INVALID` (exit 1) before it
+runs, rather than reading it as the default store. A value that starts with `~` refuses the same
+way: no shell expanded it, so it would name a folder called `~`, and the refusal names the absolute
+path to pass instead.
+
 An explicit `--store-dir` on `up`, `up --restore` or `backup restore` must name a directory or a
 path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it. The
 existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
@@ -1673,7 +1678,9 @@ store the root's last broker served, as a start does: while the default `.cotal/
 JetStream data and that store does, such as after `backup restore --store-dir`, they remove that
 store, and the dry run names it. Custom cleanup targets must contain either the Cotal store-generation marker or a
 real `jetstream/` store directory; filesystem roots, project roots, and Cotal auth/maintenance trees
-are always refused. Its contents are not checked, so a directory that holds only a `jetstream/`
+are always refused. A store in the project folder itself, as `up --store-dir .` makes, refuses
+`CONFLICT` (exit 2), since the folder holds the project's own files; its Next names the store's own
+entries to remove by hand once the space is stopped. Its contents are not checked, so a directory that holds only a `jetstream/`
 directory is removed as a store, whatever that directory holds. The one exception is another
 space's data: when another space uses the store folder, as [up](#up) checks it, `store` and `all`
 and their dry runs refuse `CONFLICT` (exit 2), name that space, its root and its streams, and remove
@@ -1761,7 +1768,9 @@ exclude aliases, remote tenants or live attachments. A negative credless probe
 cannot prove absence for TLS-first listeners. A custom store path must be
 absolute and one real directory. A recorded store path that is a link refuses `CONFLICT` in the
 preview and the apply of both resets, naming the path and the directory it points to, and nothing
-is removed. Replace the link with that directory to reset it. The preview takes no maintenance lock and cannot establish exclusive
+is removed. Replace the link with that directory to reset it. A store in the project folder itself
+refuses both resets `CONFLICT` as it refuses `clean store`, naming the store's own entries to remove
+by hand. The preview takes no maintenance lock and cannot establish exclusive
 custody or a complete identity deletion set.
 
 Bare `reset store <space>` checks those conditions, displays a scoped terminal

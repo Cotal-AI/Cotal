@@ -47,6 +47,7 @@ import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { foreignStoreEntries, lastServedStore, listEntries, refuseSharedStoreRemoval, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
 /** How a removed trust record is labeled. A full backup is bound to the trust it was taken under,
@@ -551,9 +552,15 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
   const cotal = join(canonicalRoot, ".cotal");
   const defaultStore = join(cotal, "nats");
   const protectedTrees = [join(cotal, "auth"), join(cotal, "agents"), join(cotal, "maintenance"), join(cotal, "run")];
-  if (target === parse(target).root || pathContains(target, canonicalRoot) || target === cotal ||
+  if (target === parse(target).root || target === cotal ||
       protectedTrees.some((path) => pathContains(path, target)) || (override && pathContains(cotal, target) && target !== defaultStore))
     throw new Error(`refusing unsafe store cleanup target: ${target}`);
+  // A store in the project folder, as `up --store-dir .` makes, lies beside the project's own files,
+  // so no cleanup removes the folder; its store entries are named for removal by hand.
+  if (pathContains(target, canonicalRoot)) {
+    const entries = STORE_ENTRY_NAMES.filter((entry) => existsSync(join(target, entry)));
+    throw new CommandFailure("refused", "CONFLICT", `refusing unsafe store cleanup target: ${target} holds this project${target === canonicalRoot ? "'s .cotal" : ` folder ${canonicalRoot}`}; nothing was removed`, { target: { storeDir: target, root: canonicalRoot }, ...(entries.length ? { remedy: `stop the space with cotal down, then remove the store's own entries by hand: rm -r ${entries.map((entry) => shellWord(join(target, entry))).join(" ")}` } : {}) });
+  }
   if (override) {
     const generation = join(target, ".cotal-store-id");
     const jetstream = join(target, "jetstream");

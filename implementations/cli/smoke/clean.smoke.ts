@@ -240,6 +240,13 @@ try {
     () => removeLocalState(customRoot, { includeAuth: false, storeDir: customRoot }),
     /unsafe store cleanup target/,
   );
+  // A store in the project folder, as `up --store-dir .` makes, names its own entries to remove by hand.
+  mkdirSync(join(customRoot, "jetstream"));
+  await assert.rejects(
+    () => removeLocalState(customRoot, { includeAuth: false, storeDir: customRoot }),
+    (error: Error & { code?: string; remedy?: string }) => error.code === "CONFLICT" && error.remedy === `stop the space with cotal down, then remove the store's own entries by hand: rm -r ${join(realpathSync.native(customRoot), "jetstream")}`,
+  );
+  check("a store in the project folder refuses CONFLICT, naming its entries to remove by hand", existsSync(join(customRoot, "jetstream")));
   const controlTree = join(customRoot, ".cotal", "manifests");
   mkdirSync(join(controlTree, "jetstream"), { recursive: true });
   await assert.rejects(

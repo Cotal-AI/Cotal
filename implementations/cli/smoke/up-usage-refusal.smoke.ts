@@ -9,7 +9,9 @@
  * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
  * legacy launcher. A broker address another program holds refuses CONFLICT instead of launching a
  * broker that exits on its bind. `up -f` on a root that holds a controller stack refuses CONFLICT
- * instead of starting a manifest stack beside it.
+ * instead of starting a manifest stack beside it. An empty `--store-dir`, which used to open the
+ * default store, and one that starts with a `~` no shell expanded, which made a folder named `~`,
+ * refuse USAGE_INVALID on `up` and `clean`, the second naming the absolute path.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from empty
  * folders outside them. Nothing is started; each refusal comes from validation. A `--server` that no
@@ -91,6 +93,18 @@ const servers: { server: string; message: RegExp; example: string }[] = [
 for (const { server, message, example } of servers) {
   const text = run(["up", "--server", server]);
   check(`up --server ${server} is the classified USAGE_INVALID report with no help, exit 1, giving ${example}`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Code:\s+USAGE_INVALID/.test(text.stderr) && text.stderr.includes(example) && !/Usage|Options/.test(text.stderr), shown(text));
+}
+
+// An empty --store-dir used to open the default store, and a ~ no shell expanded made a folder named ~.
+const storeDirs = [
+  { value: "", message: "--store-dir is empty; the command did not run", remedy: "name the store directory, or omit --store-dir to use the default store" },
+  ...["~", "~/stores/x"].map((value) => ({ value, message: `--store-dir ${JSON.stringify(value)} starts with ~, which no shell expanded, so it names a folder called ~ in ${realpathSync(folder)}; the command did not run`, remedy: `name the absolute path: --store-dir ${join(home, value.slice(2))}` })),
+];
+for (const { value, message, remedy } of storeDirs) {
+  const json = run(["up", "--store-dir", value, "--json"]);
+  check(`up --store-dir ${JSON.stringify(value)} --json is one USAGE_INVALID refusal, exit 1, with its remedy`, json.status === 1 && json.envelope?.error?.code === "USAGE_INVALID" && json.envelope.error.message === message && json.envelope.error.remedy === remedy, shown(json));
+  const clean = run(["clean", "store", "--dry-run", "--store-dir", value]);
+  check(`clean store --store-dir ${JSON.stringify(value)} refuses the same way, exit 1, with no help`, clean.status === 1 && clean.stderr.includes(message) && clean.stderr.includes(remedy) && !/Usage|Options/.test(clean.stderr), shown(clean));
 }
 
 check("nothing was written in the folder", readdirSync(folder).length === 0, readdirSync(folder));
