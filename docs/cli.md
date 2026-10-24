@@ -163,7 +163,9 @@ Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, t
 reports and error lines draw their marks and punctuation as plain does, and keep their color. With
 none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
 A usage refusal under `--plain` or such a locale prints the classified report that begins
-`Request refused`, then the command's help.
+`Request refused`, then the command's help. Every refusal line, the `✗` line included, shows a
+control character in the text it quotes, such as a file's bytes or an argument, as an escape like
+\u001b, so that text cannot move the cursor or change the screen.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
 terminal is written as one labeled record per row, so no value is cut off. A warning on stderr wraps
 to the terminal at spaces, each continuation line under its text.
@@ -996,7 +998,9 @@ and the manager's log both name the credential and this repair.
 ### Channel seed file
 
 A start seeds the channel registry from the `--channels` file, or from the root's
-`.cotal/channels.json` when you pass none. The file is one JSON object with two optional keys:
+`.cotal/channels.json` when you pass none. The file is one JSON object with two optional keys, in
+UTF-8. A byte-order mark at its start, which some Windows editors write, is ignored, and a file
+saved as UTF-16 is refused with `USAGE_INVALID`, saying to save it as UTF-8:
 
 ```json
 {

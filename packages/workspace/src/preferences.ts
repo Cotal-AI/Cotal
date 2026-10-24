@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { acquireLock, globalConfigDir, token, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
 import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
@@ -172,9 +172,13 @@ function checkScope(where: string, value: unknown, perSpaceOnly: boolean): Parti
 
 /** Validate a parsed preferences document. Anything unexpected refuses; nothing is dropped. */
 function parsePreferences(text: string): Preferences {
+  const encoding = utf16Problem(text);
+  if (encoding) throw invalid(`${encoding}; save it as UTF-8`);
   let doc: unknown;
   try {
-    doc = JSON.parse(text);
+    // A hand edit on Windows can begin the file with a UTF-8 byte-order mark, which RFC 8259 lets a
+    // reader ignore; the next write leaves it out.
+    doc = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch (e) {
     throw invalid(`not JSON (${(e as Error).message})`);
   }

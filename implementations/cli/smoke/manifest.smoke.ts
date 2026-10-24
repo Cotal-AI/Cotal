@@ -231,6 +231,8 @@ agents: { a: ./a.md }
 channels: { general: { subscribe: [a] } }
 `, "single-space");
 
+// a manifest saved as UTF-16 is refused by its encoding, not as a schema shape
+fails(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${HEAD}\nchannels: {}\n`, "utf16le")]).toString("utf8"), "it is saved as UTF-16, and Cotal reads only UTF-8; save it as UTF-8");
 // space: only a name `space create` takes, one routing token of 1 to 200 characters
 const spaced = (space: string) => `apiVersion: cotal/v1
 kind: Mesh

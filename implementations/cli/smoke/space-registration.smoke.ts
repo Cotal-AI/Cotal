@@ -16,7 +16,9 @@
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
- * default channels file, have refused and left the root as it was. Create and a later `up` write the
+ * default channels file, have refused and left the root as it was; a default channels file that
+ * begins with a UTF-8 byte-order mark seeds as the JSON after it, and one saved as UTF-16 is refused
+ * by its encoding. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -799,6 +801,22 @@ if (process.platform === "linux") {
       refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
         cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
   }
+  // The `✗` line quotes the parser's excerpt of a file that is not JSON with its control characters
+  // escaped, so an escape sequence in a cloned file never reaches the terminal.
+  const escSeed = join(fresh, "esc-channels.json");
+  writeFileSync(escSeed, '{"channels": \u001b[2J}');
+  const escaped = await run(["up", "--open", "--channels", escSeed, "--server", server], { LC_ALL: "C.UTF-8" }, fresh);
+  check("up with a --channels file holding an escape sequence quotes its excerpt escaped, exit 1, and leaves the root unchanged",
+    escaped.status === 1 && escaped.stderr.startsWith("✗ ") && escaped.stderr.includes('"{"channels": \\u001b[2J}"') && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(escaped.stdout + escaped.stderr) &&
+      cotalFiles() === beforeRuntime.files, shown(escaped));
+  unlinkSync(escSeed);
+  const utf16Seed = join(fresh, "utf16-channels.json");
+  writeFileSync(utf16Seed, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('{"channels":{}}', "utf16le")]));
+  const utf16 = await json(["up", "--open", "--channels", utf16Seed, "--server", server], fresh);
+  check("up with a --channels file saved as UTF-16 is USAGE_INVALID, exit 1, naming its encoding and the step to save it as UTF-8",
+    refused(utf16, 1, "USAGE_INVALID") && utf16.env?.error?.message === `the channels file ${utf16Seed} cannot be read: it is saved as UTF-16, and Cotal reads only UTF-8` &&
+      utf16.env?.error?.remedy === `save ${utf16Seed} as UTF-8` && cotalFiles() === beforeRuntime.files, shown(utf16));
+  unlinkSync(utf16Seed);
   // The default file is read once the root is settled, so it refuses after the stack lock's layout
   // exists and before a store, a broker or a registration.
   const defaultSeed = join(fresh, ".cotal", "channels.json");
@@ -817,11 +835,18 @@ if (process.platform === "linux") {
         !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(fifoDefault));
     unlinkSync(defaultSeed);
   }
+  // A channels file that begins with a UTF-8 byte-order mark, as some Windows editors save one, seeds
+  // as the JSON after it.
+  writeFileSync(defaultSeed, '\uFEFF{"channels":{"bomseed":{"description":"saved with a BOM"}}}');
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
   check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
   check("the selection still names it", getCurrent() === "demo", getCurrent());
+  const bomSeeded = await json(["channel", "show", "bomseed", "--space", "demo"]);
+  check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
+    bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
+  unlinkSync(defaultSeed);
   const reads = await json(["space", "show", "demo"]);
   check("space show now reports its broker answering", reads.env?.result.kind === "space" && reads.env.result.check === "reachable", reads.env?.result);
   // Another up of the running space refreshes it: it writes back a default persona that went
