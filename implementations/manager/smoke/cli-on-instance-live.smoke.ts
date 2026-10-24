@@ -370,7 +370,9 @@ try {
     // --on is a `--detach` flag on spawn (foreground runs in this process, not on a manager). The
     // persona ref is deliberately nonexistent so that a dropped pin cannot start anything: the
     // worst case is a manager refusal, which is a DIFFERENT message and still fails this cell.
-    { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space] },
+    // spawn reads the registry first, so an absent instance is refused naming the running ones,
+    // before any describe; a dropped pin would launch through the class queue instead.
+    { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space], deadline: new RegExp(`--on ${absent} names no manager running for space ${space}; the ones running are `) },
     { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
     { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
     // describe reports the read as a failed request that names the pinned instance and the native deadline.

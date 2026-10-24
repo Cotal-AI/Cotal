@@ -100,7 +100,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, liveManagerIds, onInstance, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { askManager, describeUnanswered, failIfNotOk, liveManagerIds, onInstance, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -599,6 +599,8 @@ export async function launchManagedPersona(
   }
   provenance.read("mesh", `${t.space} (${t.server})`);
   if (on === undefined && !t.auth.bearer) await refuseWithoutLiveManager(t.space, t.server, t.auth, { space: t.space, managerInstanceId: null, managerEpoch: null }, "launch an agent");
+  // A pin the registry does not list is refused at once; only a registered manager is waited on.
+  if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
   const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
   const defaultAgent = callerHarness(t.space);
@@ -652,6 +654,9 @@ export async function launchManagedPersona(
     // The broker attested that no manager received an unpinned launch: none takes the class queue.
     if (on === undefined && !t.auth.bearer && reply.unanswered && reply.nativeOutcome === "not-executed")
       throw await unservedClassLaunch(seat ? undefined : flags, t, values.agent ?? defaultAgent, { target, native });
+    // A pinned describe that drew no answer means the launch was never sent, as ps and stop --on say.
+    if (on !== undefined && describeUnanswered(reply))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not answer, so the launch was not sent and nothing was launched`, { target, native: { code: reply.code, ...(reply.error ? { detail: oneLine(reply.error) } : {}) }, remedy: "cotal ps shows which managers answer; rerun the spawn on one of them with --on <instance>" });
     if (reply.nativeOutcome === "not-executed" && code) {
       // A manager without the default persona: name your other live managers whose catalog has one.
       const elsewhere = ref === "default" && managerConfigRef === undefined && reply.error?.startsWith('no persona "default"') ? await managersWithPersona(flags, reply.managerInstanceId ?? on, "default").catch((): string[] => []) : [];
