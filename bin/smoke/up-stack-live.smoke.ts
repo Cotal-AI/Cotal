@@ -229,11 +229,11 @@ try {
   const pinnedErr = plain(pinnedSpawn.stderr);
   const request = /Original request:\s+([0-9a-f-]{36})/.exec(pinnedErr)?.[1];
   const reason = /Request refused\n\s+(.+)\n/.exec(pinnedErr)?.[1];
-  ok("a spawn -d pinned to that manager is refused LIFECYCLE_BLOCKED, exit 2, with its plan on stdout and its request id on stderr",
-    pinnedSpawn.status === 2 && /Code:\s+LIFECYCLE_BLOCKED/.test(pinnedErr) && request !== undefined && reason !== undefined && /Managed launch\n/.test(plain(pinnedSpawn.stdout)), { stdout: pinnedSpawn.stdout, stderr: pinnedErr });
+  ok("a spawn -d pinned to that manager is refused DEPENDENCY_UNAVAILABLE, exit 2, with its plan on stdout and its request id on stderr",
+    pinnedSpawn.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(pinnedErr) && request !== undefined && reason !== undefined && /Managed launch\n/.test(plain(pinnedSpawn.stdout)), { stdout: pinnedSpawn.stdout, stderr: pinnedErr });
   const logged = readFileSync(record(MANAGER_LOGFILE), "utf8").split("\n").filter((line) => request !== undefined && line.includes(request));
-  ok("the manager logs that refusal in one line naming the request id, the persona and the reason the caller got",
-    logged.length === 1 && logged[0]!.endsWith(`! spawn request ${request} for persona "default" refused (failed-precondition): ${reason}`), logged);
+  ok("the manager logs one correlated refusal with the persona, native code and missing-connector reason",
+    logged.length === 1 && logged[0]!.includes(`! spawn request ${request} for persona "default" refused (failed-precondition): `) && /no connector "claude"(?: installed - add it with | - install its integration with )/.test(logged[0]!), logged);
 
   // 2b) #837: a delivery launch that LOSES the single-flight lease is not a healthy control plane.
   //     Drop the pidfile - the operator-visible shape of a lost record - while the real daemon keeps
