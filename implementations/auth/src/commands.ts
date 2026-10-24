@@ -620,10 +620,10 @@ const authCommands: Command[] = [
     usage: "cotal actor <grant <actor> | revoke <actor> | label <actor> <label> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l] [--json|--plain]",
     positionals: "<grant <actor> | revoke <actor> | label <actor> <label> | list>",
     subcommands: [
-      { name: "grant", flagNames: ["space", "sub", "owner", "full", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent"], summary: "store an actor's whole ledger row: name all three ACL flags, or --full for the wide defaults", usage: "cotal actor grant <actor> (--sub <IdP subject> | --owner <u_…>) (--full | --scope a,b --allow-subscribe a,b --allow-publish a,b) [--role r] [--label l] [--parent <owner.actor>] [--space <s>]" },
-      { name: "revoke", flagNames: ["space", "sub", "owner"], summary: "revoke an actor's ledger row", usage: "cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--space <s>]" },
-      { name: "label", flagNames: ["space", "sub", "owner"], summary: "change only an interactive row's display label, keeping its lifecycle", usage: "cotal actor label <actor> (--sub <IdP subject> | --owner <u_…>) <label> [--space <s>]" },
-      { name: "list", flagNames: ["space", "sub"], summary: "list the space's actor ledger, or one IdP subject's rows", usage: "cotal actor list [--sub <IdP subject>] [--space <s>]" },
+      { name: "grant", flagNames: ["space", "sub", "owner", "full", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent"], summary: "store an actor's whole ledger row: name all three ACL flags, or --full for the wide defaults", usage: "cotal actor grant <actor> (--sub <IdP subject> | --owner <u_…>) (--full | --scope a,b --allow-subscribe a,b --allow-publish a,b) [--role r] [--label l] [--parent <owner.actor>] [--space <s>]", outputs: ["json", "plain"] },
+      { name: "revoke", flagNames: ["space", "sub", "owner"], summary: "revoke an actor's ledger row", usage: "cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--space <s>]", outputs: ["json", "plain"] },
+      { name: "label", flagNames: ["space", "sub", "owner"], summary: "change only an interactive row's display label, keeping its lifecycle", usage: "cotal actor label <actor> (--sub <IdP subject> | --owner <u_…>) <label> [--space <s>]", outputs: ["json", "plain"] },
+      { name: "list", flagNames: ["space", "sub"], summary: "list the space's actor ledger, or one IdP subject's rows", usage: "cotal actor list [--sub <IdP subject>] [--space <s>]", outputs: ["json", "plain"] },
     ],
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the resolved mesh, as for auth grants)" },

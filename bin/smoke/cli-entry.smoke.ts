@@ -267,6 +267,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     envelopes(bogus).length === 1 && refusal?.outcome === "refused" && refusal.result === null && refusal.error?.code === "USAGE_INVALID" && refusal.error.remedy === "run `cotal help version`",
     shown(bogus),
   );
+  // A subcommand's JSON is what it declares, so each actor subcommand declares it too.
+  for (const argv of [["actor", "revoke", "bot1", "--sub", "s", "--yes"], ["actor", "list", "--bogus"], ["actor", "grant", "bot1", "--sub", "s", "--full", "--bogus"], ["actor", "label", "bot1", "x", "--sub", "s", "--bogus"]]) {
+    const r = cotal([...argv, "--json"], undefined, noSeed);
+    refusedJson(`cotal ${argv.join(" ")} --json is refused`, r, /^Unknown option '--(yes|bogus)'$/);
+    check(`  as one USAGE_INVALID envelope`, envelopes(r).length === 1 && envelopes(r)[0]?.error?.code === "USAGE_INVALID", shown(r));
+  }
   const extra = cotal(["version", "-j", "extra"]);
   refusedJson("an unexpected argument under -j is refused", extra, /Unexpected argument 'extra'/);
   check("an unexpected argument under -j is a USAGE_INVALID envelope", envelopes(extra)[0]?.error?.code === "USAGE_INVALID", shown(extra));

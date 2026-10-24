@@ -5956,7 +5956,8 @@ Otherwise a usage error refuses with exit 1 before any authority is read, and on
 missing input: `--sub` or `--owner`, and for `grant` the ACL flags left off without `--full`. An
 input that is not valid refuses the same way, naming each field and why: the actor, `--owner`,
 `--role`, `--parent`, a channel pattern, or a `--scope` name other than `admin`, `run`, `spawn`,
-`supervise` and `role:<r>`. Nothing is written.
+`supervise` and `role:<r>`. Nothing is written. A channel needs no creation, so a grant may name one
+that has no message or registry entry yet.
 `grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
 `grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
 refused and writes nothing. A re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
@@ -5973,7 +5974,8 @@ action. `revoke` uses the same retirement before deleting the row, which lets a 
 real successor instead of colliding with a live predecessor. `supervise` is separate from `spawn` and `admin`: it only makes a signed-in
 person eligible for the host-provided closed remote manager-service view; it does not grant
 management of another owner or a general host profile. `revoke` denies the next exchange and
-the next connect with no restart, and evicts the principal's live connections. It reports
+the next connect with no restart, and evicts the principal's live connections. It asks nothing and
+takes no `--yes`, because a later grant gives the actor access again under a new lifecycle. It reports
 `verified gone` only when the delivery daemon's eviction result names the principal and shows a
 complete scan with no connection left; any other result prints `live-connection eviction INCOMPLETE`
 with its counts, or with the reason the result was not accepted. Managed-agent rows
