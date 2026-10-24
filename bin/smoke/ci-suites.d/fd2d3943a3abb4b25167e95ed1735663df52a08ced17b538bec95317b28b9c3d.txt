@@ -1,0 +1,2 @@
+# Retirement failure diagnostics follow the exact lifecycle's current name hold.
+smoke:retirement-copy

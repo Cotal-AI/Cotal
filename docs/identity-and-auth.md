@@ -464,6 +464,12 @@ same-name `cotal spawn` re-drives the whole teardown** and finishes it. Retrying
 effect because the agent is already stopped. The operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
 
+A failed spawn can leave a provisioned lifecycle that never became a managed agent. Its rollback
+also requests retirement. When that lifecycle has no name hold, an unconfirmed or refused retirement
+is reported under `retire <name>:` with its lifecycle UID and the absence of a hold. A new spawn
+under that name starts a fresh lifecycle; it does not retry the orphan's retirement. A hold belonging
+to another lifecycle is left unchanged.
+
 **A crash mid-retirement resumes at the next boot.** The retirement's last two steps (recording the
 issuance gate terminal, then the lifecycle head terminal) are separate durable writes, and a crash
 between them leaves the gate retired while the head is still `retiring`: an alias that can neither
