@@ -6,7 +6,8 @@
  * requires exit 130 with the native stop recorded on the instance.
  *
  * Bare `cotal down` on that legacy root then stops the saved service through the service controller
- * before the broker: its dry run lists the running manager and changes nothing, an unreadable
+ * before the broker: its dry run lists the running manager and changes nothing, `down
+ * --preserve-state` refuses and names the running manager and its stop, an unreadable
  * service record refuses with the manager and broker still running, a real stop takes the manager
  * then the broker, and after a second `up` the stopped manager is skipped and its definition kept.
  *
@@ -174,6 +175,11 @@ try {
     check("bare down --dry-run lists the running service it would stop and changes nothing",
       preview.status === 4 && stops.length === 1 && stops[0]?.definition === "mgr" && stops[0].instanceId === live?.name && stops[0].action === "stop"
         && liveState() === "running" && await isReachable(SERVER), out(preview));
+    const preserve = cotal(["down", "--preserve-state"]);
+    check("down --preserve-state refuses while the service runs, names it and its stop, and stops nothing",
+      preserve.status === 2 && out(preserve).includes("LIFECYCLE_BLOCKED") && out(preserve).includes(`mgr instance ${live?.name}: running`)
+        && out(preserve).includes(`cotal service stop mgr --instance ${live?.name} --space ${SPACE} --yes`)
+        && liveState() === "running" && await isReachable(SERVER), out(preserve));
     planted = join(serviceInstanceStore(SPACE).directory()!, `${spaceKey("planted")}.json`);
     writeFileSync(planted, "not a record\n", { mode: 0o600 });
     const blocked = cotal(["down"]);

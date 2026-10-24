@@ -21,7 +21,7 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { hardenPrivate } from "@cotal-ai/core";
+import { hardenPrivate, wfjStreamName } from "@cotal-ai/core";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
 export const MAINTENANCE_JOURNAL_VERSION = 1 as const;
@@ -4064,8 +4064,18 @@ export function rollbackRestore(lock: MaintenanceLock, options: RollbackRestoreO
   return writeJournal(lock, record, readyFrom(record)) as MaintenanceReadyRecord;
 }
 
-/** Delete the old store a healthy active restore set aside, then retire its journal. A registry
- *  restore left every other stream out, so its old store holds the only copy of that history and is
+/** What a restore left only in the store it set aside. A registry restore left out every other
+ *  stream, and a full restore whose launch names no workflow journal, of a user-mode artifact or one
+ *  made before full backups held runs, left out the workflow runs. Undefined when it left out
+ *  neither. */
+export function restoreLeftOut(record: { readonly space: string; readonly restore: Pick<RestoreContext, "selection">; readonly launch?: { readonly [key: string]: JsonValue } }): "chat and DM history and workflow runs" | "workflow runs" | undefined {
+  if (record.restore.selection === "registry") return "chat and DM history and workflow runs";
+  const restored = record.launch?.restoredStreams;
+  return Array.isArray(restored) && restored.includes(wfjStreamName(record.space)) ? undefined : "workflow runs";
+}
+
+/** Delete the old store a healthy active restore set aside, then retire its journal. When the
+ *  restore left something out ({@link restoreLeftOut}), that store holds its only copy and is
  *  deleted only with `discardHistory`. */
 export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string, options: { readonly discardHistory?: boolean } = {}): RestoreActiveRecord {
   let record = currentJournal(lock);
@@ -4092,8 +4102,9 @@ export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string,
     });
   if (record.restore.cleanup?.status === "complete") return retireCleanedRestore(lock, record);
   // A cleanup already under way had this consent when it started.
-  if (!record.restore.cleanup && record.restore.selection === "registry" && !options.discardHistory)
-    maintenanceError("cleanup-forbidden", "a registry restore's old source holds the only copy of the history it left out", {
+  const leftOut = restoreLeftOut(record);
+  if (!record.restore.cleanup && leftOut && !options.discardHistory)
+    maintenanceError("cleanup-forbidden", `the restore's old source holds the only copy of the ${leftOut} it left out`, {
       root: lock.root, attemptId, paths: [previous.identity.path],
       recourse: [{ action: "cleanup", description: "Keep the old source, or repeat the cleanup with explicit consent to discard that history.", paths: [previous.identity.path] }],
     });

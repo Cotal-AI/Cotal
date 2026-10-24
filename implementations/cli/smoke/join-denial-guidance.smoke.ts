@@ -114,6 +114,8 @@ try {
   // CELL 1: the denial is still a single human sentence, not a raw stack.
   check("CELL: a denied join renders as guidance, not a raw broker stack",
     /not authorized to join/.test(out) && !/at Object\.|at process\./.test(out), out);
+  check("CELL: the denial is a classified refusal: PERMISSION_DENIED, exit 2",
+    denied.status === 2 && /Code: +PERMISSION_DENIED/.test(out), { status: denied.status, out });
 
   // CELL 2: THE FIX. The delivery daemon is named as a possible cause.
   check("CELL: the denial NAMES the delivery daemon as a possible cause",
@@ -158,7 +160,7 @@ try {
   writeFileSync(unprovisioned, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: unprovisionedUid }), { mode: 0o600 });
   const bare = cli("join", "--space", SPACE, "--server", server, "--creds", unprovisioned, "--lifecycle-uid", unprovisionedUid, "--name", "probe");
   check("CELL: a --creds join with no inbox for its lifecycle names that lifecycle and the provisioning mint, not cotal up",
-    bare.status === 1 && bare.text.includes(`no inbox provisioned for this credential's lifecycle ${unprovisionedUid}`) &&
+    bare.status === 2 && /Code: +TARGET_NOT_FOUND/.test(bare.text) && bare.text.includes(`no inbox provisioned for this credential's lifecycle ${unprovisionedUid}`) &&
       bare.text.includes("cotal auth mint <name> --provision") && !/run cotal up/.test(bare.text), bare.text);
 
   console.log(fail === 0

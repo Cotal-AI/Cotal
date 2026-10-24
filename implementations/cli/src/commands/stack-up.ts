@@ -15,9 +15,39 @@ import { join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MEMBERSHIP_MAX_BYTES, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getCurrent, getSpaceAuth, hasUserAuthState,
-  homeCotalDir, isCommandFailure, loadMeshes, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
-  rotateSystemCreds, SPACE_NAME_MAX, spaceNameTooLong, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
+  CommandFailure,
+  accountInventory,
+  authDir,
+  canonicalRoot,
+  deliveryCredsKey,
+  findMesh,
+  findPreparedSpace,
+  getCurrent,
+  getSpaceAuth,
+  hasUserAuthState,
+  homeCotalDir,
+  isCommandFailure,
+  loadMeshes,
+  localMeshesForRoot,
+  presentationOf,
+  readMaintenanceJournal,
+  renderReport,
+  resolveNativeServiceTarget,
+  resolveOnPath,
+  rotateSystemCreds,
+  SPACE_NAME_MAX,
+  spaceNameTooLong,
+  stackHomeRemedy,
+  stackRunsUnderOtherHome,
+  terminalWidth,
+  workspaceSecretStore,
+  writeResult,
+  type MaintenanceLock,
+  type OutputWarning,
+  type Report,
+  type ServiceDefinitionInput,
+  type UserAuthInfo,
+  unparsableDaemonCreds,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
@@ -303,6 +333,14 @@ function membersView(journal: StackJournal, title: string, executable?: NatsServ
   ] }] };
 }
 
+/** The warning a start gives for daemon credentials the NATS client cannot parse. `up` mints only a
+ *  missing one and the manager re-signs only one that holds its key, so it names the step that
+ *  replaces it. */
+export function unparsableDaemonCredsNotice(kinds: readonly string[]): string {
+  const them = kinds.length === 1 ? "it" : "them";
+  return `${kinds.join(" and ")} cannot be parsed, so the delivery daemon runs without ${them} and the manager cannot re-sign ${them}; stop the stack with \`cotal down\`, then run \`cotal doctor auth --fix\`, which mints ${them} again`;
+}
+
 /** The listeners the stack's running broker and manager opened, from their saved definitions. Null
  *  when the broker's configuration could not be read, so no list is given rather than a short one. */
 function stackListeners(journal: StackJournal): StackListener[] | null {
@@ -351,6 +389,10 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     if (persona) written.push(persona);
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
+  }
+  if (mode !== "open") {
+    const unparsable = await unparsableDaemonCreds(root, space);
+    if (unparsable.length) warnings.push({ code: "DAEMON_CREDENTIAL_UNPARSABLE", target: { root, space, credentials: unparsable }, message: unparsableDaemonCredsNotice(unparsable) });
   }
   writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);

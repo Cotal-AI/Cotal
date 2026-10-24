@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -267,6 +267,7 @@ export interface StatusResult {
       origin: MeshEntry["origin"] | null;
       tlsRequired: boolean;
       eventsRequired: boolean;
+      modeChecked: boolean;
       current: boolean;
       check: "reachable" | "unreachable" | "not-checked";
       catalog: { name: string | null; fetchedAt: string | null; error: string | null } | null;
@@ -366,6 +367,12 @@ export async function status(args: ParsedArgs): Promise<void> {
   const selected = resolveSelected(cwd, values);
   const gaps = new Gaps();
   const hints: string[] = [];
+  // A folder this account cannot read hides everything in it, so that is the one gap reported for it.
+  const blocked = folderReadProblem(root);
+  if (blocked) {
+    gaps.add("FOLDER_UNREADABLE", `this folder ${root} cannot be read by this account (${blocked}), so nothing in it was read`, { root });
+    hints.push(`make it readable by you, for example with chmod u+rx ${root}`);
+  }
   // Every command warns about a preferences folder another account could write; status also lists its fix.
   const preferencesFolder = preferencesFolderWarning();
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
@@ -375,12 +382,12 @@ export async function status(args: ParsedArgs): Promise<void> {
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
   const responder = await readResponderAxis(selected);
-  const folder = await readFolder(root, selected, values, responder.state, gaps, hints);
+  const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(selected, Boolean(values.all), gaps);
   const target = await readSelected(selected, responder, gaps, hints);
   const services = readOwnedServices(selected, gaps);
-  const bootAttempts = readBootAttempts(root, gaps);
-  const maintenance = readMaintenance(root, gaps);
+  const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
+  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
   const store = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
   const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
@@ -405,6 +412,21 @@ export async function status(args: ParsedArgs): Promise<void> {
     (result) => statusView(result, Boolean(values.verbose)),
   );
   if (values.components) await printComponentHealth(cwd, values);
+}
+
+/** Why this account cannot list or search `root`, or undefined when it can. */
+function folderReadProblem(root: string): string | undefined {
+  try { accessSync(root, constants.R_OK | constants.X_OK); return undefined; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EACCES" || code === "EPERM" ? code : undefined;
+  }
+}
+
+/** The folder section for a folder this account cannot read: every part of it is unread. */
+function unreadFolder(root: string, code: string): StatusResult["folder"] {
+  const error = `${root} cannot be read by this account (${code})`;
+  return { root, auth: { state: "unreadable", spaces: [], userAuth: false, error }, personas: { root: personaDir(root), default: "unreadable", demo: null, error }, launches: null, processes: null, processSpace: null, storedState: false, controllerStack: false, noManager: false, stackBlock: null };
 }
 
 /** The folder's maintenance journal, read only. An unreadable one is reported, never taken for none. */
@@ -980,6 +1002,7 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
       origin: m.origin ?? null,
       tlsRequired: Boolean(m.tlsRequired),
       eventsRequired: m.policy?.events === "required",
+      modeChecked: m.unchecked !== true,
       current: m.space === current,
       check: all || m.space === chosen ? ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? "reachable" as const : "unreachable" as const) : "not-checked" as const,
       catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
@@ -1021,6 +1044,14 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       gaps.add("MESH_REGISTRY_UNREADABLE", e.message, { file: e.file });
       hints.push(e.message);
       return { resolved: false, code: "registry-unreadable", message: e.message };
+    }
+    // `up` and `down` refuse a root whose `.cotal` is a link, so the step that would start it there is
+    // the one their refusal names.
+    const unstarted = e instanceof UnregisteredRoot ? e.root : isWorkspaceTargetError(e) && e.code === "not-started" ? e.details.root : undefined;
+    const link = unstarted === undefined ? undefined : cotalDirLink(unstarted);
+    if (unstarted !== undefined && link !== undefined) {
+      hints.push(linkedCotalRemedy(unstarted, link));
+      return { resolved: false, code: e instanceof UnregisteredRoot ? "unregistered-root" : "not-started", message: `${join(unstarted, ".cotal")} is a link to ${link}, and a stack runs only from a folder whose .cotal is its own directory, so \`${cmd} up\` and \`${cmd} down\` refuse it there` };
     }
     if (e instanceof UnregisteredRoot) {
       const message = `no space is registered or prepared here for ${e.root}`;
@@ -1465,7 +1496,7 @@ function brokerOverview(r: StatusResult): Section {
       columns: [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Details" }],
       rows: entries.map((entry) => {
         const selected = r.selected.resolved && entry.space === r.selected.space;
-        const detail = [entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open", entry.origin === "catalog" ? "saved catalog entry" : entry.origin === "manual" ? "registered endpoint" : "local registration", entry.tlsRequired ? "TLS required" : "", entry.catalog?.error ? "catalog refresh failed" : ""].filter(Boolean).join(" · ");
+        const detail = [`${entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open"}${entry.modeChecked ? "" : ", not checked"}`, entry.origin === "catalog" ? "saved catalog entry" : entry.origin === "manual" ? "registered endpoint" : "local registration", entry.tlsRequired ? "TLS required" : "", entry.catalog?.error ? "catalog refresh failed" : ""].filter(Boolean).join(" · ");
         return {
           space: selected ? cell(`→ ${entry.space}`, "selected") : entry.space,
           state: selected && r.selected.resolved ? connectionCell(r.selected) : entry.check === "not-checked" ? stateCell("not checked", "hint") : stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed"),
@@ -1614,7 +1645,7 @@ function ownedServicesOverview(services: OwnedServiceStatus | undefined): Sectio
   if (services.instances?.length) blocks.push({ kind: "table", columns: [{ key: "service", label: "Service" }, { key: "instance", label: "Full instance" }, { key: "host", label: "Execution host" }, { key: "process", label: "Process observation" }, { key: "readiness", label: "Recorded readiness" }, { key: "supervisor", label: "Supervisor record" }], rows: services.instances.slice(0, 100).map((row) => ({
     service: row.definition, instance: row.instanceId, host: row.executionHost,
     process: stateCell(row.observedProcess.replaceAll("-", " "), row.observedProcess === "running" ? "ok" : row.observedProcess === "unreadable" || row.observedProcess === "unresolved-launch" || row.observedProcess === "foreign-host" ? "waiting" : "hint"),
-    readiness: cell(`${row.readinessObservation.replaceAll("-", " ")} · ${row.readinessAsOf}`, "hint"),
+    readiness: cell(`${row.startInterrupted ? "start interrupted" : row.readinessObservation.replaceAll("-", " ")} · ${row.readinessAsOf}`, "hint"),
     supervisor: row.supervisorRecord.mechanism === "none-recorded" ? "not assigned here" : `${row.supervisorRecord.mechanism} · ${row.supervisorRecord.fileObservation}; OS state not checked`,
   })) });
   if (services.instances && services.instances.length > 100) blocks.push({ kind: "lines", lines: [cell(`${services.instances.length - 100} instance rows omitted; --json retains the complete readable inventory.`, "hint")] });

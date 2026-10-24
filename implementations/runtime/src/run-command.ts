@@ -90,6 +90,8 @@ import {
   localStackRoot,
   spaceStreamsAbsent,
   spaceStreamsExpected,
+  connectOrThrow,
+  isConnectRefusal,
 } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
@@ -159,7 +161,7 @@ interface Planes {
  *  it drives; a read or an answer rides a one-shot `run-operator` credential for that call. An
  *  open mesh connects bare either way. */
 async function openPlanes(values: RunValues, role: "run-driver" | "run-operator", mint: NonNullable<ConnectOpts["mint"]>): Promise<Planes> {
-  const conn = await connectOrExit(values, role, { mint });
+  const conn = await connectOrThrow(values, role, { mint });
   const nc = await dialerFor(conn.server)({
     servers: conn.server,
     ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }),
@@ -347,7 +349,7 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     process.exit(1);
   }
   const endpoint = values.endpoint ?? "manager";
-  const conn = await connectOrExit(values, "run-admitter", { mint: { runAdmitter: { endpoint, runId } } });
+  const conn = await connectOrThrow(values, "run-admitter", { mint: { runAdmitter: { endpoint, runId } } });
   refuseSingleCredential(conn);
   if (conn.auth === undefined) {
     console.error("run revoke: an open mesh keeps no admission store, so there is nothing to revoke there");
@@ -646,8 +648,8 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
   const detail = `${e.code}: ${e.message}`;
   const rail = unansweredRail(e);
   if (rail === undefined || rail === "ep")
-    return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
-  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
+    return `the manager registered for this space did not answer on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
+  return `the manager registered for this space did not answer on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
 }
 
 /** The manager's refusal codes that say it acted on nothing. */
@@ -713,10 +715,13 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   const { target: t, seat } = await resolveRunControlTarget(values);
   resolved?.(t.space);
   const who = controlCaller(t.auth);
-  if ("refusal" in who) {
-    console.error(who.refusal);
-    process.exit(1);
-  }
+  // A raw --creds file carries no endpoint-caller triple, and this route cannot mint one. Without
+  // --creds the CLI mints the one-shot caller from the space's trust or the signed-in login.
+  if ("refusal" in who)
+    throw new CommandFailure("refused", "UNSUPPORTED", "a hosted run command cannot use a raw --creds file: it carries no endpoint-caller triple (owner, actor, lifecycle uid), and this route cannot mint one; nothing was sent", {
+      target: { space: t.space },
+      remedy: "run it again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
+    });
   const auth: ControlAuth = t.auth;
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
@@ -821,7 +826,7 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string): Prom
 async function resolveRunControlTarget(values: RunValues): Promise<{ target: ControlTarget; seat: boolean }> {
   const on = values.on;
   const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
-  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
+  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on, { onRefusal: "throw" });
   recordOperationSpace(target.space);
   const resolved = { target, seat: target === seat };
   if (on === undefined) return resolved;
@@ -934,6 +939,16 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;
  *  `--local` drives in this process over one connection per invocation. */
 export async function runWorkflow(args: ParsedArgs): Promise<void> {
+  // A mesh the verb cannot resolve or connect to is refused under the refusal's own code, before
+  // any request.
+  try {
+    await workflow(args);
+  } catch (e) {
+    throw isConnectRefusal(e) ? e.failure() : e;
+  }
+}
+
+async function workflow(args: ParsedArgs): Promise<void> {
   const { values, verb, a, b } = workflowArguments(args);
   if (verb === "validate" || verb === "plan" || verb === "simulate") return offlineWorkflow(verb, a!, values);
   if (verb === "turns" || verb === "yield") return seatTurnCommand(verb, a, values);

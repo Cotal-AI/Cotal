@@ -287,6 +287,17 @@ accepts(
   'const a = await spawn("x");\nawait monitor(a);\nawait parallel({ one: () => turn(a, { name: "b" }) }, { name: "p" });',
 );
 
+// ---- 5d') `once` admits only `ask`, and the validator refuses any other effect it can see (L2033) --
+
+// Every step under `once` is at-most-once and only an `ask` can be held on resume, so the run refuses
+// anything else with L4028; these passed validate and a hosted start, then failed every run.
+rejects("a sleep inside once is refused before the run", "L2033", 'const r = await once(async () => {\n  await sleep("1s")\n  return 1\n}, { name: "nap-once" });\nlog("r", r);');
+rejects("and so is one in a helper the body calls by name", "L2033", 'async function nap() {\n  await sleep("1s")\n}\nconst r = await once(async () => {\n  await nap()\n  return 1\n}, { name: "nap-once" });\nlog("r", r);');
+rejects("a checkpoint inside once is refused", "L2033", 'const r = await once(async () => await checkpoint("go", "Go?"), { name: "o" });\nlog("r", r);');
+rejects("an effect in a scope nested in once is refused", "L2033", 'const a = await spawn("x");\nconst r = await once(async () => await parallel({ t: () => turn(a, { name: "t" }) }, { name: "p" }), { name: "o" });\nlog("r", r);');
+accepts("an ask inside once is admitted", 'const a = await spawn("one");\nconst r = await once(async () => await ask(a, { name: "publish", schema: { commentId: "number" } }), { name: "publish-360" });\nlog(r.commentId);');
+accepts("a helper with a sleep is fine where once does not call it", 'async function nap() {\n  await sleep("1s")\n}\nawait nap();\nconst a = await spawn("one");\nconst r = await once(async () => await ask(a, { name: "q", schema: { n: "number" } }), { name: "o" });\nlog(r.n);');
+
 // ---- 5e) a branch may not write a binding it captured (L2032) ---------------------------------
 
 // This is the program that was found by EXECUTING rather than by reading, and it is the

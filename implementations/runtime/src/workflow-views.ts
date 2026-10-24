@@ -45,6 +45,16 @@ function answerRow(step: string, record: string, answer: AnswerFacts, artifacts:
   };
 }
 
+/** Whom an open checkpoint escalates to, and once it has, until when its escalation stays open. A
+ *  `to` comes only with `onExpiry: "escalate"`, and the escalation's attempt is armed with `proceed`
+ *  so it never hops again, so the recorded `onExpiry` says which attempt is open. */
+function escalation(row: StepRow): string {
+  if (row.addressee === undefined) return "";
+  if (row.onExpiry === "escalate") return `to ${row.addressee} if it expires`;
+  if (row.onExpiry === undefined) return `to ${row.addressee}`;
+  return `escalated to ${row.addressee}${row.deadlineAt === undefined ? "" : `, open until ${new Date(row.deadlineAt).toISOString()}`}`;
+}
+
 export function printRunDetail(space: string, view: RunStatusView, values: OutputValues): void {
   const shown = view.journal.slice(-(values.limit === undefined ? 20 : Number(values.limit)));
   // A step's rows run from pending to settled, so only its last row says whether it is still open
@@ -77,7 +87,7 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
       ["Journal rows", String(view.journal.length)]] }] },
     // A revoked run's open requests stay listed, because the pauses are still open, but they take
     // no answer, so the view says that and offers no answer command.
-    ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }], rows: needsAnswer.map((row) => ({ step: row.step, asks: row.asks ?? "" })) },
+    ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }, ...(needsAnswer.some((row) => row.addressee !== undefined) ? [{ key: "escalation", label: "Escalation" }] : [])], rows: needsAnswer.map((row) => ({ step: row.step, asks: row.asks ?? "", escalation: escalation(row) })) },
       ...(view.revoked ? [{ kind: "lines" as const, lines: [{ text: "The run's admission is revoked, so these requests take no answer.", tone: "failed" as const }] }] : [])] }] : []),
     ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: ignored ? "The run acted on each answered line. It never read a line marked not acted on, because that step's branch lost a race or was cancelled. Each amended line records a later position, and the last one is current." : "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const },
       ...(cut ? [{ text: `A value longer than ${ANSWER_VALUE_SHOWN} characters is cut here; --json carries it whole.`, tone: "hint" as const }] : [])] }] }] : []),
