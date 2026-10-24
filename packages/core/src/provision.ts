@@ -25,6 +25,7 @@ import {
   encodeAccount,
   encodeUser,
   fmtCreds,
+  type Account,
 } from "@nats-io/jwt";
 import { createOperator, createAccount, fromPublic, fromSeed } from "@nats-io/nkeys";
 import type { BrokerTransport } from "./broker-tls.js";
@@ -490,6 +491,27 @@ export async function rotateDataAccountSigningKey(auth: SpaceAuth): Promise<Spac
       signingPub,
     },
   };
+}
+
+/** The user public keys a data-account JWT revokes, each with the Unix second it was revoked at. The
+ *  broker refuses a user JWT for that key issued at or before that second. */
+export function accountRevocations(accountJwt: string): Record<string, number> {
+  return { ...decode<Account>(accountJwt).nats.revocations };
+}
+
+/** Re-issue the data-account JWT with the user key `userPub` revoked at `at` (Unix seconds), keeping
+ *  every other claim. A key already revoked keeps its first time and the auth is returned unchanged.
+ *  The broker applies it when it next loads its configuration. */
+export async function revokeAccountUser(auth: SpaceAuth, userPub: string, at: number): Promise<SpaceAuth> {
+  if (!auth.operator.seed)
+    throw new Error("revokeAccountUser: the broker operator seed is required - a stripped broker cannot re-sign the space account");
+  if (!isUserNkey(userPub)) throw new Error("revokeAccountUser: not a user public key");
+  const claims = decode<Account>(auth.account.jwt);
+  const revocations = claims.nats.revocations ?? {};
+  if (revocations[userPub] !== undefined) return auth;
+  const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
+  const jwt = await encodeAccount(claims.name, auth.account.pub, { ...claims.nats, revocations: { ...revocations, [userPub]: at } }, { signer: okp });
+  return { ...auth, account: { ...auth.account, jwt } };
 }
 
 /** Rotate the SYSTEM account and re-issue the operator JWT so persisted system-account users (currently

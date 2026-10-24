@@ -27,6 +27,9 @@
  *  I. `team boot --dry-run` of another space's manifest in this prepared folder says the folder
  *     belongs to the running space and that the apply needs a folder of its own. In folder `c`,
  *     prepared for no space, it says the folder is not prepared and names `--root .`.
+ *  J. after a clean `down` of folder `s`, `team remove <id>` refuses CONFLICT naming `cotal up` in
+ *     its root and the remove again, a bare `up` starts the stack again with the deployment's records
+ *     as they were, and a removal after one of its cards was edited names that card.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -222,6 +225,20 @@ try {
   const unprepared = cotal(c, "team", "boot", "other.yaml", "--dry-run");
   check("in a folder prepared for no space, the preview says so and names --root . with the space filled in",
     unprepared.status === 0 && /Root source:\s+this folder, not prepared\n/.test(unprepared.stdout) && unprepared.stdout.includes(`the apply refuses until "${OTHER}" is prepared: prepare this folder with cotal space create ${OTHER} --root .`), unprepared.stdout.slice(-900));
+
+  console.log("\nJ. the stack that took a team deploy, after a clean down");
+  const stoppedS = cotal(s, "down", "--yes");
+  const removeStopped = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
+  check("team remove on the stopped stack refuses CONFLICT, naming cotal up in its root and then the remove again",
+    stoppedS.status === 0 && removeStopped?.code === "CONFLICT" && removeStopped.remedy === `no registration names ${SPACE}, as after cotal down; start the stack again with cotal up in ${realpathSync(s)}, which registers it, then run cotal team remove ${deployment} again`, { down: stoppedS.out.slice(-400), removeStopped });
+  const restartedS = cotal(s, "up");
+  const kept = cotal(s, "team", "show", deployment);
+  check("a bare up starts that stack again and keeps the deployment's records as they are",
+    restartedS.status === 0 && /Controller stack started/.test(restartedS.stdout) && /Recorded state:\s+channels created\n/.test(kept.stdout), { up: restartedS.out.slice(-800), kept: kept.out.slice(-800) });
+  const edited = cotal(s, "channel", "set", "live1", "--desc", "Edited by hand.");
+  const removeEdited = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
+  check("team remove after a card was edited refuses CONFLICT naming that card",
+    edited.status === 0 && removeEdited?.code === "CONFLICT" && removeEdited.message === "the card #live1 changed after this deployment created it; changed metadata is not owned and no card was deleted", { edited: edited.out.slice(-400), removeEdited });
 } finally {
   if (bUp) {
     const down = cotal(b, "down", "--yes");

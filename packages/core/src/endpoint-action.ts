@@ -1271,8 +1271,7 @@ export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is not an object; garbled reconcile state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
   assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated", "note"], `goal-index entry ${key}`);
-  if (o.v !== 1 || typeof o.endpoint !== "string" || typeof o.owner !== "string" || typeof o.actor !== "string"
-    || typeof o.uid !== "string" || typeof o.goalId !== "string" || typeof o.iid !== "string")
+  if (o.v !== 1 || ![o.endpoint, o.owner, o.actor, o.uid, o.goalId, o.iid].every((c) => typeof c === "string" && c.length > 0))
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is malformed; garbled reconcile state never authorizes (SPEC 13.6)`);
   if (o.allocated !== undefined) {
     const a = o.allocated as Record<string, unknown>;

@@ -22,6 +22,7 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { hardenPrivate, wfjStreamName } from "@cotal-ai/core";
+import { recordOperationWarning } from "./output.js";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
 export const MAINTENANCE_JOURNAL_VERSION = 1 as const;
@@ -1009,6 +1010,7 @@ export function acquireMaintenanceLock(
     throw error;
   }
 
+  let takenOver: ProcessOwner | undefined;
   try {
     let existing: { token: string; owner: ProcessOwner } | undefined;
     try {
@@ -1036,6 +1038,7 @@ export function acquireMaintenanceLock(
         });
       unlinkSync(paths.lock);
       fsyncDirectory(paths.maintenanceDir);
+      takenOver = existing.owner;
     }
   } finally {
     removeReaper(paths.reaper, reaperToken);
@@ -1052,6 +1055,12 @@ export function acquireMaintenanceLock(
       });
     throw error;
   }
+  // A lock is taken over only from an owner proven dead, and the run that takes it says so.
+  if (takenOver) recordOperationWarning({
+    code: "MAINTENANCE_LOCK_TAKEN_OVER",
+    target: { root: paths.root, path: paths.lock, owner: { pid: takenOver.pid, host: takenOver.host, startedAt: takenOver.startedAt } },
+    message: `took over the maintenance lock in ${paths.root} that process ${takenOver.pid} (started ${takenOver.startedAt}) left; that process is no longer running, so the command it ran there ended without releasing it`,
+  });
   return { root: paths.root, path: paths.lock, token, owner };
 }
 
@@ -4096,6 +4105,27 @@ export function restoreLeftOut(record: LeftOutRecord): "chat and DM history and 
   const runs = Array.isArray(restored) && restored.includes(wfjStreamName(record.space));
   if (restoreReplacedNewerCut(record)) return runs ? "newer chat and DM history and workflow runs" : "workflow runs and newer chat and DM history";
   return runs ? undefined : "workflow runs";
+}
+
+/** A run a restore over a newer cut rolled back: its journal in the store the restore set aside goes
+ *  further than the restored one. `reopened` names each step settled there that is open again, and
+ *  `missing` marks a run that started after the artifact, so the restored store does not hold it. */
+export interface RolledBackRun {
+  readonly run: string;
+  readonly reopened: readonly string[];
+  readonly missing?: true;
+}
+
+/** The runs a restore's launch records it rolled back, and how many more it counted than it listed.
+ *  Empty when it recorded none. */
+export function restoreRolledBackRuns(record: LeftOutRecord): { readonly runs: readonly RolledBackRun[]; readonly more: number } {
+  const recorded = record.launch?.rolledBackRuns, more = record.launch?.rolledBackRunsMore;
+  const runs = Array.isArray(recorded) ? recorded.flatMap((row): RolledBackRun[] => {
+    const value = row as { run?: unknown; reopened?: unknown; missing?: unknown };
+    if (!value || typeof value !== "object" || typeof value.run !== "string" || !Array.isArray(value.reopened) || !value.reopened.every((key) => typeof key === "string")) return [];
+    return [{ run: value.run, reopened: value.reopened as string[], ...(value.missing === true ? { missing: true as const } : {}) }];
+  }) : [];
+  return { runs, more: typeof more === "number" && Number.isSafeInteger(more) && more > 0 ? more : 0 };
 }
 
 /** Why a restore left something only in the store it set aside ({@link restoreLeftOut}), as a clause

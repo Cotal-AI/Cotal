@@ -7,6 +7,7 @@
  */
 import { registry, type Command, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type Cell, type Report } from "@cotal-ai/workspace";
+import type { Block, Presentation, Section } from "@cotal-ai/workspace";
 
 const searchFlag = { name: "search", type: "string", value: "<query>", description: "show the sections that best match a query" } as const;
 const refreshFlag = { name: "refresh", type: "boolean", description: "also try the version-pinned copy of the page on docs.cotal.ai" } as const;
@@ -57,7 +58,7 @@ async function docs(args: ParsedArgs): Promise<void> {
       throw usage(`no docs page "${page}"; pages: ${pageSlugs(d).join(", ")}`);
     }
     const result: DocsPageResult = { kind: "docs-page", version: read.version, slug: read.page.slug, title: read.page.title, source: read.source, refresh: read.refresh, body: read.page.body };
-    writeResult(presentation, { command: "docs", target: null, result }, pageView);
+    writeResult(presentation, { command: "docs", target: null, result }, (r) => pageView(r, presentation));
     return;
   }
   if (query !== undefined) {
@@ -70,15 +71,12 @@ async function docs(args: ParsedArgs): Promise<void> {
   writeResult(presentation, { command: "docs", target: null, result }, indexView);
 }
 
-/** A page's category, the leading words of its kind ("Concept (informative)", "Reference: ..."). */
-const category = (kind: string): string => kind.match(/^[^:(]+/)?.[0].trim() || kind;
-
 function indexView(r: DocsIndexResult): Report {
   const columns = [{ key: "slug", label: "PAGE" }, { key: "title", label: "TITLE" }];
   const table = (pages: readonly { slug: string; title: string }[]) =>
     ({ kind: "table" as const, columns, rows: pages.map((p) => ({ slug: { text: p.slug, tone: "command" as const }, title: p.title })) });
   const groups = new Map<string, DocsIndexResult["pages"][number][]>();
-  for (const p of r.pages) groups.set(category(p.kind), [...(groups.get(category(p.kind)) ?? []), p]);
+  for (const p of r.pages) groups.set(p.category, [...(groups.get(p.category) ?? []), p]);
   return {
     sections: [
       { title: `Cotal v${r.version} documentation`, blocks: [{ kind: "lines", lines: [{ text: "Bundled with this installed version and readable offline.", tone: "hint" }] }] },
@@ -89,12 +87,76 @@ function indexView(r: DocsIndexResult): Report {
   };
 }
 
-function pageView(r: DocsPageResult): Report {
+/** A page drawn for reading on a terminal. To a pipe or a file, and with `--plain`, it is its
+ *  Markdown, since output there is never wrapped. */
+function pageView(r: DocsPageResult, presentation: Presentation): Report {
   const note: Cell =
     r.refresh === null ? { text: `bundled v${r.version}`, tone: "hint" }
     : r.refresh === "served" ? { text: `refreshed from docs.cotal.ai: the version-pinned copy for v${r.version}`, tone: "hint" }
     : { text: `bundled v${r.version}: docs.cotal.ai ${r.refresh === "unreachable" ? "did not answer" : `has no version-pinned copy for v${r.version}`}`, tone: "waiting" };
-  return { sections: [{ blocks: [{ kind: "lines", lines: [note] }] }, { blocks: [{ kind: "lines", lines: r.body.split("\n") }] }] };
+  const body: Section[] = presentation === "plain" || !process.stdout.isTTY ? [{ blocks: [{ kind: "lines", lines: r.body.split("\n") }] }] : drawnPage(r.body);
+  return { sections: [{ blocks: [{ kind: "lines", lines: [note] }] }, ...body] };
+}
+
+/** Markdown inline text as read in a terminal: a link is its text, with the address when it leaves
+ *  the docs, and bold markers are dropped. Code keeps its backticks. */
+const inline = (text: string): string =>
+  text.replace(/!?\[([^\]]*)\]\(([^)\s]*)\)/g, (_, label: string, url: string) => (/^https?:/.test(url) ? `${label} <${url}>` : label)).replace(/\*\*/g, "");
+
+/** A table row's cells; a `\|` inside a cell is a pipe, not a column break. */
+const cellsOf = (row: string): string[] => row.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((cell) => inline(cell.trim().replace(/\\\|/g, "|")));
+
+/** A table starts at a row whose next line is the header rule. */
+const startsTable = (line: string, next = ""): boolean => line.trim().startsWith("|") && /^\s*\|[\s:|-]+\|?\s*$/.test(next);
+
+/** Whether a line starts a block of its own: a heading, a fence, a table, a list item or a quote. */
+const startsBlock = (line: string, next = ""): boolean =>
+  /^#{1,6} /.test(line) || /^\s*(```|~~~)/.test(line) || startsTable(line, next) || /^\s*([-*+]|\d+[.)]) /.test(line) || line.startsWith(">");
+
+/**
+ * A Markdown page as report sections, so the report fits it to the terminal. Each heading starts a
+ * section. A paragraph, list item or quote is one line the report wraps. A table is a table, which
+ * becomes one record per row when the terminal is too narrow for its columns. A code block keeps its
+ * lines. A blank line in the page is kept between blocks, so a list stays together.
+ */
+function drawnPage(body: string): Section[] {
+  const sections: { title?: string; blocks: Block[] }[] = [{ blocks: [] }];
+  const lines = body.split("\n");
+  let gap = false;
+  const add = (block: Block) => {
+    const blocks = sections.at(-1)!.blocks;
+    if (gap && blocks.length) blocks.push({ kind: "lines", lines: [""] });
+    blocks.push(block);
+    gap = false;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const heading = /^#{1,6} +(.*)$/.exec(line);
+    const fence = /^\s*(```|~~~)/.exec(line);
+    if (!line.trim()) gap = true;
+    else if (heading) { sections.push({ title: inline(heading[1]!.trim()), blocks: [] }); gap = false; }
+    else if (fence) {
+      const code: string[] = [];
+      while (++i < lines.length && !lines[i]!.trimStart().startsWith(fence[1]!)) code.push(`  ${lines[i]}`);
+      add({ kind: "lines", lines: code.length ? code : [""] });
+    } else if (startsTable(line, lines[i + 1])) {
+      const columns = cellsOf(line).map((label, c) => ({ key: String(c), label }));
+      const rows: Record<string, Cell>[] = [];
+      for (i += 2; i < lines.length && lines[i]!.trim().startsWith("|"); i++) rows.push(Object.fromEntries(cellsOf(lines[i]!).map((cell, c) => [String(c), cell])));
+      i--;
+      add({ kind: "table", columns, rows });
+    } else if (line.startsWith(">")) {
+      const parts = [line];
+      while (lines[i + 1]?.startsWith(">")) parts.push(lines[++i]!);
+      add({ kind: "lines", lines: [{ text: inline(parts.map((part) => part.replace(/^>\s?/, "").trim()).join(" ")), tone: "hint" }] });
+    } else {
+      // A paragraph or list item runs to a blank line or the next block.
+      const parts = [line.trimEnd()];
+      while (lines[i + 1]?.trim() && !startsBlock(lines[i + 1]!, lines[i + 2])) parts.push(lines[++i]!.trim());
+      add({ kind: "lines", lines: [inline(parts.join(" "))] });
+    }
+  }
+  return sections.filter((section) => section.title !== undefined || section.blocks.length);
 }
 
 function searchView(r: DocsSearchResult): Report {

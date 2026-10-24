@@ -16,6 +16,9 @@
  * the connector's resolution, which lives here and is imported by relative specifier, so the bytes
  * graded are this package's source.
  *
+ * The same seam refuses a COTAL_SERVERS with a user name or password: the client keeps only the
+ * host and port, so the session would fail authorization or print them in a not-connected line.
+ *
  * Run: pnpm smoke:session-channels   (pure config resolution; no broker, no network)
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -62,6 +65,23 @@ check("the launcher's COTAL_SUBSCRIBE beats the persona file", eq(fromEnv.subscr
 
 const fromLink = configFromEnv({ COTAL_NAME: "p", COTAL_LINK: "cotal://tok@127.0.0.1:4222/demo?channel=lobby" });
 check("a join link still supplies the channel it carries", eq(fromLink.subscribe, ["lobby"]), fromLink.subscribe);
+
+const refusal = (env: Record<string, string>): string => {
+  try {
+    configFromEnv({ COTAL_NAME: "p", ...env });
+    return "";
+  } catch (e) {
+    return (e as Error).message;
+  }
+};
+const named = /^COTAL config: COTAL_SERVERS must not embed credentials; name the broker URL without user:password@, and pass the credential in COTAL_CREDS, COTAL_TOKEN or a COTAL_LINK$/;
+for (const [label, servers] of [["a nats:// URL", "nats://u:pw0rdX@127.0.0.1:4222"], ["a URL with no scheme", "u:pw0rdX@127.0.0.1:4222"], ["one URL of a list", "nats://127.0.0.1:1,tls://u:pw0rdX@127.0.0.1:4222"]]) {
+  const message = refusal({ COTAL_SERVERS: servers });
+  check(`COTAL_SERVERS with a user and password in ${label} is refused, naming the variable and not its value`, named.test(message) && !message.includes("pw0rdX"), message);
+}
+check("a COTAL_SERVERS with no user or password still resolves", configFromEnv({ COTAL_NAME: "p", COTAL_SERVERS: "nats://127.0.0.1:4222" }).servers === "nats://127.0.0.1:4222");
+const linked = configFromEnv({ COTAL_NAME: "p", COTAL_LINK: "cotal://u:pw0rdX@127.0.0.1:4222/demo" });
+check("a join link still carries a user and password to the endpoint", linked.user === "u" && linked.pass === "pw0rdX" && linked.servers === "nats://127.0.0.1:4222", linked);
 
 console.log(`\nsession-channels: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

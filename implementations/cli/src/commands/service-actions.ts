@@ -1,7 +1,8 @@
 import * as prompts from "../lib/prompts.js";
 import { lstatSync, readlinkSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, commandFailureReport, failureEnvelope, isCommandFailure, oneLine, presentationOf, protectedLocalDirectory, renderReport, terminalWidth, writeEnvelope, writeResult, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, commandFailureReport, isCommandFailure, oneLine, presentationOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { observeRecordedSupervisor, systemdUserUnitDirectory } from "../lib/service-systemd.js";
 import { observeSystemdAttempt } from "../lib/service-systemd-attempt-read.js";
 import { inspectSystemdInstall } from "../lib/service-systemd-plan.js";
@@ -117,32 +118,21 @@ function previewSystemdUninstall(definition: ServiceDefinitionSnapshot, selected
   ] }] }));
 }
 
-/** A SIGINT or SIGTERM while a background start runs reaches this process and not the detached
- *  service, which keeps running with its start unsettled. Report the instance it left and the
- *  commands that finish it, then exit as the signal would. Returns the release. */
-function reportInterruptedStart(name: string, space: string, selected: string | undefined, presentation: Presentation, command: string): () => void {
-  const exit = (signal: "SIGINT" | "SIGTERM"): void => {
-    let left: ServiceInstanceSnapshot | undefined;
-    try {
-      const rows = serviceInstances(space, name);
-      left = rows.find((row) => row.record.value.launcher.pid === process.pid) ?? rows.find((row) => row.name === selected);
-    } catch { left = undefined; }
-    const target = { space, name, instanceId: left?.name ?? null };
-    const observed = left && observeServiceProcess(left.record.value);
-    const failure = !left
-      ? new CommandFailure("failed", "OPERATION_FAILED", `the start of ${name} was interrupted before it launched a process, so nothing was started`, { target, remedy: `run cotal service start ${name} --space ${space} again` })
-      : observed === "running"
-        ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted while it waited for readiness; instance ${left.name} (pid ${left.record.value.process?.pid}) was left running, and this start did not establish its readiness`, { target, remedy: `run cotal service start ${name} --space ${space} to wait for its readiness again, or stop it with cotal service stop ${name} --instance ${left.name} --space ${space} --yes` })
-        : new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted before it confirmed the process of instance ${left.name} (observed: ${observed}); its record is kept`, { target, remedy: `inspect it with cotal service status ${name} --instance ${left.name} --space ${space}` });
-    if (presentation === "json") writeEnvelope(failureEnvelope(command, failure));
-    process.stderr.write(`${renderReport(commandFailureReport(failure), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
-    process.exit(signal === "SIGINT" ? 130 : 143);
-  };
-  const onInterrupt = () => exit("SIGINT");
-  const onTerminate = () => exit("SIGTERM");
-  process.once("SIGINT", onInterrupt);
-  process.once("SIGTERM", onTerminate);
-  return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
+/** What a background start interrupted by SIGINT or SIGTERM left. The signal reaches this process
+ *  and not the detached service, which keeps running with its start unsettled. */
+function interruptedStart(name: string, space: string, selected: string | undefined): CommandFailure {
+  let left: ServiceInstanceSnapshot | undefined;
+  try {
+    const rows = serviceInstances(space, name);
+    left = rows.find((row) => row.record.value.launcher.pid === process.pid) ?? rows.find((row) => row.name === selected);
+  } catch { left = undefined; }
+  const target = { space, name, instanceId: left?.name ?? null };
+  const observed = left && observeServiceProcess(left.record.value);
+  return !left
+    ? new CommandFailure("failed", "OPERATION_FAILED", `the start of ${name} was interrupted before it launched a process, so nothing was started`, { target, remedy: `run cotal service start ${name} --space ${space} again` })
+    : observed === "running"
+      ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted while it waited for readiness; instance ${left.name} (pid ${left.record.value.process?.pid}) was left running, and this start did not establish its readiness`, { target, remedy: `run cotal service start ${name} --space ${space} to wait for its readiness again, or stop it with cotal service stop ${name} --instance ${left.name} --space ${space} --yes` })
+      : new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted before it confirmed the process of instance ${left.name} (observed: ${observed}); its record is kept`, { target, remedy: `inspect it with cotal service status ${name} --instance ${left.name} --space ${space}` });
 }
 
 export async function serviceAction(args: ParsedArgs, space: string, commandName = "service"): Promise<void> {
@@ -343,7 +333,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
       throw new CommandFailure(uncertain ? "unknown" : "partial", uncertain ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", `the original process is gone, but the replacement did not confirm readiness${why}; it was not retried`, { target, changed: [instanceProjection(stopped.instance)], ...(isCommandFailure(error) && error.native ? { native: error.native } : {}), remedy: (isCommandFailure(error) ? error.remedy : undefined) ?? "inspect the retained original instance ID and its latest launch request before another start" });
     } finally { hold.release(); }
   } else {
-    const release = values.foreground ? undefined : reportInterruptedStart(name, space, selected?.name, presentation, commandName);
+    const release = values.foreground ? undefined : reportOnInterrupt(presentation, commandName, () => interruptedStart(name, space, selected?.name));
     try { started = await startProcessService(definition, { ...(id ? { instance: id } : {}), newInstance: values["new-instance"] === true, foreground: values.foreground === true }); }
     finally { release?.(); }
   }

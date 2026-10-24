@@ -41,6 +41,7 @@ import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurren
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
+import { MAX_BUFFER } from "../src/chat/engine.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -498,6 +499,16 @@ try {
     check("a retention gap is a fact about history, not a partial read", gap.envelope?.outcome === "ok" && gap.envelope.completeness === "complete", { outcome: gap.envelope?.outcome, completeness: gap.envelope?.completeness, warnings: gap.envelope?.warnings });
     const gapPlain = await run(["history", "general", "--space", openSpace, "--limit", "3", "--plain"]);
     check("the report names the gap", new RegExp(`gap: #general holds ${cap} from carol, the per-sender limit, so their older messages there are gone`).test(gapPlain.stdout), gapPlain.stdout);
+    // At the cap a larger --limit does not exist, and a filter finds only what the window read.
+    const [capPlain, fromCarol] = await Promise.all([
+      run(["history", "general", "--space", openSpace, "--limit", "1000", "--plain"]),
+      run(["history", "general", "--space", openSpace, "--limit", "1000", "--from", "carol", "--plain"]),
+    ]);
+    check("at --limit 1000 the report says history reads at most the newest 1000, and names no larger --limit",
+      capPlain.stdout.includes("older retained messages are not shown; history reads at most the newest 1000\n") && !capPlain.stdout.includes("raise --limit"), shown(capPlain));
+    check("below it the report still names the raise", gapPlain.stdout.includes("older retained messages are not shown; raise --limit (up to 1000) to read further back\n"), shown(gapPlain));
+    check("--from with older retained messages says it searched only the messages read",
+      fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
   }
 
   // ── destructive clear accepts no selection or read mode ──────────────────────────────────────
@@ -551,6 +562,10 @@ try {
   // ── channel remove says whether it removed a saved entry, and refuses a name the space lacks ──
   {
     const removedOf = (r: { envelope?: Envelope }) => (r.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
+    // The card names the inbox bound a chat session's replay keeps, from the constant that sets it.
+    const [onCard, offCard] = await Promise.all(["general", "ops"].map((channel) => run(["channel", "show", channel, "--space", space, "--plain"])));
+    check(`channel show names the newest ${MAX_BUFFER} a chat session replays, and only when replay is on`,
+      onCard.status === 0 && new RegExp(`^\\s+Chat replay:\\s+the newest ${MAX_BUFFER} messages in the window$`, "m").test(onCard.stdout) && offCard.status === 0 && !offCard.stdout.includes("Chat replay"), { on: shown(onCard), off: shown(offCard) });
     // The receipt used to print the stored values raw: `Replay: false` and `DeliveryClass: durable`.
     const saved = await run(["channel", "set", "general", "--no-replay", "--delivery", "durable", "--space", space, "--plain"]);
     check("a channel set receipt says replay on or off and labels the delivery class as channel show does",

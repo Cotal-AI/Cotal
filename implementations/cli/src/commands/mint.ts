@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readlinkSync, realpathSync, unlinkSync, type Stats } from "node:fs";
 import { dirname, join, parse, relative, resolve, sep } from "node:path";
 import {
-  CotalEndpoint, DEV_OWNER, acquireLock, agentFilePath, credsClaims, ensureDirNoSymlink, identityFromCreds,
+  CotalEndpoint, DEV_OWNER, accountRevocations, acquireLock, agentFilePath, credsClaims, ensureDirNoSymlink, identityFromCreds,
   loadAgentFile, mintCreds, mintLifecycleUid, newIdentity, principalKey, provisionAgentDurables,
   resolveReadAcl, writeSecretFileAtomic, writeSecretFileCreateOnly,
   type FlagValues, type Identity, type ParsedArgs, type Profile, type SpaceAuth,
@@ -93,6 +93,10 @@ export async function mint(args: ParsedArgs): Promise<void> {
       if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the protected identity source disappeared");
       try { identity = identityFromCreds(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
       catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the identity source has no matching native JWT subject and user nkey seed; contents were not printed"); }
+      // A credential signed now would postdate the revocation, so the broker would accept the key again.
+      const revokedAt = accountRevocations(auth.account.jwt)[identity.id];
+      if (revokedAt !== undefined)
+        throw new CommandFailure("refused", "CONFLICT", `the --identity key ${identity.id} was revoked at ${new Date(revokedAt * 1000).toISOString()} with auth revoke-credential, and a revoked key is not signed again; nothing was minted`, { target: { ...target, identity: identity.id }, remedy: "mint a fresh key: run auth mint without --identity" });
     }
     const requestedIdentity = identity;
     const key = agentCredsKey(space, name, { injected: false, root });

@@ -351,7 +351,7 @@ export async function startIsolatedBroker(options: {
   mode: MaintenanceAuthMode;
   auth?: SpaceAuth;
   deadline: Date;
-  label: "backup" | "restore" | "quarantine";
+  label: "backup" | "restore" | "quarantine" | "previous";
   initialScope: IsolatedMaintenanceScope;
   /** Attempt id prefixing the run files, tying them to the journaled maintenance attempt. */
   attemptId?: string;

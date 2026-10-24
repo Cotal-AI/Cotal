@@ -16,10 +16,9 @@ import { nativeEndpointRefusal } from "../lib/endpoint-errors.js";
 import { onInstance } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
-import { reservedPersonaName } from "../lib/persona-files.js";
+import { PERSONA_LIMIT, reservedPersonaName } from "../lib/persona-files.js";
 import type { PersonaValues } from "./persona.js";
 
-const INPUT_LIMIT = 1024 * 1024;
 const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 const csv = (text: string | undefined) => text?.split(",").map((part) => part.trim()).filter(Boolean);
 
@@ -64,21 +63,21 @@ function definitionInput(values: PersonaValues, name: string): string {
     const chunks: Buffer[] = [];
     let total = 0;
     for (;;) {
-      const chunk = Buffer.alloc(Math.min(16 * 1024, INPUT_LIMIT + 1 - total));
+      const chunk = Buffer.alloc(Math.min(16 * 1024, PERSONA_LIMIT + 1 - total));
       const size = readSync(0, chunk, 0, chunk.length, null);
       if (!size) break;
       total += size;
-      if (total > INPUT_LIMIT) throw new CommandFailure("refused", "USAGE_INVALID", "the persona input exceeds the 1 MiB limit");
+      if (total > PERSONA_LIMIT) throw new CommandFailure("refused", "USAGE_INVALID", "the persona input exceeds the 1 MiB limit");
       chunks.push(chunk.subarray(0, size));
     }
     bytes = Buffer.concat(chunks);
   } else {
     const path = values.file ?? values.from!;
-    const source = readLocalRecordSource(path, INPUT_LIMIT, false);
+    const source = readLocalRecordSource(path, PERSONA_LIMIT, false);
     if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the explicit persona input is absent");
     bytes = source;
   }
-  if (bytes.length > INPUT_LIMIT) throw new CommandFailure("refused", "USAGE_INVALID", "the persona input exceeds the 1 MiB limit");
+  if (bytes.length > PERSONA_LIMIT) throw new CommandFailure("refused", "USAGE_INVALID", "the persona input exceeds the 1 MiB limit");
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);

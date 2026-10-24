@@ -743,6 +743,7 @@
     "smoke:legacy-root-upgrade:live": "tsx implementations/cli/smoke/legacy-root-upgrade-live.smoke.ts",
     "smoke:stack-settle:live": "tsx implementations/cli/smoke/stack-settle-live.smoke.ts",
     "smoke:space-teardown:live": "tsx implementations/cli/smoke/space-teardown-live.smoke.ts",
+    "smoke:auth-revoke-credential:live": "tsx implementations/cli/smoke/auth-revoke-credential-live.smoke.ts",
     "smoke:up-refresh-identity:live": "tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
     "smoke:up-resume-render-lock:live": "tsx implementations/cli/smoke/up-resume-render-lock-live.smoke.ts",
     "smoke:up-adopt-resume-lock:live": "tsx implementations/cli/smoke/up-adopt-resume-lock-live.smoke.ts",

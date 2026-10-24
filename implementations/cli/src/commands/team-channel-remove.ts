@@ -2,6 +2,7 @@ import * as prompts from "../lib/prompts.js";
 import { contractDigest, mintCreds, newIdentity, type ChannelConfig, type ChannelDefaults } from "@cotal-ai/core";
 import { ConfirmationRequired, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { listAdditiveTeamAttempts, removedAdditiveDeploymentIds, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { CARD_TERMINAL_PHASES, openChannelCardRegistry, readChannelMemberImpact, writeChannelRemovalAttempt, writeChannelRemovalReceipt, writeChannelRemovalStep, type CardObservation, type CardReceipt, type ChannelRemovalAttempt, type ChannelRemovalStep, type RemovedChannel } from "../lib/team-channel-removal.js";
@@ -23,6 +24,16 @@ function fallback(config: ChannelConfig | null, defaults: ChannelDefaults | null
     replayWindow: { card: config?.replayWindow ?? null, after: defaults?.replayWindow ?? null },
     describedContextRemoved: config?.description !== undefined || config?.instructions !== undefined,
   };
+}
+
+/** The way forward when the registration does not match the deployment. With none, as after the
+ *  stack's `cotal down`, starting that stopped stack registers it again. */
+function registrationRemedy(selected: ReturnType<typeof findMesh>, root: string, space: string, deploymentId: string): string {
+  let stopped = false;
+  try { stopped = readStackJournal(root)?.journal.space === space; } catch { stopped = false; }
+  return selected === undefined && stopped
+    ? `no registration names ${space}, as after cotal down; start the stack again with cotal up in ${root}, which registers it, then run cotal team remove ${deploymentId} again`
+    : `compare the registration with cotal space show ${space} and the deployment with cotal team show ${deploymentId}`;
 }
 
 /** The card phase of a team removal: only the registry cards a returned deployment created, each by
@@ -48,7 +59,7 @@ export async function prepareCardRemoval(input: { root: string; space: string; d
   if (shared.length) throw new CommandFailure("refused", "CONFLICT", "another retained deployment record also names one or more of these channels; no card was deleted", { target: { ...target, sharedChannels: shared } });
 
   const selected = findMesh(space);
-  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment", { target });
+  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment", { target, remedy: registrationRemedy(selected, root, space, deploymentId) });
   const conn = await connectOrThrow({ space }, "deployer", { readOnly: true });
   if (!conn.root || canonicalRoot(conn.root) !== root || conn.server !== original.server || conn.mode !== original.authMode || conn.tls !== original.tlsRequired) throw new CommandFailure("refused", "CONFLICT", "the scoped connection differs from the original root, broker, auth mode or transport; no card was deleted", { target });
   if (conn.mode === "auth" && !conn.auth) throw new CommandFailure("refused", "PERMISSION_DENIED", "the registered static mesh has no signer for a scoped channel writer; no other credential was substituted", { target });
@@ -92,7 +103,7 @@ export async function prepareCardRemoval(input: { root: string; space: string; d
     const members = await readChannelMemberImpact(conn.server, space, conn.tls, readAuth, names);
     const preview = impactOf(original, receipt, cards, defaults, members);
     const changed = cards.filter((row) => row.state === "changed");
-    if (changed.length) throw new CommandFailure("refused", "CONFLICT", "one or more cards changed after this deployment created them; changed metadata is not owned and no card was deleted", { target: { ...target, changedChannels: changed.map((row) => row.name) } });
+    if (changed.length) throw new CommandFailure("refused", "CONFLICT", `${changed.length === 1 ? "the card" : "the cards"} ${changed.map((row) => `#${row.name}`).join(", ")} changed after this deployment created ${changed.length === 1 ? "it" : "them"}; changed metadata is not owned and no card was deleted`, { target: { ...target, changedChannels: changed.map((row) => row.name) } });
     return { preview, close, closeUnconfirmed: () => closeUnconfirmed, async execute(): Promise<CardRemovalRun> {
       let intent: ChannelRemovalAttempt | undefined, intentAttempted = false, returned = false, failure: CommandFailure | undefined;
       const outcomes: CardOutcome[] = [];
@@ -161,7 +172,7 @@ export async function prepareCardReconcile(input: { root: string; space: string;
   const { root, space, deploymentId, original, receipt, intent } = input, target = { root, space, deploymentId };
   if (intent.channels.length !== receipt.createdChannels.length || intent.channels.some((row, ordinal) => row.name !== receipt.createdChannels[ordinal]!.name || row.createdRevision !== receipt.createdChannels[ordinal]!.revision)) throw new CommandFailure("refused", "CONFLICT", "the removal intent does not name the original returned cards; nothing was reconciled", { target });
   const selected = findMesh(space);
-  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.server !== intent.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment and its removal intent", { target });
+  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.server !== intent.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment and its removal intent", { target, remedy: registrationRemedy(selected, root, space, deploymentId) });
   const conn = await connectOrThrow({ space }, "deployer", { readOnly: true });
   if (!conn.root || canonicalRoot(conn.root) !== root || conn.server !== original.server || conn.mode !== original.authMode || conn.tls !== original.tlsRequired) throw new CommandFailure("refused", "CONFLICT", "the scoped connection differs from the original root, broker, auth mode or transport; nothing was reconciled", { target });
   let auth: { creds?: string; bearer?: string; sentinelCreds?: string } = { creds: conn.creds };

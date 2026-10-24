@@ -7,7 +7,7 @@ import {
   ConfirmationRequired,
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
   canonicalRoot, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
-  presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Block, type Report,
+  presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, STORE_CONTENTS, storeContentsText, writeResult, type Block, type Report, type Section,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses, removeLocalState, safeStoreCleanupPath } from "./clean.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -18,6 +18,7 @@ import { acquireStackOperationLock, readStackJournal, stackNeverStarted } from "
 import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
 
 /** What a named reset acts on. A running or crashed space is selected by its locally started
  *  registration. A controller stack that a completed `down` stopped has none: its prepared record
@@ -38,13 +39,6 @@ export interface ResetTarget {
 }
 
 export type ResetCommand = "reset store" | "reset space";
-
-/** What the broker kept in a space's store, all of which a store reset removes. They are named, not
- *  listed: a stopped broker is the only reader of its store. */
-export const STORE_CONTENTS = ["workflow runs and their journals", "channel history", "stored messages", "every other record the broker kept there"];
-
-/** {@link STORE_CONTENTS} as one phrase. */
-export const storeContentsText = (items: readonly string[]) => `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 
 /** The runs the stack journal's last down recorded, or undefined when it holds no down with them. */
 export function runsAtLastDown(root: string): StackRuns | undefined {
@@ -72,6 +66,15 @@ export function storeRunBlocks(runs: StackRuns | undefined, remedy: string | und
     ...(rows.length ? [{ kind: "table" as const, columns: [{ key: "run", label: "Run" }, { key: "state", label: "State" }, { key: "step", label: "Waiting step" }, { key: "asks", label: "Request" }], rows }] : []),
     ...(runs.omitted ? [{ kind: "lines" as const, lines: [`${runs.omitted} more unfinished run${runs.omitted === 1 ? " is" : "s are"} not listed.`] }] : []),
   ];
+}
+
+/** The preview's Store contents section, which `reset store` and `reset space` share: what removing
+ *  the store at `root` removes, and the runs its last down recorded. None when no store is present. */
+export function storeContentsSection(removed: readonly string[], runs: StackRuns | undefined, root: string): Section[] {
+  return removed.length ? [{ title: "Store contents", blocks: [
+    { kind: "lines", lines: [`Removing the store removes ${storeContentsText(removed)}. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards.`] },
+    ...storeRunBlocks(runs, `Only the broker reads the store, and it is stopped. To see the runs, run cotal up and cotal run ps from ${root}, then cotal down --yes.`),
+  ] }] : [];
 }
 
 export function selectResetTarget(space: string, command: ResetCommand): ResetTarget {
@@ -227,24 +230,30 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
   const target = { space, root };
   if (root === canonicalRoot(homedir()) || selected.storeDir !== undefined && !isAbsolute(selected.storeDir))
     throw new CommandFailure("refused", "CONFLICT", "the selected root or custom store path is not a safe absolute project target", { target });
+  // From here an interrupt says what the reset left, and releases the lock so the next run does not find it held.
+  let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
+  let submitted = false;
+  const stopReporting = reportOnInterrupt(presentation, "reset", () => submitted
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", "reset store was interrupted while it removed the stopped store; part of it may remain", { target, remedy: `see what remains with cotal reset store ${space} --dry-run before you run it again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", "reset store was interrupted before it removed anything; the store is as it was", { target, remedy: `run cotal reset store ${space} --yes again` }),
+  () => { if (lock) releaseMaintenanceLock(lock); });
   const expected = await assertResetEligible(selected, "reset store");
   const recordedRuns = runsAtLastDown(root);
   if (!yes) {
     const answer = await prompts.confirm({ message: `Delete only the stopped store at ${oneLine(expected.path)} for ${oneLine(space)} on ${oneLine(brokerAddressForDisplay(selected.server) ?? "the recorded broker")}? Its ${storeContentsText(STORE_CONTENTS)} go with it${recordedRuns?.read ? ` (as of the last down: ${runCounts(recordedRuns)})` : ""}. Trust, credentials and registration stay.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
+      stopReporting();
       writeResult(presentation, { command: "reset", target, result: { kind: "reset-store", confirmed: false, deleted: false }, noOp: true }, (): Report => ({ sections: [{ title: "Store kept", blocks: [{ kind: "lines", lines: ["No store path was removed."] }] }] }));
       return;
     }
   }
   // A live holder, such as a racing `up`, is named by its pid, as whole-stack commands name it.
-  let lock: ReturnType<typeof acquireMaintenanceLock>;
   try { lock = acquireStackOperationLock(root); }
   catch (error) {
     if (isCommandFailure(error)) throw error;
     throw new CommandFailure("refused", "CONFLICT", "the exclusive local maintenance lock could not be acquired; no store was removed", { target });
   }
   let removed: string[] | undefined;
-  let submitted = false;
   let failure: CommandFailure | undefined;
   try {
     const pinned = await assertResetEligible(selected, "reset store");
@@ -262,6 +271,7 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
         ? new CommandFailure("partial", "OPERATION_PARTIAL", "the store cleanup returned but maintenance lock release was not confirmed", { target, changed: removed, native: { outcome: "unknown" } })
         : new CommandFailure("failed", "OPERATION_FAILED", "maintenance lock release was not confirmed; no store cleanup was submitted", { target });
     }
+    stopReporting();
   }
   if (failure) throw failure;
   const paths = removed ?? [];

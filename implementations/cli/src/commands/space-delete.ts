@@ -15,6 +15,7 @@ import {
 } from "@cotal-ai/workspace";
 import { runningStackMembers } from "../lib/stack-members.js";
 import { readStackJournal } from "../lib/stack-journal.js";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
 
 interface DeletionStream { name: string; kind: "stream" | "bucket" | "object-store"; state: "present" | "absent"; messages: number | null }
 interface PresenceImpact { id: string; name: string | null; status: string | null; lastHeartbeat: number | null }
@@ -210,8 +211,23 @@ function previewView(data: Awaited<ReturnType<typeof readSpaceDeletion>>["result
 
 type DeletionObservation = Awaited<ReturnType<typeof readSpaceDeletion>>;
 
+/** How far one apply got: the deletes acknowledged, the stream whose delete is in flight, and
+ *  whether the post-delete check began. An interrupt reports what it shows. */
+interface DeletionProgress { acknowledged: string[]; alreadyAbsent: string[]; submitted: string | null; postReadStarted: boolean }
+
+/** What a `space delete` interrupted by SIGINT or SIGTERM left, from its progress so far. */
+function interruptedDeletion(space: string, progress: DeletionProgress): CommandFailure {
+  const target = { space };
+  const { acknowledged, submitted, postReadStarted } = progress;
+  if (!acknowledged.length && submitted === null)
+    return new CommandFailure("failed", "OPERATION_FAILED", "space delete was interrupted before it deleted anything; the space's streams are as they were", { target, remedy: `run cotal space delete ${space} --yes again` });
+  if (postReadStarted)
+    return new CommandFailure("unknown", "OPERATION_UNKNOWN", `space delete was interrupted after all ${acknowledged.length} deletes were acknowledged, before its check that nothing remains`, { target, changed: acknowledged, remedy: `confirm that nothing remains with cotal space delete ${space} --dry-run` });
+  return new CommandFailure("partial", "OPERATION_PARTIAL", `space delete was interrupted after ${acknowledged.length} ${acknowledged.length === 1 ? "delete was" : "deletes were"} acknowledged${submitted === null ? "" : `, with the delete of ${submitted} unconfirmed`}; the other streams remain`, { target, changed: acknowledged, remedy: `see what remains with cotal space delete ${space} --dry-run, then run cotal space delete ${space} --yes to delete the rest` });
+}
+
 /** Every effect is on an exact stream name admitted by the fresh native observation. */
-async function applySpaceDeletion(observed: DeletionObservation): Promise<{ acknowledged: string[]; alreadyAbsent: string[]; postReadRemaining: []; registrationRemoved: false; localFilesRemoved: false }> {
+async function applySpaceDeletion(observed: DeletionObservation, progress: DeletionProgress): Promise<{ acknowledged: string[]; alreadyAbsent: string[]; postReadRemaining: []; registrationRemoved: false; localFilesRemoved: false }> {
   const { entry, auth, result } = observed;
   const target = { space: result.space };
   let latest: ReturnType<typeof findMesh>;
@@ -237,9 +253,7 @@ async function applySpaceDeletion(observed: DeletionObservation): Promise<{ ackn
   try {
     nc = await dialerFor(entry.server)({ servers: entry.server, ...standaloneConnectOpts({ ...(credential ? { creds: credential.creds } : {}), tls: entry.tlsRequired === true }), ...(credential ? { inboxPrefix: `_INBOX_${credential.id}` } : {}), timeout: 2_000, reconnect: false, maxReconnectAttempts: 0 });
   } catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the exact-scope deletion connection could not be established; no delete request was submitted", { target }); }
-  const acknowledged: string[] = [], alreadyAbsent: string[] = [];
-  let submitted: string | null = null;
-  let postReadStarted = false;
+  const { acknowledged, alreadyAbsent } = progress;
   let closed = false;
   try {
     const info = nc.info;
@@ -266,13 +280,13 @@ async function applySpaceDeletion(observed: DeletionObservation): Promise<{ ackn
     alreadyAbsent.push(...result.streams.filter((stream) => stream.state === "absent").map((stream) => stream.name));
     for (const stream of result.streams) {
       if (stream.state === "absent") continue;
-      submitted = stream.name;
+      progress.submitted = stream.name;
       const reply = await jsm.streams.delete(stream.name);
       if (reply !== true) throw new Error("stream deletion was not acknowledged");
       acknowledged.push(stream.name);
-      submitted = null;
+      progress.submitted = null;
     }
-    postReadStarted = true;
+    progress.postReadStarted = true;
     const remaining: string[] = [];
     for (const stream of result.streams) {
       try { await jsm.streams.info(stream.name); remaining.push(stream.name); }
@@ -282,17 +296,17 @@ async function applySpaceDeletion(observed: DeletionObservation): Promise<{ ackn
       if (isTransferStream(result.space, stream) && !remaining.includes(stream) && !transfers.includes(stream)) remaining.push(stream);
     if (remaining.length) throw new CommandFailure(acknowledged.length ? "partial" : "refused", acknowledged.length ? "OPERATION_PARTIAL" : "CONFLICT", "native post-delete inspection still sees space resources; no additional deletion was submitted", { target, changed: acknowledged, native: { outcome: "unknown", detail: { acknowledged, alreadyAbsent, remaining } }, remedy: "inspect these exact resources on the original broker before another deletion attempt" });
   } catch (error) {
-    if (error instanceof CommandFailure && submitted === null && (!acknowledged.length || error.outcome === "partial")) throw error;
+    if (error instanceof CommandFailure && progress.submitted === null && (!acknowledged.length || error.outcome === "partial")) throw error;
     const remaining = result.streams.map((stream) => stream.name).filter((name) => !acknowledged.includes(name) && !alreadyAbsent.includes(name));
-    if (!submitted && !acknowledged.length)
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", postReadStarted ? "post-delete inspection did not finish, but no native delete was submitted" : "native deletion preflight did not finish; no delete request was submitted", { target, native: { outcome: "not-executed", detail: { remaining, postRead: postReadStarted ? "unconfirmed" : "not-started" } } });
+    if (!progress.submitted && !acknowledged.length)
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", progress.postReadStarted ? "post-delete inspection did not finish, but no native delete was submitted" : "native deletion preflight did not finish; no delete request was submitted", { target, native: { outcome: "not-executed", detail: { remaining, postRead: progress.postReadStarted ? "unconfirmed" : "not-started" } } });
     const api = error && typeof error === "object" && "api_error" in error ? (error as { api_error?: { code?: unknown } }).api_error : undefined;
     const denied = error instanceof PermissionViolationError || api?.code === 403;
     const absent = isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound);
-    const knownRefusal = submitted !== null && (denied || absent);
+    const knownRefusal = progress.submitted !== null && (denied || absent);
     if (knownRefusal && !acknowledged.length)
-      throw new CommandFailure("refused", denied ? "PERMISSION_DENIED" : "TARGET_NOT_FOUND", "the broker refused the first exact stream delete; nothing was acknowledged or retried", { target, native: { outcome: "not-executed", detail: { acknowledged, alreadyAbsent, refused: submitted, remaining } } });
-    throw new CommandFailure(knownRefusal ? "partial" : "unknown", knownRefusal ? "OPERATION_PARTIAL" : "OPERATION_UNKNOWN", "space deletion stopped after a native refusal or unconfirmed reply; no delete was retried", { target, changed: acknowledged, native: { outcome: knownRefusal ? "not-executed" : "unknown", detail: { acknowledged, alreadyAbsent, unconfirmed: knownRefusal ? null : submitted, refused: knownRefusal ? submitted : null, remaining, postRead: postReadStarted ? "unconfirmed" : "not-started" } }, remedy: "inspect the original broker and each remaining stream before deciding whether to retry" });
+      throw new CommandFailure("refused", denied ? "PERMISSION_DENIED" : "TARGET_NOT_FOUND", "the broker refused the first exact stream delete; nothing was acknowledged or retried", { target, native: { outcome: "not-executed", detail: { acknowledged, alreadyAbsent, refused: progress.submitted, remaining } } });
+    throw new CommandFailure(knownRefusal ? "partial" : "unknown", knownRefusal ? "OPERATION_PARTIAL" : "OPERATION_UNKNOWN", "space deletion stopped after a native refusal or unconfirmed reply; no delete was retried", { target, changed: acknowledged, native: { outcome: knownRefusal ? "not-executed" : "unknown", detail: { acknowledged, alreadyAbsent, unconfirmed: knownRefusal ? null : progress.submitted, refused: knownRefusal ? progress.submitted : null, remaining, postRead: progress.postReadStarted ? "unconfirmed" : "not-started" } }, remedy: "inspect the original broker and each remaining stream before deciding whether to retry" });
   } finally {
     try { await nc.close(); closed = nc.isClosed(); } catch { closed = false; }
   }
@@ -324,6 +338,9 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   if (blocked) throw blocked;
   if (!yes && (!canPrompt() || presentation === "json"))
     throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect cotal space delete ${name} --dry-run first, then run cotal space delete ${name} --yes` });
+  // From here an interrupt says what the deletion left, as `progress` records it.
+  const progress: DeletionProgress = { acknowledged: [], alreadyAbsent: [], submitted: null, postReadStarted: false };
+  const stopReporting = reportOnInterrupt(presentation, "space delete", () => interruptedDeletion(name, progress));
   const initial = await readSpaceDeletion(name);
   if (!yes) {
     process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
@@ -331,6 +348,7 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
     const runs = pending ? ` Its ${pending} workflow run${pending === 1 ? " that has" : "s that have"} not finished go${pending === 1 ? "es" : ""} with it.` : "";
     const answer = await prompts.text({ message: `Permanently delete ${oneLine(name)} on ${oneLine(initial.result.recordedBroker ?? "the registered broker")}?${runs} Type the exact space name`, validate: (value) => value === name ? undefined : `Type ${oneLine(name)} to confirm, or cancel.` });
     if (prompts.isCancel(answer)) {
+      stopReporting();
       writeResult(presentation, { command: "space delete", target: { space: name }, result: { kind: "live-space-delete", confirmed: false, deleted: false }, noOp: true }, () => ({ sections: [{ title: "Space kept", blocks: [{ kind: "lines", lines: ["No native delete was submitted. The registration and local files were kept."] }] }] }));
       return;
     }
@@ -361,7 +379,8 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   // A stack started while the impact was reviewed refuses here too.
   const started = liveStackRefusal(refreshed.entry, name);
   if (started) throw started;
-  const receipt = await applySpaceDeletion(refreshed);
+  const receipt = await applySpaceDeletion(refreshed, progress);
+  stopReporting();
   // The broker keeps running without the space's streams. A controller stack's next up creates them
   // again, empty, on that broker. A legacy stack gets them back only from a broker start, so its
   // route back is a whole stop and a fresh up.

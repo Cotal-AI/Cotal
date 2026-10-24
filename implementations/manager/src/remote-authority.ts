@@ -11,6 +11,7 @@ import {
   managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
+  parseGoalIndexEntry,
   parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
   REMOTE_MANAGER_IDENTITY_NAMES,
@@ -516,19 +517,11 @@ export function remoteManagerGoalIndexEntries(
       result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
       result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch || !Array.isArray(result.entries))
     throw new Error("manager goal-index scan returned different lifecycle coordinates");
-  return result.entries.map((entry, index) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
-        Object.keys(entry).some((key) => !["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated", "note"].includes(key)) ||
-        entry.v !== 1 || entry.endpoint !== "manager" || entry.owner !== expectedOwner ||
-        ![entry.actor, entry.uid, entry.goalId, entry.iid].every((value) => typeof value === "string" && value.length > 0) ||
-        (entry.note !== undefined && (typeof entry.note !== "string" || entry.note.length === 0 || entry.note.length > 65_536)))
+  // The entry's shape is core's record contract; the scan adds only the endpoint and the owner.
+  return result.entries.map((raw, index) => {
+    const entry = parseGoalIndexEntry(raw, `${index} of the manager goal-index scan`);
+    if (entry.endpoint !== "manager" || entry.owner !== expectedOwner)
       throw new Error(`manager goal-index scan returned invalid entry ${index}`);
-    if (entry.allocated !== undefined && (!entry.allocated || typeof entry.allocated !== "object" || Array.isArray(entry.allocated) ||
-        Object.keys(entry.allocated).some((key) => !["name", "owner", "actor", "uid", "readinessDeadlineMs"].includes(key)) ||
-        ![entry.allocated.name, entry.allocated.actor, entry.allocated.uid].every((value) => typeof value === "string" && value.length > 0) ||
-        (entry.allocated.owner !== undefined && (typeof entry.allocated.owner !== "string" || entry.allocated.owner.length === 0)) ||
-        (entry.allocated.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(entry.allocated.readinessDeadlineMs) || entry.allocated.readinessDeadlineMs <= 0))))
-      throw new Error(`manager goal-index scan returned invalid allocation in entry ${index}`);
     return entry;
   });
 }

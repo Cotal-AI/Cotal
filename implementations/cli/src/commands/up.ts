@@ -215,10 +215,12 @@ import {
   controllerStackApplies,
   recheckExistingStore,
   requestedStackMode,
+  requestsTls,
   stackUp,
   stackUpForegroundNotice,
   stackUpInterruptNotice,
   keptOnUp,
+  MIN_FILE_STORE,
   selectedOnUp,
   type ExistingStorePin,
   type StackUpNative,
@@ -412,6 +414,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem.problem}; nothing was started or written`, { remedy: hostProblem.remedy });
   const spaceTooLong = typeof args.values.space === "string" ? spaceNameTooLong(args.values.space) : undefined;
   if (spaceTooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${spaceTooLong}; nothing was started or written`, { remedy: `choose a space name of at most ${SPACE_NAME_MAX} characters` });
+  // A prepared or controller-owned root has no route that serves TLS, so any TLS input refuses here,
+  // once and naming the route that does, before the checks below send it from one TLS form to another.
+  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot();
+  if (!args.values.file && requestsTls(args.values) && !readMaintenanceJournal(tlsRoot)) controllerStackApplies(tlsRoot, (args.values.space as string | undefined) ?? folderSpace(), args.values);
   // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
   // checks the certificate against the address it names.
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
@@ -2137,12 +2143,18 @@ function unrecordedStackServer(root: string, space: string, host: string | undef
 }
 
 /** A start over the broker a committed restore left running here. `up -f` boots a fresh mesh, so its
- *  way out also retires the restore. */
-function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string): CommandFailure {
+ *  way out also retires the restore with `retire`. */
+function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string, retire?: string): CommandFailure {
   return new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${pid}), and a new start does not run beside it; nothing was started`, {
     target: { root, attempt, pid },
-    remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${attempt} --yes, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
+    remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with ${retire}, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
   });
+}
+
+/** The cleanup that retires an active restore. One that left something out keeps its only copy in the
+ *  previous store, so its cleanup deletes that store only with `--discard-history`. */
+function retireRestore(attempt: string, leftOut: string | undefined): string {
+  return `cotal backup cleanup-fallback ${attempt} --yes${leftOut ? ` --discard-history, which deletes the previous store and the ${leftOut} only it holds` : ""}`;
 }
 
 /** `manifest` is the `up -f` file, which boots a fresh mesh and so needs the restore retired first. */
@@ -2150,13 +2162,13 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: str
   const maintenance = readMaintenanceJournal(root);
   if (!maintenance) return;
   if (maintenance.state === "active") {
-    const attempt = maintenance.restore.attemptId, retire = `cotal backup cleanup-fallback ${attempt} --yes`;
+    const attempt = maintenance.restore.attemptId, retire = retireRestore(attempt, restoreLeftOut(maintenance));
     if (!isManagerCommittedRestore(maintenance))
       throw new Error(`restore attempt ${attempt} is active without durable manager commit evidence`);
     if (!maintenance.listenerProof)
       throw new Error(`restore attempt ${attempt} is active without a bound listener proof`);
     const status = localProcessOwnerStatus(maintenance.listenerProof.processOwner);
-    if (status === "alive") throw restoredBrokerRuns(root, attempt, maintenance.listenerProof.processOwner.pid, manifest);
+    if (status === "alive") throw restoredBrokerRuns(root, attempt, maintenance.listenerProof.processOwner.pid, manifest, retire);
     if (status !== "dead")
       throw new Error(`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`);
     // `up -f` boots a fresh mesh, so the restore it would start over is retired first.
@@ -4472,12 +4484,12 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
   return true;
 }
 
-/** `--max-file-store`, refused below the bytes the space's membership bucket reserves from the
- *  broker's file store: a smaller cap cannot create the space's streams. */
+/** `--max-file-store`, refused below {@link MIN_FILE_STORE}: a smaller cap cannot create the
+ *  space's streams. */
 function parseMaxFileStore(raw: string | undefined): number | undefined {
   const cap = parsePositiveIntegerFlag("--max-file-store", raw);
-  if (cap !== undefined && cap < MEMBERSHIP_MAX_BYTES)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB), which the space's membership bucket reserves from the broker's file store; nothing was started`, { remedy: `pass --max-file-store ${MEMBERSHIP_MAX_BYTES} or more, leaving room for messages, or omit it` });
+  if (cap !== undefined && cap < MIN_FILE_STORE)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MIN_FILE_STORE} bytes, the least the space's streams start on: its membership bucket reserves ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB) of the broker's file store, and nats-server needs one more byte free to create the others; nothing was started`, { remedy: `pass --max-file-store ${MIN_FILE_STORE} or more, leaving room for messages, or omit it` });
   return cap;
 }
 

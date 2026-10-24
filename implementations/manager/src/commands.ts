@@ -28,7 +28,7 @@ import {
 import {
   assertManagerName, authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, readManagerName, reclaimDeadPreUpgradeRecord, recordManagerName, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
-  brokerAddressForDisplay, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
+  brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, deprecatedDaemonEntry, type MeshEntry,
 } from "@cotal-ai/workspace";
@@ -920,7 +920,12 @@ const managerCommands: Command[] = [
       { name: "resume-commit-sha256", type: "string", value: "<hex>", description: "full digest of the resume commit handoff" },
       { name: "spawn", type: "string", value: "<names>", description: "comma-separated personas to pre-spawn at startup" },
     ],
-    validate: (args) => { superviseExecution(args.values as Values); },
+    validate: (args) => {
+      superviseExecution(args.values as Values);
+      // COTAL_SERVER stands in for --server (see superviseTarget), so it is refused as the flag is.
+      const server = process.env.COTAL_SERVER;
+      if (args.values.server === undefined && server !== undefined && brokerUrlHasUserinfo(server)) throw brokerUrlCredentialRefusal("COTAL_SERVER");
+    },
     requiredExtensions: (args) => {
       if (superviseExecution(args.values as Values) === "none") return [];
       const runtime = args.values.runtime;

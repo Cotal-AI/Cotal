@@ -11,7 +11,9 @@
  * refuses with a target-less CONFLICT on a prepared space, and a `--file` the agent-file rules refuse
  * names the field and the reason, as does a role token `send -r` would refuse. An edit that is not
  * saved keeps its draft and names it, a malformed `--on` names the command to rerun, and no create
- * takes the seeded default's launch name. Removing the seeded default says so. No broker is started.
+ * takes the seeded default's launch name. Removing the seeded default says so, and a launch preview
+ * refuses a missing persona as the launch does. A managed preview exits 0, and both previews name
+ * the persona's source in words and warn about an unknown harness. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
@@ -147,19 +149,20 @@ for (const argv of [
 }
 
 // An edit that is not saved keeps its draft and names it: a draft the agent-file rules refuse says
-// why, and an editor that exits non-zero keeps what it wrote. The catalog file is unchanged.
+// why, and an editor that exits non-zero cancels the edit and keeps what it wrote. The catalog file
+// is unchanged.
 const drafts = join(home, "drafts");
 mkdirSync(drafts);
 const editorScript = (file: string, body: string) => { const path = join(home, file); writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 }); return path; };
 const saved = readFileSync(persona, "utf8");
 for (const [label, editor, status, says] of [
   ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
-  ["an editor that exits 3", editorScript("ed-exit", 'printf -- "---\\nname: rev\\nrole: changed\\n---\\nx\\n" > "$1"; exit 3'), 5, "editor exited with status 3 - not saved"],
+  ["an editor that exits 3", editorScript("ed-exit", 'printf -- "---\\nname: rev\\nrole: changed\\n---\\nx\\n" > "$1"; exit 3'), 0, "Edit cancelled: the editor exited with status 3."],
 ] as const) {
   const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
   const kept = readdirSync(drafts).map((dir) => join(drafts, dir, "rev.md")).filter((path) => existsSync(path));
   check(`persona edit with ${label} keeps the draft, names it and leaves the catalog file unchanged`,
-    edit.status === status && edit.stderr.includes(says) && kept.length === 1 && edit.stderr.includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
+    edit.status === status && (edit.stderr + edit.stdout).includes(says) && kept.length === 1 && (edit.stderr + edit.stdout).includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
   for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
 }
 
@@ -169,6 +172,39 @@ check("removing another persona does not call it the seeded default", removedOth
 const removedDefault = cotal("persona", "remove", "default", "--yes", "--plain");
 check("removing the seeded default says so and names what writes a fresh copy",
   removedDefault.status === 0 && removedDefault.stdout.includes("This was the seeded default persona, which a bare cotal spawn launches") && !existsSync(agentFilePath(root, "default")), shown(removedDefault));
+
+// A launch preview refuses a missing persona as the launch does, naming where it looked: the catalog
+// for a name, the file for a path, and for the default also the command that writes one.
+const catalog = dirname(agentFilePath(root, "default"));
+const noName = cotal("spawn", "nosuch", "--dry-run", "--json");
+check("spawn --dry-run of a missing name is TARGET_NOT_FOUND, naming the catalog and --file",
+  noName.status === 2 && noName.envelope?.error?.code === "TARGET_NOT_FOUND" && noName.envelope.error.message === `no persona "nosuch" in ${catalog} (mesh "opsp")`
+    && noName.envelope.error.remedy === "pass a catalog name, or a persona file elsewhere with `--file <persona.md>`", shown(noName));
+const noFile = cotal("spawn", "--file", "missing.md", "--dry-run", "--json");
+check("spawn --dry-run of a missing --file names the file it checked",
+  noFile.status === 2 && noFile.envelope?.error?.code === "TARGET_NOT_FOUND" && noFile.envelope.error.message === `no persona "missing.md": ${join(root, "missing.md")} was not found`, shown(noFile));
+const noDefault = cotal("spawn", "--dry-run", "--plain");
+check("spawn --dry-run with no default persona names cotal up in the space's root",
+  noDefault.status === 2 && noDefault.stderr.includes(`no default persona in ${catalog} (mesh "opsp")`) && noDefault.stderr.includes(`run \`cotal up\` in ${root} to write one`) && !noDefault.stderr.includes("team deploy"), shown(noDefault));
+
+// A managed preview shows the request and exits 0. Both previews say where the persona came from in
+// words, and warn about a harness no connector here provides.
+interface Preview { requested?: { source?: string }; persona?: { source?: string } }
+const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
+const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
+check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
+  managed.status === 0 && managed.envelope?.outcome === "ok" && managedResult?.completeness === "not-checked" && managedResult.result?.requested?.source === "argument", shown(managed));
+const managedHarness = cotal("spawn", "-d", "--harness", "nosuch", "--dry-run", "--plain");
+check("a managed preview warns about an unknown harness and labels the default persona in words",
+  managedHarness.status === 0 && managedHarness.stderr.includes('! no harness "nosuch"; known harnesses:') && managedHarness.stdout.includes("Persona source:            the default persona") && !managedHarness.stdout.includes("explicit-or-product-default"), shown(managedHarness));
+writeFileSync(join(root, "pv.md"), "---\nname: pv\nrole: reviewer\nsubscribe: []\n---\n");
+const direct = cotal("spawn", "--file", "pv.md", "--harness", "nosuch", "--dry-run", "--json");
+const warnings = (direct.envelope as unknown as { warnings?: { code: string }[]; result?: Preview } | undefined);
+check("a direct preview of an unknown --harness exits 0 with a HARNESS_UNKNOWN warning and the file's source",
+  direct.status === 0 && same(warnings?.warnings?.map((w) => w.code), ["HARNESS_UNKNOWN"]) && warnings?.result?.persona?.source === "file", shown(direct));
+const fromEnv = outcome(spawnSync(process.execPath, [BIN, "spawn", "--file", "pv.md", "--dry-run", "--plain"], { cwd: root, env: { ...env, COTAL_DEFAULT_AGENT: "nosuch" }, encoding: "utf8", timeout: 120_000 }));
+check("a harness only COTAL_DEFAULT_AGENT chose gets the warning config gives",
+  fromEnv.status === 0 && fromEnv.stderr.includes('! COTAL_DEFAULT_AGENT: no harness "nosuch"') && fromEnv.stdout.includes("a persona file (--file)"), shown(fromEnv));
 
 finish();
 process.exit(process.exitCode ?? 0);

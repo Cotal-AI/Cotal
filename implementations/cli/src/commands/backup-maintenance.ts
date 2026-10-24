@@ -6,10 +6,10 @@ import {
   CommandFailure, acquireMaintenanceLock, assertSingleSpaceBroker, assessMaintenanceClaim, assessRestoreClaim, authDir,
   cleanupRestoreFallback, isCommandFailure, isMaintenanceError, oneLine, presentationOf,
   readMaintenanceJournal, recoverStaleMaintenanceClaim, releaseMaintenanceLock, writeResult, type Report,
-  restoreLeftOut, restoreLeftOutReason,
+  restoreLeftOut, restoreLeftOutReason, restoreRolledBackRuns,
 } from "@cotal-ai/workspace";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
-import { heldClaim, restoreNextStep } from "../lib/restore.js";
+import { heldClaim, restoreNextStep, rolledBackNotes } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { acquireStackOperationLock } from "../lib/stack-journal.js";
 import { MissingFlags } from "../lib/missing-flags.js";
@@ -39,13 +39,16 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   const leftOut = mode === "cleanup-fallback" ? restoreLeftOut(snapshot) : undefined;
   const onlyCopy = leftOut ? restore.previousSource?.identity.path : undefined;
   const onlyCopyText = `${restoreLeftOutReason(snapshot)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out`;
-  const historyWarnings = onlyCopy ? [{ code: "HISTORY_ONLY_IN_PREVIOUS_STORE", target: { space: snapshot.space, previousStore: onlyCopy }, message: `${onlyCopyText[0]!.toUpperCase()}${onlyCopyText.slice(1)}. Cleanup deletes it only with --discard-history.` }] : [];
+  // A restore over a newer cut also names each run it rolled back and the steps open again.
+  const rolledBack = onlyCopy ? restoreRolledBackRuns(snapshot) : { runs: [], more: 0 };
+  const historyWarnings = onlyCopy ? [{ code: "HISTORY_ONLY_IN_PREVIOUS_STORE", target: { space: snapshot.space, previousStore: onlyCopy, ...(rolledBack.runs.length ? { rolledBackRuns: rolledBack.runs } : {}) }, message: `${onlyCopyText[0]!.toUpperCase()}${onlyCopyText.slice(1)}. Cleanup deletes it only with --discard-history.` }] : [];
   const assessment = snapshot.state === "restore-ready" ? assessRestoreClaim(snapshot, { unrecordedOwnersDead: attemptProcessesGone(root) }) : null;
   const claim = snapshot.state === "restore-ready" ? snapshot.claim : undefined;
   const preview = { kind: "backup-maintenance-preview", operation: mode, ...target, state: snapshot.state, preservedSource: snapshot.source.path, restoreTarget: restore.targetPath, previousSource: restore.previousSource?.identity.path ?? null, restoreMethod: restore.method, selection: restore.selection ?? null, claimAssessment: assessment, claimDeadline: claim?.deadline ?? null, claimHolderPid: claim?.coordinator.pid ?? null, effectAttempted: false, nativeGuardsStillRequired: true };
   if (args.values["dry-run"]) {
     writeResult(presentation, { command: `backup ${mode}`, target, result: preview, warnings: historyWarnings }, (data): Report => ({ sections: [{ title: "Maintenance operation plan", blocks: [
       { kind: "fields", rows: [["Operation", data.operation], ["Root", data.root], ["Space", data.space], ["Restore attempt", data.attemptId], ["Journal revision", String(data.revision)], ["Recorded state", data.state], ["Preserved source", data.preservedSource], ["Restore target", data.restoreTarget], ["Previous source", data.previousSource ?? (data.restoreMethod === "disaster" ? "none retained; the restore replaced a missing source" : "not recorded")], ["Claim observation", data.claimAssessment ?? "not a pre-commit claim"], ...(data.claimDeadline ? [["Claim deadline", data.claimDeadline], ["Restore process", String(data.claimHolderPid)]] as [string, string][] : [])] },
+      ...(rolledBack.runs.length ? [{ kind: "lines" as const, lines: rolledBackNotes(rolledBack) }] : []),
       { kind: "lines", lines: [mode === "recover" ? "Apply requires the restore process and every recorded watchdog and broker proven dead, and either every broker this root started proven gone or the claim deadline passed. It uses native rollback; a live or ambiguous owner refuses. No coordinator override or process kill is supplied." : data.restoreMethod === "disaster" ? "Apply retires the completed restore journal after the native healthy-active and finalization checks. This restore retained no old store, so nothing is removed, and the active restored target is never deleted." : `Apply removes only the matching unchanged old-store identity after the native healthy-active and finalization checks${onlyCopy ? `, and only with --discard-history, because that store holds the only copy of the ${leftOut} this restore left out` : ""}. It never deletes the active restored target and retires the completed restore journal only after cleanup.`, "Preview took no maintenance lock and made no filesystem change. Store identity, liveness and journal revision must pass again at apply; this is not permission to delete a path by hand."] },
     ] }] }));
     return;

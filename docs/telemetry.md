@@ -1,5 +1,7 @@
 # Telemetry
 
+> **Reference** · **For:** everyone who runs the `cotal` CLI
+
 The `cotal` CLI sends anonymous usage data so we can see which commands people use, which fail,
 and on which platforms. It is on by default, it works with no mesh, no Cloud and no sign-in, and
 you can turn it off in one command. This page is the contract: the intake accepts the bodies below
