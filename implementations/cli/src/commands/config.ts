@@ -153,14 +153,16 @@ export async function config(args: ParsedArgs): Promise<void> {
     // that still holds a saved value, so a value left for a gone space can go.
     if (scope.space !== null && preferenceInfo(key).perSpace && (sub === "unset" || !preferenceValueProblem(key, value!))) assertKnownSpace(scope.space, prefs, sub === "unset");
     const previous = (scope.space === null ? prefs.defaults[key] : prefs.spaces[scope.space]?.[key]) ?? null;
-    const { changed, revision } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
+    const { changed, revision, replacedMode } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
+    // The write replaces the file with a private one, so a mode someone set on it, such as read-only, is named as gone.
+    const modeChanged: OutputWarning[] = replacedMode === undefined ? [] : [{ code: "PREFERENCES_MODE_CHANGED", target: { path: preferencesPath() }, message: `${preferencesPath()} was mode ${replacedMode.toString(8).padStart(4, "0")}, and this write replaced it with a new file at mode 0600; a file's mode does not stop config set or unset` }];
     // What a command here uses next, whichever scope was written: through `--space`, else the space a
     // launch here uses, as `spawn` resolves it. `--user` chooses where the value is saved, not that.
     const here = readScope({ ...v, user: undefined });
     const effective = setting(key, here, readPreferences());
     const result: PreferenceWrite = { kind: "preference-write", file: preferencesPath(), revision, scope, key, previous, value: value ?? null, effective };
     const missing = key === "persona" && value?.trim() ? missingPersona(value, here) : undefined;
-    writeResult(presentation, { command: "config", target: target(scope), result, warnings: [...shadowedWrite(result), ...(missing ? [missing] : [])], noOp: !changed }, writeView);
+    writeResult(presentation, { command: "config", target: target(scope), result, warnings: [...modeChanged, ...shadowedWrite(result), ...(missing ? [missing] : [])], noOp: !changed }, writeView);
     return;
   }
   throw usage(`cotal config has no subcommand "${sub}" - run \`cotal help config\``);

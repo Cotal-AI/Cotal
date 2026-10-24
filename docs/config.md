@@ -165,7 +165,10 @@ The file is private to its owner and versioned:
 ```
 
 `revision` counts the writes. A write holds a lock, refuses with `CONFLICT` if the file changed after
-the command read it, and replaces the file atomically, so two writers never lose an edit. A file that
+the command read it, and replaces the file atomically, so two writers never lose an edit. The new
+file is private, mode `0600`, whatever mode the old one had. When that was another mode, such as a
+read-only `0400`, the write names it in a `PREFERENCES_MODE_CHANGED` warning, since a file's mode does
+not stop `config set` or `unset`. A file that
 does not validate (not JSON, a newer `schemaVersion`, an unknown key or an invalid value) stops every
 command that could act on a default, with an error that names the file and the problem. Help, shell
 completion, `version` and `docs` use no preference and still run. `status` reports the file as a part

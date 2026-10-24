@@ -353,6 +353,19 @@ const ansi = /\x1b\[/;
   run(["config", "unset", "editor"]);
 }
 
+// ── a write replaces a file whose mode is not 0600, and says so ──────────────────────────────────
+// A read-only 0400 file used to come back at 0600 without a word.
+if (process.platform !== "win32") {
+  run(["config", "set", "color", "always"]);
+  chmodSync(file, 0o400);
+  const r = run(["config", "set", "color", "never", "--json"]);
+  check("a write over a 0400 file names the old mode in PREFERENCES_MODE_CHANGED and leaves a 0600 file",
+    r.status === 0 && r.envelope?.warnings.some((w) => w.code === "PREFERENCES_MODE_CHANGED" && w.message === `${file} was mode 0400, and this write replaced it with a new file at mode 0600; a file's mode does not stop config set or unset`) === true && (statSync(file).mode & 0o777) === 0o600 && saved().defaults.color === "never", r.envelope);
+  const text = run(["config", "set", "color", "always"]);
+  check("a write over a 0600 file says nothing about its mode", text.status === 0 && !/was mode/.test(text.stderr), shown(text));
+  run(["config", "unset", "color"]);
+}
+
 // ── a preferences folder you cannot write is refused, naming it, and nothing changes ─────────────
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const dir = join(xdg, "cotal");
