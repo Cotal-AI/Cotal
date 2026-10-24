@@ -4988,8 +4988,9 @@ The actor ledger is the single authorization source of a user-auth space: no row
 `auth revoke` do, and refuse the same way. With no space to resolve they refuse with a next step,
 such as `cotal up`, rather than assume one, and a root that does not hold the space's user-auth
 ledger refuses `list` rather than report no rows. On a static or open space the refusal says that
-actor grants apply only to a space started with `cotal up --user-auth`.
-A usage error refuses with exit 1 before any space or authority is read, and one refusal names every
+actor grants apply only to a space started with `cotal up --user-auth`, and `grant` and `revoke`
+refuse that way before asking for `--sub`, `--owner` or the ACL flags.
+Otherwise a usage error refuses with exit 1 before any authority is read, and one refusal names every
 missing input: `--sub` or `--owner`, and for `grant` the ACL flags left off without `--full`.
 `grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
 `grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
@@ -6374,13 +6375,14 @@ space a bare command resolves; with no space they point to `cotal space`. `auth 
 selected root's authoritative user-auth actor ledger; a root without its owner secret and pinned IdP
 refuses rather than reporting an empty authoritative list. A static or open space has no such ledger
 on any machine, so there `auth grants`, `auth grant` and `auth revoke` refuse with `UNSUPPORTED` and
-say that actor grants apply only to a space started with `cotal up --user-auth`. A space that cannot
-be resolved refuses with its next step, such as `cotal up` or `cotal space`.
+say that actor grants apply only to a space started with `cotal up --user-auth`. `auth grant` and
+`auth revoke` refuse there before they ask for a subject or the ACL flags. A space that cannot be
+resolved refuses with its next step, such as `cotal up` or `cotal space`.
 
 `auth grant <actor>` and `auth revoke <actor>` use the existing local operator authority path.
 Choose `--sub` or `--owner`, never both. Grant requires explicit scope/read/post lists unless
 `--full` deliberately selects the native wide defaults. These usage errors refuse with exit 1 before
-the space or its authority is read, and one refusal names every missing input. Re-grant/revoke
+the space's authority is read, and one refusal names every missing input. Re-grant/revoke
 retain predecessor lifecycle retirement and concurrent-row checks before replacing or deleting
 authority. A retirement that did not run, because the auth service is not running, refused the
 connection or answered that the retirement did not run, is refused (exit 2) with the actor row

@@ -1,6 +1,7 @@
 /**
- * Grant usage is checked before any target or authority is read, under both spellings, `cotal
- * actor grant|revoke` and `cotal auth grant|revoke`. A grant missing its `--sub`/`--owner` and its
+ * Grant usage is checked before any authority is read, under both spellings, `cotal actor
+ * grant|revoke` and `cotal auth grant|revoke`; only a space registered as static or open refuses
+ * first, which `smoke:actor-target` covers. A grant missing its `--sub`/`--owner` and its
  * ACL flags refuses once with USAGE_INVALID (exit 1) and names every missing input, never exit 5,
  * and that holds with no space to resolve. With complete flags on a space whose root holds no
  * user-auth ledger, the capability refusal (UNSUPPORTED, exit 2) comes only after usage passed.
