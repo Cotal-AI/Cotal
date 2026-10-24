@@ -67,6 +67,7 @@ import {
   replaceDeadRestoreListener,
   repairRestoreDegradedToActive,
   releaseMaintenanceLock,
+  shellPath,
   workspaceSecretStore,
   writeRestoreCommitIntent,
   type AttemptOwnedPath,
@@ -420,15 +421,20 @@ async function validateManifest(
       // counting on during a disaster.
       // Checked before any transition, as the space is above: a refusal, not an unknown outcome.
       const sameAccount = manifest.authority?.account !== undefined && manifest.authority.account === currentAuthority.account;
+      // A registry restore does not check the trust state, so an artifact that holds the registry
+      // still restores that here, and the Next says how.
+      const registry = spaceBackupInventory(manifest.space).registry.every((stream) => held.includes(stream))
+        ? `; its channel registry still restores here with cotal backup restore ${shellPath(resolve(flags.restore))} --only registry, and chat and DM history and workflow runs then start empty`
+        : "";
       throw new CommandFailure("refused", "CONFLICT",
         sameAccount
           ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain; the preserved cut was not changed"
           : "backup authority fingerprint does not match current trust state: this full artifact was taken under another trust state, such as another machine's or a reset root's; the preserved cut was not changed",
         {
           target: { space: ready.space },
-          remedy: sameAccount
+          remedy: (sameAccount
             ? "restore it into a root holding that chain, or use a backup taken after the rotation"
-            : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root",
+            : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root") + registry,
         });
     }
   }

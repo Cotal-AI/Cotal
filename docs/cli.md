@@ -1952,7 +1952,9 @@ interrupted before it wrote a file is still an incomplete artifact. A path that 
 restores only into a root that still holds the trust state it was taken under, so it cannot move to
 another machine or a fresh root. `backup create`, `backup inspect` and `backup verify` say so in a
 `Restores into` row, and their JSON carries `trustBound`. A registry restore does not check the trust
-state, so `--only registry` still restores such an artifact's channel settings.
+state, so `--only registry` still restores such an artifact's channel settings. When a full restore
+refuses `CONFLICT` because the trust state moved, its Next names that `--only registry` restore for an
+artifact that holds the registry.
 
 File integrity is not a signature or a restore proof. Matching a manifest does not authenticate
 its author, verify snapshot semantics or prove existing trust will accept a restore. `backup
