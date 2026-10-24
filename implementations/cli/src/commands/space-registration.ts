@@ -27,6 +27,8 @@ import {
   removeMesh,
   removePreparedSpace,
   removeSpacePreferences,
+  SPACE_NAME_MAX,
+  spaceNameTooLong,
   stackHomeRemedy,
   stackRunsUnderOtherHome,
   writeResult,
@@ -409,9 +411,12 @@ export type LocalSpaceState = "created" | "prepared" | "started";
  */
 export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean, adopting = false): LocalSpaceState {
   const target = { space: name };
-  // `cotal up` starts a space only under a name that is one native routing token.
-  if (name.length > 200 || token(name) !== name)
-    throw refuse("USAGE_INVALID", "a space name is 1 to 200 letters, digits, underscores or hyphens, which `cotal up` needs to start it", target);
+  // `cotal up` starts a space only under a name that is one native routing token, short enough for
+  // the file names that carry it.
+  const tooLong = spaceNameTooLong(name);
+  if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, target, `choose a name of at most ${SPACE_NAME_MAX} characters`);
+  if (token(name) !== name)
+    throw refuse("USAGE_INVALID", `a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
   // Such a space could be prepared but never started: its first `up` would refuse to record the root.

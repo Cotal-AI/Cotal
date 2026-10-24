@@ -17,7 +17,7 @@ import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isR
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getCurrent, getSpaceAuth, hasUserAuthState,
   homeCotalDir, isCommandFailure, loadMeshes, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
-  rotateSystemCreds, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
+  rotateSystemCreds, SPACE_NAME_MAX, spaceNameTooLong, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
@@ -336,6 +336,10 @@ export function bindReaches(host: string, server: string): boolean {
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
   if (request.transport.kind !== "plaintext" && request.transport.kind !== "tls-required") throw new CommandFailure("refused", "UNSUPPORTED", "unknown broker transport");
+  // A space an earlier release prepared under a longer name refuses here, before its journal or any
+  // member's file is written, instead of failing on the first file name that does not fit.
+  const tooLong = spaceNameTooLong(space);
+  if (tooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${tooLong}; nothing was started or written`, { target: { root, space }, remedy: `forget it with cotal space forget ${space}, then create one with a name of at most ${SPACE_NAME_MAX} characters with cotal space create <name>` });
   const recorded = readStackJournal(root);
   if (request.expectPriorDown && (!recorded || recorded.sha256 !== request.expectPriorDown.journalSha256 || recorded.journal.operation.id !== request.expectPriorDown.operationId))
     throw new CommandFailure("refused", "CONFLICT", "the stopped stack changed after the team boot checked it; nothing was started", { target: { root, space, expected: request.expectPriorDown.operationId } });
