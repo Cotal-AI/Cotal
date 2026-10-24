@@ -18,7 +18,9 @@
  *   - a typed DM target that parses as a principal is sent to that principal, absent and unheard,
  *     and the present peer whose display name spells it receives nothing;
  *   - a disconnected native session whose endpoint warns that the session's consumer is gone ends
- *     itself with that reason, and the close exits 5.
+ *     itself with that reason, and the close exits 5;
+ *   - what the native session reports before its first subscriber, such as its own presence
+ *     `joined`, reaches that subscriber once.
  * Admission, retirement, delivery and every broker behavior are NOT covered here.
  *
  * Run: pnpm smoke:chat-stand-in
@@ -330,6 +332,23 @@ if (mode === "plain" || mode === "stdio") {
     reads.length = 0;
     const admitted = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire, reopen: (channel) => `cotal chat ${channel}` }).history("general", 50);
     check("a static session's /history still reads through the delivery daemon", admitted.outcome === "ok" && reads.join() === "readHistory", { admitted, reads });
+  }
+
+  console.log("10. what the session reports before a front end subscribes reaches that front end");
+  {
+    // The endpoint's start reports presence, the session's own row included, before the front end
+    // has subscribed to the session.
+    const endpoint = new EventEmitter();
+    const session = new NativeChatSession({ endpoint: endpoint as unknown as CotalEndpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), reopen: (channel) => `cotal chat ${channel}` });
+    const presence = (name: string) => ({ card: { id: `local.${name}`, name, kind: "endpoint" }, status: "idle", ts: 0 });
+    endpoint.emit("presence", { type: "join", presence: presence("me") });
+    const first: SessionEvent[] = [], second: SessionEvent[] = [];
+    session.subscribe((e) => first.push(e));
+    endpoint.emit("presence", { type: "join", presence: presence("peer") });
+    session.subscribe((e) => second.push(e));
+    const joined = (events: SessionEvent[]) => events.map((e) => e.type === "presence" ? `${e.change} ${e.row.name}` : e.type);
+    check("the first subscriber gets the session's own joined from before it subscribed, then what follows", JSON.stringify(joined(first)) === JSON.stringify(["joined me", "joined peer"]), joined(first));
+    check("...and a later subscriber gets only what follows it", second.length === 0, joined(second));
   }
 
   finish();

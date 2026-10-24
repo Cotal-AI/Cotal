@@ -4802,7 +4802,7 @@ The session also writes these records on its own:
 | `type` | Fields | When |
 |---|---|---|
 | `message` | `message`: `id`, `ts` (epoch milliseconds), `kind` (`channel`, `dm` or `anycast`), `from` (`id`, `name`, optional `role`), `channel` or `service`, `text`, optional `replyTo`, `mentionsMe`, `historical`, optional `deliveryCount` | A message arrived |
-| `presence` | `change` (`joined`, `updated` or `left`), `row` (a roster row) | A roster row changed, this session's own row included |
+| `presence` | `change` (`joined`, `updated` or `left`), `row` (a roster row) | A roster row changed, this session's own row included. As the session opens, its own row and each member already online come as `joined` |
 | `gap` | `scope` (`live` or `inbox`), `reason` | Messages may have been missed |
 | `error` | `id` (`null`), `error` | A line was refused before an id could be read from it, or was too long |
 | `end` | `reason`, `close` | The session ended. Nothing follows it |
