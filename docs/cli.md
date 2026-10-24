@@ -5023,6 +5023,10 @@ native credential matching the nkey deliberately supplied through `--identity`; 
 and identities refuse. New outputs use create-only publication. The output's directories follow
 the [`space create`](#selecting-a-space) path rule, which also accepts a root-owned sticky directory
 such as `/tmp`, and the file is owner-only. Unsupported platforms refuse rather than weakening it.
+A credential is never written through a symbolic link: a link among the output's folders refuses
+`PERMISSION_DENIED`, naming the link, the folder it points to and the same file named without the
+link. A path through a file refuses `USAGE_INVALID`, and a folder this account cannot create
+refuses `PERMISSION_DENIED`, naming the folder. None of them writes anything.
 
 `--identity` reuses the native nkey. The out-of-band agent mint reports its newly allocated
 lifecycle UID, with a warning that it did not reuse the old inbox/delivery footprint. Use that

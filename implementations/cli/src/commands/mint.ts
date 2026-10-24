@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, unlinkSync } from "node:fs";
-import { dirname, parse, resolve, sep } from "node:path";
+import { existsSync, lstatSync, readlinkSync, realpathSync, unlinkSync, type Stats } from "node:fs";
+import { dirname, join, parse, relative, resolve, sep } from "node:path";
 import {
   CotalEndpoint, DEV_OWNER, acquireLock, agentFilePath, credsClaims, ensureDirNoSymlink, identityFromCreds,
   loadAgentFile, mintCreds, mintLifecycleUid, newIdentity, principalKey, provisionAgentDurables,
@@ -42,6 +42,33 @@ function replaceable(standing: string, name: string, target: object): Replaced {
   return { state: "expired", expiresAt: exp };
 }
 
+/** Why the `--out` folders could not be made, naming the folder: the first one on the path that is a
+ *  symbolic link, which a credential is never written through, or that is not a folder, or the
+ *  folder this account may not create in. Undefined for any other failure. */
+function outFolderRefusal(target: object, out: string, error: unknown): CommandFailure | undefined {
+  const parent = dirname(out), volume = parse(parent).root;
+  let dir = volume;
+  for (const segment of parent.slice(volume.length).split(sep).filter(Boolean)) {
+    dir = join(dir, segment);
+    let found: Stats | undefined;
+    try { found = lstatSync(dir, { throwIfNoEntry: false }); } catch { break; }
+    if (found === undefined) break;
+    if (found.isSymbolicLink()) {
+      let real: string | undefined;
+      try { real = realpathSync(dir); } catch { /* a link that names no folder */ }
+      return new CommandFailure("refused", "PERMISSION_DENIED", `the --out path goes through ${dir}, a symbolic link to ${readlinkSync(dir)}, and a private credential is never written through a link; no credential was written`, {
+        target: { ...target, folder: dir },
+        remedy: `name the --out file by a path with no symbolic link in it${real === undefined ? "" : `, such as ${join(real, relative(dir, out))} if that folder is yours`}`,
+      });
+    }
+    if (!found.isDirectory())
+      return new CommandFailure("refused", "USAGE_INVALID", `the --out path goes through ${dir}, which is not a folder; no credential was written`, { target: { ...target, folder: dir }, remedy: "name an --out file in a folder", selfContained: true });
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code !== "EACCES" && code !== "EPERM") return undefined;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `the --out folder ${parent} could not be reached or made by this account (${code}); no credential was written`, { target: { ...target, folder: parent }, remedy: "name an --out file in a folder you own, or make that folder first" });
+}
+
 /** Native static profiles only. Labels, files and broker provisioning share one resolved authority. */
 export async function mint(args: ParsedArgs): Promise<void> {
   validateCredentialMintArguments(args);
@@ -73,7 +100,8 @@ export async function mint(args: ParsedArgs): Promise<void> {
     target = { ...target, path: out };
     if (values.out !== undefined) assertExternalCredentialExport(out, [root, currentRoot]);
     const parent = dirname(out), volume = parse(parent).root;
-    ensureDirNoSymlink(volume, ...parent.slice(volume.length).split(sep).filter(Boolean));
+    try { ensureDirNoSymlink(volume, ...parent.slice(volume.length).split(sep).filter(Boolean)); }
+    catch (error) { throw outFolderRefusal(target, out, error) ?? error; }
     protectedLocalDirectory(parent);
     held = acquireLock(`${out}.mint.lock`, { label: "credential output", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another credential writer holds this output") });
     let previous: Buffer | undefined, standing: string | undefined, replaced: Replaced | undefined;

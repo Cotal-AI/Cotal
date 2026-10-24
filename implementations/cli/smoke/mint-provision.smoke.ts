@@ -45,7 +45,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -546,6 +546,30 @@ try {
     check("--identity on a missing path is refused before anything is read",
       r3.code === 2 && /credential reference is missing or unreadable/.test(r3.out), r3.out);
     check("  and mints nothing", !existsSync(out));
+    // An --out folder that cannot hold the credential is named, with the cause and the step.
+    const real = join(root, "out-real"), link = join(root, "out-link");
+    mkdirSync(real, { mode: 0o700 });
+    symlinkSync(real, link);
+    const linked = await runMint(["x", "--profile", "observer", "--out", join(link, "sub", "x.creds")]);
+    check("--out through a symbolic link exits 2 PERMISSION_DENIED, naming the link, where it points and the path without it",
+      linked.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(linked.out) && linked.out.includes(`the --out path goes through ${link}, a symbolic link to ${real}`)
+        && linked.out.includes(`such as ${join(real, "sub", "x.creds")} if that folder is yours`), linked.out);
+    check("  and creates nothing through the link", readdirSync(real).length === 0);
+    const file = join(root, "out-file");
+    writeFileSync(file, "", { mode: 0o600 });
+    const notFolder = await runMint(["x", "--profile", "observer", "--out", join(file, "x.creds")]);
+    check("--out through a file exits 1, naming the file that is not a folder",
+      notFolder.code === 1 && notFolder.out.includes(`the --out path goes through ${file}, which is not a folder; no credential was written`), notFolder.out);
+    // An account that bypasses folder permissions cannot be refused this way.
+    if (process.getuid?.() !== 0) {
+      const locked = join(root, "out-locked");
+      mkdirSync(locked, { mode: 0o500 });
+      const noAccess = await runMint(["x", "--profile", "observer", "--out", join(locked, "sub", "x.creds")]);
+      chmodSync(locked, 0o700);
+      check("--out under a folder this account cannot create in exits 2 PERMISSION_DENIED, naming the folder",
+        noAccess.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(noAccess.out) && noAccess.out.includes(`the --out folder ${join(locked, "sub")} could not be reached or made by this account (EACCES)`), noAccess.out);
+      check("  and creates nothing there", readdirSync(locked).length === 0);
+    }
   }
 
   // ── 10. --replace: an expired or unbounded label's standing credential ─────────────────────
